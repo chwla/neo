@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.db.base import Base
 
 
 def build_engine(database_url: str | None = None):
@@ -31,6 +32,17 @@ def configure_sqlite(created_engine) -> None:
 
 engine = build_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+
+def initialize_database() -> None:
+    """Create the local schema when running without migrations."""
+
+    import app.models  # noqa: F401
+
+    Base.metadata.create_all(bind=engine)
+
+
+initialize_database()
 
 
 def get_db() -> Generator[Session, None, None]:
