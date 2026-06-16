@@ -39,6 +39,7 @@ class MemoryReviewService:
         if request.decision == CandidateStatus.REJECTED:
             candidate.status = CandidateStatus.REJECTED
             candidate.reviewed_at = datetime.now(UTC)
+            store.db.flush()
             return MemoryReviewResult(candidate_id=candidate.id, status=candidate.status)
 
         if request.decision == CandidateStatus.MERGED:
@@ -48,6 +49,7 @@ class MemoryReviewService:
         candidate.status = CandidateStatus.ACCEPTED
         candidate.reviewed_at = datetime.now(UTC)
         candidate.accepted_memory_id = memory.id
+        store.db.flush()
         return MemoryReviewResult(
             candidate_id=candidate.id,
             status=candidate.status,
@@ -70,6 +72,7 @@ class MemoryReviewService:
         candidate.status = CandidateStatus.MERGED
         candidate.reviewed_at = datetime.now(UTC)
         candidate.accepted_memory_id = memory.id
+        store.db.flush()
         return MemoryReviewResult(
             candidate_id=candidate.id,
             status=candidate.status,
@@ -79,31 +82,59 @@ class MemoryReviewService:
     def _accept(self, store: MemoryStore, candidate) -> Memory:
         attrs = self._attributes(candidate.reasoning)
         if candidate.candidate_type == CandidateType.IDENTITY:
+            key = str(attrs.get("key", "general"))
+            value = str(attrs.get("value", candidate.candidate_text))
+            memory_text = f"{key} = {value}"
+            existing_memory = self._existing_memory(store, MemoryType.IDENTITY, memory_text)
+            existing_profile = next(
+                (
+                    fact
+                    for fact in store.active_profile_by_key(key)
+                    if fact.value == value
+                ),
+                None,
+            )
+            if existing_memory is not None and existing_profile is not None:
+                return existing_memory
             profile = store.add(
                 ProfileFact(
-                    key=str(attrs.get("key", "general")),
-                    value=str(attrs.get("value", candidate.candidate_text)),
+                    key=key,
+                    value=value,
                     confidence=candidate.confidence,
                 )
             )
             memory_type = MemoryType.IDENTITY
-            memory_text = f"{profile.key} = {profile.value}"
-            memory = store.add(self._memory(candidate, memory_type, memory_text))
+            memory = existing_memory or store.add(self._memory(candidate, memory_type, memory_text))
             self.conflicts.supersede_profile_key(store, profile)
             self.conflicts.supersede_similar_memory(store, memory)
             return memory
 
         if candidate.candidate_type == CandidateType.PREFERENCE:
+            category = str(attrs.get("category", "general"))
+            value = str(attrs.get("value", candidate.candidate_text))
+            memory_text = f"{category} = {value}"
+            existing_memory = self._existing_memory(store, MemoryType.PREFERENCE, memory_text)
+            existing_preference = next(
+                (
+                    preference
+                    for preference in store.active_preferences_by_category(category)
+                    if preference.value == value
+                ),
+                None,
+            )
+            if existing_memory is not None and existing_preference is not None:
+                return existing_memory
             preference = store.add(
                 Preference(
-                    category=str(attrs.get("category", "general")),
-                    value=str(attrs.get("value", candidate.candidate_text)),
+                    category=category,
+                    value=value,
                     confidence=candidate.confidence,
                     importance=candidate.importance,
                 )
             )
-            memory_text = f"{preference.category} = {preference.value}"
-            memory = store.add(self._memory(candidate, MemoryType.PREFERENCE, memory_text))
+            memory = existing_memory or store.add(
+                self._memory(candidate, MemoryType.PREFERENCE, memory_text)
+            )
             self.conflicts.supersede_preference_category(store, preference)
             self.conflicts.supersede_similar_memory(store, memory)
             return memory
@@ -146,6 +177,17 @@ class MemoryReviewService:
         self.conflicts.supersede_similar_memory(store, memory)
         return memory
 
+    def _existing_memory(
+        self,
+        store: MemoryStore,
+        memory_type: MemoryType,
+        memory_text: str,
+    ) -> Memory | None:
+        for memory in store.active_memories_by_type(memory_type):
+            if memory.memory_text == memory_text:
+                return memory
+        return None
+
     def _memory(self, candidate, memory_type: MemoryType, text: str) -> Memory:
         return Memory(
             memory_text=text,
@@ -168,4 +210,3 @@ class MemoryReviewService:
         if not value:
             return None
         return date.fromisoformat(str(value))
-

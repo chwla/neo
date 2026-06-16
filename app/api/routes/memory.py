@@ -35,7 +35,7 @@ def ingest_conversation(
     service = MemoryExtractionService()
     result = service.extract(request)
     if request.persist:
-        service.persist_candidates(store, result)
+        service.persist_and_accept(store, result)
         store.db.commit()
     try:
         text = request.text or "\n".join(message.content for message in request.messages)
@@ -58,7 +58,7 @@ def extract_memory(
     service = MemoryExtractionService()
     result = service.extract(request)
     if request.persist:
-        service.persist_candidates(store, result)
+        service.persist_and_accept(store, result)
         store.db.commit()
     return result
 

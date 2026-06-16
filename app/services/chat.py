@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.repositories.memory_store import MemoryStore
 from app.services.context import ContextAssemblyService, ContextPackage
-from app.services.extraction import ExtractionRequest, MemoryExtractionService
+from app.services.extraction import ConversationMessage, ExtractionRequest, MemoryExtractionService
 from app.services.ollama_client import ChatTurn, OllamaClient, OllamaMessage
 from app.services.retrieval import RetrievalRequest
 
@@ -40,7 +40,9 @@ class NeoChatService:
             "You are Neo, a local personal AI assistant. Use the provided memory context "
             "when it is relevant. Do not claim memories that are not present. If memory "
             "context conflicts, prefer active goals, active projects, current profile facts, "
-            "and current preferences.\n\n"
+            "and current preferences. For personal questions about the user's name, age, "
+            "location, preferences, goals, or projects, answer only from memory context or "
+            "conversation history. If the fact is not present, say you do not know yet.\n\n"
             f"Memory context:\n{context.model_dump_json(indent=2)}"
         )
         messages = [OllamaMessage(role="system", content=system_prompt)]
@@ -56,23 +58,44 @@ class NeoChatService:
             ChatTurn(role=message.role, content=message.content)
             for message in self.store.list_chat_messages(chat_id)
         ]
-        context = self.build_context(prompt)
-        messages = self.build_messages(prompt, history, context)
         self.store.add_chat_message(chat_id, "user", prompt)
         self.store.rename_chat_from_prompt(chat_id, prompt)
+        self.db.commit()
+
+        try:
+            self.extract_user_prompt(prompt)
+        except Exception:
+            self.db.rollback()
+        context = self.build_context(prompt)
+        messages = self.build_messages(prompt, history, context)
+        self.db.rollback()
+
         reply = self.ollama.chat(messages)
         self.store.add_chat_message(chat_id, "assistant", reply)
-        self.extract_after_turn(prompt, reply)
         self.db.commit()
+        try:
+            self.extract_after_turn(prompt, reply)
+        except Exception:
+            self.db.rollback()
         return reply
 
+    def extract_user_prompt(self, prompt: str) -> list[int]:
+        extraction = self.extractor.extract(ExtractionRequest(text=prompt, persist=True))
+        candidates = self.extractor.persist_and_accept(self.store, extraction)
+        self.db.commit()
+        return [candidate.id for candidate in candidates]
+
     def extract_after_turn(self, user_prompt: str, assistant_reply: str) -> list[int]:
-        extraction = self.extractor.extract(
+        extraction = self.extractor.extract_with_llm(
             ExtractionRequest(
-                text=f"User: {user_prompt}\nAssistant: {assistant_reply}",
+                messages=[
+                    ConversationMessage(role="user", content=user_prompt),
+                    ConversationMessage(role="assistant", content=assistant_reply),
+                ],
                 persist=True,
-            )
+            ),
+            self.ollama,
         )
-        candidates = self.extractor.persist_candidates(self.store, extraction)
+        candidates = self.extractor.persist_and_accept(self.store, extraction)
         self.db.commit()
         return [candidate.id for candidate in candidates]

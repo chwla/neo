@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.models import MemoryCandidate
 from app.models.enums import CandidateStatus, CandidateType
 from app.repositories.memory_store import MemoryStore
+from app.services.ollama_client import OllamaClient, OllamaMessage
 from app.services.scoring import score_importance
 
 
@@ -57,6 +59,35 @@ class ExtractionResult(BaseModel):
 class MemoryExtractionService:
     """Extract durable memory candidates from conversation text."""
 
+    LLM_SYSTEM_PROMPT = """
+You extract durable user memory from conversations for a local personal assistant.
+Return JSON only, with this shape:
+{
+  "items": [
+    {
+      "type": "identity|preference|goal|project|event|memory",
+      "text": "short human sentence",
+      "confidence": 0.0,
+      "importance": 1,
+      "attributes": {}
+    }
+  ]
+}
+
+Rules:
+- Extract only stable facts about the user, their preferences, goals, projects, timeline events,
+  and explicit instructions the assistant should remember.
+- Do not store temporary requests, assistant claims, or facts not grounded in the user's words.
+- For preferences such as "be concise", use type "preference", category "response_style",
+  and value like "concise answers".
+- For identity, set attributes {"key":"name|location|occupation|education|general","value":"..."}.
+- For goals, set attributes {"goal":"...","priority":1-10}.
+- For projects, set attributes {"name":"...","description":"..."}.
+- For events, set attributes {"event":"...","event_date":"YYYY-MM-DD"} when a date is explicit.
+- For general memories, set attributes {"memory_text":"..."}.
+- If nothing durable should be stored, return {"items":[]}.
+""".strip()
+
     def extract(self, request: ExtractionRequest) -> ExtractionResult:
         text = self._request_text(request)
         result = ExtractionResult()
@@ -83,6 +114,31 @@ class MemoryExtractionService:
 
         return result
 
+    def extract_with_llm(
+        self,
+        request: ExtractionRequest,
+        ollama: OllamaClient | None,
+    ) -> ExtractionResult:
+        if ollama is None:
+            return self.extract(self._fallback_request(request))
+
+        try:
+            response = ollama.chat(
+                [
+                    OllamaMessage(role="system", content=self.LLM_SYSTEM_PROMPT),
+                    OllamaMessage(
+                        role="user",
+                        content=f"Conversation:\n{self._conversation_text(request)}",
+                    ),
+                ],
+                temperature=0.0,
+            )
+            result = self._result_from_llm_response(response)
+        except Exception:
+            return self.extract(self._fallback_request(request))
+
+        return result
+
     def persist_candidates(
         self,
         store: MemoryStore,
@@ -105,18 +161,59 @@ class MemoryExtractionService:
         extraction.candidate_ids = [candidate.id for candidate in candidates]
         return candidates
 
+    def persist_and_accept(
+        self,
+        store: MemoryStore,
+        extraction: ExtractionResult,
+    ) -> list[MemoryCandidate]:
+        from app.services.review import MemoryReviewRequest, MemoryReviewService
+
+        candidates = self.persist_candidates(store, extraction)
+        reviewer = MemoryReviewService()
+        for candidate in candidates:
+            reviewer.review(
+                store,
+                MemoryReviewRequest(
+                    candidate_id=candidate.id,
+                    decision=CandidateStatus.ACCEPTED,
+                ),
+            )
+        return candidates
+
     def _request_text(self, request: ExtractionRequest) -> str:
         if request.text:
             return request.text
         return "\n".join(message.content for message in request.messages if message.role == "user")
 
+    def _fallback_request(self, request: ExtractionRequest) -> ExtractionRequest:
+        return ExtractionRequest(text=self._request_text(request), persist=request.persist)
+
+    def _conversation_text(self, request: ExtractionRequest) -> str:
+        if request.messages:
+            return "\n".join(f"{message.role}: {message.content}" for message in request.messages)
+        return request.text or ""
+
     def _sentences(self, text: str) -> list[str]:
         parts = re.split(r"(?<=[.!?])\s+|\n+", text)
-        return [part.strip(" .\t\r\n") for part in parts if part.strip(" .\t\r\n")]
+        clauses: list[str] = []
+        clause_pattern = (
+            r"\s+\band\s+"
+            r"(?=(?:my name is|my age is|i am|i'm|i live in|i study at|"
+            r"i prefer|i like|i want to|my goal is|i need to|i plan to)\b)"
+        )
+        for part in parts:
+            clauses.extend(re.split(clause_pattern, part, flags=re.IGNORECASE))
+        return [clause.strip(" .\t\r\n") for clause in clauses if clause.strip(" .\t\r\n")]
 
     def _extract_identity(self, sentence: str) -> ExtractedItem | None:
         patterns = [
-            (r"\bmy name is (?P<value>[A-Z][A-Za-z .'-]{1,80})", "name"),
+            (
+                r"\bmy name is (?P<value>[A-Z][A-Za-z .'-]{1,80}?)(?=\s*(?:,|;|\band\b|$))",
+                "name",
+            ),
+            (r"\bmy age is (?P<value>\d{1,3})\b", "age"),
+            (r"\bi am (?P<value>\d{1,3})\s+years? old\b", "age"),
+            (r"\bi'?m (?P<value>\d{1,3})\s+years? old\b", "age"),
             (r"\bi am (?P<value>a |an )?(?P<occupation>[^.]{3,80})", "occupation"),
             (r"\bi'?m (?P<value>a |an )?(?P<occupation>[^.]{3,80})", "occupation"),
             (r"\bi live in (?P<value>[A-Za-z ,'-]{2,80})", "location"),
@@ -130,6 +227,8 @@ class MemoryExtractionService:
             if not value:
                 continue
             value = re.sub(r"^(a|an)\s+", "", value.strip(), flags=re.IGNORECASE)
+            value = re.split(r"\s+\band\b\s+", value, maxsplit=1, flags=re.IGNORECASE)[0]
+            value = value.strip(" ,;")
             text = f"{key} = {value}"
             return ExtractedItem(
                 candidate_type=CandidateType.IDENTITY,
@@ -236,6 +335,80 @@ class MemoryExtractionService:
             CandidateType.MEMORY: result.memories,
         }[item.candidate_type]
         target.append(item)
+
+    def _result_from_llm_response(self, response: str) -> ExtractionResult:
+        payload = self._json_payload(response)
+        data = json.loads(payload)
+        raw_items = data if isinstance(data, list) else data.get("items", [])
+        result = ExtractionResult()
+        if not isinstance(raw_items, list):
+            return result
+
+        for raw_item in raw_items:
+            item = self._item_from_llm_dict(raw_item)
+            if item is not None:
+                self._append(result, item)
+        return result
+
+    def _item_from_llm_dict(self, raw_item: Any) -> ExtractedItem | None:
+        if not isinstance(raw_item, dict):
+            return None
+        try:
+            candidate_type = CandidateType(str(raw_item.get("type", "")).strip().lower())
+        except ValueError:
+            return None
+        if candidate_type == CandidateType.NONE:
+            return None
+
+        attributes = raw_item.get("attributes")
+        if not isinstance(attributes, dict):
+            attributes = {}
+        text = str(
+            raw_item.get("text")
+            or attributes.get("memory_text")
+            or attributes.get("value")
+            or attributes.get("goal")
+            or attributes.get("name")
+            or attributes.get("event")
+            or ""
+        ).strip()
+        if not text:
+            return None
+
+        confidence = self._bounded_float(raw_item.get("confidence"), default=0.78)
+        importance = self._bounded_int(raw_item.get("importance"), default=score_importance(text))
+        return ExtractedItem(
+            candidate_type=candidate_type,
+            text=text,
+            confidence=confidence,
+            importance=importance,
+            attributes=attributes,
+            reasoning=str(raw_item.get("reasoning") or "LLM extracted durable memory."),
+        )
+
+    def _json_payload(self, response: str) -> str:
+        cleaned = response.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+        if cleaned.startswith("{") or cleaned.startswith("["):
+            return cleaned
+        match = re.search(r"(\{.*\}|\[.*\])", cleaned, flags=re.DOTALL)
+        if not match:
+            raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+        return match.group(1)
+
+    def _bounded_float(self, value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(0.0, min(1.0, parsed))
+
+    def _bounded_int(self, value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(1, min(10, parsed))
 
     def _preference_category(self, value: str) -> str:
         normalized = value.lower()

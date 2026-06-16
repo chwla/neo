@@ -59,7 +59,7 @@ class ReflectionService:
                     )
                 ]
             )
-            candidates = MemoryExtractionService().persist_candidates(store, extraction)
+            candidates = MemoryExtractionService().persist_and_accept(store, extraction)
             candidate_ids = [candidate.id for candidate in candidates]
 
         return ReflectionRunResult(

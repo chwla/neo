@@ -1,4 +1,11 @@
-from streamlit_app import chat_row_html, project_chat_link_html, project_folder_html
+import streamlit as st
+
+from streamlit_app import (
+    chat_row_html,
+    close_memory_dialog,
+    project_chat_link_html,
+    project_folder_html,
+)
 
 
 def test_delete_x_is_inside_chat_rectangle_markup() -> None:
@@ -37,3 +44,13 @@ def test_project_chat_link_does_not_render_div_markup() -> None:
     assert "</div>" not in html
     assert 'href="?open_chat=9"' in html
     assert "project-chat-link active" in html
+
+
+def test_memory_close_resets_dialog_and_skill_dropdown() -> None:
+    st.session_state.show_memory = True
+    st.session_state.reset_skills_v2 = False
+
+    close_memory_dialog()
+
+    assert st.session_state.show_memory is False
+    assert st.session_state.reset_skills_v2 is True

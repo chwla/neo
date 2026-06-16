@@ -9,7 +9,7 @@ from app.models import Base
 from app.repositories.memory_store import MemoryStore
 
 
-def test_api_extract_review_and_list_memory() -> None:
+def test_api_extract_auto_stores_and_list_memory() -> None:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -34,13 +34,7 @@ def test_api_extract_review_and_list_memory() -> None:
             json={"text": "My name is Soham.", "persist": True},
         )
         assert extraction.status_code == 200
-        candidate_id = extraction.json()["candidate_ids"][0]
-
-        review = client.post(
-            "/memory/review",
-            json={"candidate_id": candidate_id, "decision": "accepted"},
-        )
-        assert review.status_code == 200
+        assert extraction.json()["candidate_ids"]
 
         profile = client.get("/profile")
         assert profile.status_code == 200

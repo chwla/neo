@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from html import escape
 
 import requests
@@ -10,15 +11,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models import Project
-from app.models.enums import CandidateStatus, GoalStatus, ProjectStatus
+from app.models.enums import GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
-from app.schemas.memory_objects import MemoryCandidateRead
 from app.services.chat import NeoChatService
 from app.services.ollama_client import OllamaClient
-from app.services.review import MemoryReviewRequest, MemoryReviewService
 
 MODEL_NAME = "qwen3:8b-q4_K_M"
 OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_TIMEOUT = 600
 
 
 @contextmanager
@@ -377,6 +377,7 @@ def initialize_state() -> None:
     st.session_state.setdefault("active_chat_id", None)
     st.session_state.setdefault("selected_project_id", None)
     st.session_state.setdefault("show_memory", False)
+    st.session_state.setdefault("reset_skills_v2", False)
     st.session_state.setdefault("show_new_project_form", False)
     st.session_state.setdefault("pending_delete_chat_id", None)
     st.session_state.setdefault("pending_delete_project_id", None)
@@ -664,6 +665,8 @@ def render_sidebar_v2() -> None:
             render_chat_button(chat.title, chat.id)
 
     st.sidebar.markdown('<div class="sidebar-section">Skills</div>', unsafe_allow_html=True)
+    if st.session_state.pop("reset_skills_v2", False):
+        st.session_state["skills-v2"] = "Choose a skill"
     skill = st.sidebar.selectbox(
         "Open skill",
         ["Choose a skill", "Memory"],
@@ -672,6 +675,11 @@ def render_sidebar_v2() -> None:
     )
     if skill == "Memory":
         st.session_state.show_memory = True
+
+
+def close_memory_dialog() -> None:
+    st.session_state.show_memory = False
+    st.session_state.reset_skills_v2 = True
 
 
 @st.dialog("Confirm deletion")
@@ -717,96 +725,251 @@ def confirm_delete_dialog() -> None:
         st.rerun()
 
 
-def render_memory_records(records: list, empty: str, fields: list[str]) -> None:
+def clean_optional_text(value: str) -> str | None:
+    cleaned = " ".join(value.split())
+    return cleaned or None
+
+
+def parse_optional_date(value: str) -> date | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return date.fromisoformat(cleaned)
+
+
+def memory_summary(prefix: str, text: str) -> None:
+    st.markdown(f"**{prefix}** {text}")
+
+
+def save_memory_change(db: Session) -> None:
+    db.commit()
+    st.rerun()
+
+
+def render_profile_editor(db: Session, store: MemoryStore) -> None:
+    records = store.list_profile()
     if not records:
-        st.caption(empty)
+        st.caption("No profile facts stored yet.")
         return
     for record in records:
-        chunks = []
-        for field in fields:
-            value = getattr(record, field, None)
-            if value is not None:
-                chunks.append(f"**{field.replace('_', ' ').title()}**: {value}")
-        st.markdown(f"<div class='neo-card'>{'<br>'.join(chunks)}</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            memory_summary("Neo remembers:", f"the user's {record.key} is {record.value}.")
+            with st.form(f"profile-memory-{record.id}"):
+                key = st.text_input("Label", value=record.key)
+                value = st.text_area("Memory", value=record.value)
+                save, delete = st.columns(2)
+                if save.form_submit_button("Save", use_container_width=True):
+                    if key.strip() and value.strip():
+                        store.update_profile_fact(record.id, key.strip(), value.strip())
+                        save_memory_change(db)
+                if delete.form_submit_button("Delete", use_container_width=True):
+                    store.delete_profile_fact(record.id)
+                    save_memory_change(db)
+
+
+def render_preference_editor(db: Session, store: MemoryStore) -> None:
+    records = store.list_preferences()
+    if not records:
+        st.caption("No preferences stored yet.")
+        return
+    for record in records:
+        with st.container(border=True):
+            memory_summary("Neo remembers:", f"the user likes {record.value}.")
+            with st.form(f"preference-memory-{record.id}"):
+                category = st.text_input("Category", value=record.category)
+                value = st.text_area("Preference", value=record.value)
+                importance = st.number_input(
+                    "Importance",
+                    min_value=1,
+                    max_value=10,
+                    value=int(record.importance),
+                    step=1,
+                )
+                save, delete = st.columns(2)
+                if save.form_submit_button("Save", use_container_width=True):
+                    if category.strip() and value.strip():
+                        store.update_preference(
+                            record.id,
+                            category.strip(),
+                            value.strip(),
+                            int(importance),
+                        )
+                        save_memory_change(db)
+                if delete.form_submit_button("Delete", use_container_width=True):
+                    store.delete_preference(record.id)
+                    save_memory_change(db)
+
+
+def render_goal_editor(db: Session, store: MemoryStore) -> None:
+    records = store.list_goals(GoalStatus.ACTIVE)
+    if not records:
+        st.caption("No active goals stored yet.")
+        return
+    for record in records:
+        with st.container(border=True):
+            memory_summary("Neo remembers:", f"the user wants to {record.goal}.")
+            with st.form(f"goal-memory-{record.id}"):
+                goal = st.text_area("Goal", value=record.goal)
+                description = st.text_area("Notes", value=record.description or "")
+                priority = st.number_input(
+                    "Priority",
+                    min_value=1,
+                    max_value=10,
+                    value=int(record.priority),
+                    step=1,
+                )
+                save, delete = st.columns(2)
+                if save.form_submit_button("Save", use_container_width=True):
+                    if goal.strip():
+                        store.update_goal(
+                            record.id,
+                            goal.strip(),
+                            clean_optional_text(description),
+                            int(priority),
+                        )
+                        save_memory_change(db)
+                if delete.form_submit_button("Delete", use_container_width=True):
+                    store.delete_goal(record.id)
+                    save_memory_change(db)
+
+
+def render_project_memory_editor(db: Session, store: MemoryStore) -> None:
+    records = store.list_projects(ProjectStatus.ACTIVE)
+    if not records:
+        st.caption("No projects stored yet.")
+        return
+    for record in records:
+        with st.container(border=True):
+            memory_summary("Neo remembers:", f"the user is working on {record.name}.")
+            with st.form(f"project-memory-{record.id}"):
+                name = st.text_input("Project", value=record.name)
+                description = st.text_area("Notes", value=record.description or "")
+                priority = st.number_input(
+                    "Priority",
+                    min_value=1,
+                    max_value=10,
+                    value=int(record.priority),
+                    step=1,
+                )
+                save, delete = st.columns(2)
+                if save.form_submit_button("Save", use_container_width=True):
+                    if name.strip():
+                        store.update_project_memory(
+                            record.id,
+                            name.strip(),
+                            clean_optional_text(description),
+                            int(priority),
+                        )
+                        save_memory_change(db)
+                if delete.form_submit_button("Delete", use_container_width=True):
+                    store.delete_project_memory(record.id)
+                    save_memory_change(db)
+
+
+def render_event_editor(db: Session, store: MemoryStore) -> None:
+    records = store.list_events()
+    if not records:
+        st.caption("No events stored yet.")
+        return
+    for record in records:
+        with st.container(border=True):
+            memory_summary("Neo remembers:", record.event)
+            with st.form(f"event-memory-{record.id}"):
+                event = st.text_area("Event", value=record.event)
+                description = st.text_area("Notes", value=record.description or "")
+                event_date = st.text_input(
+                    "Date",
+                    value=record.event_date.isoformat() if record.event_date else "",
+                    placeholder="YYYY-MM-DD",
+                )
+                importance = st.number_input(
+                    "Importance",
+                    min_value=1,
+                    max_value=10,
+                    value=int(record.importance),
+                    step=1,
+                )
+                save, delete = st.columns(2)
+                if save.form_submit_button("Save", use_container_width=True):
+                    try:
+                        parsed_date = parse_optional_date(event_date)
+                    except ValueError:
+                        st.error("Use YYYY-MM-DD for the date.")
+                    else:
+                        if event.strip():
+                            store.update_event(
+                                record.id,
+                                event.strip(),
+                                clean_optional_text(description),
+                                parsed_date,
+                                int(importance),
+                            )
+                            save_memory_change(db)
+                if delete.form_submit_button("Delete", use_container_width=True):
+                    store.delete_event(record.id)
+                    save_memory_change(db)
+
+
+def render_memory_editor(db: Session, store: MemoryStore) -> None:
+    records = store.list_memories(limit=100)
+    if not records:
+        st.caption("No general memories stored yet.")
+        return
+    memory_types = list(MemoryType)
+    for record in records:
+        with st.container(border=True):
+            memory_summary("Neo remembers:", record.memory_text)
+            with st.form(f"general-memory-{record.id}"):
+                memory_text = st.text_area("Memory", value=record.memory_text)
+                memory_type = st.selectbox(
+                    "Type",
+                    memory_types,
+                    index=memory_types.index(record.memory_type),
+                    format_func=lambda item: item.value.replace("_", " ").title(),
+                )
+                importance = st.number_input(
+                    "Importance",
+                    min_value=1,
+                    max_value=10,
+                    value=int(record.importance),
+                    step=1,
+                )
+                save, delete = st.columns(2)
+                if save.form_submit_button("Save", use_container_width=True):
+                    if memory_text.strip():
+                        store.update_memory(
+                            record.id,
+                            memory_text.strip(),
+                            memory_type,
+                            int(importance),
+                        )
+                        save_memory_change(db)
+                if delete.form_submit_button("Delete", use_container_width=True):
+                    store.delete_memory(record.id)
+                    save_memory_change(db)
 
 
 @st.dialog("Memory")
 def memory_dialog() -> None:
     with session_scope() as db:
         store = MemoryStore(db)
-        reviewer = MemoryReviewService()
-        tabs = st.tabs(
-            ["Profile", "Preferences", "Goals", "Projects", "Events", "Memories", "Review"]
-        )
+        tabs = st.tabs(["Profile", "Preferences", "Goals", "Projects", "Events", "Memories"])
 
         with tabs[0]:
-            render_memory_records(store.list_profile(), "No profile facts yet.", ["key", "value"])
+            render_profile_editor(db, store)
         with tabs[1]:
-            render_memory_records(
-                store.list_preferences(),
-                "No preferences yet.",
-                ["category", "value", "importance"],
-            )
+            render_preference_editor(db, store)
         with tabs[2]:
-            render_memory_records(
-                store.list_goals(GoalStatus.ACTIVE),
-                "No active goals yet.",
-                ["goal", "description", "priority"],
-            )
+            render_goal_editor(db, store)
         with tabs[3]:
-            render_memory_records(
-                store.list_projects(ProjectStatus.ACTIVE),
-                "No active projects yet.",
-                ["name", "description", "priority"],
-            )
+            render_project_memory_editor(db, store)
         with tabs[4]:
-            render_memory_records(
-                store.list_events(),
-                "No events yet.",
-                ["event", "description", "event_date", "importance"],
-            )
+            render_event_editor(db, store)
         with tabs[5]:
-            render_memory_records(
-                store.list_memories(limit=100),
-                "No memories yet.",
-                ["memory_text", "memory_type", "importance"],
-            )
-        with tabs[6]:
-            candidates = store.list_candidates(CandidateStatus.PENDING, limit=50)
-            if not candidates:
-                st.caption("No pending memory to review.")
-            for candidate in candidates:
-                data = MemoryCandidateRead.model_validate(candidate)
-                candidate_type = data.candidate_type.value
-                st.markdown(
-                    f"<div class='neo-card'><span class='neo-pill'>{candidate_type}</span>"
-                    f"{data.candidate_text}</div>",
-                    unsafe_allow_html=True,
-                )
-                accept, reject = st.columns(2)
-                if accept.button("Accept", key=f"memory-accept-{data.id}"):
-                    reviewer.review(
-                        store,
-                        MemoryReviewRequest(
-                            candidate_id=data.id,
-                            decision=CandidateStatus.ACCEPTED,
-                        ),
-                    )
-                    db.commit()
-                    st.rerun()
-                if reject.button("Reject", key=f"memory-reject-{data.id}"):
-                    reviewer.review(
-                        store,
-                        MemoryReviewRequest(
-                            candidate_id=data.id,
-                            decision=CandidateStatus.REJECTED,
-                        ),
-                    )
-                    db.commit()
-                    st.rerun()
+            render_memory_editor(db, store)
 
     if st.button("Close"):
-        st.session_state.show_memory = False
+        close_memory_dialog()
         st.rerun()
 
 
@@ -818,7 +981,14 @@ def load_active_messages() -> list[dict[str, str]]:
 
 def run_chat(prompt: str) -> None:
     with session_scope() as db:
-        service = NeoChatService(db, ollama=OllamaClient(model=MODEL_NAME, base_url=OLLAMA_URL))
+        service = NeoChatService(
+            db,
+            ollama=OllamaClient(
+                model=MODEL_NAME,
+                base_url=OLLAMA_URL,
+                timeout=OLLAMA_TIMEOUT,
+            ),
+        )
         service.send_message(st.session_state.active_chat_id, prompt)
 
 
@@ -876,8 +1046,9 @@ def main() -> None:
             st.rerun()
         except requests.RequestException as exc:
             st.error(
-                "Ollama is not reachable or the model is unavailable. "
-                f"Expected {MODEL_NAME} at {OLLAMA_URL}. Details: {exc}"
+                "Ollama did not finish the response in time. "
+                f"Expected {MODEL_NAME} at {OLLAMA_URL} within {OLLAMA_TIMEOUT} seconds. "
+                f"Details: {exc}"
             )
 
     st.markdown("</div>", unsafe_allow_html=True)

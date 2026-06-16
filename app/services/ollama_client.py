@@ -19,7 +19,7 @@ class OllamaClient:
         self,
         model: str = "qwen3:8b-q4_K_M",
         base_url: str = "http://127.0.0.1:11434",
-        timeout: int = 120,
+        timeout: int = 600,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")

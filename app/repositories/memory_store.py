@@ -173,6 +173,192 @@ class MemoryStore:
     def get_memory(self, memory_id: int) -> Memory | None:
         return self.db.get(Memory, memory_id)
 
+    def get_profile_fact(self, profile_id: int) -> ProfileFact | None:
+        return self.db.get(ProfileFact, profile_id)
+
+    def get_preference(self, preference_id: int) -> Preference | None:
+        return self.db.get(Preference, preference_id)
+
+    def get_goal(self, goal_id: int) -> Goal | None:
+        return self.db.get(Goal, goal_id)
+
+    def get_event(self, event_id: int) -> Event | None:
+        return self.db.get(Event, event_id)
+
+    def update_profile_fact(self, profile_id: int, key: str, value: str) -> None:
+        fact = self.get_profile_fact(profile_id)
+        if fact is None:
+            return
+        old_text = f"{fact.key} = {fact.value}"
+        fact.key = key
+        fact.value = value
+        self._update_matching_memories(MemoryType.IDENTITY, old_text, f"{key} = {value}")
+        self.db.flush()
+
+    def delete_profile_fact(self, profile_id: int) -> None:
+        fact = self.get_profile_fact(profile_id)
+        if fact is None:
+            return
+        fact.is_active = False
+        self._deactivate_matching_memories(MemoryType.IDENTITY, f"{fact.key} = {fact.value}")
+        self.db.flush()
+
+    def update_preference(
+        self,
+        preference_id: int,
+        category: str,
+        value: str,
+        importance: int,
+    ) -> None:
+        preference = self.get_preference(preference_id)
+        if preference is None:
+            return
+        old_text = f"{preference.category} = {preference.value}"
+        preference.category = category
+        preference.value = value
+        preference.importance = importance
+        self._update_matching_memories(
+            MemoryType.PREFERENCE,
+            old_text,
+            f"{category} = {value}",
+            importance,
+        )
+        self.db.flush()
+
+    def delete_preference(self, preference_id: int) -> None:
+        preference = self.get_preference(preference_id)
+        if preference is None:
+            return
+        preference.is_active = False
+        self._deactivate_matching_memories(
+            MemoryType.PREFERENCE,
+            f"{preference.category} = {preference.value}",
+        )
+        self.db.flush()
+
+    def update_goal(
+        self,
+        goal_id: int,
+        goal_text: str,
+        description: str | None,
+        priority: int,
+    ) -> None:
+        goal = self.get_goal(goal_id)
+        if goal is None:
+            return
+        old_text = goal.goal
+        goal.goal = goal_text
+        goal.description = description
+        goal.priority = priority
+        self._update_matching_memories(MemoryType.GOAL_RELATED, old_text, goal_text, priority)
+        self.db.flush()
+
+    def delete_goal(self, goal_id: int) -> None:
+        goal = self.get_goal(goal_id)
+        if goal is None:
+            return
+        goal.status = GoalStatus.ABANDONED
+        self._deactivate_matching_memories(MemoryType.GOAL_RELATED, goal.goal)
+        self.db.flush()
+
+    def update_project_memory(
+        self,
+        project_id: int,
+        name: str,
+        description: str | None,
+        priority: int,
+    ) -> None:
+        project = self.get_project(project_id)
+        if project is None:
+            return
+        old_text = project.name
+        project.name = name
+        project.description = description
+        project.priority = priority
+        self._update_matching_memories(MemoryType.PROJECT_RELATED, old_text, name, priority)
+        self.db.flush()
+
+    def delete_project_memory(self, project_id: int) -> None:
+        project = self.get_project(project_id)
+        if project is None:
+            return
+        project.status = ProjectStatus.ARCHIVED
+        self._deactivate_matching_memories(MemoryType.PROJECT_RELATED, project.name)
+        self.db.flush()
+
+    def update_event(
+        self,
+        event_id: int,
+        event_text: str,
+        description: str | None,
+        event_date: date | None,
+        importance: int,
+    ) -> None:
+        event = self.get_event(event_id)
+        if event is None:
+            return
+        old_text = event.event
+        event.event = event_text
+        event.description = description
+        event.event_date = event_date
+        event.importance = importance
+        self._update_matching_memories(MemoryType.LIFE_FACT, old_text, event_text, importance)
+        self.db.flush()
+
+    def delete_event(self, event_id: int) -> None:
+        event = self.get_event(event_id)
+        if event is None:
+            return
+        self._deactivate_matching_memories(MemoryType.LIFE_FACT, event.event)
+        self.db.delete(event)
+        self.db.flush()
+
+    def update_memory(
+        self,
+        memory_id: int,
+        memory_text: str,
+        memory_type: MemoryType,
+        importance: int,
+    ) -> None:
+        memory = self.get_memory(memory_id)
+        if memory is None:
+            return
+        memory.memory_text = memory_text
+        memory.memory_type = memory_type
+        memory.importance = importance
+        self.db.flush()
+
+    def delete_memory(self, memory_id: int) -> None:
+        memory = self.get_memory(memory_id)
+        if memory is None:
+            return
+        memory.is_active = False
+        self.db.flush()
+
+    def _update_matching_memories(
+        self,
+        memory_type: MemoryType,
+        old_text: str,
+        new_text: str,
+        importance: int | None = None,
+    ) -> None:
+        for memory in self._matching_memories(memory_type, old_text):
+            memory.memory_text = new_text
+            if importance is not None:
+                memory.importance = importance
+
+    def _deactivate_matching_memories(self, memory_type: MemoryType, memory_text: str) -> None:
+        for memory in self._matching_memories(memory_type, memory_text):
+            memory.is_active = False
+
+    def _matching_memories(self, memory_type: MemoryType, memory_text: str) -> list[Memory]:
+        stmt = select(Memory).where(
+            Memory.memory_type == memory_type,
+            Memory.memory_text == memory_text,
+            Memory.is_active.is_(True),
+        )
+        return list(self.db.scalars(stmt))
+
     def search_memories(self, query: str, limit: int = 10) -> list[Memory]:
         filters = self._term_filters(query, [Memory.memory_text])
         stmt = (
