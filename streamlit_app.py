@@ -59,6 +59,24 @@ def inject_theme() -> None:
             background: linear-gradient(180deg, #020402, #071407);
             border-right: 1px solid var(--neo-line);
         }
+        [data-testid="stSidebar"] .block-container {
+            padding-top: 0 !important;
+            margin-top: 0 !important;
+        }
+        [data-testid="stSidebarContent"] {
+            padding-top: 0 !important;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 0 !important;
+        }
+        [data-testid="stSidebarUserContent"] {
+            padding-top: 0 !important;
+            padding-bottom: 1rem;
+        }
+        [data-testid="stSidebarUserContent"] > div:first-child {
+            padding-top: 0 !important;
+            margin-top: 0 !important;
+        }
         [data-testid="stHeader"] {
             background: rgba(2, 4, 2, .72);
             border-bottom: 1px solid rgba(57,255,20,.12);
@@ -66,6 +84,13 @@ def inject_theme() -> None:
         .neo-shell {
             max-width: 980px;
             margin: 0 auto;
+        }
+        .neo-empty-state {
+            display: block;
+        }
+        .stApp:has([data-testid="stChatMessage"]) .neo-empty-state,
+        .stApp:has(.stSpinner) .neo-empty-state {
+            display: none;
         }
         .neo-title {
             font-size: 30px;
@@ -96,14 +121,37 @@ def inject_theme() -> None:
             border: 1px solid var(--neo-line) !important;
             border-radius: 8px !important;
             box-shadow: 0 0 18px rgba(57,255,20,.10);
-            padding: 18px 58px 18px 18px !important;
-            min-height: 56px !important;
+            padding: 10px 14px !important;
+            min-height: 42px !important;
+            height: 42px !important;
+            line-height: 20px !important;
         }
         [data-testid="stChatInput"] {
-            padding-top: 18px;
+            padding-top: 6px;
+            padding-bottom: 2px;
         }
-        [data-testid="stChatInputSubmitButton"] {
-            margin-right: 8px;
+        [data-testid="stChatInput"] form {
+            align-items: center;
+            display: flex;
+            gap: 8px;
+        }
+        [data-testid="stChatInput"] textarea {
+            flex: 1 1 auto;
+        }
+        [data-testid="stChatInput"] button {
+            margin: 0 !important;
+        }
+        [data-testid="stChatInput"]::after {
+            color: var(--neo-muted);
+            content: "Neo is an AI and it can make mistakes. Please double-check responses.";
+            display: block;
+            font-size: 12px;
+            line-height: 16px;
+            margin-top: 4px;
+            text-align: center;
+        }
+        [data-testid="stBottomBlockContainer"] {
+            padding-bottom: 6px !important;
         }
         .stButton > button, .stDownloadButton > button {
             background: #061006;
@@ -145,7 +193,7 @@ def inject_theme() -> None:
             color: var(--neo-green);
             font-size: 18px;
             font-weight: 700;
-            margin: 4px 0 16px;
+            margin: 0 0 10px;
         }
         .sidebar-section {
             color: var(--neo-muted);
@@ -153,6 +201,49 @@ def inject_theme() -> None:
             letter-spacing: 0;
             text-transform: none;
             margin: 18px 0 8px;
+        }
+        .sidebar-spacer {
+            height: 88px;
+        }
+        .sidebar-settings-bar {
+            position: sticky;
+            bottom: 0;
+            padding-top: 12px;
+            background: linear-gradient(180deg, rgba(2,4,2,0), #071407 42%);
+        }
+        .sidebar-settings-link {
+            width: 34px;
+            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid var(--neo-line);
+            border-radius: 7px;
+            background: #061006;
+            color: var(--neo-green) !important;
+            font-size: 18px;
+            line-height: 1;
+            text-decoration: none !important;
+        }
+        .sidebar-settings-link:hover {
+            border-color: var(--neo-green);
+            box-shadow: 0 0 16px rgba(57,255,20,.25);
+            color: #caffc2 !important;
+        }
+        .sidebar-settings-button {
+            width: 34px;
+        }
+        .sidebar-settings-button button {
+            min-width: 34px !important;
+            width: 34px !important;
+            height: 34px !important;
+            min-height: 34px !important;
+            padding: 0 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 18px !important;
+            line-height: 1 !important;
         }
         [data-testid="stSidebar"] .stButton > button {
             min-height: 34px;
@@ -377,7 +468,7 @@ def initialize_state() -> None:
     st.session_state.setdefault("active_chat_id", None)
     st.session_state.setdefault("selected_project_id", None)
     st.session_state.setdefault("show_memory", False)
-    st.session_state.setdefault("reset_skills_v2", False)
+    st.session_state.setdefault("show_settings", False)
     st.session_state.setdefault("show_new_project_form", False)
     st.session_state.setdefault("pending_delete_chat_id", None)
     st.session_state.setdefault("pending_delete_project_id", None)
@@ -616,14 +707,17 @@ def render_sidebar() -> None:
         for chat in chats:
             render_chat_button(chat.title, chat.id)
 
-    st.sidebar.markdown('<div class="sidebar-section">Skills</div>', unsafe_allow_html=True)
-    skill = st.sidebar.selectbox(
-        "Open skill",
-        ["Choose a skill", "Memory"],
-        label_visibility="collapsed",
+    st.sidebar.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-settings-bar">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-settings-button">', unsafe_allow_html=True)
+    st.sidebar.button(
+        "\u2699",
+        key="open-settings-v1",
+        help="Settings",
+        on_click=open_settings_dialog,
     )
-    if skill == "Memory":
-        st.session_state.show_memory = True
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_sidebar_v2() -> None:
@@ -664,22 +758,45 @@ def render_sidebar_v2() -> None:
         for chat in chats:
             render_chat_button(chat.title, chat.id)
 
-    st.sidebar.markdown('<div class="sidebar-section">Skills</div>', unsafe_allow_html=True)
-    if st.session_state.pop("reset_skills_v2", False):
-        st.session_state["skills-v2"] = "Choose a skill"
-    skill = st.sidebar.selectbox(
-        "Open skill",
-        ["Choose a skill", "Memory"],
-        label_visibility="collapsed",
-        key="skills-v2",
+    st.sidebar.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-settings-bar">', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sidebar-settings-button">', unsafe_allow_html=True)
+    st.sidebar.button(
+        "\u2699",
+        key="open-settings-v2",
+        help="Settings",
+        on_click=open_settings_dialog,
     )
-    if skill == "Memory":
-        st.session_state.show_memory = True
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 
 def close_memory_dialog() -> None:
     st.session_state.show_memory = False
-    st.session_state.reset_skills_v2 = True
+
+
+def close_settings_dialog() -> None:
+    st.session_state.show_settings = False
+
+
+def open_settings_dialog() -> None:
+    st.session_state.show_settings = True
+
+
+def open_memory_from_settings() -> None:
+    st.session_state.show_settings = False
+    st.session_state.show_memory = True
+
+
+@st.dialog("Settings")
+def settings_dialog() -> None:
+    st.caption("App controls")
+    if st.button("Memory", key="settings-memory-button", use_container_width=True):
+        open_memory_from_settings()
+        st.rerun()
+    if st.button("Close", key="settings-close-button", use_container_width=True):
+        close_settings_dialog()
+        st.rerun()
 
 
 @st.dialog("Confirm deletion")
@@ -1011,22 +1128,30 @@ def main() -> None:
     ):
         confirm_delete_dialog()
 
+    if st.session_state.show_settings:
+        settings_dialog()
+
     if st.session_state.show_memory:
         memory_dialog()
 
-    st.markdown('<div class="neo-shell">', unsafe_allow_html=True)
-    st.markdown('<h1 class="neo-title">Neo</h1>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="neo-subtitle">Your local personal AI assistant</p>',
-        unsafe_allow_html=True,
-    )
-
     messages = load_active_messages()
+    prompt = st.chat_input("Message Neo")
+    show_empty_state = not messages and not prompt
+
+    st.markdown('<div class="neo-shell">', unsafe_allow_html=True)
+    if show_empty_state:
+        st.markdown('<div class="neo-empty-state">', unsafe_allow_html=True)
+        st.markdown('<h1 class="neo-title">Neo</h1>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="neo-subtitle">Your local personal AI assistant</p>',
+            unsafe_allow_html=True,
+        )
+
     for message in messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if not messages:
+    if show_empty_state:
         st.markdown(
             """
             <div class="neo-status">
@@ -1036,8 +1161,8 @@ def main() -> None:
             """,
             unsafe_allow_html=True,
         )
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    prompt = st.chat_input("Message Neo")
     if prompt:
         st.chat_message("user").markdown(prompt)
         try:
