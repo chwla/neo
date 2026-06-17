@@ -1,3 +1,4 @@
+# Python
 .venv/
 __pycache__/
 *.py[cod]
@@ -7,10 +8,18 @@ __pycache__/
 .mypy_cache/
 .ipynb_checkpoints/
 
+# JavaScript / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Local environment
 .env
 .env.*
 !.env.example
 
+# Runtime data
 neo_memory.db
 neo_memory.db-shm
 neo_memory.db-wal
@@ -20,14 +29,28 @@ neo_memory.db-wal
 *.sqlite
 *.sqlite3
 
+# Logs and coverage
 *.log
-
-build/
-dist/
 htmlcov/
 .coverage
 .coverage.*
+coverage/
 
+# Browser and visual verification artifacts
+.tmp-cdp-*/
+.tmp-headless-*/
+react-*-modal.png
+streamlit-*-modal.png
+react-*-state.png
+streamlit-*-state.png
+react-*-form.png
+streamlit-*-form.png
+react-dom.html
+streamlit-dom.html
+neo_*probe*.db
+neo_visual_verify_*.db
+
+# Editor / OS
 .vscode/
 .idea/
 Thumbs.db
