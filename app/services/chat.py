@@ -70,8 +70,18 @@ class NeoChatService:
         messages = self.build_messages(prompt, history, context)
         self.db.rollback()
 
-        reply = self.ollama.chat(messages)
-        self.store.add_chat_message(chat_id, "assistant", reply)
+        result = self.ollama.chat_with_metadata(messages)
+        reply = result.content
+        self.store.add_chat_message(
+            chat_id,
+            "assistant",
+            reply,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            duration_ms=result.duration_ms,
+            thinking=result.thinking,
+        )
         self.db.commit()
         try:
             self.extract_after_turn(prompt, reply)

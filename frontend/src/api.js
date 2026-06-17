@@ -1,13 +1,22 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers ?? {}),
-    },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers ?? {}),
+      },
+      ...options,
+    });
+  } catch (error) {
+    throw new Error(
+      `Backend API is not reachable. Start FastAPI on http://127.0.0.1:8000. Details: ${
+        error.message || error
+      }`,
+    );
+  }
 
   if (response.status === 204) {
     return null;
@@ -20,6 +29,9 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const detail = typeof body === "object" && body !== null ? body.detail : body;
+    if (response.status === 500 && !detail) {
+      throw new Error("Backend API is not running on http://127.0.0.1:8000.");
+    }
     throw new Error(detail || `Request failed with ${response.status}`);
   }
 
@@ -38,6 +50,11 @@ export const api = {
     request(`/chats/${chatId}/messages`, {
       method: "POST",
       body: JSON.stringify({ prompt }),
+    }),
+  updateChatMessage: (chatId, messageId, content) =>
+    request(`/chats/${chatId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
     }),
   deleteChat: (chatId) => request(`/chats/${chatId}`, { method: "DELETE" }),
   createProject: (name) =>

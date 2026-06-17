@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_store
+from app.models import ChatMessage
 from app.models.enums import CandidateStatus, GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
 from app.schemas.memory_objects import (
@@ -52,6 +53,11 @@ class ChatMessageRead(BaseModel):
     chat_id: int
     role: str
     content: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    thinking: str | None = None
     created_at: datetime
 
 
@@ -75,6 +81,10 @@ class ChatCreateRequest(BaseModel):
 
 class ChatSendRequest(BaseModel):
     prompt: str = Field(min_length=1)
+
+
+class ChatMessageUpdateRequest(BaseModel):
+    content: str = Field(min_length=1)
 
 
 class ChatSendResponse(BaseModel):
@@ -283,6 +293,28 @@ def send_chat_message(
         ) from exc
     payload = _thread_payload(store, chat_id)
     return ChatSendResponse(chat=payload.chat, messages=payload.messages, reply=reply)
+
+
+@router.patch("/chats/{chat_id}/messages/{message_id}", response_model=ChatMessageRead)
+def update_chat_message(
+    chat_id: int,
+    message_id: int,
+    request: ChatMessageUpdateRequest,
+    store: StoreDependency,
+) -> ChatMessageRead:
+    _get_required_chat(store, chat_id)
+    message = store.db.get(ChatMessage, message_id)
+    if message is None or message.chat_id != chat_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.role != "user":
+        raise HTTPException(status_code=400, detail="Only user messages can be edited")
+    cleaned = request.content.strip()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="Message content is required")
+    message = store.update_chat_message_content(message_id, cleaned)
+    store.db.commit()
+    store.db.refresh(message)
+    return ChatMessageRead.model_validate(message)
 
 
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)

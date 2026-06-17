@@ -107,85 +107,6 @@ function NeoButton({ children, className = "", type = "button", ...props }) {
   );
 }
 
-function HeaderBar() {
-  return (
-    <div className="neo-header">
-      <div className="neo-header-actions">
-        <button className="header-deploy" type="button">
-          Deploy
-        </button>
-        <button className="header-menu" type="button" aria-label="More options">
-          <span />
-          <span />
-          <span />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function UserAvatarIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M7.3 7.1 9 4.8l1.7 2.4M15 4.8l1.7 2.3"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M7.2 9.3a4.8 4.8 0 0 1 9.6 0v1.6a4.8 4.8 0 0 1-9.6 0z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 12.3h.01M14 12.3h.01M10.4 15.2c1 .6 2.2.6 3.2 0"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function AssistantAvatarIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 4.5v2.2M8.1 7.4h7.8a2 2 0 0 1 2 2v4.7a2 2 0 0 1-2 2H8.1a2 2 0 0 1-2-2V9.4a2 2 0 0 1 2-2Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9.6 11.4h.01M14.4 11.4h.01M9.5 15h5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M8.4 16.1v2.1M15.6 16.1v2.1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function Modal({ title, children, onClose, wide = false, className = "" }) {
   return (
     <div className="modal-backdrop" role="presentation">
@@ -347,15 +268,116 @@ function Sidebar({
   );
 }
 
-function ChatMessage({ message }) {
+function formatTokens(message) {
+  return Number.isFinite(message.total_tokens) ? `${message.total_tokens} tokens` : "Tokens n/a";
+}
+
+function formatDuration(durationMs) {
+  if (!Number.isFinite(durationMs)) {
+    return "Time n/a";
+  }
+  if (durationMs < 1000) {
+    return `${durationMs} ms`;
+  }
+  const seconds = durationMs / 1000;
+  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+}
+
+function previousUserMessage(messages, message) {
+  const index = messages.findIndex((item) => item.id === message.id);
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (messages[cursor]?.role === "user") {
+      return messages[cursor];
+    }
+  }
+  return null;
+}
+
+function ChatMessage({
+  message,
+  messages,
+  editingMessageId,
+  editingValue,
+  onCancelEdit,
+  onCopy,
+  onEdit,
+  onRerun,
+  onSaveEdit,
+  onSetEditingValue,
+  onToggleThinking,
+  thinkingOpen,
+}) {
   const isUser = message.role === "user";
+  const isEditing = isUser && editingMessageId === message.id;
+  const previousUser = isUser ? null : previousUserMessage(messages, message);
 
   return (
-    <article className={`neo-chat-message ${isUser ? "user" : ""}`}>
-      <div className={`chat-avatar ${isUser ? "user" : "assistant"}`} aria-hidden="true">
-        {isUser ? <UserAvatarIcon /> : <AssistantAvatarIcon />}
+    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}`}>
+      <div className="message-bubble">
+        {isEditing ? (
+          <form
+            className="message-edit-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSaveEdit(message);
+            }}
+          >
+            <textarea
+              value={editingValue}
+              onChange={(event) => onSetEditingValue(event.target.value)}
+              rows={3}
+              autoFocus
+            />
+            <div className="message-actions">
+              <button type="submit">Save</button>
+              <button type="button" onClick={onCancelEdit}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <div className="chat-content">{message.content}</div>
+            {message.failed && (
+              <div className="chat-message-status">Not sent. Edit and try again.</div>
+            )}
+            {!isUser && (
+              <div className="message-meta">
+                <span>{formatTokens(message)}</span>
+                <span>{formatDuration(message.duration_ms)}</span>
+              </div>
+            )}
+            <div className="message-actions">
+              <button type="button" onClick={() => onCopy(message.content)}>
+                Copy
+              </button>
+              {isUser ? (
+                <button type="button" onClick={() => onEdit(message)}>
+                  Edit
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={!previousUser}
+                    onClick={() => previousUser && onRerun(previousUser.content)}
+                  >
+                    Rerun
+                  </button>
+                  <button type="button" onClick={() => onToggleThinking(message.id)}>
+                    {thinkingOpen ? "Hide thinking" : "View thinking"}
+                  </button>
+                </>
+              )}
+            </div>
+            {!isUser && thinkingOpen && (
+              <div className="thinking-panel">
+                {message.thinking || "No thinking process was returned for this message."}
+              </div>
+            )}
+          </>
+        )}
       </div>
-      <div className="chat-content">{message.content}</div>
     </article>
   );
 }
@@ -1012,6 +1034,9 @@ export default function App() {
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingValue, setEditingValue] = useState("");
+  const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
   const [sending, setSending] = useState(false);
   const [statusError, setStatusError] = useState("");
   const bootstrapped = useRef(false);
@@ -1032,10 +1057,12 @@ export default function App() {
   }, []);
 
   const createActiveChat = useCallback(
-    async (projectId = null) => {
+    async (projectId = null, options = {}) => {
       const chat = await api.createChat(projectId);
       setActiveChat(chat);
-      setMessages([]);
+      if (options.resetMessages !== false) {
+        setMessages([]);
+      }
       setSelectedProjectId(chat.project_id);
       localStorage.setItem("neo-active-chat-id", String(chat.id));
       await refreshSidebar();
@@ -1197,20 +1224,64 @@ export default function App() {
     }
   }
 
-  async function handleSendMessage(event) {
-    event.preventDefault();
-    const prompt = composerValue.trim();
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+    }
+  }
+
+  function handleEditMessage(message) {
+    setEditingMessageId(message.id);
+    setEditingValue(message.content);
+  }
+
+  async function handleSaveEditedMessage(message) {
+    const cleaned = editingValue.trim();
+    if (!cleaned) {
+      return;
+    }
+    if (typeof message.id !== "number") {
+      setMessages((current) =>
+        current.map((item) => (item.id === message.id ? { ...item, content: cleaned } : item)),
+      );
+      setComposerValue(cleaned);
+      setEditingMessageId(null);
+      setEditingValue("");
+      return;
+    }
+    if (!activeChat?.id) {
+      return;
+    }
+    setStatusError("");
+    try {
+      const updated = await api.updateChatMessage(activeChat.id, message.id, cleaned);
+      setMessages((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setEditingMessageId(null);
+      setEditingValue("");
+      await refreshSidebar();
+    } catch (error) {
+      setStatusError(errorMessage(error));
+    }
+  }
+
+  async function sendPrompt(prompt) {
     if (!prompt || sending) {
       return;
     }
 
-    setComposerValue("");
     setSending(true);
     setStatusError("");
-    const chat = activeChat ?? (await createActiveChat(selectedProjectId));
+    const pendingId = `pending-${Date.now()}`;
     const optimisticMessage = {
-      id: `pending-${Date.now()}`,
-      chat_id: chat.id,
+      id: pendingId,
+      chat_id: activeChat?.id ?? null,
       role: "user",
       content: prompt,
       created_at: new Date().toISOString(),
@@ -1218,15 +1289,32 @@ export default function App() {
     setMessages((current) => [...current, optimisticMessage]);
 
     try {
+      const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
       const response = await api.sendMessage(chat.id, prompt);
       setActiveChat(response.chat);
       setMessages(response.messages);
       await refreshSidebar();
     } catch (error) {
-      setStatusError(errorMessage(error));
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === pendingId ? { ...message, failed: true } : message,
+        ),
+      );
+      setComposerValue(prompt);
+      setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
     } finally {
       setSending(false);
     }
+  }
+
+  async function handleSendMessage(event) {
+    event.preventDefault();
+    const prompt = composerValue.trim();
+    if (!prompt || sending) {
+      return;
+    }
+    setComposerValue("");
+    await sendPrompt(prompt);
   }
 
   const showEmptyState = messages.length === 0 && !sending;
@@ -1248,7 +1336,6 @@ export default function App() {
       />
 
       <main className="neo-main">
-        <HeaderBar />
         <section className="neo-shell">
           {showEmptyState && (
             <div className="neo-empty-state">
@@ -1258,15 +1345,33 @@ export default function App() {
           )}
 
           {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} />
+            <ChatMessage
+              key={message.id}
+              message={message}
+              messages={messages}
+              editingMessageId={editingMessageId}
+              editingValue={editingValue}
+              onCancelEdit={() => {
+                setEditingMessageId(null);
+                setEditingValue("");
+              }}
+              onCopy={copyText}
+              onEdit={handleEditMessage}
+              onRerun={(prompt) => sendPrompt(prompt)}
+              onSaveEdit={handleSaveEditedMessage}
+              onSetEditingValue={setEditingValue}
+              onToggleThinking={(messageId) =>
+                setOpenThinkingMessageId((current) => (current === messageId ? null : messageId))
+              }
+              thinkingOpen={openThinkingMessageId === message.id}
+            />
           ))}
 
           {sending && (
-            <article className="neo-chat-message thinking">
-              <div className="chat-avatar assistant" aria-hidden="true">
-                <AssistantAvatarIcon />
+            <article className="neo-chat-message assistant thinking">
+              <div className="message-bubble">
+                <div className="chat-content">Neo is thinking...</div>
               </div>
-              <div className="chat-content">Neo is thinking...</div>
             </article>
           )}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterator
 
 import requests
@@ -10,6 +11,15 @@ from pydantic import BaseModel, Field
 class OllamaMessage(BaseModel):
     role: str
     content: str
+
+
+class OllamaChatResult(BaseModel):
+    content: str
+    thinking: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    duration_ms: int | None = None
 
 
 class OllamaClient:
@@ -43,6 +53,14 @@ class OllamaClient:
         return any(model.get("name") == self.model for model in models)
 
     def chat(self, messages: list[OllamaMessage], temperature: float = 0.4) -> str:
+        return self.chat_with_metadata(messages, temperature).content
+
+    def chat_with_metadata(
+        self,
+        messages: list[OllamaMessage],
+        temperature: float = 0.4,
+    ) -> OllamaChatResult:
+        started = time.perf_counter()
         response = requests.post(
             f"{self.base_url}/api/chat",
             json={
@@ -54,7 +72,25 @@ class OllamaClient:
             timeout=self.timeout,
         )
         response.raise_for_status()
-        return self.clean_response(str(response.json()["message"]["content"]))
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        payload = response.json()
+        raw_content = str(payload["message"]["content"])
+        prompt_tokens = payload.get("prompt_eval_count")
+        completion_tokens = payload.get("eval_count")
+        total_duration = payload.get("total_duration")
+        duration_ms = int(total_duration / 1_000_000) if total_duration else elapsed_ms
+        return OllamaChatResult(
+            content=self.clean_response(raw_content),
+            thinking=self.extract_thinking(raw_content),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=(
+                prompt_tokens + completion_tokens
+                if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int)
+                else None
+            ),
+            duration_ms=duration_ms,
+        )
 
     def chat_stream(
         self,
@@ -87,6 +123,11 @@ class OllamaClient:
 
         cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
         return cleaned.strip()
+
+    def extract_thinking(self, content: str) -> str | None:
+        blocks = re.findall(r"<think>(.*?)</think>", content, flags=re.DOTALL | re.IGNORECASE)
+        thinking = "\n\n".join(block.strip() for block in blocks if block.strip())
+        return thinking or None
 
 
 class ChatTurn(BaseModel):

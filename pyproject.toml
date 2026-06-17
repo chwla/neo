@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "neo-memory"
+name = "neo"
 version = "0.1.0"
-description = "Long-term personal memory system for Neo."
+description = "Your local personal AI assistant."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

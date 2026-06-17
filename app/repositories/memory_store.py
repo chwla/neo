@@ -72,11 +72,40 @@ class MemoryStore:
         )
         return list(self.db.scalars(stmt))
 
-    def add_chat_message(self, chat_id: int, role: str, content: str) -> ChatMessage:
-        message = self.add(ChatMessage(chat_id=chat_id, role=role, content=content))
+    def add_chat_message(
+        self,
+        chat_id: int,
+        role: str,
+        content: str,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        duration_ms: int | None = None,
+        thinking: str | None = None,
+    ) -> ChatMessage:
+        message = self.add(
+            ChatMessage(
+                chat_id=chat_id,
+                role=role,
+                content=content,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                duration_ms=duration_ms,
+                thinking=thinking,
+            )
+        )
         chat = self.get_chat(chat_id)
         if chat is not None:
             chat.updated_at = message.created_at
+        return message
+
+    def update_chat_message_content(self, message_id: int, content: str) -> ChatMessage | None:
+        message = self.db.get(ChatMessage, message_id)
+        if message is None:
+            return None
+        message.content = content
+        self.db.flush()
         return message
 
     def rename_chat_from_prompt(self, chat_id: int, prompt: str) -> None:
