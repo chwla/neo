@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
 
@@ -436,20 +436,54 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
           {hasThinking ? generation.thinking : "Waiting for model thinking..."}
         </div>
         {hasContent && <div className="chat-content live-answer">{generation.content}</div>}
-        {!hasContent && !hasThinking && <div className="chat-content">Neo is thinking...</div>}
       </div>
     </article>
   );
 }
 
 function ChatComposer({ disabled, value, onChange, onSubmit }) {
+  const textareaRef = useRef(null);
+
+  const resizeComposer = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const styles = window.getComputedStyle(textarea);
+    const maxHeight = Number.parseFloat(styles.getPropertyValue("--composer-max-height"));
+    const minHeight = Number.parseFloat(styles.getPropertyValue("--composer-min-height"));
+    const viewportMax = Math.max(132, Math.floor(window.innerHeight * 0.34));
+    const boundedMax = Math.min(Number.isFinite(maxHeight) ? maxHeight : 224, viewportMax);
+    const boundedMin = Number.isFinite(minHeight) ? minHeight : 42;
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, boundedMin), boundedMax);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
+  }, []);
+
+  useLayoutEffect(() => {
+    resizeComposer();
+  }, [resizeComposer, value]);
+
+  useEffect(() => {
+    window.addEventListener("resize", resizeComposer);
+    return () => window.removeEventListener("resize", resizeComposer);
+  }, [resizeComposer]);
+
   return (
     <div className="chat-input-wrap">
       <div className="chat-input-shell">
         <form className="chat-input-form" onSubmit={onSubmit}>
           <textarea
+            ref={textareaRef}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => {
+              onChange(event.target.value);
+              requestAnimationFrame(resizeComposer);
+            }}
+            onInput={resizeComposer}
             placeholder="Message Neo"
             rows={1}
             disabled={disabled}
