@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any, Callable
+
 from sqlalchemy.orm import Session
 
 from app.repositories.memory_store import MemoryStore
@@ -88,6 +91,69 @@ class NeoChatService:
         except Exception:
             self.db.rollback()
         return reply
+
+    def stream_message(
+        self,
+        chat_id: int,
+        prompt: str,
+        after_reply: Callable[[str, str], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        history = [
+            ChatTurn(role=message.role, content=message.content)
+            for message in self.store.list_chat_messages(chat_id)
+        ]
+        self.store.add_chat_message(chat_id, "user", prompt)
+        self.store.rename_chat_from_prompt(chat_id, prompt)
+        self.db.commit()
+
+        try:
+            self.extract_user_prompt(prompt)
+        except Exception:
+            self.db.rollback()
+        context = self.build_context(prompt)
+        messages = self.build_messages(prompt, history, context)
+        self.db.rollback()
+
+        raw_reply = ""
+        final_metadata: dict[str, Any] = {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "duration_ms": None,
+        }
+        for event in self.ollama.chat_stream(messages):
+            if event["type"] == "chunk":
+                raw_reply += event["content"]
+                yield event
+                continue
+            final_metadata = event
+
+        reply = self.ollama.clean_response(raw_reply)
+        thinking = self.ollama.extract_thinking(raw_reply)
+        assistant = self.store.add_chat_message(
+            chat_id,
+            "assistant",
+            reply,
+            prompt_tokens=final_metadata.get("prompt_tokens"),
+            completion_tokens=final_metadata.get("completion_tokens"),
+            total_tokens=final_metadata.get("total_tokens"),
+            duration_ms=final_metadata.get("duration_ms"),
+            thinking=thinking,
+        )
+        self.db.commit()
+        self.db.refresh(assistant)
+        if after_reply is not None:
+            after_reply(prompt, reply)
+        yield {
+            "type": "done",
+            "message_id": assistant.id,
+            "reply": reply,
+            "thinking": thinking,
+            "prompt_tokens": final_metadata.get("prompt_tokens"),
+            "completion_tokens": final_metadata.get("completion_tokens"),
+            "total_tokens": final_metadata.get("total_tokens"),
+            "duration_ms": final_metadata.get("duration_ms"),
+        }
 
     def extract_user_prompt(self, prompt: str) -> list[int]:
         extraction = self.extractor.extract(ExtractionRequest(text=prompt, persist=True))

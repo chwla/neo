@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Iterator
+from typing import Any
 
 import requests
 from pydantic import BaseModel, Field
@@ -96,7 +97,8 @@ class OllamaClient:
         self,
         messages: list[OllamaMessage],
         temperature: float = 0.4,
-    ) -> Iterator[str]:
+    ) -> Iterator[dict[str, Any]]:
+        started = time.perf_counter()
         response = requests.post(
             f"{self.base_url}/api/chat",
             json={
@@ -114,8 +116,26 @@ class OllamaClient:
                 continue
             chunk = requests.models.complexjson.loads(line)
             if "message" in chunk:
-                yield str(chunk["message"].get("content", ""))
+                content = str(chunk["message"].get("content", ""))
+                if content:
+                    yield {"type": "chunk", "content": content}
             if chunk.get("done"):
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                prompt_tokens = chunk.get("prompt_eval_count")
+                completion_tokens = chunk.get("eval_count")
+                total_duration = chunk.get("total_duration")
+                duration_ms = int(total_duration / 1_000_000) if total_duration else elapsed_ms
+                yield {
+                    "type": "done",
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": (
+                        prompt_tokens + completion_tokens
+                        if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int)
+                        else None
+                    ),
+                    "duration_ms": duration_ms,
+                }
                 break
 
     def clean_response(self, content: str) -> str:

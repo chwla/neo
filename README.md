@@ -4,8 +4,10 @@ Neo
 Run everything:
 
 ```powershell
-.\scripts\start-dev.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
+
+Keep that terminal open; it runs the backend server.
 
 Run the API:
 

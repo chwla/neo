@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_store
+from app.db.session import SessionLocal
 from app.models import ChatMessage
 from app.models.enums import CandidateStatus, GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
@@ -33,6 +36,24 @@ StoreDependency = Annotated[MemoryStore, Depends(get_store)]
 MODEL_NAME = "qwen3:8b-q4_K_M"
 OLLAMA_URL = "http://127.0.0.1:11434"
 OLLAMA_TIMEOUT = 600
+
+
+def extract_after_turn_background(user_prompt: str, assistant_reply: str) -> None:
+    db = SessionLocal()
+    try:
+        service = NeoChatService(
+            db,
+            ollama=OllamaClient(
+                model=MODEL_NAME,
+                base_url=OLLAMA_URL,
+                timeout=OLLAMA_TIMEOUT,
+            ),
+        )
+        service.extract_after_turn(user_prompt, assistant_reply)
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 class ChatRead(BaseModel):
@@ -293,6 +314,49 @@ def send_chat_message(
         ) from exc
     payload = _thread_payload(store, chat_id)
     return ChatSendResponse(chat=payload.chat, messages=payload.messages, reply=reply)
+
+
+@router.post("/chats/{chat_id}/messages/stream")
+def stream_chat_message(
+    chat_id: int,
+    request: ChatSendRequest,
+    background_tasks: BackgroundTasks,
+    store: StoreDependency,
+) -> StreamingResponse:
+    _get_required_chat(store, chat_id)
+    service = NeoChatService(
+        store.db,
+        ollama=OllamaClient(
+            model=MODEL_NAME,
+            base_url=OLLAMA_URL,
+            timeout=OLLAMA_TIMEOUT,
+        ),
+    )
+
+    def events():
+        try:
+            for event in service.stream_message(
+                chat_id,
+                request.prompt,
+                after_reply=lambda prompt, reply: background_tasks.add_task(
+                    extract_after_turn_background,
+                    prompt,
+                    reply,
+                ),
+            ):
+                yield json.dumps(event, default=str) + "\n"
+        except Exception as exc:
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "detail": (
+                        f"Ollama did not finish the response. Expected {MODEL_NAME} "
+                        f"at {OLLAMA_URL} within {OLLAMA_TIMEOUT} seconds. Details: {exc}"
+                    ),
+                }
+            ) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
 @router.patch("/chats/{chat_id}/messages/{message_id}", response_model=ChatMessageRead)

@@ -283,6 +283,45 @@ function formatDuration(durationMs) {
   return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
 }
 
+function formatElapsedDuration(durationMs) {
+  if (!Number.isFinite(durationMs)) {
+    return "0.0 s";
+  }
+  const seconds = durationMs / 1000;
+  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+}
+
+function splitGeneratedText(rawContent) {
+  const openTag = "<think>";
+  const closeTag = "</think>";
+  const lowerContent = rawContent.toLowerCase();
+  const thinkingParts = [];
+  const contentParts = [];
+  let cursor = 0;
+
+  while (cursor < rawContent.length) {
+    const start = lowerContent.indexOf(openTag, cursor);
+    if (start === -1) {
+      contentParts.push(rawContent.slice(cursor));
+      break;
+    }
+    contentParts.push(rawContent.slice(cursor, start));
+    const thinkingStart = start + openTag.length;
+    const end = lowerContent.indexOf(closeTag, thinkingStart);
+    if (end === -1) {
+      thinkingParts.push(rawContent.slice(thinkingStart));
+      break;
+    }
+    thinkingParts.push(rawContent.slice(thinkingStart, end));
+    cursor = end + closeTag.length;
+  }
+
+  return {
+    content: contentParts.join("").trim(),
+    thinking: thinkingParts.join("\n\n").trim(),
+  };
+}
+
 function previousUserMessage(messages, message) {
   const index = messages.findIndex((item) => item.id === message.id);
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
@@ -377,6 +416,27 @@ function ChatMessage({
             )}
           </>
         )}
+      </div>
+    </article>
+  );
+}
+
+function PendingAssistantMessage({ generation, elapsedMs }) {
+  const hasThinking = Boolean(generation?.thinking);
+  const hasContent = Boolean(generation?.content);
+
+  return (
+    <article className="neo-chat-message assistant thinking">
+      <div className="message-bubble pending-message-bubble">
+        <div className="pending-message-header">
+          <span>Neo is generating</span>
+          <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>
+        </div>
+        <div className="thinking-panel live-thinking-panel">
+          {hasThinking ? generation.thinking : "Waiting for model thinking..."}
+        </div>
+        {hasContent && <div className="chat-content live-answer">{generation.content}</div>}
+        {!hasContent && !hasThinking && <div className="chat-content">Neo is thinking...</div>}
       </div>
     </article>
   );
@@ -1038,6 +1098,10 @@ export default function App() {
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
   const [sending, setSending] = useState(false);
+  const [streamingAssistant, setStreamingAssistant] = useState(null);
+  const [generationStartedAt, setGenerationStartedAt] = useState(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [statusError, setStatusError] = useState("");
   const bootstrapped = useRef(false);
 
@@ -1151,6 +1215,16 @@ export default function App() {
 
     bootstrap();
   }, [createActiveChat, loadChat, refreshSidebar]);
+
+  useEffect(() => {
+    if (!generationStartedAt) {
+      return undefined;
+    }
+    const updateElapsed = () => setElapsedMs(Date.now() - generationStartedAt);
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 100);
+    return () => window.clearInterval(intervalId);
+  }, [generationStartedAt]);
 
   async function handleCreateProject(name) {
     setStatusError("");
@@ -1278,6 +1352,13 @@ export default function App() {
 
     setSending(true);
     setStatusError("");
+    setGenerationStartedAt(Date.now());
+    setElapsedMs(0);
+    setStreamingAssistant({
+      rawContent: "",
+      content: "",
+      thinking: "",
+    });
     const pendingId = `pending-${Date.now()}`;
     const optimisticMessage = {
       id: pendingId,
@@ -1290,9 +1371,17 @@ export default function App() {
 
     try {
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
-      const response = await api.sendMessage(chat.id, prompt);
-      setActiveChat(response.chat);
-      setMessages(response.messages);
+      let rawContent = "";
+      await api.streamMessage(chat.id, prompt, (event) => {
+        if (event.type === "chunk") {
+          rawContent += event.content;
+          setStreamingAssistant({
+            rawContent,
+            ...splitGeneratedText(rawContent),
+          });
+        }
+      });
+      await loadChat(chat.id);
       await refreshSidebar();
     } catch (error) {
       setMessages((current) =>
@@ -1304,6 +1393,8 @@ export default function App() {
       setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
     } finally {
       setSending(false);
+      setGenerationStartedAt(null);
+      setStreamingAssistant(null);
     }
   }
 
@@ -1320,7 +1411,18 @@ export default function App() {
   const showEmptyState = messages.length === 0 && !sending;
 
   return (
-    <div className="neo-app">
+    <div className={`neo-app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <button
+        className="sidebar-toggle"
+        type="button"
+        aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        aria-expanded={!sidebarCollapsed}
+        onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+      >
+        <span />
+        <span />
+        <span />
+      </button>
       <Sidebar
         sidebar={sidebar}
         activeChatId={activeChat?.id ?? null}
@@ -1367,13 +1469,7 @@ export default function App() {
             />
           ))}
 
-          {sending && (
-            <article className="neo-chat-message assistant thinking">
-              <div className="message-bubble">
-                <div className="chat-content">Neo is thinking...</div>
-              </div>
-            </article>
-          )}
+          {sending && <PendingAssistantMessage generation={streamingAssistant} elapsedMs={elapsedMs} />}
 
           {showEmptyState && (
             <div className="neo-status">

@@ -38,6 +38,55 @@ async function request(path, options = {}) {
   return body;
 }
 
+async function streamRequest(path, payload, onEvent) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(
+      `Backend API is not reachable. Start FastAPI on http://127.0.0.1:8000. Details: ${
+        error.message || error
+      }`,
+    );
+  }
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Request failed with ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("Streaming response is not available in this browser.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffered.split("\n");
+    buffered = lines.pop() ?? "";
+    for (const line of lines) {
+      const cleaned = line.trim();
+      if (!cleaned) {
+        continue;
+      }
+      const event = JSON.parse(cleaned);
+      if (event.type === "error") {
+        throw new Error(event.detail || "Streaming request failed.");
+      }
+      onEvent(event);
+    }
+    if (done) {
+      break;
+    }
+  }
+}
+
 export const api = {
   sidebar: () => request("/sidebar"),
   createChat: (projectId = null) =>
@@ -51,6 +100,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prompt }),
     }),
+  streamMessage: (chatId, prompt, onEvent) =>
+    streamRequest(`/chats/${chatId}/messages/stream`, { prompt }, onEvent),
   updateChatMessage: (chatId, messageId, content) =>
     request(`/chats/${chatId}/messages/${messageId}`, {
       method: "PATCH",

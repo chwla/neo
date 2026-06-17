@@ -64,12 +64,62 @@ textarea:disabled {
   border-right: 1px solid var(--neo-line);
   background: linear-gradient(180deg, #020402, #071407);
   padding: 76px 30px 16px;
+  transition: transform .18s ease;
 }
 
 .neo-main {
   min-height: 100vh;
   margin-left: 300px;
   padding: 0 0 152px;
+  transition: margin-left .18s ease;
+}
+
+.neo-app.sidebar-collapsed .neo-sidebar {
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+
+.neo-app.sidebar-collapsed .neo-main {
+  margin-left: 0;
+}
+
+.sidebar-toggle {
+  position: fixed;
+  top: 18px;
+  left: 246px;
+  z-index: 70;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(57,255,20,.28);
+  border-radius: 7px;
+  background: #061006;
+  color: var(--neo-green);
+  padding: 0;
+  transition: left .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+.sidebar-toggle span {
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 8px rgba(57,255,20,.36);
+}
+
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible {
+  border-color: var(--neo-green);
+  box-shadow: 0 0 16px rgba(57,255,20,.22);
+  outline: none;
+}
+
+.neo-app.sidebar-collapsed .sidebar-toggle {
+  left: 16px;
 }
 
 .neo-shell {
@@ -569,6 +619,40 @@ textarea:disabled {
   white-space: pre-wrap;
 }
 
+.pending-message-bubble {
+  min-width: min(280px, 100%);
+}
+
+.pending-message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--neo-text);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.pending-message-timer {
+  flex: 0 0 auto;
+  border: 1px solid rgba(57,255,20,.22);
+  border-radius: 999px;
+  color: var(--neo-green);
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.live-thinking-panel {
+  color: #9ec79e;
+}
+
+.live-answer {
+  margin-top: 12px;
+  border-top: 1px solid rgba(57,255,20,.18);
+  padding-top: 12px;
+}
+
 .message-edit-form textarea {
   width: min(560px, 100%);
   min-height: 90px;
@@ -597,6 +681,11 @@ textarea:disabled {
   z-index: 35;
   padding: 0 16px 8px;
   background: linear-gradient(180deg, rgba(2,4,2,0), rgba(2,4,2,.92) 24%, #020402);
+  transition: left .18s ease;
+}
+
+.neo-app.sidebar-collapsed .chat-input-wrap {
+  left: 0;
 }
 
 .chat-input-shell {
@@ -811,6 +900,10 @@ textarea:disabled {
     margin-left: 282px;
   }
 
+  .sidebar-toggle {
+    left: 228px;
+  }
+
   .chat-input-wrap {
     left: 282px;
   }
@@ -828,6 +921,17 @@ textarea:disabled {
     border-right: 0;
     border-bottom: 1px solid var(--neo-line);
     padding: 28px 18px 18px;
+  }
+
+  .neo-app.sidebar-collapsed .neo-sidebar {
+    position: fixed;
+  }
+
+  .sidebar-toggle,
+  .neo-app.sidebar-collapsed .sidebar-toggle {
+    top: 16px;
+    right: 18px;
+    left: auto;
   }
 
   .neo-main {
@@ -872,5 +976,11 @@ textarea:disabled {
   .message-bubble {
     min-width: min(220px, 92%);
     max-width: 92%;
+  }
+
+  .pending-message-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
   }
 }
