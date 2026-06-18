@@ -519,9 +519,6 @@ function SettingsDialog({ onOpenMemory, onClose }) {
       <NeoButton className="w-full" onClick={onOpenMemory}>
         Memory
       </NeoButton>
-      <NeoButton className="mt-2 w-full" onClick={onClose}>
-        Close
-      </NeoButton>
     </Modal>
   );
 }

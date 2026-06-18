@@ -380,7 +380,7 @@ textarea:disabled {
 
 .project-folder {
   overflow: hidden;
-  margin: 3px 0 3px 24px;
+  margin: 8px 0 3px;
   border: 1px solid rgba(57,255,20,.22);
   border-radius: 7px;
   background: transparent;
@@ -743,15 +743,13 @@ textarea:disabled {
 .chat-input-shell {
   width: min(1220px, 100%);
   margin: 0 auto;
-  border-radius: 12px;
-  background: #2c2f39;
-  padding: 14px 16px 12px;
+  padding: 0;
 }
 
 .chat-input-form {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   min-width: 0;
 }
@@ -799,13 +797,30 @@ textarea:disabled {
   flex: 0 0 42px;
   height: 42px;
   min-height: 42px;
-  border-color: rgba(255, 255, 255, .04);
-  background: #464957;
-  box-shadow: none;
-  color: #cbd2de;
+  border-color: rgba(57,255,20,.46);
+  border-radius: 8px;
+  background: #07180d;
+  box-shadow: 0 0 0 1px rgba(57,255,20,.08) inset;
+  color: var(--neo-green);
   padding: 0;
   font-size: 18px;
   line-height: 1;
+}
+
+.chat-input-form .send-button:hover:not(:disabled),
+.chat-input-form .send-button:focus-visible {
+  border-color: var(--neo-green);
+  background: var(--neo-green);
+  box-shadow: 0 0 18px rgba(57,255,20,.22);
+  color: #020402;
+  outline: none;
+}
+
+.chat-input-form .send-button:disabled {
+  border-color: rgba(57,255,20,.20);
+  background: #061006;
+  color: rgba(137, 173, 137, .72);
+  opacity: 1;
 }
 
 .chat-input-disclaimer {
@@ -893,24 +908,27 @@ textarea:disabled {
 }
 
 .dialog-close {
-  border: 0;
-  background: transparent;
-  color: #f3f6fb;
-  font-size: 34px;
-  line-height: 1;
-  padding: 0 2px;
-}
-
-.memory-dialog .dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   border: 1px solid rgba(57,255,20,.20);
   border-radius: 7px;
+  background: transparent;
   color: #9eff9a;
   font-size: 28px;
+  line-height: 1;
+  padding: 0;
   transition: border-color .16s ease, box-shadow .16s ease, color .16s ease;
 }
 
+.memory-dialog .dialog-close {
+  color: #9eff9a;
+}
+
+.dialog-close:hover,
+.dialog-close:focus-visible,
 .memory-dialog .dialog-close:hover,
 .memory-dialog .dialog-close:focus-visible {
   border-color: rgba(21,244,238,.70);
