@@ -847,7 +847,22 @@ textarea:disabled {
 }
 
 .memory-dialog {
-  width: min(500px, calc(100% - 48px));
+  position: relative;
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 72px));
+  overflow: hidden;
+  border: 1px solid rgba(57,255,20,.32);
+  border-radius: 14px;
+  background: #05090c;
+  box-shadow:
+    0 0 0 1px rgba(21,244,238,.08) inset,
+    0 18px 60px rgba(0, 0, 0, .62),
+    0 0 22px rgba(57,255,20,.08);
+  padding: 20px;
+}
+
+.memory-dialog::before {
+  content: none;
 }
 
 .dialog-title-row {
@@ -864,6 +879,19 @@ textarea:disabled {
   font-weight: 700;
 }
 
+.memory-dialog .dialog-title-row {
+  position: relative;
+  z-index: 1;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(57,255,20,.20);
+}
+
+.memory-dialog .dialog-title-row h2 {
+  color: #eaffea;
+  font-size: 28px;
+  line-height: 1;
+}
+
 .dialog-close {
   border: 0;
   background: transparent;
@@ -871,6 +899,24 @@ textarea:disabled {
   font-size: 34px;
   line-height: 1;
   padding: 0 2px;
+}
+
+.memory-dialog .dialog-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(57,255,20,.20);
+  border-radius: 7px;
+  color: #9eff9a;
+  font-size: 28px;
+  transition: border-color .16s ease, box-shadow .16s ease, color .16s ease;
+}
+
+.memory-dialog .dialog-close:hover,
+.memory-dialog .dialog-close:focus-visible {
+  border-color: rgba(21,244,238,.70);
+  color: #dff;
+  box-shadow: 0 0 18px rgba(21,244,238,.18);
+  outline: none;
 }
 
 .dialog-actions,
@@ -898,45 +944,153 @@ textarea:disabled {
 }
 
 .memory-tabs {
+  position: relative;
+  z-index: 1;
   display: flex;
-  gap: 16px;
+  gap: 8px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--neo-line);
-  margin-top: 16px;
+  margin: 14px -2px 12px;
+  border: 1px solid rgba(57,255,20,.16);
+  border-radius: 8px;
+  background: rgba(1, 13, 12, .66);
+  padding: 5px;
 }
 
 .memory-tabs button {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: rgba(4, 18, 14, .70);
   color: var(--neo-muted);
-  padding: 8px 0 12px;
+  padding: 7px 11px;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 13px;
+  line-height: 1.2;
+  transition: border-color .16s ease, color .16s ease, box-shadow .16s ease, background .16s ease;
 }
 
 .memory-tabs button.active {
-  border-bottom-color: var(--neo-green);
+  border-color: rgba(57,255,20,.70);
+  background: rgba(7, 28, 15, .95);
   color: var(--neo-green);
+  box-shadow: 0 0 0 1px rgba(57,255,20,.10) inset;
+}
+
+.memory-tabs button:hover,
+.memory-tabs button:focus-visible {
+  border-color: rgba(21,244,238,.40);
+  color: #caffc2;
+  outline: none;
 }
 
 .memory-scroll {
-  max-height: min(52vh, 680px);
+  position: relative;
+  z-index: 1;
+  max-height: min(58vh, 560px);
   overflow-y: auto;
-  padding-right: 4px;
+  padding: 2px 8px 2px 0;
 }
 
 .memory-card {
-  margin: 12px 0;
-  border: 1px solid rgba(57,255,20,.22);
-  border-radius: 8px;
-  background: rgba(7, 16, 7, .76);
-  padding: 14px;
+  margin: 8px 0;
+  border: 1px solid rgba(57,255,20,.18);
+  border-radius: 7px;
+  background: #06110d;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.015) inset;
+  overflow: hidden;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
 
-.memory-card p {
-  margin: 0 0 8px;
-  line-height: 1.45;
+.memory-card.is-open {
+  border-color: rgba(57,255,20,.42);
+  background: #07140f;
+  box-shadow: 0 0 20px rgba(57,255,20,.08);
+}
+
+.memory-card-head {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.memory-card-summary {
+  min-width: 0;
+  margin: 0;
+  color: #eaffea;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.memory-card-edit {
+  min-width: 54px;
+  border: 1px solid rgba(21,244,238,.34);
+  border-radius: 6px;
+  background: rgba(0, 20, 18, .72);
+  color: #8ff;
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 1.1;
+  text-transform: uppercase;
+  transition: border-color .16s ease, box-shadow .16s ease, color .16s ease;
+}
+
+.memory-card-edit:hover,
+.memory-card-edit:focus-visible {
+  border-color: var(--neo-green);
+  color: var(--neo-green);
+  box-shadow: 0 0 14px rgba(57,255,20,.18);
+  outline: none;
+}
+
+.memory-card-body {
+  border-top: 1px solid rgba(57,255,20,.14);
+  padding: 10px 12px 12px;
+  background: rgba(0, 8, 7, .58);
+}
+
+.memory-dialog .memory-field {
+  margin-top: 8px;
+  color: #82b882;
+  font-size: 12px;
+}
+
+.memory-dialog .memory-field span {
+  margin-bottom: 4px;
+  color: rgba(160, 255, 156, .78);
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.memory-dialog .memory-field input,
+.memory-dialog .memory-field textarea,
+.memory-dialog .memory-field select {
+  min-height: 36px;
+  border-radius: 6px;
+  border-color: rgba(57,255,20,.20);
+  background: rgba(1, 12, 8, .84);
+  color: #eaffea;
+  padding: 8px 9px;
+}
+
+.memory-dialog .memory-field textarea {
+  min-height: 70px;
+}
+
+.memory-dialog .memory-actions {
+  grid-template-columns: repeat(2, minmax(0, 120px));
+  justify-content: end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.memory-dialog .memory-actions .neo-button {
+  min-height: 32px;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
 }
 
 .neo-error {
@@ -1044,5 +1198,53 @@ textarea:disabled {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .modal-backdrop {
+    padding: 14px 10px;
+  }
+
+  .memory-dialog {
+    width: min(100%, calc(100vw - 20px));
+    max-height: calc(100vh - 28px);
+    border-radius: 10px;
+    padding: 14px;
+  }
+
+  .memory-dialog .dialog-title-row h2 {
+    font-size: 24px;
+  }
+
+  .memory-tabs {
+    margin-top: 12px;
+    padding: 4px;
+  }
+
+  .memory-tabs button {
+    padding: 7px 9px;
+    font-size: 12px;
+  }
+
+  .memory-scroll {
+    max-height: calc(100vh - 150px);
+    padding-right: 4px;
+  }
+
+  .memory-card-head {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .memory-card-edit {
+    justify-self: start;
+  }
+
+  .memory-card-body {
+    padding: 10px;
+  }
+
+  .memory-dialog .memory-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

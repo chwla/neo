@@ -576,13 +576,23 @@ function FormActions({ onDelete, saving }) {
 }
 
 function MemoryCard({ summary, children }) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <div className="memory-card">
-      <p>
-        <strong>Neo remembers:</strong> {summary}
-      </p>
-      {children}
-    </div>
+    <section className={`memory-card ${expanded ? "is-open" : ""}`}>
+      <div className="memory-card-head">
+        <p className="memory-card-summary">{summary}</p>
+        <button
+          className="memory-card-edit"
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "Hide" : "Edit"}
+        </button>
+      </div>
+      {expanded && <div className="memory-card-body">{children}</div>}
+    </section>
   );
 }
 
@@ -1111,9 +1121,6 @@ function MemoryDialog({ onClose, refreshSidebar }) {
       </div>
       {error && <div className="neo-error">{error}</div>}
       <div className="memory-scroll">{content}</div>
-      <NeoButton className="mt-3" onClick={onClose}>
-        Close
-      </NeoButton>
     </Modal>
   );
 }
