@@ -12,6 +12,7 @@ from app.models.event import Event
 from app.models.goal import Goal
 from app.models.memory import Memory
 from app.models.memory_embedding import MemoryEmbedding
+from app.models.memory_lifecycle_audit import MemoryLifecycleAudit
 from app.models.memory_candidate import MemoryCandidate
 from app.models.preference import Preference
 from app.models.profile import ProfileFact
@@ -29,6 +30,7 @@ __all__ = [
     "GoalStatus",
     "Memory",
     "MemoryEmbedding",
+    "MemoryLifecycleAudit",
     "MemoryCandidate",
     "MemoryType",
     "Preference",

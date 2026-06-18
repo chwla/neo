@@ -9,6 +9,7 @@ from app.models import Event, Goal, Memory, Preference, ProfileFact, Project
 from app.models.enums import CandidateStatus, CandidateType, GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
 from app.services.conflicts import ConflictResolutionService
+from app.services.lifecycle import MemoryLifecycleService
 
 
 class MemoryReviewRequest(BaseModel):
@@ -26,8 +27,13 @@ class MemoryReviewResult(BaseModel):
 class MemoryReviewService:
     """Promote, reject, or merge pending memory candidates."""
 
-    def __init__(self, conflicts: ConflictResolutionService | None = None) -> None:
+    def __init__(
+        self,
+        conflicts: ConflictResolutionService | None = None,
+        lifecycle: MemoryLifecycleService | None = None,
+    ) -> None:
         self.conflicts = conflicts or ConflictResolutionService()
+        self.lifecycle = lifecycle or MemoryLifecycleService()
 
     def review(self, store: MemoryStore, request: MemoryReviewRequest) -> MemoryReviewResult:
         candidate = store.get_candidate(request.candidate_id)
@@ -44,6 +50,29 @@ class MemoryReviewService:
 
         if request.decision == CandidateStatus.MERGED:
             return self._merge(store, candidate, request.merged_into_memory_id)
+
+        tombstone = self._resurrection_tombstone(store, candidate)
+        if tombstone is not None:
+            attrs = self._attributes(candidate.reasoning)
+            if not attrs.get("allow_resurrection"):
+                candidate.status = CandidateStatus.REJECTED
+                candidate.reviewed_at = datetime.now(UTC)
+                candidate.reasoning = self._merge_reasoning(
+                    candidate.reasoning,
+                    {
+                        "lifecycle_rejection": "Rejected to prevent resurrection of inactive memory.",
+                        "tombstone_memory_id": tombstone.id,
+                        "tombstone_status": tombstone.status,
+                    },
+                )
+                self.lifecycle.record_resurrection_blocked(
+                    store,
+                    tombstone,
+                    candidate.candidate_text,
+                    "Blocked likely resurrection of inactive memory.",
+                )
+                store.db.flush()
+                return MemoryReviewResult(candidate_id=candidate.id, status=candidate.status)
 
         memory = self._accept(store, candidate)
         candidate.status = CandidateStatus.ACCEPTED
@@ -67,8 +96,14 @@ class MemoryReviewService:
         memory = store.get_memory(merged_into_memory_id)
         if memory is None:
             raise ValueError(f"Memory {merged_into_memory_id} does not exist.")
+        if not memory.is_active or memory.status != "active":
+            raise ValueError(f"Memory {merged_into_memory_id} is not active and cannot be merged into.")
         memory.memory_text = f"{memory.memory_text}\n{candidate.candidate_text}"
         memory.importance = max(memory.importance, candidate.importance)
+        memory.update_reason = "Merged accepted candidate into active memory."
+        store._sync_memory_fts(memory)
+        store._mark_embedding_stale(memory)
+        store._sync_memory_embedding(memory)
         candidate.status = CandidateStatus.MERGED
         candidate.reviewed_at = datetime.now(UTC)
         candidate.accepted_memory_id = memory.id
@@ -241,7 +276,7 @@ class MemoryReviewService:
                     update_reason="User stated a replacement current hardware setup.",
                 ),
             )
-            self._supersede_memory(existing_memory, memory)
+            self._supersede_memory(store, existing_memory, memory)
             return memory
         memory = store.add(self._memory(candidate, MemoryType.KNOWLEDGE, candidate.candidate_text))
         self.conflicts.supersede_similar_memory(store, memory)
@@ -305,10 +340,51 @@ class MemoryReviewService:
             update_reason=update_reason or str(attrs.get("update_reason") or ""),
         )
 
-    def _supersede_memory(self, old_memory: Memory, new_memory: Memory) -> None:
-        old_memory.is_active = False
-        old_memory.status = "superseded"
-        old_memory.superseded_by_id = new_memory.id
+    def _supersede_memory(self, store: MemoryStore, old_memory: Memory, new_memory: Memory) -> None:
+        self.lifecycle.supersede(
+            store=store,
+            old_memory=old_memory,
+            new_memory=new_memory,
+            reason="User stated a replacement current hardware setup.",
+        )
+
+    def _resurrection_tombstone(self, store: MemoryStore, candidate) -> Memory | None:
+        memory_type, memory_text = self._candidate_memory_identity(candidate)
+        attrs = self._attributes(candidate.reasoning)
+        canonical_slot = attrs.get("canonical_slot")
+        return store.inactive_memory_tombstone(
+            memory_type,
+            memory_text,
+            canonical_slot=str(canonical_slot) if canonical_slot else None,
+        )
+
+    def _candidate_memory_identity(self, candidate) -> tuple[MemoryType, str]:
+        attrs = self._attributes(candidate.reasoning)
+        if candidate.candidate_type == CandidateType.IDENTITY:
+            return MemoryType.IDENTITY, f"{attrs.get('key', 'general')} = {attrs.get('value', candidate.candidate_text)}"
+        if candidate.candidate_type == CandidateType.PREFERENCE:
+            return MemoryType.PREFERENCE, f"{attrs.get('category', 'general')} = {attrs.get('value', candidate.candidate_text)}"
+        if candidate.candidate_type == CandidateType.GOAL:
+            return MemoryType.GOAL_RELATED, str(attrs.get("goal", candidate.candidate_text))
+        if candidate.candidate_type == CandidateType.PROJECT:
+            return MemoryType.PROJECT_RELATED, str(attrs.get("name", candidate.candidate_text))
+        if candidate.candidate_type == CandidateType.EVENT:
+            return MemoryType.LIFE_FACT, str(attrs.get("event", candidate.candidate_text))
+        return MemoryType.KNOWLEDGE, candidate.candidate_text
+
+    def _merge_reasoning(self, reasoning: str | None, attributes: dict) -> str:
+        payload: dict = {}
+        if reasoning:
+            try:
+                payload = json.loads(reasoning)
+            except json.JSONDecodeError:
+                payload = {"note": reasoning}
+        existing_attrs = payload.get("attributes")
+        if not isinstance(existing_attrs, dict):
+            existing_attrs = {}
+        existing_attrs.update(attributes)
+        payload["attributes"] = existing_attrs
+        return json.dumps(payload, sort_keys=True)
 
     def _optional_int(self, value) -> int | None:
         if value is None:

@@ -16,6 +16,7 @@ from app.models import (
     Memory,
     MemoryCandidate,
     MemoryEmbedding,
+    MemoryLifecycleAudit,
     Preference,
     ProfileFact,
     Project,
@@ -94,6 +95,14 @@ class MemoryStore:
         if isinstance(entity, Memory):
             self._sync_memory_fts(entity)
             self._sync_memory_embedding(entity)
+            self.record_lifecycle_audit(
+                entity,
+                "created",
+                previous_status=None,
+                new_status=entity.status,
+                reason=entity.update_reason or "Memory created.",
+                source_sentence=entity.source_sentence,
+            )
         return entity
 
     def create_chat(self, project_id: int | None = None, title: str = "New chat") -> Chat:
@@ -247,7 +256,7 @@ class MemoryStore:
             .limit(limit)
         )
         if active_only:
-            stmt = stmt.where(Memory.is_active.is_(True))
+            stmt = stmt.where(Memory.is_active.is_(True), Memory.status == "active")
         return list(self.db.scalars(stmt))
 
     def list_candidates(
@@ -416,23 +425,32 @@ class MemoryStore:
         memory = self.get_memory(memory_id)
         if memory is None:
             return
+        if not memory.is_active or memory.status != "active":
+            return
         memory.memory_text = memory_text
         memory.memory_type = memory_type
         memory.importance = importance
+        memory.update_reason = "User edited active memory."
         self._sync_memory_fts(memory)
         self._mark_embedding_stale(memory)
         self._sync_memory_embedding(memory)
+        self.record_lifecycle_audit(
+            memory,
+            "updated",
+            previous_status="active",
+            new_status="active",
+            reason=memory.update_reason,
+            source_sentence=memory.source_sentence,
+        )
         self.db.flush()
 
     def delete_memory(self, memory_id: int) -> None:
         memory = self.get_memory(memory_id)
         if memory is None:
             return
-        memory.is_active = False
-        memory.status = "deleted"
-        self._delete_memory_fts(memory_id)
-        self._mark_embedding_stale(memory)
-        self.db.flush()
+        from app.services.lifecycle import MemoryLifecycleService
+
+        MemoryLifecycleService().delete(self, memory)
 
     def _update_matching_memories(
         self,
@@ -448,15 +466,102 @@ class MemoryStore:
 
     def _deactivate_matching_memories(self, memory_type: MemoryType, memory_text: str) -> None:
         for memory in self._matching_memories(memory_type, memory_text):
-            memory.is_active = False
+            self.delete_memory(memory.id)
 
     def _matching_memories(self, memory_type: MemoryType, memory_text: str) -> list[Memory]:
         stmt = select(Memory).where(
             Memory.memory_type == memory_type,
             Memory.memory_text == memory_text,
             Memory.is_active.is_(True),
+            Memory.status == "active",
         )
         return list(self.db.scalars(stmt))
+
+    def inactive_memory_tombstone(
+        self,
+        memory_type: MemoryType,
+        memory_text: str,
+        canonical_slot: str | None = None,
+    ) -> Memory | None:
+        normalized_text = " ".join(memory_text.lower().split())
+        from app.services.lifecycle import tombstone_identity
+
+        candidate_identity = tombstone_identity(memory_type, memory_text, canonical_slot)
+        stmt = select(Memory).where(
+            Memory.memory_type == memory_type,
+            Memory.is_active.is_(False),
+            Memory.status.in_(["deleted", "archived", "superseded"]),
+        )
+        for memory in self.db.scalars(stmt):
+            memory_identity = tombstone_identity(memory.memory_type, memory.memory_text, memory.canonical_slot)
+            if candidate_identity and memory_identity == candidate_identity:
+                return memory
+            if canonical_slot and memory.canonical_slot == canonical_slot:
+                if " ".join(memory.memory_text.lower().split()) == normalized_text:
+                    return memory
+            elif " ".join(memory.memory_text.lower().split()) == normalized_text:
+                return memory
+        return None
+
+    def record_lifecycle_audit(
+        self,
+        memory: Memory,
+        action: str,
+        previous_status: str | None,
+        new_status: str | None,
+        reason: str | None = None,
+        related_memory_id: int | None = None,
+        source_sentence: str | None = None,
+    ) -> MemoryLifecycleAudit:
+        return self.add(
+            MemoryLifecycleAudit(
+                memory_id=memory.id,
+                action=action,
+                previous_status=previous_status,
+                new_status=new_status,
+                reason=reason,
+                related_memory_id=related_memory_id,
+                source_sentence=source_sentence,
+            ),
+        )
+
+    def list_lifecycle_audit(self, memory_id: int) -> list[MemoryLifecycleAudit]:
+        stmt = (
+            select(MemoryLifecycleAudit)
+            .where(MemoryLifecycleAudit.memory_id == memory_id)
+            .order_by(MemoryLifecycleAudit.created_at.desc(), MemoryLifecycleAudit.id.desc())
+        )
+        return list(self.db.scalars(stmt))
+
+    def compress_memories(
+        self,
+        memories: list[Memory],
+        summary_text: str,
+        memory_type: MemoryType,
+        canonical_slot: str | None = None,
+        reason: str = "Compressed related memories into a concise active summary.",
+    ) -> Memory:
+        from app.services.lifecycle import MemoryLifecycleService
+
+        return MemoryLifecycleService().compress(
+            self,
+            memories,
+            summary_text,
+            memory_type,
+            canonical_slot=canonical_slot,
+            reason=reason,
+        )
+
+    def age_memories(self, policy=None, now=None, dry_run: bool = False, max_actions: int | None = None):
+        from app.services.lifecycle import MemoryLifecycleService
+
+        return MemoryLifecycleService().age(
+            self,
+            policy=policy,
+            now=now,
+            dry_run=dry_run,
+            max_actions=max_actions,
+        )
 
     def search_memories(self, query: str, limit: int = 10) -> list[Memory]:
         if self.semantic_enabled:
@@ -472,6 +577,7 @@ class MemoryStore:
         stmt = (
             select(Memory)
             .where(Memory.is_active.is_(True))
+            .where(Memory.status == "active")
             .where(or_(*filters))
             .order_by(relevance_score.desc(), Memory.importance.desc(), Memory.updated_at.desc())
             .limit(limit)
@@ -824,7 +930,11 @@ class MemoryStore:
         return list(self.db.scalars(stmt))
 
     def active_memories_by_type(self, memory_type: MemoryType) -> list[Memory]:
-        stmt = select(Memory).where(Memory.memory_type == memory_type, Memory.is_active.is_(True))
+        stmt = select(Memory).where(
+            Memory.memory_type == memory_type,
+            Memory.is_active.is_(True),
+            Memory.status == "active",
+        )
         return list(self.db.scalars(stmt))
 
     def events_in_range(self, start: date, end: date) -> list[Event]:

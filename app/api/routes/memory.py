@@ -28,6 +28,8 @@ from app.services.chat import NeoChatService
 from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.extraction import ExtractionRequest, ExtractionResult, MemoryExtractionService
 from app.services.explanation import MemoryExplanation, MemoryExplanationService
+from app.services.lifecycle import AgingPolicy, MemoryLifecycleService
+from app.services.lifecycle_maintenance import MemoryLifecycleMaintenance
 from app.services.ollama_client import OllamaClient
 from app.services.reflection import ReflectionRunRequest, ReflectionRunResult, ReflectionService
 from app.services.retrieval import RetrievalRequest
@@ -163,6 +165,80 @@ class MemoryExplainRequest(BaseModel):
     query: str = Field(min_length=1)
 
 
+class MemoryLifecycleActionRequest(BaseModel):
+    reason: str = Field(default="Manual lifecycle operation.", min_length=1)
+
+
+class MemorySupersedeRequest(BaseModel):
+    replacement_memory_id: int
+    reason: str = Field(default="Manual memory supersession.", min_length=1)
+
+
+class MemoryRestoreRequest(BaseModel):
+    restore_intent: str = Field(pattern="^restore$")
+    reason: str = Field(default="Explicit manual memory restore.", min_length=1)
+
+
+class MemoryLifecycleActionResponse(BaseModel):
+    memory_id: int
+    status: str
+    related_memory_id: int | None = None
+
+
+class MemoryLifecycleAuditRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    memory_id: int
+    action: str
+    created_at: datetime
+    previous_status: str | None
+    new_status: str | None
+    reason: str | None
+    related_memory_id: int | None
+    source_sentence: str | None
+
+
+class MemoryAgingRequest(BaseModel):
+    dry_run: bool = True
+    dormant_days: int = Field(default=180, ge=1)
+    archive_importance_below: int = Field(default=4, ge=1, le=10)
+    confidence_decay: float = Field(default=0.05, ge=0, le=1)
+
+
+class MemoryAgingResponse(BaseModel):
+    dry_run: bool
+    archived: int
+    decayed: int
+    skipped: int
+    actions: list[dict]
+
+
+class MemoryLifecycleMaintenanceRequest(BaseModel):
+    apply: bool = False
+    confirm: str | None = None
+    max_actions: int = Field(default=10, ge=0)
+    include_aging: bool = True
+    include_compression_candidates: bool = True
+    include_audit_check: bool = True
+    include_tombstone_review: bool = True
+    include_audit_repair: bool = False
+
+
+class MemoryLifecycleMaintenanceResponse(BaseModel):
+    dry_run: bool
+    max_actions: int
+    planned_actions: list[dict]
+    applied_actions: list[dict]
+    skipped_actions: list[dict]
+    warnings: list[str]
+    aging: dict
+    compression_candidates: list[dict]
+    audit_consistency: list[dict]
+    audit_repair: dict
+    tombstone_review: dict
+
+
 def _clean_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -182,6 +258,13 @@ def _get_required_project(store: MemoryStore, project_id: int):
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+def _get_required_memory(store: MemoryStore, memory_id: int):
+    memory = store.get_memory(memory_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return memory
 
 
 def _thread_payload(store: MemoryStore, chat_id: int) -> ChatThreadRead:
@@ -538,13 +621,130 @@ def update_memory(
     return MemoryRead.model_validate(memory)
 
 
-@router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_memory(memory_id: int, store: StoreDependency) -> Response:
-    if store.get_memory(memory_id) is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
+@router.delete("/memories/{memory_id}", response_model=MemoryLifecycleActionResponse)
+def delete_memory(memory_id: int, store: StoreDependency) -> MemoryLifecycleActionResponse:
+    memory = _get_required_memory(store, memory_id)
     store.delete_memory(memory_id)
     store.db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    store.db.refresh(memory)
+    return MemoryLifecycleActionResponse(memory_id=memory.id, status=memory.status)
+
+
+@router.post("/memories/{memory_id}/archive", response_model=MemoryLifecycleActionResponse)
+def archive_memory(
+    memory_id: int,
+    request: MemoryLifecycleActionRequest,
+    store: StoreDependency,
+) -> MemoryLifecycleActionResponse:
+    memory = _get_required_memory(store, memory_id)
+    MemoryLifecycleService().archive(store, memory, request.reason)
+    store.db.commit()
+    store.db.refresh(memory)
+    return MemoryLifecycleActionResponse(memory_id=memory.id, status=memory.status)
+
+
+@router.post("/memories/{memory_id}/supersede", response_model=MemoryLifecycleActionResponse)
+def supersede_memory(
+    memory_id: int,
+    request: MemorySupersedeRequest,
+    store: StoreDependency,
+) -> MemoryLifecycleActionResponse:
+    old_memory = _get_required_memory(store, memory_id)
+    new_memory = _get_required_memory(store, request.replacement_memory_id)
+    if not new_memory.is_active or new_memory.status != "active":
+        raise HTTPException(status_code=400, detail="Replacement memory must be active")
+    MemoryLifecycleService().supersede(store, old_memory, new_memory, request.reason)
+    store.db.commit()
+    store.db.refresh(old_memory)
+    return MemoryLifecycleActionResponse(
+        memory_id=old_memory.id,
+        status=old_memory.status,
+        related_memory_id=new_memory.id,
+    )
+
+
+@router.post("/memories/{memory_id}/restore", response_model=MemoryLifecycleActionResponse)
+def restore_memory(
+    memory_id: int,
+    request: MemoryRestoreRequest,
+    store: StoreDependency,
+) -> MemoryLifecycleActionResponse:
+    memory = _get_required_memory(store, memory_id)
+    try:
+        MemoryLifecycleService().restore(
+            store,
+            memory,
+            request.reason,
+            explicit_restore=request.restore_intent == "restore",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.db.commit()
+    store.db.refresh(memory)
+    return MemoryLifecycleActionResponse(memory_id=memory.id, status=memory.status)
+
+
+@router.get("/memories/{memory_id}/lifecycle", response_model=list[MemoryLifecycleAuditRead])
+def memory_lifecycle_history(
+    memory_id: int,
+    store: StoreDependency,
+) -> list[MemoryLifecycleAuditRead]:
+    _get_required_memory(store, memory_id)
+    return [
+        MemoryLifecycleAuditRead.model_validate(record)
+        for record in store.list_lifecycle_audit(memory_id)
+    ]
+
+
+@router.post("/memory/lifecycle/age", response_model=MemoryAgingResponse)
+def age_memory_lifecycle(
+    request: MemoryAgingRequest,
+    store: StoreDependency,
+) -> MemoryAgingResponse:
+    result = store.age_memories(
+        AgingPolicy(
+            dormant_days=request.dormant_days,
+            archive_importance_below=request.archive_importance_below,
+            confidence_decay=request.confidence_decay,
+        ),
+        dry_run=request.dry_run,
+    )
+    if not request.dry_run:
+        store.db.commit()
+    return MemoryAgingResponse(
+        dry_run=result.dry_run,
+        archived=result.archived,
+        decayed=result.decayed,
+        skipped=result.skipped,
+        actions=list(result.actions),
+    )
+
+
+@router.post("/memory/lifecycle/maintenance", response_model=MemoryLifecycleMaintenanceResponse)
+def run_memory_lifecycle_maintenance(
+    request: MemoryLifecycleMaintenanceRequest,
+    store: StoreDependency,
+) -> MemoryLifecycleMaintenanceResponse:
+    if request.apply and request.confirm != "APPLY_LIFECYCLE_MAINTENANCE":
+        raise HTTPException(
+            status_code=400,
+            detail="Apply mode requires confirm='APPLY_LIFECYCLE_MAINTENANCE'.",
+        )
+    report = MemoryLifecycleMaintenance().run(
+        store,
+        apply=request.apply,
+        max_actions=request.max_actions,
+        include_aging=request.include_aging,
+        include_compression_candidates=request.include_compression_candidates,
+        include_audit_check=request.include_audit_check,
+        include_tombstone_review=request.include_tombstone_review,
+        include_audit_repair=request.include_audit_repair,
+    )
+    if request.apply:
+        store.db.commit()
+    else:
+        store.db.rollback()
+    return MemoryLifecycleMaintenanceResponse(**report.to_dict())
 
 
 @router.get("/memory/candidates", response_model=list[MemoryCandidateRead])

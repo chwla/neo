@@ -3,10 +3,14 @@ from __future__ import annotations
 from app.models import Memory, Preference, ProfileFact
 from app.models.enums import MemoryType
 from app.repositories.memory_store import MemoryStore
+from app.services.lifecycle import MemoryLifecycleService
 
 
 class ConflictResolutionService:
     """Resolve contradictions without deleting historical records."""
+
+    def __init__(self, lifecycle: MemoryLifecycleService | None = None) -> None:
+        self.lifecycle = lifecycle or MemoryLifecycleService()
 
     def supersede_profile_key(self, store: MemoryStore, new_fact: ProfileFact) -> None:
         for old_fact in store.active_profile_by_key(new_fact.key):
@@ -25,11 +29,12 @@ class ConflictResolutionService:
             if old_memory.id == new_memory.id:
                 continue
             if self._conflicts(old_memory, new_memory):
-                old_memory.is_active = False
-                old_memory.status = "superseded"
-                old_memory.superseded_by_id = new_memory.id
-                if new_memory.supersedes_id is None:
-                    new_memory.supersedes_id = old_memory.id
+                self.lifecycle.supersede(
+                    store,
+                    old_memory,
+                    new_memory,
+                    "Superseded by conflicting accepted memory.",
+                )
 
     def _conflicts(self, old_memory: Memory, new_memory: Memory) -> bool:
         if old_memory.memory_type in {MemoryType.IDENTITY, MemoryType.PREFERENCE}:
