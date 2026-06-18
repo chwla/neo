@@ -26,7 +26,10 @@ class ConflictResolutionService:
                 continue
             if self._conflicts(old_memory, new_memory):
                 old_memory.is_active = False
+                old_memory.status = "superseded"
                 old_memory.superseded_by_id = new_memory.id
+                if new_memory.supersedes_id is None:
+                    new_memory.supersedes_id = old_memory.id
 
     def _conflicts(self, old_memory: Memory, new_memory: Memory) -> bool:
         if old_memory.memory_type in {MemoryType.IDENTITY, MemoryType.PREFERENCE}:

@@ -63,6 +63,12 @@ class MemoryRead(OrmSchema):
     importance: int
     confidence: float
     source: str | None
+    source_sentence: str | None
+    source_conversation_id: int | None
+    canonical_slot: str | None
+    status: str
+    supersedes_id: int | None
+    update_reason: str | None
     is_active: bool
     created_at: datetime
     updated_at: datetime

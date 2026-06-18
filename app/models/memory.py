@@ -39,11 +39,24 @@ class Memory(TimestampMixin, Base):
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     source: Mapped[str | None] = mapped_column(String(255))
+    source_sentence: Mapped[str | None] = mapped_column(Text)
+    source_conversation_id: Mapped[int | None] = mapped_column(Integer)
+    canonical_slot: Mapped[str | None] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("memories.id"))
+    update_reason: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("memories.id"))
 
-    superseded_by = relationship("Memory", remote_side=[id])
+    supersedes = relationship("Memory", remote_side=[id], foreign_keys=[supersedes_id])
+    superseded_by = relationship("Memory", remote_side=[id], foreign_keys=[superseded_by_id])
+    embedding = relationship(
+        "MemoryEmbedding",
+        back_populates="memory",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     projects = relationship(
         "Project",
         secondary=memory_project_links,

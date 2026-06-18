@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_store
+from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models import ChatMessage
 from app.models.enums import CandidateStatus, GoalStatus, MemoryType, ProjectStatus
@@ -26,6 +27,7 @@ from app.services.archives import QdrantArchiveService
 from app.services.chat import NeoChatService
 from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.extraction import ExtractionRequest, ExtractionResult, MemoryExtractionService
+from app.services.explanation import MemoryExplanation, MemoryExplanationService
 from app.services.ollama_client import OllamaClient
 from app.services.reflection import ReflectionRunRequest, ReflectionRunResult, ReflectionService
 from app.services.retrieval import RetrievalRequest
@@ -33,9 +35,16 @@ from app.services.review import MemoryReviewRequest, MemoryReviewResult, MemoryR
 
 router = APIRouter()
 StoreDependency = Annotated[MemoryStore, Depends(get_store)]
-MODEL_NAME = "qwen3:8b-q4_K_M"
-OLLAMA_URL = "http://127.0.0.1:11434"
-OLLAMA_TIMEOUT = 600
+
+
+def _ollama_client() -> OllamaClient:
+    settings = get_settings()
+    return OllamaClient(
+        model=settings.chat_model,
+        base_url=settings.ollama_url,
+        timeout=settings.chat_timeout_seconds,
+        num_predict=settings.chat_num_predict,
+    )
 
 
 def extract_after_turn_background(user_prompt: str, assistant_reply: str) -> None:
@@ -43,11 +52,7 @@ def extract_after_turn_background(user_prompt: str, assistant_reply: str) -> Non
     try:
         service = NeoChatService(
             db,
-            ollama=OllamaClient(
-                model=MODEL_NAME,
-                base_url=OLLAMA_URL,
-                timeout=OLLAMA_TIMEOUT,
-            ),
+            ollama=_ollama_client(),
         )
         service.extract_after_turn(user_prompt, assistant_reply)
     except Exception:
@@ -152,6 +157,10 @@ class MemoryUpdateRequest(BaseModel):
     memory_text: str = Field(min_length=1)
     memory_type: MemoryType
     importance: int = Field(ge=1, le=10)
+
+
+class MemoryExplainRequest(BaseModel):
+    query: str = Field(min_length=1)
 
 
 def _clean_optional_text(value: str | None) -> str | None:
@@ -296,20 +305,18 @@ def send_chat_message(
     _get_required_chat(store, chat_id)
     service = NeoChatService(
         store.db,
-        ollama=OllamaClient(
-            model=MODEL_NAME,
-            base_url=OLLAMA_URL,
-            timeout=OLLAMA_TIMEOUT,
-        ),
+        ollama=_ollama_client(),
     )
     try:
         reply = service.send_message(chat_id, request.prompt)
     except Exception as exc:
+        settings = get_settings()
         raise HTTPException(
             status_code=502,
             detail=(
-                f"Ollama did not finish the response. Expected {MODEL_NAME} "
-                f"at {OLLAMA_URL} within {OLLAMA_TIMEOUT} seconds. Details: {exc}"
+                f"Ollama did not finish the response. Expected {settings.chat_model} "
+                f"at {settings.ollama_url} within {settings.chat_timeout_seconds} seconds. "
+                f"Details: {exc}"
             ),
         ) from exc
     payload = _thread_payload(store, chat_id)
@@ -326,11 +333,7 @@ def stream_chat_message(
     _get_required_chat(store, chat_id)
     service = NeoChatService(
         store.db,
-        ollama=OllamaClient(
-            model=MODEL_NAME,
-            base_url=OLLAMA_URL,
-            timeout=OLLAMA_TIMEOUT,
-        ),
+        ollama=_ollama_client(),
     )
 
     def events():
@@ -346,12 +349,14 @@ def stream_chat_message(
             ):
                 yield json.dumps(event, default=str) + "\n"
         except Exception as exc:
+            settings = get_settings()
             yield json.dumps(
                 {
                     "type": "error",
                     "detail": (
-                        f"Ollama did not finish the response. Expected {MODEL_NAME} "
-                        f"at {OLLAMA_URL} within {OLLAMA_TIMEOUT} seconds. Details: {exc}"
+                        f"Ollama did not finish the response. Expected {settings.chat_model} "
+                        f"at {settings.ollama_url} within {settings.chat_timeout_seconds} seconds. "
+                        f"Details: {exc}"
                     ),
                 }
             ) + "\n"
@@ -551,6 +556,14 @@ def list_memory_candidates(
         MemoryCandidateRead.model_validate(candidate)
         for candidate in store.list_candidates(status=status)
     ]
+
+
+@router.post("/memory/explain", response_model=MemoryExplanation)
+def explain_memory(
+    request: MemoryExplainRequest,
+    store: StoreDependency,
+) -> MemoryExplanation:
+    return MemoryExplanationService().explain(store, request.query)
 
 
 @router.get("/profile", response_model=list[ProfileFactRead])

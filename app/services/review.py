@@ -94,8 +94,13 @@ class MemoryReviewService:
                 ),
                 None,
             )
-            if existing_memory is not None and existing_profile is not None:
-                return existing_memory
+            if existing_profile is not None:
+                existing_profile.confidence = max(existing_profile.confidence, candidate.confidence)
+                memory = existing_memory or store.add(
+                    self._memory(candidate, MemoryType.IDENTITY, memory_text)
+                )
+                self._refresh_memory(memory, candidate)
+                return memory
             profile = store.add(
                 ProfileFact(
                     key=key,
@@ -122,8 +127,20 @@ class MemoryReviewService:
                 ),
                 None,
             )
-            if existing_memory is not None and existing_preference is not None:
-                return existing_memory
+            if existing_preference is not None:
+                existing_preference.confidence = max(
+                    existing_preference.confidence,
+                    candidate.confidence,
+                )
+                existing_preference.importance = max(
+                    existing_preference.importance,
+                    candidate.importance,
+                )
+                memory = existing_memory or store.add(
+                    self._memory(candidate, MemoryType.PREFERENCE, memory_text)
+                )
+                self._refresh_memory(memory, candidate)
+                return memory
             preference = store.add(
                 Preference(
                     category=category,
@@ -140,9 +157,23 @@ class MemoryReviewService:
             return memory
 
         if candidate.candidate_type == CandidateType.GOAL:
+            goal_text = str(attrs.get("goal", candidate.candidate_text))
+            for existing_goal in store.list_goals(GoalStatus.ACTIVE):
+                if self._same_text(existing_goal.goal, goal_text):
+                    existing_memory = self._existing_memory(
+                        store,
+                        MemoryType.GOAL_RELATED,
+                        existing_goal.goal,
+                    )
+                    if existing_memory is not None:
+                        self._refresh_memory(existing_memory, candidate)
+                        return existing_memory
+                    return store.add(
+                        self._memory(candidate, MemoryType.GOAL_RELATED, existing_goal.goal)
+                    )
             goal = store.add(
                 Goal(
-                    goal=str(attrs.get("goal", candidate.candidate_text)),
+                    goal=goal_text,
                     description=candidate.candidate_text,
                     priority=int(attrs.get("priority", candidate.importance)),
                     status=GoalStatus.ACTIVE,
@@ -151,10 +182,28 @@ class MemoryReviewService:
             return store.add(self._memory(candidate, MemoryType.GOAL_RELATED, goal.goal))
 
         if candidate.candidate_type == CandidateType.PROJECT:
+            project_name = str(attrs.get("name", candidate.candidate_text))
+            project_description = str(attrs.get("description", candidate.candidate_text))
+            for existing_project in store.list_projects(ProjectStatus.ACTIVE):
+                if self._same_text(existing_project.name, project_name):
+                    if project_description and project_description != existing_project.description:
+                        existing_project.description = project_description
+                        existing_project.priority = max(existing_project.priority, candidate.importance)
+                    existing_memory = self._existing_memory(
+                        store,
+                        MemoryType.PROJECT_RELATED,
+                        existing_project.name,
+                    )
+                    if existing_memory is not None:
+                        self._refresh_memory(existing_memory, candidate)
+                        return existing_memory
+                    return store.add(
+                        self._memory(candidate, MemoryType.PROJECT_RELATED, existing_project.name)
+                    )
             project = store.add(
                 Project(
-                    name=str(attrs.get("name", candidate.candidate_text)),
-                    description=str(attrs.get("description", candidate.candidate_text)),
+                    name=project_name,
+                    description=project_description,
                     priority=candidate.importance,
                     status=ProjectStatus.ACTIVE,
                 )
@@ -173,6 +222,27 @@ class MemoryReviewService:
             )
             return store.add(self._memory(candidate, MemoryType.LIFE_FACT, event.event))
 
+        existing_memory = self._existing_memory(
+            store,
+            MemoryType.KNOWLEDGE,
+            candidate.candidate_text,
+        )
+        if existing_memory is not None:
+            self._refresh_memory(existing_memory, candidate)
+            return existing_memory
+        existing_memory = self._existing_current_hardware(store, candidate.candidate_text)
+        if existing_memory is not None:
+            memory = store.add(
+                self._memory(
+                    candidate,
+                    MemoryType.KNOWLEDGE,
+                    candidate.candidate_text,
+                    supersedes_id=existing_memory.id,
+                    update_reason="User stated a replacement current hardware setup.",
+                ),
+            )
+            self._supersede_memory(existing_memory, memory)
+            return memory
         memory = store.add(self._memory(candidate, MemoryType.KNOWLEDGE, candidate.candidate_text))
         self.conflicts.supersede_similar_memory(store, memory)
         return memory
@@ -188,14 +258,70 @@ class MemoryReviewService:
                 return memory
         return None
 
-    def _memory(self, candidate, memory_type: MemoryType, text: str) -> Memory:
+    def _same_text(self, left: str | None, right: str | None) -> bool:
+        if left is None or right is None:
+            return False
+        return " ".join(left.lower().split()) == " ".join(right.lower().split())
+
+    def _existing_current_hardware(self, store: MemoryStore, candidate_text: str) -> Memory | None:
+        if not candidate_text.lower().startswith("current hardware:"):
+            return None
+        for memory in store.active_memories_by_type(MemoryType.KNOWLEDGE):
+            if memory.memory_text.lower().startswith("current hardware:"):
+                return memory
+        return None
+
+    def _refresh_memory(self, memory: Memory, candidate) -> None:
+        memory.confidence = max(memory.confidence, candidate.confidence)
+        memory.importance = max(memory.importance, candidate.importance)
+        attrs = self._attributes(candidate.reasoning)
+        if attrs.get("source_sentence"):
+            memory.source_sentence = str(attrs.get("source_sentence"))
+        if attrs.get("source_conversation_id") is not None:
+            memory.source_conversation_id = int(attrs["source_conversation_id"])
+        if attrs.get("canonical_slot"):
+            memory.canonical_slot = str(attrs.get("canonical_slot"))
+
+    def _memory(
+        self,
+        candidate,
+        memory_type: MemoryType,
+        text: str,
+        supersedes_id: int | None = None,
+        update_reason: str | None = None,
+    ) -> Memory:
+        attrs = self._attributes(candidate.reasoning)
         return Memory(
             memory_text=text,
             memory_type=memory_type,
             importance=candidate.importance,
             confidence=candidate.confidence,
             source=f"memory_candidate:{candidate.id}",
+            source_sentence=str(attrs.get("source_sentence") or candidate.candidate_text),
+            source_conversation_id=self._optional_int(attrs.get("source_conversation_id")),
+            canonical_slot=str(attrs.get("canonical_slot") or self._canonical_slot(memory_type, text)),
+            status="active",
+            supersedes_id=supersedes_id,
+            update_reason=update_reason or str(attrs.get("update_reason") or ""),
         )
+
+    def _supersede_memory(self, old_memory: Memory, new_memory: Memory) -> None:
+        old_memory.is_active = False
+        old_memory.status = "superseded"
+        old_memory.superseded_by_id = new_memory.id
+
+    def _optional_int(self, value) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _canonical_slot(self, memory_type: MemoryType, text: str) -> str:
+        if text.lower().startswith("current hardware:"):
+            return "current_hardware"
+        return memory_type.value
 
     def _attributes(self, reasoning: str | None) -> dict:
         if not reasoning:

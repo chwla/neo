@@ -11,6 +11,7 @@ from app.models.enums import (
 from app.models.event import Event
 from app.models.goal import Goal
 from app.models.memory import Memory
+from app.models.memory_embedding import MemoryEmbedding
 from app.models.memory_candidate import MemoryCandidate
 from app.models.preference import Preference
 from app.models.profile import ProfileFact
@@ -27,6 +28,7 @@ __all__ = [
     "Goal",
     "GoalStatus",
     "Memory",
+    "MemoryEmbedding",
     "MemoryCandidate",
     "MemoryType",
     "Preference",

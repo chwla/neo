@@ -8,6 +8,8 @@ from typing import Any
 import requests
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
+
 
 class OllamaMessage(BaseModel):
     role: str
@@ -28,13 +30,16 @@ class OllamaClient:
 
     def __init__(
         self,
-        model: str = "qwen3:8b-q4_K_M",
-        base_url: str = "http://127.0.0.1:11434",
-        timeout: int = 600,
+        model: str | None = None,
+        base_url: str | None = None,
+        timeout: int | None = None,
+        num_predict: int | None = None,
     ) -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        settings = get_settings()
+        self.model = model or settings.chat_model
+        self.base_url = (base_url or settings.ollama_url).rstrip("/")
+        self.timeout = timeout or settings.chat_timeout_seconds
+        self.num_predict = num_predict or settings.chat_num_predict
 
     def is_available(self) -> bool:
         try:
@@ -56,10 +61,18 @@ class OllamaClient:
     def chat(self, messages: list[OllamaMessage], temperature: float = 0.4) -> str:
         return self.chat_with_metadata(messages, temperature).content
 
+    def _options(self, temperature: float, num_predict: int | None = None) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "temperature": temperature,
+            "num_predict": num_predict or self.num_predict,
+        }
+        return options
+
     def chat_with_metadata(
         self,
         messages: list[OllamaMessage],
         temperature: float = 0.4,
+        num_predict: int | None = None,
     ) -> OllamaChatResult:
         started = time.perf_counter()
         response = requests.post(
@@ -68,7 +81,7 @@ class OllamaClient:
                 "model": self.model,
                 "messages": [message.model_dump() for message in messages],
                 "stream": False,
-                "options": {"temperature": temperature},
+                "options": self._options(temperature, num_predict),
             },
             timeout=self.timeout,
         )
@@ -97,6 +110,7 @@ class OllamaClient:
         self,
         messages: list[OllamaMessage],
         temperature: float = 0.4,
+        num_predict: int | None = None,
     ) -> Iterator[dict[str, Any]]:
         started = time.perf_counter()
         response = requests.post(
@@ -105,7 +119,7 @@ class OllamaClient:
                 "model": self.model,
                 "messages": [message.model_dump() for message in messages],
                 "stream": True,
-                "options": {"temperature": temperature},
+                "options": self._options(temperature, num_predict),
             },
             stream=True,
             timeout=self.timeout,

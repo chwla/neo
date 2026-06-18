@@ -42,6 +42,8 @@ def initialize_database() -> None:
 
     Base.metadata.create_all(bind=engine)
     ensure_chat_message_metadata_columns()
+    ensure_memory_metadata_columns()
+    ensure_memory_embedding_table()
 
 
 def ensure_chat_message_metadata_columns() -> None:
@@ -62,6 +64,102 @@ def ensure_chat_message_metadata_columns() -> None:
         for name, column_type in columns.items():
             if name not in existing:
                 connection.execute(text(f"ALTER TABLE chat_messages ADD COLUMN {name} {column_type}"))
+
+
+def ensure_memory_metadata_columns() -> None:
+    """Add traceability columns for existing SQLite memory databases."""
+
+    inspector = inspect(engine)
+    if "memories" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("memories")}
+    columns = {
+        "source_sentence": "TEXT",
+        "source_conversation_id": "INTEGER",
+        "canonical_slot": "VARCHAR(120)",
+        "status": "VARCHAR(32) NOT NULL DEFAULT 'active'",
+        "supersedes_id": "INTEGER",
+        "update_reason": "TEXT",
+    }
+    with engine.begin() as connection:
+        for name, column_type in columns.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE memories ADD COLUMN {name} {column_type}"))
+        connection.execute(
+            text(
+                """
+                UPDATE memories
+                SET source_sentence = memory_text
+                WHERE source_sentence IS NULL
+                """,
+            ),
+        )
+
+
+def ensure_memory_embedding_table() -> None:
+    """Create embedding metadata table for existing SQLite databases."""
+
+    inspector = inspect(engine)
+    if "memory_embeddings" in inspector.get_table_names():
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE memory_embeddings (
+                    memory_id INTEGER NOT NULL PRIMARY KEY,
+                    model VARCHAR(120) NOT NULL,
+                    provider VARCHAR(80) NOT NULL DEFAULT 'ollama',
+                    dimensions INTEGER,
+                    vector_json TEXT,
+                    content_hash VARCHAR(64),
+                    status VARCHAR(32) NOT NULL DEFAULT 'missing',
+                    error TEXT,
+                    embedded_at DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    FOREIGN KEY(memory_id) REFERENCES memories(id)
+                )
+                """,
+            ),
+        )
+        connection.execute(
+            text("CREATE INDEX ix_memory_embeddings_status ON memory_embeddings(status)"),
+        )
+        connection.execute(
+            text("CREATE INDEX ix_memory_embeddings_model ON memory_embeddings(model)"),
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE memories
+                SET status = CASE
+                    WHEN is_active = 1 THEN 'active'
+                    WHEN superseded_by_id IS NOT NULL THEN 'superseded'
+                    ELSE 'deleted'
+                END
+                WHERE status IS NULL OR status = ''
+                """,
+            ),
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE memories
+                SET canonical_slot = CASE
+                    WHEN lower(memory_text) LIKE 'current hardware:%' THEN 'current_hardware'
+                    WHEN memory_type = 'preference' AND instr(memory_text, '=') > 0
+                        THEN 'preference:' || lower(trim(substr(memory_text, 1, instr(memory_text, '=') - 1)))
+                    WHEN memory_type = 'identity' AND instr(memory_text, '=') > 0
+                        THEN 'identity:' || lower(trim(substr(memory_text, 1, instr(memory_text, '=') - 1)))
+                    WHEN memory_type = 'project_related'
+                        THEN 'project:' || lower(trim(memory_text))
+                    ELSE memory_type
+                END
+                WHERE canonical_slot IS NULL OR canonical_slot = ''
+                """,
+            ),
+        )
 
 
 initialize_database()

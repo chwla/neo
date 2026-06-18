@@ -55,3 +55,7 @@ neo_visual_verify_*.db
 .idea/
 Thumbs.db
 .DS_Store
+
+
+/scripts
+/tests
