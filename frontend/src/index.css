@@ -1001,6 +1001,30 @@ textarea:disabled {
   outline: none;
 }
 
+.memory-sort-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 10px;
+}
+
+.memory-sort-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--neo-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.memory-sort-bar select {
+  min-height: 32px;
+  border: 1px solid rgba(57,255,20,.24);
+  border-radius: 6px;
+  background: #061006;
+  color: #eaffea;
+  padding: 6px 28px 6px 9px;
+}
+
 .memory-scroll {
   position: relative;
   z-index: 1;

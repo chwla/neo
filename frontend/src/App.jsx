@@ -20,6 +20,12 @@ const MEMORY_TABS = [
   ["events", "Events"],
   ["memories", "Memories"],
 ];
+const MEMORY_SORT_OPTIONS = [
+  ["newest", "Newest First"],
+  ["oldest", "Oldest First"],
+  ["az", "A \u2192 Z"],
+  ["za", "Z \u2192 A"],
+];
 
 function formatMemoryType(value) {
   return value
@@ -38,6 +44,26 @@ function errorMessage(error) {
     return "";
   }
   return error.message || String(error);
+}
+
+function createdTime(record) {
+  const parsed = Date.parse(record.created_at ?? "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function sortMemoryRecords(records, sortOrder) {
+  return [...records].sort((left, right) => {
+    if (sortOrder === "oldest") {
+      return createdTime(left) - createdTime(right);
+    }
+    if (sortOrder === "az") {
+      return left.memory_text.localeCompare(right.memory_text, undefined, { sensitivity: "base" });
+    }
+    if (sortOrder === "za") {
+      return right.memory_text.localeCompare(left.memory_text, undefined, { sensitivity: "base" });
+    }
+    return createdTime(right) - createdTime(left);
+  });
 }
 
 function parseQueryId(params, key) {
@@ -1053,6 +1079,7 @@ function GeneralMemoryForm({ record, refresh, setError }) {
 
 function MemoryDialog({ onClose, refreshSidebar }) {
   const [activeTab, setActiveTab] = useState("profile");
+  const [memorySortOrder, setMemorySortOrder] = useState("newest");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1096,7 +1123,12 @@ function MemoryDialog({ onClose, refreshSidebar }) {
     } else if (activeTab === "events") {
       content = <EventEditor records={data.events} {...editorProps} />;
     } else {
-      content = <GeneralMemoryEditor records={data.memories} {...editorProps} />;
+      content = (
+        <GeneralMemoryEditor
+          records={sortMemoryRecords(data.memories, memorySortOrder)}
+          {...editorProps}
+        />
+      );
     }
   }
 
@@ -1117,6 +1149,23 @@ function MemoryDialog({ onClose, refreshSidebar }) {
         ))}
       </div>
       {error && <div className="neo-error">{error}</div>}
+      {activeTab === "memories" && (
+        <div className="memory-sort-bar">
+          <label>
+            <span>Sort</span>
+            <select
+              value={memorySortOrder}
+              onChange={(event) => setMemorySortOrder(event.target.value)}
+            >
+              {MEMORY_SORT_OPTIONS.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
       <div className="memory-scroll">{content}</div>
     </Modal>
   );
