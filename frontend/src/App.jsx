@@ -51,16 +51,24 @@ function createdTime(record) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function memorySortText(record) {
+  return String(record.memory_text ?? "");
+}
+
 function sortMemoryRecords(records, sortOrder) {
   return [...records].sort((left, right) => {
     if (sortOrder === "oldest") {
       return createdTime(left) - createdTime(right);
     }
     if (sortOrder === "az") {
-      return left.memory_text.localeCompare(right.memory_text, undefined, { sensitivity: "base" });
+      return memorySortText(left).localeCompare(memorySortText(right), undefined, {
+        sensitivity: "base",
+      });
     }
     if (sortOrder === "za") {
-      return right.memory_text.localeCompare(left.memory_text, undefined, { sensitivity: "base" });
+      return memorySortText(right).localeCompare(memorySortText(left), undefined, {
+        sensitivity: "base",
+      });
     }
     return createdTime(right) - createdTime(left);
   });

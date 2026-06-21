@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,78 @@ class Settings(BaseSettings):
     hybrid_semantic_weight: float = Field(default=2.0)
     hybrid_slot_weight: float = Field(default=3.0)
     hybrid_importance_weight: float = Field(default=0.05)
+    web_search_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WEB_SEARCH_ENABLED", "NEO_WEB_SEARCH_ENABLED"),
+    )
+    web_search_provider: str = Field(
+        default="duckduckgo",
+        validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "NEO_WEB_SEARCH_PROVIDER"),
+    )
+    web_search_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "NEO_WEB_SEARCH_API_KEY"),
+    )
+    web_search_fallback_providers: str = Field(
+        default="tavily,brave,duckduckgo,bing_html",
+        validation_alias=AliasChoices(
+            "WEB_SEARCH_FALLBACK_PROVIDERS",
+            "NEO_WEB_SEARCH_FALLBACK_PROVIDERS",
+        ),
+    )
+    tavily_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TAVILY_API_KEY", "NEO_TAVILY_API_KEY"),
+    )
+    brave_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BRAVE_API_KEY", "NEO_BRAVE_API_KEY", "DATA_BRAVE_API_KEY"),
+    )
+    serper_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SERPER_API_KEY", "NEO_SERPER_API_KEY"),
+    )
+    web_search_max_results: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices("WEB_SEARCH_MAX_RESULTS", "NEO_WEB_SEARCH_MAX_RESULTS"),
+    )
+    web_fetch_max_pages: int = Field(
+        default=3,
+        ge=0,
+        le=5,
+        validation_alias=AliasChoices("WEB_FETCH_MAX_PAGES", "NEO_WEB_FETCH_MAX_PAGES"),
+    )
+    web_fetch_timeout_seconds: float = Field(
+        default=8.0,
+        gt=0,
+        le=30,
+        validation_alias=AliasChoices(
+            "WEB_FETCH_TIMEOUT_SECONDS",
+            "NEO_WEB_FETCH_TIMEOUT_SECONDS",
+        ),
+    )
+    web_fetch_max_bytes: int = Field(
+        default=1_000_000,
+        ge=10_000,
+        le=5_000_000,
+        validation_alias=AliasChoices("WEB_FETCH_MAX_BYTES", "NEO_WEB_FETCH_MAX_BYTES"),
+    )
+    web_search_user_agent: str = Field(
+        default="Neo/1.0 local personal assistant (+https://localhost)",
+        validation_alias=AliasChoices("WEB_SEARCH_USER_AGENT", "NEO_WEB_SEARCH_USER_AGENT"),
+    )
+    web_context_max_tokens: int = Field(
+        default=1200,
+        ge=200,
+        le=4000,
+        validation_alias=AliasChoices("WEB_CONTEXT_MAX_TOKENS", "NEO_WEB_CONTEXT_MAX_TOKENS"),
+    )
+    web_cache_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("WEB_CACHE_ENABLED", "NEO_WEB_CACHE_ENABLED"),
+    )
 
 
 @lru_cache

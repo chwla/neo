@@ -119,6 +119,7 @@ class ChatSendResponse(BaseModel):
     chat: ChatRead
     messages: list[ChatMessageRead]
     reply: str
+    web_debug: dict[str, object] = Field(default_factory=dict)
 
 
 class ProjectCreateRequest(BaseModel):
@@ -403,7 +404,12 @@ def send_chat_message(
             ),
         ) from exc
     payload = _thread_payload(store, chat_id)
-    return ChatSendResponse(chat=payload.chat, messages=payload.messages, reply=reply)
+    return ChatSendResponse(
+        chat=payload.chat,
+        messages=payload.messages,
+        reply=reply,
+        web_debug=service.last_web_debug,
+    )
 
 
 @router.post("/chats/{chat_id}/messages/stream")
@@ -441,6 +447,7 @@ def stream_chat_message(
                         f"at {settings.ollama_url} within {settings.chat_timeout_seconds} seconds. "
                         f"Details: {exc}"
                     ),
+                    "web_debug": service.last_web_debug,
                 }
             ) + "\n"
 
