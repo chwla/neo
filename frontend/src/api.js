@@ -148,4 +148,9 @@ export const api = {
   updateMemory: (id, payload) =>
     request(`/memories/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteMemory: (id) => request(`/memories/${id}`, { method: "DELETE" }),
+  searchConfig: () => request("/search/config"),
+  updateSearchConfig: (payload) =>
+    request("/search/config", { method: "POST", body: JSON.stringify(payload) }),
+  testSearchProvider: (payload = {}) =>
+    request("/search/test", { method: "POST", body: JSON.stringify(payload) }),
 };

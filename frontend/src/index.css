@@ -861,6 +861,43 @@ textarea:disabled {
   width: min(500px, calc(100% - 48px));
 }
 
+.settings-menu {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-section {
+  margin-bottom: 18px;
+  border: 1px solid rgba(57,255,20,.20);
+  border-radius: 8px;
+  background: rgba(7, 16, 7, .48);
+  padding: 14px;
+}
+
+.settings-section h3 {
+  margin: 0 0 10px;
+  color: #f3f6fb;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.settings-status {
+  margin-top: 12px;
+  border: 1px solid rgba(57,255,20,.28);
+  border-radius: 8px;
+  background: rgba(57,255,20,.08);
+  color: #caffc2;
+  padding: 9px 10px;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
 .memory-dialog {
   position: relative;
   width: min(760px, calc(100vw - 48px));

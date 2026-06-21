@@ -371,6 +371,14 @@ def _run_provider_chain(query: str, options: SearchOptions) -> WebSearchResponse
             response.provider_query = rewritten_query
             response.attempted_providers = attempted
             return with_source_hints(rewritten_query, response, limit)
+        if provider.name in {"searxng", "tavily"} and _is_provider_configuration_error(response.error):
+            return WebSearchResponse(
+                query=query,
+                provider=provider.name,
+                error=response.error,
+                provider_query=rewritten_query,
+                attempted_providers=attempted,
+            )
     hints = source_hints(rewritten_query)
     if hints:
         attempted["source_hints"] = f"ok ({len(hints)})"
@@ -444,6 +452,23 @@ def provider_query(query: str) -> str:
     if match:
         return f"{match.group(2)} {match.group(1)}"
     return cleaned
+
+
+def _is_provider_configuration_error(error: str | None) -> bool:
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "api key",
+            "instance url",
+            "unreachable",
+            "timed out",
+            "returned http",
+            "rejected",
+        )
+    )
 
 
 def with_source_hints(provider_query_value: str, response: WebSearchResponse, max_results: int) -> WebSearchResponse:

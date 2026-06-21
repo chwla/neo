@@ -13,6 +13,7 @@ from app.services.search.providers import (
     DisabledSearchProvider,
     DuckDuckGoSearchProvider,
     ProviderRegistry,
+    SearXNGSearchProvider,
     TavilySearchProvider,
     WebSearchProvider,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "ProviderRegistry",
     "SearchOptions",
     "SearchResult",
+    "SearXNGSearchProvider",
     "StructuredSource",
     "TavilySearchProvider",
     "WebAnswerService",

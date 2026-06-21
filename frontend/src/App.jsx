@@ -546,13 +546,156 @@ function ChatComposer({ disabled, value, onChange, onSubmit }) {
   );
 }
 
-function SettingsDialog({ onOpenMemory, onClose }) {
+function WebSearchSettingsDialog({ onClose }) {
+  const [searchConfig, setSearchConfig] = useState(null);
+  const [provider, setProvider] = useState("searxng");
+  const [searxngInstance, setSearxngInstance] = useState("http://localhost:8080");
+  const [tavilyKey, setTavilyKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSearchConfig() {
+      setLoading(true);
+      setError("");
+      try {
+        const config = await api.searchConfig();
+        if (cancelled) {
+          return;
+        }
+        setSearchConfig(config);
+        setProvider(config.provider || "searxng");
+        setSearxngInstance(config.searxng_instance || "http://localhost:8080");
+      } catch (requestError) {
+        if (!cancelled) {
+          setError(errorMessage(requestError));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadSearchConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function saveSearchConfig(event) {
+    event.preventDefault();
+    setSaving(true);
+    setStatus("");
+    setError("");
+    try {
+      const config = await api.updateSearchConfig({
+        provider,
+        searxng_instance: searxngInstance,
+        tavily_key: provider === "tavily" ? tavilyKey : undefined,
+      });
+      setSearchConfig(config);
+      setProvider(config.provider || "searxng");
+      setSearxngInstance(config.searxng_instance || "http://localhost:8080");
+      setTavilyKey("");
+      setStatus("Saved.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testSearchConfig() {
+    setTesting(true);
+    setStatus("");
+    setError("");
+    try {
+      const result = await api.testSearchProvider({ query: "latest OpenAI news" });
+      if (!result.success) {
+        setError(result.error || "Search test failed.");
+        return;
+      }
+      setStatus(
+        `Test passed: ${result.provider_used} returned ${result.result_count} result(s) in ${result.latency_ms} ms.`,
+      );
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <Modal title="Web Search" onClose={onClose} className="settings-dialog web-search-dialog">
+      <section className="settings-section">
+        {loading ? (
+          <p className="dialog-caption">Loading...</p>
+        ) : (
+          <form onSubmit={saveSearchConfig}>
+            <Field label="Provider">
+              <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+                <option value="searxng">SearXNG</option>
+                <option value="tavily">Tavily</option>
+              </select>
+            </Field>
+
+            {provider === "searxng" && (
+              <Field label="Instance URL">
+                <input
+                  value={searxngInstance}
+                  onChange={(event) => setSearxngInstance(event.target.value)}
+                  placeholder="http://localhost:8080"
+                />
+              </Field>
+            )}
+
+            {provider === "tavily" && (
+              <Field label="API Key">
+                <input
+                  value={tavilyKey}
+                  onChange={(event) => setTavilyKey(event.target.value)}
+                  placeholder={searchConfig?.tavily_configured ? "Configured" : "TAVILY_API_KEY"}
+                  type="password"
+                  autoComplete="off"
+                />
+              </Field>
+            )}
+
+            <div className="settings-actions">
+              <NeoButton type="submit" disabled={saving || testing}>
+                {saving ? "Saving..." : "Save"}
+              </NeoButton>
+              <NeoButton type="button" disabled={saving || testing} onClick={testSearchConfig}>
+                {testing ? "Testing..." : "Test"}
+              </NeoButton>
+            </div>
+          </form>
+        )}
+        {error && <div className="neo-error">{error}</div>}
+        {status && <div className="settings-status">{status}</div>}
+      </section>
+    </Modal>
+  );
+}
+
+function SettingsDialog({ onOpenMemory, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
-      <NeoButton className="w-full" onClick={onOpenMemory}>
-        Memory
-      </NeoButton>
+      <div className="settings-menu">
+        <NeoButton className="w-full" onClick={onOpenWebSearch}>
+          Web Search
+        </NeoButton>
+        <NeoButton className="w-full" onClick={onOpenMemory}>
+          Memory
+        </NeoButton>
+      </div>
     </Modal>
   );
 }
@@ -1186,6 +1329,7 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -1586,12 +1730,20 @@ export default function App() {
 
       {showSettings && (
         <SettingsDialog
+          onOpenWebSearch={() => {
+            setShowSettings(false);
+            setShowWebSearchSettings(true);
+          }}
           onOpenMemory={() => {
             setShowSettings(false);
             setShowMemory(true);
           }}
           onClose={() => setShowSettings(false)}
         />
+      )}
+
+      {showWebSearchSettings && (
+        <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />
       )}
 
       {showMemory && (

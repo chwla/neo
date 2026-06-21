@@ -13,6 +13,7 @@ from app.services.search.types import SearchResult, WebSearchResponse
 
 
 PROVIDER_INFO = {
+    "searxng": ("SearXNG", False, True),
     "tavily": ("Tavily", True, False),
     "brave": ("Brave Search", True, False),
     "duckduckgo": ("DuckDuckGo", False, False),
@@ -159,12 +160,85 @@ def _settings_key(provider: str) -> str | None:
     return None
 
 
+def normalize_searxng_instance(value: str) -> str:
+    cleaned = (value or "").strip().rstrip("/")
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("SearXNG instance URL must be an http or https URL.")
+    return cleaned
+
+
 def provider_available(provider: str) -> bool:
     provider = provider.lower().strip()
     info = PROVIDER_INFO.get(provider)
     if not info:
         return False
+    if provider == "searxng":
+        try:
+            normalize_searxng_instance(get_settings().searxng_instance)
+        except ValueError:
+            return False
+        return True
     return not info[1] or bool(_settings_key(provider))
+
+
+class SearXNGSearchProvider(WebSearchProvider):
+    name = "searxng"
+
+    def __init__(
+        self,
+        instance_url: str | None = None,
+        timeout_seconds: float | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        settings = get_settings()
+        self.instance_url = (instance_url or settings.searxng_instance).strip()
+        self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
+        self.user_agent = user_agent or settings.web_search_user_agent
+
+    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+        try:
+            instance = normalize_searxng_instance(self.instance_url)
+        except ValueError as exc:
+            return WebSearchResponse(query=query, provider=self.name, error=str(exc))
+
+        params: dict[str, object] = {
+            "q": query,
+            "format": "json",
+            "language": "en",
+            "safesearch": 1,
+        }
+        if time_filter in {"day", "week", "month", "year"}:
+            params["time_range"] = "week" if time_filter == "day" else time_filter
+        try:
+            response = requests.get(
+                f"{instance}/search",
+                params=params,
+                headers={"Accept": "application/json", "User-Agent": self.user_agent},
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except requests.Timeout:
+            return WebSearchResponse(query=query, provider=self.name, error="SearXNG instance timed out.")
+        except requests.ConnectionError as exc:
+            return WebSearchResponse(query=query, provider=self.name, error=f"SearXNG instance is unreachable: {exc}")
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            return WebSearchResponse(query=query, provider=self.name, error=f"SearXNG returned HTTP {status}.")
+        except (requests.RequestException, json.JSONDecodeError) as exc:
+            return WebSearchResponse(query=query, provider=self.name, error=f"SearXNG search failed: {exc}")
+
+        raw = [
+            {
+                "title": item.get("title") or item.get("url") or "",
+                "url": item.get("url") or "",
+                "snippet": item.get("content") or item.get("snippet") or "",
+                "published_date": item.get("publishedDate") or item.get("published_date"),
+            }
+            for item in payload.get("results", [])
+        ]
+        return _results_response(query, self.name, raw, max_results)
 
 
 class DuckDuckGoSearchProvider(WebSearchProvider):
@@ -291,6 +365,10 @@ class TavilySearchProvider(WebSearchProvider):
             )
             response.raise_for_status()
             data = response.json()
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code in {401, 403}:
+                return WebSearchResponse(query=query, provider=self.name, error="Tavily API key was rejected.")
+            return WebSearchResponse(query=query, provider=self.name, error=f"Tavily returned HTTP {exc.response.status_code if exc.response is not None else 'unknown'}.")
         except (requests.RequestException, json.JSONDecodeError) as exc:
             return WebSearchResponse(query=query, provider=self.name, error=f"Search failed: {exc}")
         raw = [
@@ -359,6 +437,8 @@ class ProviderRegistry:
 
     def provider(self, name: str) -> WebSearchProvider:
         normalized = name.lower().strip()
+        if normalized == "searxng":
+            return SearXNGSearchProvider()
         if normalized == "tavily":
             return TavilySearchProvider()
         if normalized == "brave":
@@ -383,7 +463,9 @@ class ProviderRegistry:
         configured = self.settings.web_search_fallback_providers
         fallback_names = [item.strip().lower() for item in configured.split(",") if item.strip()]
         if not fallback_names:
-            fallback_names = ["tavily", "brave", "duckduckgo", "bing_html"]
+            fallback_names = ["duckduckgo", "bing_html"]
+        if names[0] != "tavily":
+            fallback_names = [name for name in fallback_names if name != "tavily"]
         for name in fallback_names:
             if name not in names and name != "disabled":
                 names.append(name)

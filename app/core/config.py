@@ -33,15 +33,19 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WEB_SEARCH_ENABLED", "NEO_WEB_SEARCH_ENABLED"),
     )
     web_search_provider: str = Field(
-        default="duckduckgo",
+        default="searxng",
         validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "NEO_WEB_SEARCH_PROVIDER"),
+    )
+    searxng_instance: str = Field(
+        default="http://localhost:8080",
+        validation_alias=AliasChoices("SEARXNG_INSTANCE", "NEO_SEARXNG_INSTANCE"),
     )
     web_search_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "NEO_WEB_SEARCH_API_KEY"),
     )
     web_search_fallback_providers: str = Field(
-        default="tavily,brave,duckduckgo,bing_html",
+        default="duckduckgo,bing_html",
         validation_alias=AliasChoices(
             "WEB_SEARCH_FALLBACK_PROVIDERS",
             "NEO_WEB_SEARCH_FALLBACK_PROVIDERS",
