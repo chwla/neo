@@ -107,13 +107,36 @@ class TopicIntent:
     normalized_entities: dict[str, str] = field(default_factory=dict)
     pricing_focus: bool = False
     comparison_query: bool = True
+    original_query: str = ""
+    normalized_query: str | None = None
+    normalization_reason: str | None = None
+    ai_workload_focus: bool = False
+    product_pair: str | None = None
 
 
-def classify_topic_intent(user_query: str) -> TopicIntent | None:
+def classify_topic_intent(user_query: str, original_query: str | None = None) -> TopicIntent | None:
     """Classify short ambiguous queries into Neo-relevant topic intents."""
+    from app.services.research.product_intent import classify_product_intent
+
+    orig = (original_query or user_query).strip()
     q = user_query.strip()
     if not q:
         return None
+
+    product = classify_product_intent(q, original_query=orig)
+    if product:
+        return TopicIntent(
+            topic_intent=product.topic_intent,
+            tools=product.entities,
+            normalized_entities=product.normalized_entities,
+            pricing_focus=product.pricing_focus,
+            comparison_query=product.comparison_query,
+            original_query=product.original_query,
+            normalized_query=product.normalized_query,
+            normalization_reason=product.normalization_reason,
+            ai_workload_focus=product.ai_workload_focus,
+            product_pair=product.product_pair,
+        )
 
     tools = _detect_ai_coding_tools(q)
     if not tools:
@@ -140,6 +163,7 @@ def classify_topic_intent(user_query: str) -> TopicIntent | None:
         normalized_entities=normalized,
         pricing_focus=bool(_PRICING_SIGNAL.search(q)),
         comparison_query=is_comparison or len(tools) >= 2,
+        original_query=orig,
     )
 
 

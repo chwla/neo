@@ -15,6 +15,7 @@ from app.services.research.evidence import (
     identify_gaps,
 )
 from app.services.research.topic_intent import TOPIC_AI_CODING_TOOLS, classify_topic_intent
+from app.services.research.product_intent import TOPIC_PRODUCT_COMPARISON, normalize_user_query
 from app.services.research.memory_scope import retrieve_scoped_memory
 from app.services.research.planner import generate_followup_queries, generate_plan
 from app.services.research.searcher import ResearchSearcher
@@ -122,6 +123,9 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         max_sources = job_data["max_sources"]
         max_rounds = job_data["max_rounds"]
 
+        query_norm = normalize_user_query(user_query)
+        effective_query = query_norm.effective_query
+
         # --- SCOPED MEMORY ---
         memory_context, memory_keys = retrieve_scoped_memory(user_query)
         if memory_context:
@@ -130,7 +134,14 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
         ollama = OllamaClient(num_predict=512)
 
-        plan = generate_plan(user_query, depth, memory_context=memory_context, ollama=ollama)
+        intent = classify_topic_intent(effective_query, original_query=user_query)
+        plan = generate_plan(
+            effective_query, depth,
+            memory_context=memory_context,
+            ollama=ollama,
+            topic_intent=intent,
+            original_query=user_query,
+        )
         _save_plan(job_id, plan)
         _update(job_id, JobStatus.PLANNING, 10, "Plan ready",
                 f"Generated {len(plan.queries)} search queries, {len(plan.subquestions)} sub-questions")
@@ -168,9 +179,11 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         if cancel.is_set():
             return _mark_cancelled(job_id)
 
-        entity_terms = extract_entity_terms(user_query, plan)
-        if entity_terms or plan.topic_intent == TOPIC_AI_CODING_TOOLS:
-            sources = filter_irrelevant_sources(sources, entity_terms, plan=plan, user_query=user_query)
+        entity_terms = extract_entity_terms(effective_query, plan)
+        if entity_terms or plan.topic_intent in (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON):
+            sources = filter_irrelevant_sources(
+                sources, entity_terms, plan=plan, user_query=effective_query,
+            )
 
         fetched_count = sum(1 for s in sources if s.fetched)
         rejected_count = sum(1 for s in sources if s.fetch_status == "rejected")
@@ -178,7 +191,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         _update(job_id, JobStatus.EXTRACTING, 55, "Extracting evidence",
                 f"Fetched {fetched_count} pages ({failed_count} failed, {rejected_count} rejected), extracting evidence...")
 
-        evidence = extract_evidence(sources, plan, entity_terms=entity_terms, user_query=user_query)
+        evidence = extract_evidence(sources, plan, entity_terms=entity_terms, user_query=effective_query)
 
         for src in sources:
             src.evidence_count = sum(1 for e in evidence if e.source_id == src.id)
@@ -188,12 +201,12 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
         _update(job_id, JobStatus.EXTRACTING, 60, "Checking gaps",
                 f"Extracted {len(evidence)} evidence chunks, checking for gaps...")
-        gaps = identify_gaps(plan, evidence, user_query=user_query)
+        gaps = identify_gaps(plan, evidence, user_query=effective_query)
 
         # --- FOLLOW-UP ROUNDS ---
         while current_round < max_rounds - 1 and gaps and not cancel.is_set():
             current_round += 1
-            followup_queries = generate_followup_queries(user_query, plan, gaps, ollama=ollama)
+            followup_queries = generate_followup_queries(effective_query, plan, gaps, ollama=ollama)
             if not followup_queries:
                 break
 
@@ -222,14 +235,18 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
                 sources.extend(new_sources)
                 fetched_count = sum(1 for s in sources if s.fetched)
 
-                if entity_terms or plan.topic_intent == TOPIC_AI_CODING_TOOLS:
-                    filter_irrelevant_sources(new_sources, entity_terms, plan=plan, user_query=user_query)
-                evidence = extract_evidence(sources, plan, entity_terms=entity_terms, user_query=user_query)
+                if entity_terms or plan.topic_intent in (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON):
+                    filter_irrelevant_sources(
+                        new_sources, entity_terms, plan=plan, user_query=effective_query,
+                    )
+                evidence = extract_evidence(
+                    sources, plan, entity_terms=entity_terms, user_query=effective_query,
+                )
                 for src in sources:
                     src.evidence_count = sum(1 for e in evidence if e.source_id == src.id)
                 _save_sources(job_id, sources, all_queries)
                 _save_evidence(job_id, evidence)
-                gaps = identify_gaps(plan, evidence, user_query=user_query)
+                gaps = identify_gaps(plan, evidence, user_query=effective_query)
 
         if cancel.is_set():
             return _mark_cancelled(job_id)
@@ -329,6 +346,11 @@ def _save_final(job_id, report, sources, evidence, queries, plan, gaps, memory_k
             "topic_intent": plan.topic_intent,
             "normalized_entities": plan.normalized_entities,
             "comparison_tools": plan.comparison_tools,
+            "original_query": plan.original_query,
+            "normalized_query": plan.normalized_query,
+            "normalization_reason": plan.normalization_reason,
+            "ai_workload_focus": plan.ai_workload_focus,
+            "product_pair": plan.product_pair,
             "fetch_summary": {
                 "success": len(fetched),
                 "failed": len(failed),

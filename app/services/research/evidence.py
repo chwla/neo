@@ -22,6 +22,15 @@ from app.services.research.topic_intent import (
     is_preferred_ai_coding_source,
     source_is_offtopic_for_ai_coding,
 )
+from app.services.research.product_intent import (
+    TOPIC_PRODUCT_COMPARISON,
+    classify_product_evidence_category,
+    intent_from_topic,
+    is_low_quality_product_source,
+    is_preferred_product_source,
+    product_entity_terms,
+    source_is_offtopic_for_product,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +51,14 @@ _MIN_QUALITY_SCORE = 2.0
 def extract_entity_terms(user_query: str, plan: ResearchPlan) -> list[str]:
     """Extract key entity terms that evidence chunks MUST contain at least one of."""
     if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
-        intent = classify_topic_intent(user_query)
+        intent = classify_topic_intent(user_query, original_query=plan.original_query or user_query)
         if intent:
             return ai_coding_entity_terms(intent)
+
+    if plan.topic_intent == TOPIC_PRODUCT_COMPARISON:
+        intent = classify_topic_intent(user_query, original_query=plan.original_query or user_query)
+        if intent:
+            return product_entity_terms(intent_from_topic(intent))
 
     query_lower = user_query.lower()
     objective_lower = plan.objective.lower()
@@ -98,8 +112,14 @@ def filter_irrelevant_sources(
 ) -> list[ResearchSource]:
     """Mark sources that don't mention the entity as rejected."""
     intent: TopicIntent | None = None
+    product_intent = None
+    orig = plan.original_query or user_query if plan else user_query
     if plan and plan.topic_intent == TOPIC_AI_CODING_TOOLS:
-        intent = classify_topic_intent(user_query)
+        intent = classify_topic_intent(user_query, original_query=orig)
+    elif plan and plan.topic_intent == TOPIC_PRODUCT_COMPARISON:
+        intent = classify_topic_intent(user_query, original_query=orig)
+        if intent:
+            product_intent = intent_from_topic(intent)
 
     if not entity_terms and not intent:
         return sources
@@ -121,7 +141,7 @@ def filter_irrelevant_sources(
         if not src.fetched or not src.text:
             continue
 
-        if intent:
+        if intent and plan and plan.topic_intent == TOPIC_AI_CODING_TOOLS:
             reject_reason = source_is_offtopic_for_ai_coding(src, intent)
             if reject_reason:
                 src.fetched = False
@@ -131,6 +151,19 @@ def filter_irrelevant_sources(
                 continue
             if is_low_quality_ai_coding_source(src) and not is_preferred_ai_coding_source(src):
                 src.quality_score = max(0.0, src.quality_score - 2.0)
+
+        if product_intent:
+            reject_reason = source_is_offtopic_for_product(src, product_intent)
+            if reject_reason:
+                src.fetched = False
+                src.fetch_status = "rejected"
+                src.fetch_error = reject_reason
+                src.text = ""
+                continue
+            if is_low_quality_product_source(src) and not is_preferred_product_source(src, product_intent):
+                src.quality_score = max(0.0, src.quality_score - 2.0)
+            elif is_preferred_product_source(src, product_intent):
+                src.quality_score = min(10.0, src.quality_score + 1.0)
 
         domain_lower = src.domain.lower()
         if any(d in domain_lower for d in _IRRELEVANT_DOMAINS):
@@ -166,13 +199,21 @@ def extract_evidence(
     all_chunks: list[ResearchEvidenceChunk] = []
     seen_hashes: set[str] = set()
     intent: TopicIntent | None = None
+    product_intent = None
+    orig = plan.original_query or user_query
     if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
-        intent = classify_topic_intent(user_query)
+        intent = classify_topic_intent(user_query, original_query=orig)
+    elif plan.topic_intent == TOPIC_PRODUCT_COMPARISON:
+        intent = classify_topic_intent(user_query, original_query=orig)
+        if intent:
+            product_intent = intent_from_topic(intent)
 
     for source in sources:
         if not source.fetched or not source.text:
             continue
-        chunks = _extract_from_source(source, plan, entity_terms or [], intent)
+        chunks = _extract_from_source(
+            source, plan, entity_terms or [], intent, product_intent,
+        )
         for chunk in chunks:
             h = _chunk_hash(chunk.text)
             if h in seen_hashes:
@@ -204,6 +245,18 @@ def identify_gaps(
             )
             if not has_partial:
                 gaps.append(f"Unanswered: {subq}")
+
+    if plan.topic_intent == TOPIC_PRODUCT_COMPARISON and plan.comparison_tools:
+        air_ev = [c for c in evidence if c.evidence_category in ("air_evidence", "comparison_evidence")]
+        pro_ev = [c for c in evidence if c.evidence_category in ("pro_evidence", "comparison_evidence")]
+        if "macbook air" in (plan.comparison_tools or []) and not air_ev:
+            gaps.append("Missing MacBook Air-specific evidence")
+        if "macbook pro" in (plan.comparison_tools or []) and not pro_ev:
+            gaps.append("Missing MacBook Pro-specific evidence")
+        if plan.comparison_query and not any(
+            c.evidence_category == "comparison_evidence" for c in evidence
+        ):
+            gaps.append("Missing direct comparison evidence")
 
     if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
         tools = plan.comparison_tools or []
@@ -243,6 +296,7 @@ def _extract_from_source(
     plan: ResearchPlan,
     entity_terms: list[str],
     intent: TopicIntent | None = None,
+    product_intent=None,
 ) -> list[ResearchEvidenceChunk]:
     text = source.text
     paragraphs = _split_into_paragraphs(text)
@@ -259,16 +313,19 @@ def _extract_from_source(
             continue
 
         evidence_category = "general"
-        if intent:
+        quality_boost = 0.0
+        if product_intent:
+            evidence_category = classify_product_evidence_category(para, source, product_intent)
+            if evidence_category == "irrelevant":
+                continue
+            if is_preferred_product_source(source, product_intent):
+                quality_boost = 1.5
+        elif intent and plan.topic_intent == TOPIC_AI_CODING_TOOLS:
             evidence_category = classify_evidence_category(para, source, intent)
             if evidence_category == "irrelevant":
                 continue
             if is_preferred_ai_coding_source(source):
                 quality_boost = 1.5
-            else:
-                quality_boost = 0.0
-        else:
-            quality_boost = 0.0
 
         relevance = _score_relevance(para, plan)
         quality = _score_chunk_quality(para, source) + quality_boost

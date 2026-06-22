@@ -74,6 +74,12 @@ class ResearchPlan(BaseModel):
     topic_intent: str | None = None
     normalized_entities: dict[str, str] = Field(default_factory=dict)
     comparison_tools: list[str] = Field(default_factory=list)
+    original_query: str | None = None
+    normalized_query: str | None = None
+    normalization_reason: str | None = None
+    ai_workload_focus: bool = False
+    product_pair: str | None = None
+    comparison_query: bool = True
 
 
 class ProgressEvent(BaseModel):

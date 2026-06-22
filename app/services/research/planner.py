@@ -15,6 +15,13 @@ from app.services.research.topic_intent import (
     filter_offtopic_ai_coding_queries,
     is_offtopic_ai_coding_query,
 )
+from app.services.research.product_intent import (
+    TOPIC_PRODUCT_COMPARISON,
+    filter_offtopic_product_queries,
+    build_product_plan,
+    is_offtopic_product_query,
+    intent_from_topic,
+)
 from app.services.research.types import DepthMode, DEPTH_CONFIG, ResearchPlan
 
 logger = logging.getLogger(__name__)
@@ -54,9 +61,14 @@ def generate_plan(
     memory_context: str = "",
     ollama: OllamaClient | None = None,
     topic_intent: TopicIntent | None = None,
+    original_query: str = "",
 ) -> ResearchPlan:
     config = DEPTH_CONFIG[depth]
-    intent = topic_intent or classify_topic_intent(user_query)
+    orig = original_query or user_query
+    intent = topic_intent or classify_topic_intent(user_query, original_query=orig)
+
+    if intent and intent.topic_intent == TOPIC_PRODUCT_COMPARISON:
+        return _product_comparison_plan(user_query, config, intent, orig)
 
     if intent and intent.topic_intent == TOPIC_AI_CODING_TOOLS:
         return _ai_coding_tools_plan(user_query, config, intent)
@@ -89,6 +101,38 @@ def generate_plan(
     return _fallback_plan(user_query, config, entity_hint)
 
 
+def _product_comparison_plan(
+    user_query: str, config: dict, intent: TopicIntent, original_query: str,
+) -> ResearchPlan:
+    product = intent_from_topic(intent)
+    payload = build_product_plan(product, user_query)
+    queries = filter_offtopic_product_queries(payload["queries"])
+    queries = queries[: config["max_queries"]]
+    if len(queries) < config["min_queries"]:
+        for q in build_product_plan(product, user_query)["queries"]:
+            if q not in queries and not is_offtopic_product_query(q):
+                queries.append(q)
+            if len(queries) >= config["min_queries"]:
+                break
+    return ResearchPlan(
+        objective=payload["objective"],
+        subquestions=payload["subquestions"],
+        queries=queries,
+        freshness_required=payload["freshness_required"],
+        source_preferences=payload["source_preferences"],
+        expected_output=payload["expected_output"],
+        topic_intent=intent.topic_intent,
+        normalized_entities=intent.normalized_entities,
+        comparison_tools=intent.tools,
+        original_query=original_query,
+        normalized_query=intent.normalized_query,
+        normalization_reason=intent.normalization_reason,
+        ai_workload_focus=intent.ai_workload_focus,
+        product_pair=intent.product_pair,
+        comparison_query=intent.comparison_query,
+    )
+
+
 def _ai_coding_tools_plan(user_query: str, config: dict, intent: TopicIntent) -> ResearchPlan:
     payload = build_ai_coding_plan(intent, user_query)
     queries = filter_offtopic_ai_coding_queries(payload["queries"])
@@ -110,6 +154,7 @@ def _ai_coding_tools_plan(user_query: str, config: dict, intent: TopicIntent) ->
         topic_intent=intent.topic_intent,
         normalized_entities=intent.normalized_entities,
         comparison_tools=intent.tools,
+        comparison_query=intent.comparison_query,
     )
 
 
@@ -121,6 +166,26 @@ def generate_followup_queries(
 ) -> list[str]:
     if not gaps:
         return []
+
+    if plan.topic_intent == TOPIC_PRODUCT_COMPARISON:
+        intent = classify_topic_intent(user_query)
+        if intent and intent.product_pair and "macbook" in (intent.product_pair or ""):
+            followups: list[str] = []
+            for gap in gaps[:3]:
+                gl = gap.lower()
+                if "air" in gl and "pro" not in gl:
+                    followups.append("Apple MacBook Air official specs site:apple.com")
+                elif "pro" in gl:
+                    followups.append("Apple MacBook Pro official specs site:apple.com")
+                elif "battery" in gl:
+                    followups.append("MacBook Air vs MacBook Pro battery life comparison")
+                elif "comparison" in gl:
+                    followups.append("MacBook Air vs MacBook Pro comparison review")
+                elif "pricing" in gl or "price" in gl:
+                    followups.append("MacBook Air vs MacBook Pro pricing comparison")
+                else:
+                    followups.append("MacBook Air vs MacBook Pro ports display weight")
+            return filter_offtopic_product_queries(list(dict.fromkeys(followups)))[:4]
 
     if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
         intent = classify_topic_intent(user_query)
