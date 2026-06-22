@@ -1,0 +1,341 @@
+"""Research planner: converts user query into a structured research plan via LLM."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+
+from app.services.ollama_client import OllamaClient, OllamaMessage
+from app.services.research.topic_intent import (
+    TOPIC_AI_CODING_TOOLS,
+    TopicIntent,
+    build_ai_coding_plan,
+    classify_topic_intent,
+    filter_offtopic_ai_coding_queries,
+    is_offtopic_ai_coding_query,
+)
+from app.services.research.types import DepthMode, DEPTH_CONFIG, ResearchPlan
+
+logger = logging.getLogger(__name__)
+
+PLANNING_SYSTEM_PROMPT = """\
+You are a research planner. Given a user's research question, produce a JSON research plan.
+
+Output ONLY valid JSON with this structure:
+{
+  "objective": "one sentence describing the research goal — include the FULL entity name",
+  "subquestions": ["list of 3-6 specific sub-questions to investigate"],
+  "queries": ["list of web search queries to run"],
+  "freshness_required": true or false,
+  "source_preferences": ["types of sources to prefer, e.g. official docs, GitHub, pricing pages"],
+  "expected_output": "comparison" or "recommendation" or "overview" or "analysis"
+}
+
+CRITICAL Rules for query generation:
+- ALWAYS preserve the FULL entity name in every search query.
+  Example: for "amazing spiderman comics", every query must include "Amazing Spider-Man" or "The Amazing Spider-Man".
+  NEVER generate queries like "amazing meaning" or "comics history" without the entity name.
+- Add disambiguating context words: the publisher, creator names, category, official name.
+  Example: "Amazing Spider-Man Marvel Comics", "The Amazing Spider-Man Stan Lee Steve Ditko"
+- For media franchises (comics, movies, games, books), include the publisher/studio/author.
+- For tech products, include the company name.
+- Each query should be a realistic web search query (short, keyword-focused).
+- Generate diverse queries covering different aspects of the topic.
+- Sub-questions should break the research into answerable parts.
+- Set freshness_required=true if the topic involves current/recent information.
+- Do NOT include any text outside the JSON object.
+"""
+
+
+def generate_plan(
+    user_query: str,
+    depth: DepthMode = DepthMode.STANDARD,
+    memory_context: str = "",
+    ollama: OllamaClient | None = None,
+    topic_intent: TopicIntent | None = None,
+) -> ResearchPlan:
+    config = DEPTH_CONFIG[depth]
+    intent = topic_intent or classify_topic_intent(user_query)
+
+    if intent and intent.topic_intent == TOPIC_AI_CODING_TOOLS:
+        return _ai_coding_tools_plan(user_query, config, intent)
+
+    client = ollama or OllamaClient(num_predict=512)
+    entity_hint = _extract_entity_hint(user_query)
+
+    user_content = f"Research question: {user_query}"
+    if entity_hint:
+        user_content += f"\n\nEntity disambiguation: the main subject is \"{entity_hint}\". All search queries MUST include this entity name."
+    if memory_context:
+        user_content += f"\n\nUser context (use for personalization only):\n{memory_context}"
+    user_content += f"\n\nGenerate {config['min_queries']}-{config['max_queries']} search queries."
+
+    messages = [
+        OllamaMessage(role="system", content=PLANNING_SYSTEM_PROMPT),
+        OllamaMessage(role="user", content=user_content),
+    ]
+
+    try:
+        raw = client.chat(messages, temperature=0.3)
+        plan = _parse_plan_json(raw, config)
+        if plan and plan.queries:
+            plan.queries = _anchor_queries(plan.queries, user_query, entity_hint)
+            return plan
+        logger.warning("LLM plan parsing failed or empty, using fallback")
+    except Exception:
+        logger.exception("LLM planning failed")
+
+    return _fallback_plan(user_query, config, entity_hint)
+
+
+def _ai_coding_tools_plan(user_query: str, config: dict, intent: TopicIntent) -> ResearchPlan:
+    payload = build_ai_coding_plan(intent, user_query)
+    queries = filter_offtopic_ai_coding_queries(payload["queries"])
+    queries = queries[: config["max_queries"]]
+    if len(queries) < config["min_queries"]:
+        extra = build_ai_coding_plan(intent, user_query)["queries"]
+        for q in extra:
+            if q not in queries and not is_offtopic_ai_coding_query(q):
+                queries.append(q)
+            if len(queries) >= config["min_queries"]:
+                break
+    return ResearchPlan(
+        objective=payload["objective"],
+        subquestions=payload["subquestions"],
+        queries=queries,
+        freshness_required=payload["freshness_required"],
+        source_preferences=payload["source_preferences"],
+        expected_output="comparison",
+        topic_intent=intent.topic_intent,
+        normalized_entities=intent.normalized_entities,
+        comparison_tools=intent.tools,
+    )
+
+
+def generate_followup_queries(
+    user_query: str,
+    plan: ResearchPlan,
+    gaps: list[str],
+    ollama: OllamaClient | None = None,
+) -> list[str]:
+    if not gaps:
+        return []
+
+    if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
+        intent = classify_topic_intent(user_query)
+        if intent:
+            followups: list[str] = []
+            for gap in gaps[:3]:
+                if "pricing" in gap.lower() or "price" in gap.lower():
+                    followups.append("Cursor AI Pro vs OpenAI Codex Pro pricing comparison")
+                elif "cursor" in gap.lower():
+                    followups.append("Cursor AI editor official documentation agent features")
+                elif "codex" in gap.lower():
+                    followups.append("OpenAI Codex CLI cloud coding agent official docs")
+                else:
+                    followups.append(f"Cursor AI vs OpenAI Codex {gap.split()[-1]}")
+            return filter_offtopic_ai_coding_queries(list(dict.fromkeys(followups)))[:4]
+
+    entity_hint = _extract_entity_hint(user_query)
+    client = ollama or OllamaClient(num_predict=256)
+    prompt = (
+        f"Original research question: {user_query}\n"
+        f"Research objective: {plan.objective}\n"
+    )
+    if entity_hint:
+        prompt += f"Main entity: {entity_hint}\n"
+    prompt += (
+        f"Gaps found after initial research:\n"
+        + "\n".join(f"- {g}" for g in gaps)
+        + "\n\nGenerate 2-4 follow-up web search queries to fill these gaps. "
+        f"Every query MUST include the entity name \"{entity_hint or user_query}\". "
+        "Output ONLY a JSON array of query strings."
+    )
+
+    try:
+        raw = client.chat(
+            [OllamaMessage(role="system", content="You generate web search queries. Output ONLY a JSON array of strings."),
+             OllamaMessage(role="user", content=prompt)],
+            temperature=0.3,
+        )
+        queries = _parse_json_array(raw)
+        if queries:
+            return _anchor_queries(queries[:4], user_query, entity_hint)
+    except Exception:
+        logger.exception("Follow-up query generation failed")
+
+    anchor = entity_hint or user_query
+    return [f"{anchor} {gap.split()[-1]}" for gap in gaps[:2]]
+
+
+_ENTITY_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bamazing\s+spider[- ]?man\b", re.I), "The Amazing Spider-Man Marvel Comics"),
+    (re.compile(r"\bspider[- ]?man\b", re.I), "Spider-Man Marvel"),
+    (re.compile(r"\bbatman\b", re.I), "Batman DC Comics"),
+    (re.compile(r"\bsuperman\b", re.I), "Superman DC Comics"),
+    (re.compile(r"\bx[- ]?men\b", re.I), "X-Men Marvel Comics"),
+    (re.compile(r"\bavengers\b", re.I), "Avengers Marvel"),
+    (re.compile(r"\bjustice\s+league\b", re.I), "Justice League DC Comics"),
+    (re.compile(r"\bstar\s+wars\b", re.I), "Star Wars Lucasfilm"),
+    (re.compile(r"\bgame\s+of\s+thrones\b", re.I), "Game of Thrones HBO"),
+    (re.compile(r"\bminecraft\b", re.I), "Minecraft Mojang"),
+    (re.compile(r"\bfortnite\b", re.I), "Fortnite Epic Games"),
+]
+
+
+def _extract_entity_hint(query: str) -> str:
+    """Detect known franchises/entities and return a disambiguation string."""
+    for pattern, hint in _ENTITY_PATTERNS:
+        if pattern.search(query):
+            return hint
+    return ""
+
+
+def _anchor_queries(queries: list[str], user_query: str, entity_hint: str) -> list[str]:
+    """Ensure every query contains the core entity terms."""
+    if not entity_hint:
+        return queries
+
+    core_terms = _get_core_terms(entity_hint)
+    if not core_terms:
+        return queries
+
+    anchored: list[str] = []
+    for q in queries:
+        q_lower = q.lower()
+        missing = [t for t in core_terms if t.lower() not in q_lower]
+        if missing:
+            q_lower_words = set(q_lower.split())
+            stop = {"the", "a", "an", "is", "are", "of", "for", "and", "or", "to", "in", "on", "with", "how", "what", "why"}
+            useful_words = q_lower_words - stop
+            if not useful_words or _is_offtopic_query(q, entity_hint):
+                anchored.append(f"{entity_hint} {' '.join(w for w in q.split() if w.lower() not in stop)[:60]}")
+            else:
+                anchored.append(f"{' '.join(missing)} {q}"[:120])
+        else:
+            anchored.append(q)
+
+    return list(dict.fromkeys(anchored))
+
+
+def _get_core_terms(entity_hint: str) -> list[str]:
+    """Extract must-appear terms from the entity hint."""
+    hint_lower = entity_hint.lower()
+    if "amazing spider-man" in hint_lower:
+        return ["Amazing Spider-Man"]
+    if "spider-man" in hint_lower:
+        return ["Spider-Man"]
+    words = [w for w in entity_hint.split() if len(w) > 2 and w.lower() not in ("the", "comics", "dc", "marvel")]
+    return words[:2] if words else []
+
+
+_OFFTOPIC_PATTERNS = re.compile(
+    r"^(what\s+(is|does|means?)|define |meaning |definition |"
+    r"how\s+to\s+say|translate |synonym|antonym|"
+    r"english\s+(meaning|definition|word))",
+    re.IGNORECASE,
+)
+
+
+def _is_offtopic_query(query: str, entity_hint: str) -> bool:
+    """Detect queries that are clearly about word definitions, not the entity."""
+    if _OFFTOPIC_PATTERNS.search(query):
+        return True
+    hint_words = set(entity_hint.lower().split())
+    query_words = set(query.lower().split())
+    overlap = hint_words & query_words
+    if len(overlap) <= 1 and len(query_words) > 2:
+        return True
+    return False
+
+
+def _parse_plan_json(raw: str, config: dict) -> ResearchPlan | None:
+    try:
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if not match:
+            return None
+        data = json.loads(match.group())
+
+        queries = data.get("queries", [])
+        if not isinstance(queries, list) or not queries:
+            return None
+        queries = [q for q in queries if isinstance(q, str) and len(q.strip()) > 3]
+        queries = queries[:config["max_queries"]]
+
+        subquestions = data.get("subquestions", [])
+        if not isinstance(subquestions, list):
+            subquestions = []
+        subquestions = [s for s in subquestions if isinstance(s, str) and len(s.strip()) > 5]
+
+        return ResearchPlan(
+            objective=str(data.get("objective", "")),
+            subquestions=subquestions[:8],
+            queries=queries,
+            freshness_required=bool(data.get("freshness_required", False)),
+            source_preferences=[str(s) for s in data.get("source_preferences", []) if isinstance(s, str)],
+            expected_output=str(data.get("expected_output", "overview")),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _parse_json_array(raw: str) -> list[str]:
+    try:
+        match = re.search(r"\[[\s\S]*\]", raw)
+        if not match:
+            return []
+        data = json.loads(match.group())
+        if isinstance(data, list):
+            return [str(item) for item in data if isinstance(item, str) and len(item.strip()) > 3]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return []
+
+
+def _fallback_plan(query: str, config: dict, entity_hint: str = "") -> ResearchPlan:
+    words = query.lower().split()
+    is_comparison = any(w in words for w in ("vs", "versus", "compare", "comparison", "or"))
+    anchor = entity_hint or query
+
+    base_queries = [anchor]
+
+    if is_comparison:
+        parts = re.split(r"\bvs\.?\b|\bversus\b|\bor\b|\bcompare\b", query, flags=re.IGNORECASE)
+        for part in parts:
+            cleaned = part.strip().strip(".,!?")
+            if cleaned and len(cleaned) > 3:
+                base_queries.append(f"{cleaned} features pros cons")
+                base_queries.append(f"{cleaned} review 2024 2025")
+    else:
+        base_queries.append(f"{anchor} overview")
+        base_queries.append(f"{anchor} history")
+        base_queries.append(f"{anchor} official site")
+        base_queries.append(f"{anchor} Wikipedia")
+        if entity_hint:
+            base_queries.append(f"{query} publication history")
+            base_queries.append(f"{query} major storylines")
+
+    base_queries.append(f"{anchor} Reddit")
+    base_queries.append(f"{anchor} guide")
+
+    queries = list(dict.fromkeys(base_queries))[:config["max_queries"]]
+
+    subquestions = [f"What is {anchor}?"]
+    if is_comparison:
+        subquestions.append("What are the key differences?")
+        subquestions.append("What are the tradeoffs?")
+        subquestions.append("Which is better for the user's specific case?")
+    else:
+        subquestions.append(f"What is the history of {anchor}?")
+        subquestions.append(f"What are the key facts about {anchor}?")
+        subquestions.append(f"What do experts say about {anchor}?")
+
+    return ResearchPlan(
+        objective=f"Research: {anchor}",
+        subquestions=subquestions,
+        queries=queries,
+        freshness_required=True,
+        source_preferences=["official sources", "Wikipedia", "dedicated databases", "expert articles"],
+        expected_output="comparison" if is_comparison else "overview",
+    )

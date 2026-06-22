@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import Research from "./Research.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -174,6 +175,7 @@ function Sidebar({
   onDeleteChat,
   onDeleteProject,
   onOpenSettings,
+  onOpenResearch,
 }) {
   const [projectName, setProjectName] = useState("");
 
@@ -195,6 +197,9 @@ function Sidebar({
       </NeoButton>
       <NeoButton className="mt-2 w-full justify-start" onClick={onToggleProjectForm}>
         + New Project
+      </NeoButton>
+      <NeoButton className="mt-2 w-full justify-start" onClick={onOpenResearch}>
+        Research
       </NeoButton>
 
       {showNewProjectForm && (
@@ -1342,6 +1347,7 @@ export default function App() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [statusError, setStatusError] = useState("");
+  const [showResearch, setShowResearch] = useState(false);
   const bootstrapped = useRef(false);
 
   const refreshSidebar = useCallback(async () => {
@@ -1674,8 +1680,12 @@ export default function App() {
         onDeleteChat={handleDeleteChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenResearch={() => setShowResearch(true)}
       />
 
+      {showResearch ? (
+        <Research onBack={() => setShowResearch(false)} />
+      ) : (
       <main className="neo-main">
         <section className="neo-shell">
           {showEmptyState && (
@@ -1727,6 +1737,7 @@ export default function App() {
           disabled={sending}
         />
       </main>
+      )}
 
       {showSettings && (
         <SettingsDialog

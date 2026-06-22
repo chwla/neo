@@ -33,12 +33,12 @@ _SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "canvas", "templat
 _JUNK_TAGS = frozenset({"nav", "header", "footer", "aside"})
 _JUNK_ROLES = frozenset({"navigation", "banner", "contentinfo", "complementary", "menu", "menubar"})
 _JUNK_CLASSES = re.compile(
-    r"\b(nav|navbar|sidebar|side-bar|header|footer|menu|breadcrumb|cookie|"
-    r"social|share|related|advertisement|ad-|ads-|promo|popup|modal|"
+    r"(?:^|\s)(nav|navbar|sidebar|side-bar|breadcrumb|cookie-|"
+    r"social-share|share-bar|advertisement|ad-container|ads-|promo-|popup|modal|"
     r"skip-link|site-header|site-footer|site-nav|masthead|"
-    r"toc|table-of-contents|mw-navigation|mw-panel|mw-header|mw-footer|"
-    r"catlinks|printfooter|noprint|navbox|sidebar|infobox-below|"
-    r"top-nav|bottom-nav|main-nav|global-nav|page-header|page-footer)\b",
+    r"table-of-contents|mw-navigation|mw-panel|mw-header|mw-footer|"
+    r"catlinks|printfooter|noprint|navbox|"
+    r"top-nav|bottom-nav|main-nav|global-nav|page-header|page-footer)(?:\s|$)",
     re.IGNORECASE,
 )
 _CONTENT_TAGS = frozenset({"main", "article"})
@@ -65,6 +65,9 @@ class _ReadableHTMLParser(HTMLParser):
         self._content_parts: list[str] = []
         self._infobox_parts: list[str] = []
         self._infobox_depth = 0
+        self._junk_tag_stack: list[str] = []
+        self._skip_tag_stack: list[str] = []
+        self._content_tag_stack: list[str] = []
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attr_dict = dict(attrs) if attrs else {}
@@ -83,6 +86,7 @@ class _ReadableHTMLParser(HTMLParser):
 
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
+            self._skip_tag_stack.append(tag)
             return
 
         role = (attr_dict.get("role") or "").lower()
@@ -97,11 +101,13 @@ class _ReadableHTMLParser(HTMLParser):
         )
         if is_junk:
             self._junk_depth += 1
+            self._junk_tag_stack.append(tag)
             return
 
         is_content = tag in _CONTENT_TAGS or _CONTENT_CLASSES.search(cls)
         if is_content:
             self._content_depth += 1
+            self._content_tag_stack.append(tag)
 
         if "infobox" in cls.lower():
             self._infobox_depth += 1
@@ -113,17 +119,20 @@ class _ReadableHTMLParser(HTMLParser):
             target.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        if self._skip_depth and self._skip_tag_stack and self._skip_tag_stack[-1] == tag:
+            self._skip_depth -= 1
+            self._skip_tag_stack.pop()
+            return
         if tag in _SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
             return
-        if tag in _JUNK_TAGS:
-            if self._junk_depth:
-                self._junk_depth -= 1
+        if self._junk_depth and self._junk_tag_stack and self._junk_tag_stack[-1] == tag:
+            self._junk_depth -= 1
+            self._junk_tag_stack.pop()
             return
-        attr_cls = ""
-        if tag in _CONTENT_TAGS:
-            if self._content_depth:
-                self._content_depth -= 1
+        if self._content_depth and self._content_tag_stack and self._content_tag_stack[-1] == tag:
+            self._content_depth -= 1
+            self._content_tag_stack.pop()
         if tag == "title":
             self._in_title = False
         if tag in {"article", "div", "li", "main", "p", "section", "tr", "table"}:

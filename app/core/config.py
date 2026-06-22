@@ -104,6 +104,33 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("WEB_CACHE_ENABLED", "NEO_WEB_CACHE_ENABLED"),
     )
+    research_fetch_timeout_seconds: float = Field(
+        default=12.0,
+        gt=0,
+        le=30,
+        validation_alias=AliasChoices(
+            "RESEARCH_FETCH_TIMEOUT_SECONDS",
+            "NEO_RESEARCH_FETCH_TIMEOUT_SECONDS",
+        ),
+    )
+    research_max_fetch_workers: int = Field(
+        default=4,
+        ge=1,
+        le=8,
+        validation_alias=AliasChoices(
+            "RESEARCH_MAX_FETCH_WORKERS",
+            "NEO_RESEARCH_MAX_FETCH_WORKERS",
+        ),
+    )
+    research_fetch_retries: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        validation_alias=AliasChoices(
+            "RESEARCH_FETCH_RETRIES",
+            "NEO_RESEARCH_FETCH_RETRIES",
+        ),
+    )
 
 
 @lru_cache

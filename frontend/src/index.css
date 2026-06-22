@@ -1327,3 +1327,500 @@ textarea:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── Research Mode ── */
+
+.research-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 0;
+  height: 100vh;
+  margin-left: 300px;
+  overflow: hidden;
+  transition: margin-left .18s ease;
+}
+
+.neo-app.sidebar-collapsed .research-layout {
+  margin-left: 0;
+}
+
+.research-main {
+  padding: 32px 40px;
+  overflow-y: auto;
+}
+
+.research-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.research-back {
+  background: none;
+  border: 1px solid var(--neo-line);
+  color: var(--neo-green);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.research-back:hover {
+  background: rgba(57,255,20,.08);
+}
+
+.research-title {
+  margin: 0;
+  font-size: 22px;
+  color: var(--neo-green);
+  font-weight: 600;
+}
+
+.research-input-area {
+  margin-bottom: 20px;
+}
+
+.research-query {
+  width: 100%;
+  min-height: 60px;
+  padding: 12px 16px;
+  background: var(--neo-panel);
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  color: var(--neo-text);
+  font-size: 15px;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+}
+.research-query:focus {
+  border-color: var(--neo-green);
+  box-shadow: 0 0 12px rgba(57,255,20,.12);
+}
+.research-query::placeholder {
+  color: var(--neo-muted);
+}
+
+.research-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.research-depth-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--neo-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.research-depth-btn {
+  padding: 7px 16px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--neo-line);
+  color: var(--neo-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.research-depth-btn:last-child {
+  border-right: none;
+}
+.research-depth-btn:hover {
+  background: rgba(57,255,20,.06);
+  color: var(--neo-text);
+}
+.research-depth-btn.active {
+  background: rgba(57,255,20,.15);
+  color: var(--neo-green);
+  font-weight: 600;
+}
+.research-depth-btn:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.research-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.research-start-btn {
+  padding: 8px 22px;
+  background: var(--neo-green);
+  color: var(--neo-black);
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.research-start-btn:hover:not(:disabled) {
+  opacity: .88;
+}
+.research-start-btn:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.research-cancel-btn {
+  padding: 8px 22px;
+  background: transparent;
+  color: #ff5555;
+  border: 1px solid #ff5555;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+.research-cancel-btn:hover {
+  background: rgba(255,85,85,.1);
+}
+
+.research-error {
+  padding: 10px 16px;
+  background: rgba(255,60,60,.1);
+  border: 1px solid rgba(255,60,60,.3);
+  border-radius: 6px;
+  color: #ff8888;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+/* Progress */
+
+.research-progress {
+  background: var(--neo-panel);
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.research-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.research-progress-pct {
+  color: var(--neo-green);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.research-progress-bar-track {
+  height: 6px;
+  background: rgba(57,255,20,.1);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.research-progress-bar-fill {
+  height: 100%;
+  background: var(--neo-green);
+  border-radius: 3px;
+  transition: width .4s ease-out;
+  box-shadow: 0 0 10px rgba(57,255,20,.4);
+}
+
+.research-progress-step {
+  color: var(--neo-muted);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.research-progress-counts {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--neo-muted);
+}
+.research-progress-counts span {
+  background: rgba(57,255,20,.06);
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+/* Status badges */
+
+.research-status-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.research-status-badge.planning,
+.research-status-badge.searching,
+.research-status-badge.fetching,
+.research-status-badge.extracting {
+  background: rgba(57,255,20,.12);
+  color: var(--neo-green);
+}
+.research-status-badge.synthesizing {
+  background: rgba(100,200,255,.12);
+  color: #88ccff;
+}
+.research-status-badge.completed {
+  background: rgba(57,255,20,.18);
+  color: var(--neo-green);
+}
+.research-status-badge.failed {
+  background: rgba(255,60,60,.12);
+  color: #ff6666;
+}
+.research-status-badge.cancelled {
+  background: rgba(255,200,50,.12);
+  color: #ffcc44;
+}
+.research-status-badge.queued {
+  background: rgba(150,150,150,.12);
+  color: #aaa;
+}
+
+/* Report */
+
+.research-report {
+  margin-top: 8px;
+}
+
+.research-report-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--neo-panel);
+  border: 1px solid var(--neo-line);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--neo-muted);
+  margin-bottom: 16px;
+}
+
+.research-report-body {
+  background: var(--neo-panel);
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  padding: 24px 28px;
+  line-height: 1.65;
+  font-size: 15px;
+  color: var(--neo-text);
+}
+
+.research-report-body .report-h1 {
+  font-size: 22px;
+  color: var(--neo-green);
+  margin: 0 0 16px;
+  font-weight: 700;
+}
+.research-report-body .report-h2 {
+  font-size: 17px;
+  color: var(--neo-green);
+  margin: 20px 0 10px;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(57,255,20,.15);
+  padding-bottom: 4px;
+}
+.research-report-body .report-h3 {
+  font-size: 15px;
+  color: var(--neo-text);
+  margin: 16px 0 8px;
+  font-weight: 600;
+}
+
+.research-report-body .report-ul {
+  margin: 8px 0;
+  padding-left: 20px;
+  list-style: none;
+}
+.research-report-body .report-li {
+  position: relative;
+  padding-left: 14px;
+  margin-bottom: 6px;
+}
+.research-report-body .report-li::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  color: var(--neo-green);
+}
+
+.research-report-body .report-link {
+  color: var(--neo-green);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.research-report-body .report-blockquote {
+  border-left: 3px solid rgba(255,200,50,.4);
+  padding: 8px 14px;
+  margin: 12px 0;
+  background: rgba(255,200,50,.04);
+  color: #ddcc88;
+  font-size: 14px;
+}
+
+.research-report-body strong {
+  color: var(--neo-green);
+}
+
+/* Failed / Cancelled panels */
+
+.research-failed-panel,
+.research-cancelled-panel {
+  background: var(--neo-panel);
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.research-error-detail {
+  color: #ff8888;
+  margin: 10px 0;
+  font-size: 14px;
+}
+
+.research-meta-bar {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--neo-muted);
+  margin-top: 10px;
+}
+
+/* Sidebar */
+
+.research-sidebar {
+  border-left: 1px solid var(--neo-line);
+  background: var(--neo-panel);
+  padding: 20px 14px;
+  overflow-y: auto;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+}
+
+.research-sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.research-sidebar-title {
+  margin: 0;
+  font-size: 14px;
+  color: var(--neo-green);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.research-clear-btn {
+  background: none;
+  border: 1px solid rgba(255,85,85,.4);
+  color: #ff8888;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.research-clear-btn:hover {
+  background: rgba(255,85,85,.1);
+  border-color: #ff5555;
+}
+
+.research-sidebar-empty {
+  color: var(--neo-muted);
+  font-size: 13px;
+}
+
+.research-jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.research-job-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--neo-text);
+  transition: all .12s;
+}
+.research-job-item:hover {
+  background: rgba(57,255,20,.04);
+  border-color: var(--neo-line);
+}
+.research-job-item.active {
+  background: rgba(57,255,20,.08);
+  border-color: var(--neo-green);
+}
+
+.research-job-query {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.research-job-meta {
+  font-size: 11px;
+  color: var(--neo-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.research-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.research-status-dot.completed { background: var(--neo-green); }
+.research-status-dot.searching,
+.research-status-dot.fetching,
+.research-status-dot.extracting,
+.research-status-dot.planning,
+.research-status-dot.synthesizing { background: #88ccff; }
+.research-status-dot.failed { background: #ff5555; }
+.research-status-dot.cancelled { background: #ffcc44; }
+.research-status-dot.queued { background: #888; }
+
+@media (max-width: 768px) {
+  .research-layout {
+    grid-template-columns: 1fr;
+  }
+  .research-sidebar {
+    border-left: none;
+    border-top: 1px solid var(--neo-line);
+    height: auto;
+    position: static;
+    max-height: 300px;
+  }
+  .research-main {
+    padding: 20px 16px;
+  }
+}

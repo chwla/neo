@@ -153,4 +153,15 @@ export const api = {
     request("/search/config", { method: "POST", body: JSON.stringify(payload) }),
   testSearchProvider: (payload = {}) =>
     request("/search/test", { method: "POST", body: JSON.stringify(payload) }),
+
+  researchClear: () => request("/research/clear", { method: "DELETE" }),
+  researchStart: (payload) =>
+    request("/research/start", { method: "POST", body: JSON.stringify(payload) }),
+  researchList: (limit = 20) => request(`/research/list?limit=${limit}`),
+  researchJob: (jobId) => request(`/research/${jobId}`),
+  researchStatus: (jobId) => request(`/research/${jobId}/status`),
+  researchReport: (jobId) => request(`/research/${jobId}/report`),
+  researchCancel: (jobId) =>
+    request(`/research/${jobId}/cancel`, { method: "POST" }),
+  researchEvents: (jobId) => `${API_BASE}/research/${jobId}/events`,
 };

@@ -2,8 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.memory import router as memory_router
+from app.api.routes.research import router as research_router
 from app.api.routes.search import router as search_router
 from app.api.routes.web import router as web_router
+from app.services.research.store import initialize_research_tables
 
 
 def create_app() -> FastAPI:
@@ -23,8 +25,10 @@ def create_app() -> FastAPI:
     app.include_router(memory_router)
     app.include_router(memory_router, prefix="/api")
     app.include_router(search_router, prefix="/api")
+    app.include_router(research_router, prefix="/api")
     app.include_router(web_router)
     app.include_router(web_router, prefix="/api")
+    initialize_research_tables()
     return app
 
 
