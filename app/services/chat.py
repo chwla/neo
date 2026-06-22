@@ -17,6 +17,7 @@ from app.services.explanation import MemoryExplanationService
 from app.services.ollama_client import ChatTurn, OllamaClient, OllamaMessage
 from app.services.retrieval import RetrievalRequest
 from app.services.source_citations import CitationFormatter
+from app.services.search.content import FactResult, run_extractors
 from app.services.web_search import (
     EXTRACTION_FAILURE_MESSAGE,
     GROUNDING_FAILURE_MESSAGE,
@@ -77,14 +78,35 @@ class NeoChatService:
             "context conflicts, prefer active goals, active projects, current profile facts, "
             "and current preferences. For personal questions about the user's name, age, "
             "location, preferences, goals, or projects, answer only from memory context or "
-            "conversation history. If the fact is not present, say you do not know yet. "
+            "conversation history. If the fact is not in memory and not a time-sensitive "
+            "question, you may answer from general knowledge confidently. "
+            "IMPORTANT: Either answer confidently or say you are unsure. Never combine "
+            "uncertainty with a partial answer. Do NOT say 'I'm not sure, but...' followed "
+            "by an answer attempt. If you know the answer, state it directly. If you do not "
+            "know, say only: I'm not sure about that. I can look it up if you'd like. "
+            "Never produce dead-end responses like 'I don't know yet' for general factual "
+            "questions. "
             "Memory context and web context are separate. Use web context only for current, "
             "recent, or explicitly searched information. When web context is provided, cite "
-            "web-grounded claims using bracket markers like [1]. For web-grounded prompts, "
-            "do not use memory, conversation history, or general knowledge to fill gaps in "
-            "the retrieved web evidence. The web context contains extracted evidence only; "
-            "do not infer beyond it. "
-            "Answer directly and concisely.\n\n"
+            "web-grounded claims using bracket markers like [1]. Do not place raw URLs "
+            "inline in your answer text; citations go in the Sources block appended after "
+            "your answer. For web-grounded prompts, do not use memory, conversation history, "
+            "or general knowledge to fill gaps in the retrieved web evidence. The web context "
+            "contains extracted evidence only; do not infer beyond it. "
+            "For questions about current rankings, latest products, prices, versions, news, "
+            "release dates, champions, schedules, or any time-sensitive fact: answer ONLY "
+            "from the web evidence. If the web evidence does not contain the answer, say "
+            "only: I searched the web but could not find sufficiently reliable current "
+            "sources. Do NOT add general knowledge or filler after that statement. Do NOT "
+            "answer from your training data for time-sensitive questions. "
+            "If search results cover multiple unrelated entities with the same name (e.g. "
+            "'Fable' the Xbox game vs other uses), note the ambiguity and present results "
+            "grouped by entity. Do not merge unrelated entities into one answer. "
+            "Do NOT generate a Sources or References block yourself. The backend will "
+            "append verified sources automatically. Do NOT invent URLs or cite pages that "
+            "were not provided in the web context. "
+            "Answer the user's question directly first, then provide brief supporting "
+            "evidence. Do not output raw search-result titles or snippet labels.\n\n"
             f"Memory context:\n{self._compact_context(context)}\n\n"
             f"Web context:\n{web_section}"
         )
@@ -110,8 +132,12 @@ class NeoChatService:
         except Exception:
             self.db.rollback()
         context = self.build_context(prompt)
+        follow_up = _is_follow_up_search(prompt)
         web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
-        web_context = self.web_search.build_context(web_query)
+        if follow_up:
+            web_context = self.web_search.build_context_forced(web_query)
+        else:
+            web_context = self.web_search.build_context(web_query)
         direct_reply = None if web_context.needed else self._direct_reply(prompt)
         if direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", direct_reply)
@@ -176,6 +202,20 @@ class NeoChatService:
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                 )
                 raise
+        if not web_context.needed and _reply_expresses_uncertainty(reply) and _is_factual_entity_query(prompt):
+            web_context = self.web_search.build_context_forced(web_query)
+            direct_web_reply = self._direct_web_reply(web_query, web_context)
+            if direct_web_reply is not None:
+                reply = direct_web_reply
+            elif web_context.evidence_chunks and web_context.citations:
+                retry_messages = self.build_messages(prompt, history, context, web_context)
+                try:
+                    retry_result = self.ollama.chat_with_metadata(
+                        retry_messages, temperature=0.2, num_predict=self._num_predict(prompt, context),
+                    )
+                    reply = self._with_web_citations(retry_result.content, web_context)
+                except Exception:
+                    reply = self._web_generation_fallback(prompt, web_context, RuntimeError("retry failed"))
         self.store.add_chat_message(
             chat_id,
             "assistant",
@@ -214,8 +254,12 @@ class NeoChatService:
         except Exception:
             self.db.rollback()
         context = self.build_context(prompt)
+        follow_up = _is_follow_up_search(prompt)
         web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
-        web_context = self.web_search.build_context(web_query)
+        if follow_up:
+            web_context = self.web_search.build_context_forced(web_query)
+        else:
+            web_context = self.web_search.build_context(web_query)
         direct_reply = None if web_context.needed else self._direct_reply(prompt)
         if direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", direct_reply)
@@ -348,6 +392,22 @@ class NeoChatService:
             )
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
+        if not web_context.needed and _reply_expresses_uncertainty(reply) and _is_factual_entity_query(prompt):
+            web_context = self.web_search.build_context_forced(web_query)
+            direct_web_reply = self._direct_web_reply(web_query, web_context)
+            if direct_web_reply is not None:
+                reply = direct_web_reply
+                yield {"type": "replace", "content": reply}
+            elif web_context.evidence_chunks and web_context.citations:
+                retry_messages = self.build_messages(prompt, history, context, web_context)
+                try:
+                    retry_result = self.ollama.chat_with_metadata(
+                        retry_messages, temperature=0.2, num_predict=self._num_predict(prompt, context),
+                    )
+                    reply = self._with_web_citations(retry_result.content, web_context)
+                except Exception:
+                    reply = self._web_generation_fallback(prompt, web_context, RuntimeError("retry failed"))
+                yield {"type": "replace", "content": reply}
         thinking = self.ollama.extract_thinking(raw_reply)
         assistant = self.store.add_chat_message(
             chat_id,
@@ -390,6 +450,9 @@ class NeoChatService:
         return [candidate.id for candidate in candidates]
 
     def _direct_reply(self, prompt: str) -> str | None:
+        short = _short_input_clarification(prompt)
+        if short is not None:
+            return short
         if not self.explainer.should_handle(prompt):
             return self.direct_answers.answer(self.store, prompt)
         return self.explainer.answer(self.store, prompt)
@@ -406,9 +469,9 @@ class NeoChatService:
 
     def _is_release_date_query(self, query: str) -> bool:
         return bool(
-            re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, re.IGNORECASE)
+            re.search(r"\b(release|released|releasing|premiere|date|when|coming out)\b", query, re.IGNORECASE)
             and re.search(
-                r"\b(movie|film|season|show|series|spider-?man|spiderman|odyssey|avengers|doomsday|dune)\b",
+                r"\b(movie|film|season|show|series|spider-?man|spiderman|odyssey|avengers|doomsday|dune|supergirl|god of war)\b",
                 query,
                 re.IGNORECASE,
             )
@@ -491,14 +554,16 @@ class NeoChatService:
         return f"I tried to search the web, but could not build a cited answer: {reason}"
 
     def _with_web_citations(self, reply: str, web_context: WebContext | None) -> str:
-        if re.search(r"(?im)^\s*Sources:\s*$", reply):
-            return reply
+        body = _strip_llm_sources_block(reply)
         if web_context is None or not web_context.needed or not web_context.citations:
-            return self._strip_orphan_citation_markers(reply)
+            body = self._strip_orphan_citation_markers(body)
+            return _strip_fabricated_urls(body, set())
+        valid_urls = {citation.url for citation in web_context.citations}
+        body = _strip_fabricated_urls(body, valid_urls)
         citations = self.citation_formatter.format_citations(web_context.citations)
         if not citations:
-            return self._strip_orphan_citation_markers(reply)
-        return f"{reply.strip()}\n\n{citations}"
+            return self._strip_orphan_citation_markers(body)
+        return f"{body.strip()}\n\n{citations}"
 
     def _strip_orphan_citation_markers(self, reply: str) -> str:
         cleaned = re.sub(r"\s*\[(?:\d{1,2})(?:\s*,\s*\d{1,2})*\]", "", reply)
@@ -509,25 +574,34 @@ class NeoChatService:
         return any(f"[{citation.index}]" in reply for citation in web_context.citations)
 
     def _web_generation_fallback(self, prompt: str, web_context: WebContext, error: Exception) -> str:
-        lines = [
-            "I found these source-backed passages:",
-        ]
-        for chunk in web_context.evidence_chunks[:4]:
-            lines.append(f"- {chunk.text[:420]} [{chunk.source_index}]")
-        lines.append(f"Grounding fallback reason: {error}")
-        citations = self.citation_formatter.format_citations(web_context.citations)
-        if citations:
-            lines.extend(["", citations])
-        return "\n".join(lines)
+        if web_context.answer_mode == "fact_lookup":
+            fact = run_extractors(prompt, web_context.evidence_chunks)
+            if fact is not None:
+                answer = self._format_fact_answer(prompt, fact)
+                citations = self.citation_formatter.format_citations(web_context.citations)
+                return f"{answer}\n\n{citations}" if citations else answer
+            return "I searched the web but could not find sufficiently reliable evidence to answer that."
+        if web_context.answer_mode in {"news_summary", "overview"}:
+            lines = [
+                "Here are the source-backed updates I found:"
+                if web_context.answer_mode == "news_summary"
+                else "Here is what the sources say:",
+            ]
+            for chunk in web_context.evidence_chunks[:4]:
+                lines.append(f"- {_clean_snippet_text(chunk.text[:420])} [{chunk.source_index}]")
+            citations = self.citation_formatter.format_citations(web_context.citations)
+            if citations:
+                lines.extend(["", citations])
+            return "\n".join(lines)
+        return "I searched the web but could not find sufficiently reliable evidence to answer that."
 
     def _direct_web_reply(self, prompt: str, web_context: WebContext) -> str | None:
         if not web_context.needed or not web_context.evidence_chunks or not web_context.citations:
             return None
         if web_context.answer_mode == "fact_lookup":
-            episode_match = self._episode_count_from_evidence(prompt, web_context)
-            if episode_match is not None:
-                count, source_index = episode_match
-                answer = f"The listed episode count is {count} episodes [{source_index}]."
+            fact = run_extractors(prompt, web_context.evidence_chunks)
+            if fact is not None:
+                answer = self._format_fact_answer(prompt, fact)
                 citations = self.citation_formatter.format_citations(web_context.citations)
                 return f"{answer}\n\n{citations}" if citations else answer
             planned_match = self._planned_seasons_from_evidence(prompt, web_context)
@@ -536,18 +610,19 @@ class NeoChatService:
                 answer = f"Robert Kirkman has described the plan as {planned} seasons [{source_index}]."
                 citations = self.citation_formatter.format_citations(web_context.citations)
                 return f"{answer}\n\n{citations}" if citations else answer
-            release_match = self._release_date_from_evidence(prompt, web_context)
-            if release_match is not None:
-                release_date, source_index = release_match
-                prefix = "In India, the listed release date is" if self._target_region(prompt) == "india" else "The listed release date is"
-                answer = (
-                    f"{prefix} {release_date.rstrip('.')} "
-                    f"[{source_index}]."
-                )
-                citations = self.citation_formatter.format_citations(web_context.citations)
-                return f"{answer}\n\n{citations}" if citations else answer
             return None
         if web_context.answer_mode in {"news_summary", "overview"}:
+            clusters = _cluster_evidence_by_entity(prompt, web_context.evidence_chunks)
+            if len(clusters) > 1:
+                lines = ["I found results for multiple topics:"]
+                for cluster_label, cluster_chunks in clusters.items():
+                    lines.append(f"\n**{cluster_label}:**")
+                    for chunk in cluster_chunks[:2]:
+                        lines.append(f"- {_clean_snippet_text(chunk.text[:350])} [{chunk.source_index}]")
+                citations = self.citation_formatter.format_citations(web_context.citations)
+                if citations:
+                    lines.extend(["", citations])
+                return "\n".join(lines)
             heading = (
                 "Here are the source-backed updates I found:"
                 if web_context.answer_mode == "news_summary"
@@ -559,12 +634,35 @@ class NeoChatService:
                 key=lambda chunk: (self._source_priority(chunk.source_url), -chunk.relevance_score),
             )
             for chunk in chunks[:4]:
-                lines.append(f"- {chunk.text[:420]} [{chunk.source_index}]")
+                lines.append(f"- {_clean_snippet_text(chunk.text[:420])} [{chunk.source_index}]")
             citations = self.citation_formatter.format_citations(web_context.citations)
             if citations:
                 lines.extend(["", citations])
             return "\n".join(lines)
         return None
+
+    def _format_fact_answer(self, prompt: str, fact: FactResult) -> str:
+        """Format a structured fact extraction result into a user-facing answer."""
+        lowered = prompt.lower()
+        if re.search(r"\b(season|seasons)\b", lowered) and not re.search(r"\b(episode|episodes)\b", lowered):
+            return f"The series has {fact.answer} [{fact.source_index}]."
+        if re.search(r"\b(episode|episodes)\b", lowered):
+            return f"The listed episode count is {fact.answer} [{fact.source_index}]."
+        if re.search(r"\b(champion|ranking|rankings|rated|rating|highest rated)\b", lowered):
+            if "champion" in fact.match_reason:
+                return f"The current world chess champion is {fact.answer} [{fact.source_index}]."
+            return f"The top-rated player is {fact.answer} [{fact.source_index}]."
+        if re.search(r"\b(version|latest)\b", lowered) and re.search(r"\b(next\.?js|react|node|npm|python)\b", lowered):
+            return f"The latest version is {fact.answer} [{fact.source_index}]."
+        if re.search(r"\b(price|cost|how much)\b", lowered):
+            region = self._target_region(prompt)
+            prefix = "In India, the" if region == "india" else "The"
+            return f"{prefix} listed price is {fact.answer} [{fact.source_index}]."
+        if re.search(r"\b(release|released|premiere|when|coming out|date)\b", lowered):
+            region = self._target_region(prompt)
+            prefix = "In India, the listed release date is" if region == "india" else "The listed release date is"
+            return f"{prefix} {fact.answer} [{fact.source_index}]."
+        return f"{fact.answer} [{fact.source_index}]."
 
     def _source_priority(self, url: str) -> int:
         domain = urlparse(url).netloc.lower().removeprefix("www.")
@@ -581,39 +679,6 @@ class NeoChatService:
         }
         return 0 if domain in official_domains else 1
 
-    def _episode_count_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[int, int] | None:
-        if not re.search(r"\b(episode|episodes|how many)\b", prompt, re.IGNORECASE):
-            return None
-        candidates: list[tuple[int, int, int]] = []
-        for position, chunk in enumerate(web_context.evidence_chunks):
-            text = f"{chunk.source_title}. {chunk.text}"
-            if re.search(r"\b(first|last|next|remaining|one more|final)\s+\w+\s+episodes\b", text, re.IGNORECASE):
-                continue
-            match = re.search(
-                r"\b(?:consists of|has|have|with|contains|includes)\s+"
-                r"(?P<count>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
-                r"\s+episodes\b",
-                text,
-                re.IGNORECASE,
-            )
-            if not match:
-                match = re.search(
-                    r"\b(?P<count>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
-                    r"\s+episodes\b",
-                    text,
-                    re.IGNORECASE,
-                )
-            if not match:
-                continue
-            count = self._number_from_text(match.group("count"))
-            if count is None:
-                continue
-            candidates.append((position, count, chunk.source_index or position + 1))
-        if not candidates:
-            return None
-        _, count, source_index = sorted(candidates)[0]
-        return count, source_index
-
     def _planned_seasons_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[str, int] | None:
         if not re.search(r"\b(kirkman|planning|planned|how many seasons)\b", prompt, re.IGNORECASE):
             return None
@@ -624,26 +689,6 @@ class NeoChatService:
             if re.search(r"\b(7-8|7\s+to\s+8|seven\s+to\s+eight)\s+seasons\b", text, re.IGNORECASE):
                 return "seven to eight", chunk.source_index or position + 1
         return None
-
-    def _number_from_text(self, value: str) -> int | None:
-        lowered = value.lower()
-        words = {
-            "one": 1,
-            "two": 2,
-            "three": 3,
-            "four": 4,
-            "five": 5,
-            "six": 6,
-            "seven": 7,
-            "eight": 8,
-            "nine": 9,
-            "ten": 10,
-            "eleven": 11,
-            "twelve": 12,
-        }
-        if lowered.isdigit():
-            return int(lowered)
-        return words.get(lowered)
 
     def _release_date_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[str, int] | None:
         if not re.search(r"\b(release|released|releasing|premiere|date|when)\b", prompt, re.IGNORECASE):
@@ -907,10 +952,171 @@ class NeoChatService:
         return [candidate.id for candidate in candidates]
 
 
+ENTITY_CLUSTER_PATTERNS: list[tuple[str, list[re.Pattern[str]]]] = [
+    ("Xbox/Video Game", [re.compile(r"\b(xbox|playstation|ps5|ps4|nintendo|game(?:play)?|rpg|lionhead|playground games|fable (?:game|reboot|remake|trilogy))\b", re.IGNORECASE)]),
+    ("AI/Technology", [re.compile(r"\b(ai|artificial intelligence|model|llm|anthropic|openai|claude|gpt|machine learning|neural|fable\s+\d)\b", re.IGNORECASE)]),
+    ("TV Series", [re.compile(r"\b(tv|television|series|season|episode|streaming|netflix|hulu|peacock|paramount|prime video|showrunner|renewed|cancelled|canceled)\b", re.IGNORECASE)]),
+    ("Movie/Film", [re.compile(r"\b(movie|film|cinema|theatrical|box office|director|starring|trailer)\b", re.IGNORECASE)]),
+]
+
+
+def _cluster_evidence_by_entity(query: str, chunks: list) -> dict[str, list]:
+    """Detect if evidence chunks belong to clearly different entity categories."""
+    if len(chunks) < 2:
+        return {}
+
+    chunk_labels: list[tuple[str, object]] = []
+    for chunk in chunks:
+        text = f"{chunk.source_title}. {chunk.text[:500]}".lower()
+        best_label = "General"
+        best_score = 0
+        for label, patterns in ENTITY_CLUSTER_PATTERNS:
+            score = sum(1 for p in patterns if p.search(text))
+            if score > best_score:
+                best_score = score
+                best_label = label
+        chunk_labels.append((best_label if best_score > 0 else "General", chunk))
+
+    clusters: dict[str, list] = {}
+    for label, chunk in chunk_labels:
+        clusters.setdefault(label, []).append(chunk)
+
+    non_general = {k: v for k, v in clusters.items() if k != "General"}
+    if len(non_general) < 2:
+        return {}
+
+    if "General" in clusters:
+        for chunk in clusters["General"]:
+            largest = max(non_general, key=lambda k: len(non_general[k]))
+            non_general[largest].append(chunk)
+
+    return non_general
+
+
+def _strip_llm_sources_block(reply: str) -> str:
+    """Remove any Sources/References block the LLM generated — backend appends its own."""
+    cleaned = re.sub(
+        r"\n{1,3}(?:Sources|References|Citations)\s*:\s*\n(?:\s*\[?\d{1,2}\]?\s*.*\n?)*",
+        "",
+        reply,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\n{1,3}(?:Sources|References|Citations)\s*:\s*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _strip_fabricated_urls(reply: str, valid_urls: set[str]) -> str:
+    """Remove inline URLs from answer body that are not in the valid citation set."""
+    if not valid_urls:
+        return re.sub(r"https?://\S+", "", reply).strip()
+
+    def _replace_url(match: re.Match) -> str:
+        url = match.group(0).rstrip(".,;:)>]")
+        if url in valid_urls:
+            return match.group(0)
+        for valid in valid_urls:
+            if url.startswith(valid) or valid.startswith(url):
+                return match.group(0)
+        return ""
+
+    cleaned = re.sub(r"https?://\S+", _replace_url, reply)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _clean_snippet_text(text: str) -> str:
+    """Strip raw 'Search result title/snippet' labels that should never appear in user-facing output."""
+    cleaned = re.sub(r"^Search result title:\s*", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\.\s*Search result snippet:\s*", ". ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^Search result snippet:\s*", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 FOLLOW_UP_SEARCH_COMMAND = re.compile(
     r"^(can you |could you |please )?(look|search|check|find)\s+(it|this|that)\s+up[.?!\s]*$",
     re.IGNORECASE,
 )
+
+
+_UNCERTAINTY_MARKERS = re.compile(
+    r"(?:I don'?t know|I'?m not sure|I couldn'?t find|I can look it up|"
+    r"I don'?t have (?:that|this) information|I'?m unable to|"
+    r"I don'?t have enough|not in my memory|I couldn'?t locate)",
+    re.IGNORECASE,
+)
+
+_FACTUAL_ENTITY_QUERY = re.compile(
+    r"\b("
+    r"how many (?:seasons?|episodes?|parts?|volumes?|runs?|goals?|points?)|"
+    r"who (?:created|wrote|directed|produced|made|invented|designed|founded|built|developed|started|launched)|"
+    r"who (?:is|are|was|were) the (?:creator|writer|director|founder|maker|developer|original creator)s? of|"
+    r"who (?:is|are|was|were) the (?:original |founding )?(?:creator|writer|director|founder|maker|developer|team)s? (?:of|behind)|"
+    r"cast of|release date of|"
+    r"when did .+ (?:release|end|start|premiere|air|come out)|"
+    r"when was .+ (?:released|made|created|published)|"
+    r"when did .+ (?:score|win|play|debut)|"
+    r"(?:tv|television) series|"
+    r"how many .+ (?:does|did|do|has|have)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+_SHORT_TOOL_HINTS: dict[str, str] = {
+    "sed": "`sed`, the Unix stream editor",
+    "awk": "`awk`, the text processing language",
+    "grep": "`grep`, the text search utility",
+    "npm": "`npm`, the Node.js package manager",
+    "docker": "`docker`, the container platform",
+    "git": "`git`, the version control system",
+    "curl": "`curl`, the URL transfer tool",
+    "wget": "`wget`, the file download utility",
+    "pip": "`pip`, the Python package manager",
+    "yarn": "`yarn`, the JavaScript package manager",
+    "vim": "`vim`, the text editor",
+    "bash": "`bash`, the Unix shell",
+    "zsh": "`zsh`, the Z shell",
+    "ssh": "`ssh`, the secure shell protocol",
+    "tar": "`tar`, the archive utility",
+    "make": "`make`, the build automation tool",
+    "gcc": "`gcc`, the GNU C compiler",
+    "apt": "`apt`, the Debian package manager",
+    "brew": "`brew`, the macOS package manager",
+    "ps": "`ps`, the process status command",
+    "ls": "`ls`, the directory listing command",
+    "cat": "`cat`, the file concatenation command",
+    "chmod": "`chmod`, the file permission command",
+    "rsync": "`rsync`, the file synchronization tool",
+}
+
+
+def _short_input_clarification(prompt: str) -> str | None:
+    """Fast response for very short, ambiguous, or typo-like inputs."""
+    cleaned = prompt.strip().rstrip("'\"?!.,;:")
+    if len(cleaned) > 12 or len(cleaned) < 3:
+        return None
+    if " " in cleaned and len(cleaned.split()) > 2:
+        return None
+    lowered = cleaned.lower()
+    hint = _SHORT_TOOL_HINTS.get(lowered)
+    if hint is not None:
+        return f"Did you mean {hint}?"
+    if re.match(r"^[a-z]{2,10}$", lowered):
+        return f"Did you mean `{lowered}`? Could you give me a bit more context about what you need?"
+    return None
+
+
+def _reply_expresses_uncertainty(reply: str) -> bool:
+    return bool(_UNCERTAINTY_MARKERS.search(reply[:400]))
+
+
+def _is_factual_entity_query(prompt: str) -> bool:
+    return bool(_FACTUAL_ENTITY_QUERY.search(prompt))
+
+
+def _is_follow_up_search(prompt: str) -> bool:
+    cleaned = prompt.strip()
+    return bool(FOLLOW_UP_SEARCH_COMMAND.match(cleaned) or WebSearchDecisionService.BARE_COMMAND.match(cleaned))
 
 
 def resolve_web_search_query(prompt: str, history: list[ChatTurn]) -> str:

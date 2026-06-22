@@ -22,6 +22,8 @@ class DirectMemoryAnswerService:
             return self._single_profile_answer(store, "location", "You are in {value}.")
         if self._asks_goals(lowered):
             return self._goals_answer(store)
+        if self._asks_working_on(lowered):
+            return self._working_on_answer(store)
         if self._asks_projects(lowered):
             return self._projects_answer(store)
         if self._asks_dedicated_gpu(lowered):
@@ -139,6 +141,22 @@ class DirectMemoryAnswerService:
             lines.append(f"- {project.name}{description}")
         return "\n".join(lines)
 
+    def _working_on_answer(self, store: MemoryStore) -> str:
+        from app.models.enums import ProjectStatus
+
+        projects = store.list_projects(ProjectStatus.ACTIVE)
+        if not projects:
+            return "I do not have any active projects stored for you yet."
+        if len(projects) == 1:
+            project = projects[0]
+            description = f" — {project.description}" if project.description else ""
+            return f"You're currently working on {project.name}{description}."
+        lines = ["You're currently working on:"]
+        for project in projects[:8]:
+            description = f" — {project.description}" if project.description else ""
+            lines.append(f"- {project.name}{description}")
+        return "\n".join(lines)
+
     def _current_hardware_memory(self, store: MemoryStore) -> Memory | None:
         memories = [
             memory
@@ -200,6 +218,14 @@ class DirectMemoryAnswerService:
 
     def _asks_goals(self, lowered: str) -> bool:
         return bool(re.search(r"\b(what are my goals|what goals do i have|my goals|active goals)\b", lowered))
+
+    def _asks_working_on(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what am i working on|what are you helping me with|what'?s my current project)\b",
+                lowered,
+            )
+        )
 
     def _asks_projects(self, lowered: str) -> bool:
         return bool(

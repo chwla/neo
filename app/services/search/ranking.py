@@ -48,11 +48,13 @@ FRESHNESS_TERMS = {
     "announces",
     "breaking",
     "current",
+    "currently",
     "latest",
     "launched",
     "launches",
     "news",
     "new",
+    "newest",
     "price",
     "prices",
     "cost",
@@ -62,11 +64,20 @@ FRESHNESS_TERMS = {
     "schedule",
     "upcoming",
     "recent",
+    "recently",
     "release",
     "released",
     "update",
+    "updated",
     "updates",
     "version",
+    "ranking",
+    "rankings",
+    "ranked",
+    "rated",
+    "fide",
+    "champion",
+    "worldcup",
 }
 
 OFFICIAL_DOMAINS = {
@@ -144,7 +155,7 @@ def build_relevance_profile(query: str, provider_query: str) -> QueryRelevancePr
                 aliases.append(alias)
                 seen.add(alias)
     requires_freshness = bool(
-        re.search(r"\b(latest|current|recent|today|news|updates|version|release)\b", query, re.IGNORECASE)
+        re.search(r"\b(latest|current|currently|recent|recently|today|news|updates|version|release|newest|ranking|rankings|ranked|rated|right now|fide|updated|champion|world champion|world cup|upcoming|coming out)\b", query, re.IGNORECASE)
     )
     return QueryRelevanceProfile(
         query=query,
