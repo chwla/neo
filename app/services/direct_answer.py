@@ -12,6 +12,18 @@ class DirectMemoryAnswerService:
 
     def answer(self, store: MemoryStore, query: str) -> str | None:
         lowered = query.lower()
+        if self._asks_profile_summary(lowered):
+            return self._profile_summary_answer(store)
+        if self._asks_name(lowered):
+            return self._single_profile_answer(store, "name", "Your name is {value}.")
+        if self._asks_age(lowered):
+            return self._single_profile_answer(store, "age", "You are {value} years old.")
+        if self._asks_location(lowered):
+            return self._single_profile_answer(store, "location", "You are in {value}.")
+        if self._asks_goals(lowered):
+            return self._goals_answer(store)
+        if self._asks_projects(lowered):
+            return self._projects_answer(store)
         if self._asks_dedicated_gpu(lowered):
             return self._dedicated_gpu_answer(store)
         if self._asks_hardware(lowered):
@@ -31,6 +43,48 @@ class DirectMemoryAnswerService:
         if self._asks_flutter_priority(lowered):
             return self._flutter_priority_answer(store)
         return None
+
+    def _profile_summary_answer(self, store: MemoryStore) -> str | None:
+        facts = [
+            fact
+            for fact in store.list_profile()
+            if getattr(fact, "is_active", True)
+            and str(getattr(fact, "key", "")).lower() in {"name", "age", "location", "country", "nationality", "occupation", "education"}
+        ]
+        if not facts:
+            return "I do not have enough stored profile information to answer that yet."
+        order = {
+            "name": 0,
+            "age": 1,
+            "location": 2,
+            "country": 3,
+            "nationality": 4,
+            "occupation": 5,
+            "education": 6,
+        }
+        facts = sorted(
+            facts,
+            key=lambda fact: (order.get(str(getattr(fact, "key", "")).lower(), 99), str(getattr(fact, "key", ""))),
+        )
+        parts = [self._profile_fact_sentence(str(fact.key).lower(), str(fact.value)) for fact in facts[:8]]
+        return "From memory, " + "; ".join(part for part in parts if part) + "."
+
+    def _profile_fact_sentence(self, key: str, value: str) -> str:
+        if key == "name":
+            return f"your name is {value}"
+        if key == "age":
+            return f"you are {value} years old"
+        if key == "location":
+            return f"you are in {value}"
+        if key == "country":
+            return f"your country is {value}"
+        if key == "nationality":
+            return f"your nationality is {value}"
+        if key == "occupation":
+            return f"your occupation is {value}"
+        if key == "education":
+            return f"your education is {value}"
+        return f"{key} is {value}"
 
     def _hardware_answer(self, store: MemoryStore) -> str | None:
         memory = self._current_hardware_memory(store)
@@ -55,6 +109,35 @@ class DirectMemoryAnswerService:
         if preference is None:
             return None
         return template.format(value=preference.value)
+
+    def _single_profile_answer(self, store: MemoryStore, key: str, template: str) -> str | None:
+        facts = store.active_profile_by_key(key)
+        if not facts:
+            return None
+        fact = sorted(facts, key=lambda item: getattr(item, "updated_at", ""), reverse=True)[0]
+        return template.format(value=fact.value)
+
+    def _goals_answer(self, store: MemoryStore) -> str:
+        goals = store.list_goals(GoalStatus.ACTIVE)
+        if not goals:
+            return "I do not have any active goals stored for you yet."
+        lines = ["Your active goals are:"]
+        for goal in goals[:8]:
+            description = f" - {goal.description}" if goal.description and goal.description != goal.goal else ""
+            lines.append(f"- {goal.goal}{description}")
+        return "\n".join(lines)
+
+    def _projects_answer(self, store: MemoryStore) -> str:
+        from app.models.enums import ProjectStatus
+
+        projects = store.list_projects(ProjectStatus.ACTIVE)
+        if not projects:
+            return "I do not have any active projects stored for you yet."
+        lines = ["Your active projects are:"]
+        for project in projects[:8]:
+            description = f" - {project.description}" if project.description else ""
+            lines.append(f"- {project.name}{description}")
+        return "\n".join(lines)
 
     def _current_hardware_memory(self, store: MemoryStore) -> Memory | None:
         memories = [
@@ -94,6 +177,34 @@ class DirectMemoryAnswerService:
             )
             and re.search(
                 r"\b(laptop|hardware|computer|machine|pc|system|specs|ram|processor|cpu)\b",
+                lowered,
+            )
+        )
+
+    def _asks_profile_summary(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(who am i|what do you know about me|tell me about me|my profile|about me)\b",
+                lowered,
+            )
+        )
+
+    def _asks_name(self, lowered: str) -> bool:
+        return bool(re.search(r"\b(what'?s|what is|tell me)\s+my\s+name\b|\bwho am i named\b", lowered))
+
+    def _asks_age(self, lowered: str) -> bool:
+        return bool(re.search(r"\b(how old am i|what'?s my age|what is my age)\b", lowered))
+
+    def _asks_location(self, lowered: str) -> bool:
+        return bool(re.search(r"\b(where am i|where do i live|what'?s my location|what is my location)\b", lowered))
+
+    def _asks_goals(self, lowered: str) -> bool:
+        return bool(re.search(r"\b(what are my goals|what goals do i have|my goals|active goals)\b", lowered))
+
+    def _asks_projects(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what projects (?:am i|i am) working on|what projects do i have|my projects|active projects|what am i building)\b",
                 lowered,
             )
         )

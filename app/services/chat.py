@@ -407,7 +407,11 @@ class NeoChatService:
     def _is_release_date_query(self, query: str) -> bool:
         return bool(
             re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, re.IGNORECASE)
-            and re.search(r"\b(movie|film|season|show|series|spider-?man|spiderman|odyssey)\b", query, re.IGNORECASE)
+            and re.search(
+                r"\b(movie|film|season|show|series|spider-?man|spiderman|odyssey|avengers|doomsday|dune)\b",
+                query,
+                re.IGNORECASE,
+            )
         )
 
     def _country_from_memory(self, context: ContextPackage) -> str | None:
@@ -487,14 +491,19 @@ class NeoChatService:
         return f"I tried to search the web, but could not build a cited answer: {reason}"
 
     def _with_web_citations(self, reply: str, web_context: WebContext | None) -> str:
-        if web_context is None or not web_context.needed or not web_context.citations:
-            return reply
         if re.search(r"(?im)^\s*Sources:\s*$", reply):
             return reply
+        if web_context is None or not web_context.needed or not web_context.citations:
+            return self._strip_orphan_citation_markers(reply)
         citations = self.citation_formatter.format_citations(web_context.citations)
         if not citations:
-            return reply
+            return self._strip_orphan_citation_markers(reply)
         return f"{reply.strip()}\n\n{citations}"
+
+    def _strip_orphan_citation_markers(self, reply: str) -> str:
+        cleaned = re.sub(r"\s*\[(?:\d{1,2})(?:\s*,\s*\d{1,2})*\]", "", reply)
+        cleaned = re.sub(r" {2,}", " ", cleaned)
+        return cleaned.strip()
 
     def _has_web_citation_marker(self, reply: str, web_context: WebContext) -> bool:
         return any(f"[{citation.index}]" in reply for citation in web_context.citations)
@@ -515,6 +524,18 @@ class NeoChatService:
         if not web_context.needed or not web_context.evidence_chunks or not web_context.citations:
             return None
         if web_context.answer_mode == "fact_lookup":
+            episode_match = self._episode_count_from_evidence(prompt, web_context)
+            if episode_match is not None:
+                count, source_index = episode_match
+                answer = f"The listed episode count is {count} episodes [{source_index}]."
+                citations = self.citation_formatter.format_citations(web_context.citations)
+                return f"{answer}\n\n{citations}" if citations else answer
+            planned_match = self._planned_seasons_from_evidence(prompt, web_context)
+            if planned_match is not None:
+                planned, source_index = planned_match
+                answer = f"Robert Kirkman has described the plan as {planned} seasons [{source_index}]."
+                citations = self.citation_formatter.format_citations(web_context.citations)
+                return f"{answer}\n\n{citations}" if citations else answer
             release_match = self._release_date_from_evidence(prompt, web_context)
             if release_match is not None:
                 release_date, source_index = release_match
@@ -559,6 +580,70 @@ class NeoChatService:
             "x.ai",
         }
         return 0 if domain in official_domains else 1
+
+    def _episode_count_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[int, int] | None:
+        if not re.search(r"\b(episode|episodes|how many)\b", prompt, re.IGNORECASE):
+            return None
+        candidates: list[tuple[int, int, int]] = []
+        for position, chunk in enumerate(web_context.evidence_chunks):
+            text = f"{chunk.source_title}. {chunk.text}"
+            if re.search(r"\b(first|last|next|remaining|one more|final)\s+\w+\s+episodes\b", text, re.IGNORECASE):
+                continue
+            match = re.search(
+                r"\b(?:consists of|has|have|with|contains|includes)\s+"
+                r"(?P<count>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+                r"\s+episodes\b",
+                text,
+                re.IGNORECASE,
+            )
+            if not match:
+                match = re.search(
+                    r"\b(?P<count>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+                    r"\s+episodes\b",
+                    text,
+                    re.IGNORECASE,
+                )
+            if not match:
+                continue
+            count = self._number_from_text(match.group("count"))
+            if count is None:
+                continue
+            candidates.append((position, count, chunk.source_index or position + 1))
+        if not candidates:
+            return None
+        _, count, source_index = sorted(candidates)[0]
+        return count, source_index
+
+    def _planned_seasons_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[str, int] | None:
+        if not re.search(r"\b(kirkman|planning|planned|how many seasons)\b", prompt, re.IGNORECASE):
+            return None
+        for position, chunk in enumerate(web_context.evidence_chunks):
+            text = f"{chunk.source_title}. {chunk.text}"
+            if re.search(r"\b(7-9|7\s+to\s+9|seven,\s*eight,\s*or\s*nine|seven\s+or\s+eight\s+or\s+nine)\s+seasons\b", text, re.IGNORECASE):
+                return "seven to nine", chunk.source_index or position + 1
+            if re.search(r"\b(7-8|7\s+to\s+8|seven\s+to\s+eight)\s+seasons\b", text, re.IGNORECASE):
+                return "seven to eight", chunk.source_index or position + 1
+        return None
+
+    def _number_from_text(self, value: str) -> int | None:
+        lowered = value.lower()
+        words = {
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+            "eleven": 11,
+            "twelve": 12,
+        }
+        if lowered.isdigit():
+            return int(lowered)
+        return words.get(lowered)
 
     def _release_date_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[str, int] | None:
         if not re.search(r"\b(release|released|releasing|premiere|date|when)\b", prompt, re.IGNORECASE):
@@ -611,6 +696,7 @@ class NeoChatService:
             "district.in",
             "economictimes.indiatimes.com",
             "filmibeat.com",
+            "gadgets360.com",
             "in.bookmyshow.com",
             "indiatoday.in",
             "news24online.com",
@@ -629,11 +715,13 @@ class NeoChatService:
         if target_region == "india":
             if domain in {"in.bookmyshow.com"}:
                 return 0
-            if domain in {"district.in", "thehindu.com", "indiatoday.in", "business-standard.com", "timesnownews.com"}:
+            if domain in {"thehindu.com", "indiatoday.in", "business-standard.com", "timesnownews.com", "gadgets360.com"}:
                 return 1
-            if domain in {"theodysseymovie.com", "marvel.com"}:
+            if domain in {"district.in"}:
                 return 2
-            return 3
+            if domain in {"theodysseymovie.com", "marvel.com"}:
+                return 3
+            return 4
         if domain in {"marvel.com", "theodysseymovie.com"}:
             return 0
         return 1

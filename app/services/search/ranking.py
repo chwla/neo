@@ -107,6 +107,7 @@ INDIA_SOURCE_DOMAINS = {
     "district.in",
     "economictimes.indiatimes.com",
     "filmibeat.com",
+    "gadgets360.com",
     "in.bookmyshow.com",
     "indiatoday.in",
     "news24online.com",
@@ -115,6 +116,7 @@ INDIA_SOURCE_DOMAINS = {
     "www.business-standard.com",
     "www.district.in",
     "www.filmibeat.com",
+    "www.gadgets360.com",
     "www.indiatoday.in",
     "www.news24online.com",
     "www.thehindu.com",
@@ -165,7 +167,7 @@ def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) ->
         and not is_low_quality_result(result)
         and not (
             is_video_or_social_result(result)
-            and not re.search(r"\b(video|youtube|trailer|clip|watch|instagram|social|post)\b", profile.query, re.IGNORECASE)
+            and not re.search(r"\b(video|youtube|trailer|clip|watch|instagram|reddit|facebook|social|post)\b", profile.query, re.IGNORECASE)
         )
         and (
             not profile.requires_freshness
@@ -323,10 +325,12 @@ def is_low_quality_result(result: SearchResult) -> bool:
 def is_video_or_social_result(result: SearchResult) -> bool:
     domain = urlparse(result.url).netloc.lower().removeprefix("www.")
     return domain in {
+        "facebook.com",
         "youtube.com",
         "youtu.be",
         "tiktok.com",
         "instagram.com",
+        "reddit.com",
         "x.com",
         "twitter.com",
     }

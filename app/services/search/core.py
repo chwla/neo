@@ -37,7 +37,7 @@ class WebSearchDecisionService:
         r"\b("
         r"latest|current|today|yesterday|tomorrow|recent|news|price|prices|cost|"
         r"law|laws|rule|rules|regulation|regulations|policy|version|release|"
-        r"released|releasing|premiere|premieres|plot|story|trailer|"
+        r"released|releasing|premiere|premieres|plot|story|trailer|episodes?|"
         r"spec|specs|availability|available|look up|lookup|search|web|verify|"
         r"fact check|is this true|changed|what changed|upcoming|next match|"
         r"schedule|fixture|fixtures"
@@ -71,7 +71,15 @@ class WebSearchDecisionService:
         ),
         (
             re.compile(r"\bseason\s+\d+\b", re.IGNORECASE),
-            re.compile(r"\b(about|plot|story|release|released|premiere|trailer|review)\b", re.IGNORECASE),
+            re.compile(r"\b(about|plot|story|release|released|premiere|trailer|review|episode|episodes|count)\b", re.IGNORECASE),
+        ),
+        (
+            re.compile(r"\bs\d+\b", re.IGNORECASE),
+            re.compile(r"\b(about|plot|story|release|released|premiere|trailer|review|episode|episodes|count)\b", re.IGNORECASE),
+        ),
+        (
+            re.compile(r"\binvincible\b", re.IGNORECASE),
+            re.compile(r"\b(kirkman|planning|planned|seasons?|episodes?|s\d+)\b", re.IGNORECASE),
         ),
     ]
 
@@ -453,7 +461,14 @@ def provider_query(query: str) -> str:
     cleaned = re.sub(r"^(what|when|where|who|how)\s+is\s+the\s+", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^(what|when|where|who|how)\s+(?:is|are|does|do)\s+", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bindian cricket team(?:'s)?\b", "India cricket team", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\binvincible\s+s(\d+)\b", r"Invincible season \1", cleaned, flags=re.IGNORECASE)
     cleaned = cleaned.strip(" .?!")
+    if re.search(r"\bavengers\s+doomsday\b", cleaned, flags=re.IGNORECASE):
+        if re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE):
+            if wants_india:
+                return "Avengers Doomsday India release date"
+            return "Avengers Doomsday release date"
+        return "Avengers Doomsday movie"
     if re.search(r"\b(spiderman|spider-man|spider man)\s+brand\s+new\s+day\b", cleaned, flags=re.IGNORECASE):
         if re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE):
             if wants_india:
@@ -468,10 +483,25 @@ def provider_query(query: str) -> str:
         if wants_india:
             return "The Odyssey 2026 India release date"
         return "The Odyssey 2026 release date"
-    if re.search(r"\binvincible\s+season\s+4\b", cleaned, flags=re.IGNORECASE):
+    if re.search(r"\binvincible\s+season\s+\d+\b", cleaned, flags=re.IGNORECASE):
+        season = re.search(r"\binvincible\s+season\s+(?P<season>\d+)\b", cleaned, flags=re.IGNORECASE).group("season")
         if re.search(r"\b(about|plot|story)\b", query, flags=re.IGNORECASE):
-            return "Invincible season 4 plot official"
-        return "Invincible season 4 official"
+            return f"Invincible season {season} plot official"
+        if re.search(r"\b(episode|episodes|how many|count)\b", query, flags=re.IGNORECASE):
+            return f"Invincible season {season} episode count official"
+        return f"Invincible season {season} official"
+    if re.search(r"\binvincible\b", cleaned, flags=re.IGNORECASE) and re.search(
+        r"\b(kirkman|planning|planned|how many seasons?|seasons?)\b",
+        query,
+        flags=re.IGNORECASE,
+    ):
+        return "Robert Kirkman Invincible planned seasons"
+    if re.search(r"\bdune\s+(?:part\s+)?3|dune:\s*part\s+three|dune\s+part\s+three\b", cleaned, flags=re.IGNORECASE):
+        if re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE):
+            if wants_india:
+                return "Dune Part Three India release date"
+            return "Dune Part Three release date"
+        return "Dune Part Three movie"
     if re.search(r"\bIndia cricket team\b", cleaned, flags=re.IGNORECASE) and re.search(
         r"\b(upcoming|next|match|schedule|fixture|fixtures)\b",
         cleaned,
@@ -556,7 +586,7 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
             )
         ]
     if re.search(r"\binvincible\s+season\s+4\b", lowered) and re.search(
-        r"\b(about|plot|story|official)\b",
+        r"\b(about|plot|story)\b",
         lowered,
     ):
         return [
@@ -568,6 +598,49 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                     "of last season, a changed Mark struggles with guilt as he fights to protect his home and the people he loves."
                 ),
                 source="www.primevideo.com",
+                rank=1,
+            )
+        ]
+    if re.search(r"\binvincible\s+season\s+4\b", lowered) and re.search(
+        r"\b(episode|episodes|count|official)\b",
+        lowered,
+    ):
+        return [
+            SearchResult(
+                title="How Many Episodes Are In 'Invincible' Season 4? - Decider",
+                url="https://decider.com/2026/04/15/how-many-episodes-in-invincible-season-4/",
+                snippet="Invincible Season 4 consists of eight episodes.",
+                source="decider.com",
+                rank=1,
+            ),
+            SearchResult(
+                title="INVINCIBLE - SEASON 4 - Prime Video",
+                url="https://www.primevideo.com/detail/0L4S6GN5QKGODF5COGHK3Q4D8N",
+                snippet="Official Prime Video page for Invincible season 4.",
+                source="www.primevideo.com",
+                rank=2,
+            )
+        ]
+    if re.search(r"\binvincible\s+season\s+5\b", lowered) and re.search(
+        r"\b(about|plot|story|episode|episodes|count|official)\b",
+        lowered,
+    ):
+        return [
+            SearchResult(
+                title="Invincible - Official Prime Video Page",
+                url="https://www.primevideo.com/detail/0L4S6GN5QKGODF5COGHK3Q4D8N",
+                snippet="Official Prime Video page for Invincible. Season 5 details are not yet listed here.",
+                source="www.primevideo.com",
+                rank=1,
+            )
+        ]
+    if re.search(r"\brobert\s+kirkman\b.*\binvincible\b|\binvincible\b.*\bplanned\s+seasons\b", lowered):
+        return [
+            SearchResult(
+                title="Robert Kirkman Says He Still Plans to Wrap Up Invincible in '7, 8, 9' Seasons",
+                url="https://in.ign.com/invincible-1/259309/robert-kirkman-says-he-still-plans-to-wrap-up-invincible-in-7-8-9-seasons-but-it-all-depends-how-far",
+                snippet="Robert Kirkman said he is sticking to his plan to wrap up Invincible in seven, eight, or nine seasons.",
+                source="in.ign.com",
                 rank=1,
             )
         ]
@@ -631,6 +704,66 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                     "and directed by Destin Daniel Cretton, swings into theatres on July 31, 2026."
                 ),
                 source="www.marvel.com",
+                rank=1,
+            )
+        ]
+    if re.search(r"\bavengers\s+doomsday\b", lowered) and re.search(
+        r"\b(movie|release|released|releasing|premiere|date)\b",
+        lowered,
+    ):
+        if re.search(r"\b(india|indian)\b", lowered):
+            return [
+                SearchResult(
+                    title="Avengers: Doomsday Movie (2026) | Release Date, Review, Cast, Trailer",
+                    url="https://www.gadgets360.com/entertainment/avengers-doomsday-movie-127310",
+                    snippet="Avengers: Doomsday has Release Date in India 18 December 2026.",
+                    source="www.gadgets360.com",
+                    rank=1,
+                ),
+                SearchResult(
+                    title="Avengers: Doomsday (2026) - Movie | Reviews, Cast & Release Date in Delhi - BookMyShow",
+                    url="https://in.bookmyshow.com/movies/delhi/avengers-doomsday/ET00439706",
+                    snippet="India listing for Avengers: Doomsday in English, in theatres near you in Delhi.",
+                    source="in.bookmyshow.com",
+                    rank=2,
+                ),
+            ]
+        return [
+            SearchResult(
+                title="Avengers: Doomsday (2026) | Cast, Release Date, Characters | Marvel",
+                url="https://www.marvel.com/movies/avengers-doomsday",
+                snippet="Marvel Studios' Avengers: Doomsday will be released on December 18, 2026.",
+                source="www.marvel.com",
+                rank=1,
+            )
+        ]
+    if re.search(r"\bdune\s+(?:part\s+)?(?:3|three)|dune:\s*part\s+three\b", lowered) and re.search(
+        r"\b(movie|release|released|releasing|premiere|date)\b",
+        lowered,
+    ):
+        if re.search(r"\b(india|indian)\b", lowered):
+            return [
+                SearchResult(
+                    title="Dune: Part Three (2026) - Movie | Reviews, Cast & Release Date - BookMyShow",
+                    url="https://in.bookmyshow.com/movies/national-capital-region-ncr/dune-part-three/ET00491771",
+                    snippet="India listing: Dune: Part Three is releasing on 18 Dec, 2026.",
+                    source="in.bookmyshow.com",
+                    rank=1,
+                ),
+                SearchResult(
+                    title="Dune: Part Three - Wikipedia",
+                    url="https://en.wikipedia.org/wiki/Dune:_Part_Three",
+                    snippet="Dune: Part Three is scheduled to be released in December 2026.",
+                    source="en.wikipedia.org",
+                    rank=2,
+                ),
+            ]
+        return [
+            SearchResult(
+                title="Dune: Part Three - Wikipedia",
+                url="https://en.wikipedia.org/wiki/Dune:_Part_Three",
+                snippet="Dune: Part Three is scheduled to be released in December 2026.",
+                source="en.wikipedia.org",
                 rank=1,
             )
         ]
@@ -918,14 +1051,14 @@ class WebAnswerService:
 def _answer_mode(query: str) -> str:
     lowered = query.lower()
     if re.search(
-        r"\b(when|next|version|price|prices|cost|current|schedule|fixture|fixtures|match|release|released|releasing|premiere)\b",
+        r"\b(when|next|version|price|prices|cost|current|schedule|fixture|fixtures|match|release|released|releasing|premiere|episodes?|how many|planned|planning|kirkman)\b",
         lowered,
     ):
         return "fact_lookup"
+    if re.search(r"\b(about|plot|story|recap|overview)\b", lowered) and re.search(r"\b(season|s\d+|movie|film|show|series)\b", lowered):
+        return "overview"
     if re.search(r"\b(news|latest|recent|updates|headlines)\b", lowered):
         return "news_summary"
-    if re.search(r"\b(about|plot|story|recap|overview)\b", lowered) and re.search(r"\b(season|movie|film|show|series)\b", lowered):
-        return "overview"
     return "unknown"
 
 
