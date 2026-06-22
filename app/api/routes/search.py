@@ -111,6 +111,7 @@ def test_search_provider(request: SearchTestRequest) -> dict[str, object]:
     latency_ms = round((perf_counter() - started) * 1000)
     return {
         "success": bool(response.results and not response.error),
+        "provider": response.provider,
         "provider_used": response.provider,
         "result_count": len(response.results),
         "latency_ms": latency_ms,

@@ -73,14 +73,20 @@ OFFICIAL_DOMAINS = {
     "about.fb.com",
     "bcci.tv",
     "icc-cricket.com",
+    "marvel.com",
     "nextjs.org",
     "npmjs.com",
     "openai.com",
+    "primevideo.com",
     "registry.npmjs.org",
+    "x.ai",
     "www.anthropic.com",
     "www.bcci.tv",
     "www.icc-cricket.com",
+    "www.marvel.com",
     "www.npmjs.com",
+    "www.primevideo.com",
+    "www.x.ai",
 }
 
 TRUSTED_NEWS_DOMAINS = {
@@ -94,6 +100,25 @@ TRUSTED_NEWS_DOMAINS = {
     "www.reuters.com",
     "www.techcrunch.com",
     "www.theverge.com",
+}
+
+INDIA_SOURCE_DOMAINS = {
+    "business-standard.com",
+    "district.in",
+    "economictimes.indiatimes.com",
+    "filmibeat.com",
+    "in.bookmyshow.com",
+    "indiatoday.in",
+    "news24online.com",
+    "thehindu.com",
+    "timesnownews.com",
+    "www.business-standard.com",
+    "www.district.in",
+    "www.filmibeat.com",
+    "www.indiatoday.in",
+    "www.news24online.com",
+    "www.thehindu.com",
+    "www.timesnownews.com",
 }
 
 MIN_FETCH_RELEVANCE_SCORE = 4.0
@@ -138,6 +163,10 @@ def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) ->
         and has_alias_hit(profile, f"{result.title} {result.url} {result.snippet or ''}")
         and term_hit_count(profile, f"{result.title} {result.url} {result.snippet or ''}") >= minimum_term_hits
         and not is_low_quality_result(result)
+        and not (
+            is_video_or_social_result(result)
+            and not re.search(r"\b(video|youtube|trailer|clip|watch|instagram|social|post)\b", profile.query, re.IGNORECASE)
+        )
         and (
             not profile.requires_freshness
             or has_freshness_hit(f"{result.title} {result.url} {result.snippet or ''}")
@@ -173,6 +202,20 @@ def score_result(profile: QueryRelevanceProfile, result: SearchResult) -> Search
     elif domain in TRUSTED_NEWS_DOMAINS or f"www.{domain}" in TRUSTED_NEWS_DOMAINS:
         score += 1.5
         reasons.append("trusted")
+    result_text = f"{result.title} {result.url} {result.snippet or ''}".lower()
+    if "india" in profile.terms or "indian" in profile.terms:
+        if domain in INDIA_SOURCE_DOMAINS or f"www.{domain}" in INDIA_SOURCE_DOMAINS or re.search(
+            r"\b(india|indian|mumbai|delhi|chennai|bengaluru|gurgaon|hindi|tamil|telugu)\b",
+            result_text,
+        ):
+            score += 5.0
+            reasons.append("india_source")
+        else:
+            score -= 2.0
+            reasons.append("missing_india_signal")
+    if is_video_or_social_result(result) and not re.search(r"\b(video|youtube|trailer|clip|watch)\b", profile.query, re.IGNORECASE):
+        score -= 7.0
+        reasons.append("video_social")
     if is_low_quality_result(result):
         score -= 6.0
         reasons.append("low_quality")
@@ -275,6 +318,18 @@ def is_low_quality_result(result: SearchResult) -> bool:
         "wallpapers",
     )
     return any(part in result.url.lower() for part in low_quality_parts)
+
+
+def is_video_or_social_result(result: SearchResult) -> bool:
+    domain = urlparse(result.url).netloc.lower().removeprefix("www.")
+    return domain in {
+        "youtube.com",
+        "youtu.be",
+        "tiktok.com",
+        "instagram.com",
+        "x.com",
+        "twitter.com",
+    }
 
 
 def is_low_quality_page(page: FetchedPage) -> bool:
