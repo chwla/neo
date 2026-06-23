@@ -73,6 +73,10 @@ def generate_plan(
     if intent and intent.topic_intent == TOPIC_AI_CODING_TOOLS:
         return _ai_coding_tools_plan(user_query, config, intent)
 
+    comparison = _extract_generic_comparison(user_query)
+    if comparison:
+        return _generic_comparison_plan(user_query, config, comparison, orig)
+
     client = ollama or OllamaClient(num_predict=512)
     entity_hint = _extract_entity_hint(user_query)
 
@@ -158,6 +162,87 @@ def _ai_coding_tools_plan(user_query: str, config: dict, intent: TopicIntent) ->
     )
 
 
+def _generic_comparison_plan(
+    user_query: str,
+    config: dict,
+    comparison: dict[str, str],
+    original_query: str,
+) -> ResearchPlan:
+    """Deterministic, topic-agnostic plan for comparison queries."""
+    left = comparison["left"]
+    right = comparison["right"]
+    context = comparison.get("context", "")
+    domain_hint = comparison.get("domain_hint", "")
+    qualifiers = comparison.get("qualifiers", [])
+    pair = f"{left} vs {right}"
+    if context and context.lower() not in pair.lower():
+        pair_with_context = f"{pair} {context}"
+    else:
+        pair_with_context = pair
+
+    subquestions = [
+        f"What is the exact scope of {left} and {right} in this query?",
+        f"What reliable sources establish the key facts about {left}?",
+        f"What reliable sources establish the key facts about {right}?",
+        f"What direct comparison evidence exists for {pair_with_context}?",
+        "What are the tradeoffs, unknowns, and practical recommendation supported by evidence?",
+    ]
+
+    if domain_hint == "operating_system":
+        source_preferences = [
+            "official project websites and documentation",
+            "official download, release, and support pages",
+            "reputable Linux or desktop operating system review sources",
+            "direct comparison articles as secondary sources",
+        ]
+        queries = [
+            _entity_query(left, context),
+            _entity_query(right, context),
+            *_official_os_queries(left, right),
+            f"{left} official documentation",
+            f"{right} official documentation",
+            f"{pair_with_context} comparison",
+            f"{pair_with_context} desktop operating system comparison",
+            f"{pair_with_context} personal use review",
+            f"{pair_with_context} beginner desktop Linux",
+        ]
+    else:
+        source_preferences = [
+            "official or primary sources",
+            "reputable publications and expert reviews",
+            "independent tests, benchmarks, datasets, or direct comparisons when relevant",
+        ]
+        queries = [
+            f"{pair_with_context} official",
+            _entity_query(left, context),
+            _entity_query(right, context),
+            f"{pair_with_context} comparison",
+            f"{pair_with_context} benchmark review",
+            f"{pair_with_context} differences",
+            f"{pair_with_context} buyer guide",
+            f"{pair_with_context} expert review",
+            f"{pair_with_context} real world test",
+            f"{pair_with_context} pros cons",
+        ]
+    queries = list(dict.fromkeys(q for q in queries if len(q.strip()) > 3))[: config["max_queries"]]
+
+    return ResearchPlan(
+        objective=f"Compare {pair_with_context} using reliable internet sources.",
+        subquestions=subquestions,
+        queries=queries,
+        freshness_required=True,
+        source_preferences=source_preferences,
+        expected_output="comparison",
+        normalized_entities={"left": left, "right": right},
+        comparison_tools=["left", "right"],
+        original_query=original_query,
+        normalized_query=pair_with_context,
+        domain_hint=domain_hint or None,
+        qualifiers=qualifiers,
+        comparison_query=True,
+    )
+
+
 def generate_followup_queries(
     user_query: str,
     plan: ResearchPlan,
@@ -232,6 +317,211 @@ def generate_followup_queries(
 
     anchor = entity_hint or user_query
     return [f"{anchor} {gap.split()[-1]}" for gap in gaps[:2]]
+
+
+_GENERIC_COMPARISON_SPLIT = re.compile(
+    r"\b(?:vs\.?|versus|compared\s+to|compare|comparison\s+of|or)\b",
+    re.IGNORECASE,
+)
+
+_QUALIFIER_SPLIT = re.compile(
+    r"\b(for|in|as|on|with|under|during|from)\b",
+    re.IGNORECASE,
+)
+
+_OPERATING_SYSTEM_TERMS = {
+    "ubuntu", "linux mint", "fedora", "arch", "arch linux", "manjaro",
+    "windows", "linux", "macos", "mac os", "debian", "pop!_os", "pop os",
+    "elementary os", "zorin os", "opensuse", "red hat", "rhel",
+}
+
+_ENTITY_CASE_OVERRIDES = {
+    "c": "C",
+    "c++": "C++",
+    "c#": "C#",
+    "go": "Go",
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "python": "Python",
+    "java": "Java",
+    "rust": "Rust",
+    "macbook": "MacBook",
+    "macos": "macOS",
+    "os": "OS",
+    "ai": "AI",
+    "ios": "iOS",
+    "rhel": "RHEL",
+    "pop!_os": "Pop!_OS",
+}
+
+
+def _extract_generic_comparison(query: str) -> dict[str, str] | None:
+    """Extract comparison sides without topic-specific knowledge."""
+    q = re.sub(r"\s+", " ", query.strip())
+    if not q:
+        return None
+
+    diff = re.search(
+        r"\bdifference\s+between\s+(.+?)\s+and\s+(.+)$",
+        q,
+        flags=re.IGNORECASE,
+    )
+    if diff:
+        left = diff.group(1).strip(" ?.,")
+        right = diff.group(2).strip(" ?.,")
+        return _normalize_comparison_parts(left, right)
+
+    parts = _GENERIC_COMPARISON_SPLIT.split(q, maxsplit=1)
+    if len(parts) == 2:
+        return _normalize_comparison_parts(parts[0].strip(" ?.,:"), parts[1].strip(" ?.,:"))
+
+    return None
+
+
+def _normalize_comparison_parts(left: str, right: str) -> dict[str, str] | None:
+    left = _clean_comparison_side(left)
+    right = _clean_comparison_side(right)
+    if not left or not right:
+        return None
+
+    right_entity, right_context = _split_entity_qualifier(right, left)
+    left_entity, left_context = _split_entity_qualifier(left, right_entity)
+    left = left_entity
+    right = right_entity
+
+    context = ""
+    if right_context:
+        context = right_context
+    elif left_context:
+        context = left_context
+
+    if context and _should_share_context(context):
+        if context.lower() not in left.lower():
+            left = f"{left} {context}".strip()
+        if context.lower() not in right.lower():
+            right = f"{right} {context}".strip()
+
+    left = _canonicalize_entity(left)
+    right = _canonicalize_entity(right)
+    context = _clean_comparison_side(context)
+    domain_hint = _detect_comparison_domain(left, right, context)
+    qualifiers = _extract_qualifiers(context)
+
+    return {
+        "left": left,
+        "right": right,
+        "context": context,
+        "domain_hint": domain_hint,
+        "qualifiers": qualifiers,
+    }
+
+
+def _clean_comparison_side(value: str) -> str:
+    value = re.sub(r"^(the|a|an)\s+", "", value.strip(), flags=re.IGNORECASE)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip(" ?.,:")
+
+
+def _should_share_context(context: str) -> bool:
+    words = context.split()
+    if not words:
+        return False
+    return bool(re.search(r"\b(in|on|with|under|during|from)\b", context, re.IGNORECASE))
+
+
+def _entity_query(entity: str, context: str) -> str:
+    if _should_share_context(context) and context.lower() not in entity.lower():
+        return f"{entity} official {context}".strip()
+    return f"{entity} official"
+
+
+def _official_os_queries(left: str, right: str) -> list[str]:
+    queries: list[str] = []
+    for entity in (left, right):
+        entity_lower = entity.lower()
+        if entity_lower == "ubuntu":
+            queries.append(f"site:ubuntu.com {entity} desktop official")
+            queries.append(f"site:help.ubuntu.com {entity} documentation")
+        elif entity_lower == "linux mint":
+            queries.append(f"site:linuxmint.com {entity} official documentation")
+            queries.append(f"site:linuxmint.com {entity} release notes")
+        elif entity_lower == "fedora":
+            queries.append(f"site:fedoraproject.org {entity} official documentation")
+        elif entity_lower in {"arch", "arch linux"}:
+            queries.append(f"site:archlinux.org {entity} official documentation")
+        elif entity_lower == "manjaro":
+            queries.append(f"site:manjaro.org {entity} official documentation")
+        elif entity_lower == "debian":
+            queries.append(f"site:debian.org {entity} official documentation")
+        elif entity_lower == "windows":
+            queries.append(f"site:microsoft.com {entity} official documentation")
+        elif entity_lower in {"macos", "mac os"}:
+            queries.append(f"site:apple.com {entity} official documentation")
+    return queries
+
+
+def _split_entity_qualifier(value: str, peer: str) -> tuple[str, str]:
+    """Split a comparison side into the entity and a trailing use-case/domain qualifier."""
+    match = _QUALIFIER_SPLIT.search(value)
+    if not match:
+        return value, ""
+
+    before = value[:match.start()].strip()
+    after = value[match.start():].strip()
+    if not before or not after:
+        return value, ""
+
+    marker = match.group(1).lower()
+    if marker == "for":
+        return before, after
+
+    before_words = before.split()
+    peer_words = peer.split()
+    if len(before_words) > len(peer_words) and len(peer_words) <= 2:
+        descriptor = " ".join(before_words[len(peer_words):])
+        entity = " ".join(before_words[:len(peer_words)])
+        if descriptor:
+            return entity, f"{descriptor} {after}".strip()
+
+    return before, after
+
+
+def _canonicalize_entity(value: str) -> str:
+    words = value.split()
+    fixed: list[str] = []
+    for word in words:
+        key = word.lower()
+        if re.fullmatch(r"[a-zA-Z]\d+[a-zA-Z0-9-]*", word):
+            fixed.append(word.upper())
+        elif key in _ENTITY_CASE_OVERRIDES:
+            fixed.append(_ENTITY_CASE_OVERRIDES[key])
+        else:
+            fixed.append(word[:1].upper() + word[1:])
+    return " ".join(fixed)
+
+
+def _detect_comparison_domain(left: str, right: str, context: str) -> str:
+    combined = f"{left} {right} {context}".lower()
+    entities = {left.lower(), right.lower()}
+    if entities & _OPERATING_SYSTEM_TERMS:
+        return "operating_system"
+    if "operating system" in combined or "linux distribution" in combined or "desktop linux" in combined:
+        return "operating_system"
+    return ""
+
+
+def _extract_qualifiers(context: str) -> list[str]:
+    context_lower = context.lower()
+    qualifiers: list[str] = []
+    if "personal use" in context_lower:
+        qualifiers.append("personal use")
+    if "beginner" in context_lower:
+        qualifiers.append("beginner")
+    if "desktop" in context_lower:
+        qualifiers.append("desktop")
+    if "programming" in context_lower:
+        qualifiers.append("programming")
+    return qualifiers
 
 
 _ENTITY_PATTERNS: list[tuple[re.Pattern, str]] = [

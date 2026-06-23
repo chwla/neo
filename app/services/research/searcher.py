@@ -76,7 +76,9 @@ class ResearchSearcher:
         max_pages: int | None = None,
         cancelled: callable | None = None,
     ) -> list[ResearchSource]:
-        limit = max_pages or self.max_sources
+        limit = self.max_sources if max_pages is None else max_pages
+        if limit <= 0:
+            return []
         seen: set[str] = set()
         to_fetch: list[SearchResult] = []
         for r in results:

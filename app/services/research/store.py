@@ -70,7 +70,7 @@ def save_job(job_dict: dict) -> None:
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             """
-            INSERT OR REPLACE INTO research_jobs (
+            INSERT INTO research_jobs (
                 id, user_query, depth, max_sources, max_rounds,
                 status, created_at, updated_at,
                 progress_percent, current_step,
@@ -85,6 +85,24 @@ def save_job(job_dict: dict) -> None:
                 :evidence_json, :report, :error,
                 :metadata_json, :progress_log_json
             )
+            ON CONFLICT(id) DO UPDATE SET
+                user_query = excluded.user_query,
+                depth = excluded.depth,
+                max_sources = excluded.max_sources,
+                max_rounds = excluded.max_rounds,
+                status = excluded.status,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                progress_percent = excluded.progress_percent,
+                current_step = excluded.current_step,
+                plan_json = excluded.plan_json,
+                generated_queries_json = excluded.generated_queries_json,
+                sources_json = excluded.sources_json,
+                evidence_json = excluded.evidence_json,
+                report = excluded.report,
+                error = excluded.error,
+                metadata_json = excluded.metadata_json,
+                progress_log_json = excluded.progress_log_json
             """,
             {
                 "id": job_dict["id"],

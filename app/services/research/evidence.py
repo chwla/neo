@@ -60,6 +60,12 @@ def extract_entity_terms(user_query: str, plan: ResearchPlan) -> list[str]:
         if intent:
             return product_entity_terms(intent_from_topic(intent))
 
+    if plan.comparison_query and plan.normalized_entities:
+        terms: list[str] = []
+        for entity in plan.normalized_entities.values():
+            terms.extend(_entity_aliases(entity))
+        return list(dict.fromkeys(t for t in terms if t))
+
     query_lower = user_query.lower()
     objective_lower = plan.objective.lower()
     combined = query_lower + " " + objective_lower
@@ -80,12 +86,16 @@ def extract_entity_terms(user_query: str, plan: ResearchPlan) -> list[str]:
         entity_groups.append(["superman", "clark kent", "dc comics", "krypton"])
 
     if not entity_groups:
-        words = set(query_lower.split()) - {
+        words = set(re.findall(r"[a-z0-9][a-z0-9+.-]*", query_lower)) - {
             "research", "the", "a", "an", "of", "for", "and", "or", "to",
             "in", "on", "with", "about", "how", "what", "why", "best",
-            "should", "compare", "vs", "between", "current", "latest",
+            "should", "compare", "comparison", "compared", "versus", "vs",
+            "difference", "between", "current", "latest",
         }
-        significant = [w for w in words if len(w) > 3]
+        significant = [
+            w for w in words
+            if len(w) > 3 or (len(w) >= 2 and any(ch.isdigit() for ch in w))
+        ]
         if significant:
             entity_groups.append(significant)
 
@@ -101,7 +111,7 @@ def source_passes_entity_filter(
         return True
 
     searchable = (source.title + " " + source.text[:3000]).lower()
-    return any(term in searchable for term in entity_terms)
+    return any(_contains_entity_term(searchable, term) for term in entity_terms)
 
 
 def filter_irrelevant_sources(
@@ -164,6 +174,19 @@ def filter_irrelevant_sources(
                 src.quality_score = max(0.0, src.quality_score - 2.0)
             elif is_preferred_product_source(src, product_intent):
                 src.quality_score = min(10.0, src.quality_score + 1.0)
+
+        if plan and plan.domain_hint == "operating_system" and plan.comparison_query:
+            reject_reason = _source_is_offtopic_for_os_comparison(src, plan)
+            if reject_reason:
+                src.fetched = False
+                src.fetch_status = "rejected"
+                src.fetch_error = reject_reason
+                src.text = ""
+                continue
+            if _is_preferred_os_source(src, plan):
+                src.quality_score = min(10.0, src.quality_score + 1.5)
+            elif _is_low_quality_os_source(src, plan):
+                src.quality_score = max(0.0, src.quality_score - 2.5)
 
         domain_lower = src.domain.lower()
         if any(d in domain_lower for d in _IRRELEVANT_DOMAINS):
@@ -277,6 +300,23 @@ def identify_gaps(
         if not any(c.evidence_category == "comparison_evidence" for c in evidence):
             gaps.append("Missing direct comparison evidence")
 
+    if (
+        plan.comparison_query
+        and plan.normalized_entities
+        and plan.topic_intent not in (TOPIC_PRODUCT_COMPARISON, TOPIC_AI_CODING_TOOLS)
+    ):
+        entities = list(plan.normalized_entities.values())
+        left_label = entities[0] if entities else "left entity"
+        right_label = entities[1] if len(entities) > 1 else "right entity"
+        left_ev = [c for c in evidence if c.evidence_category in ("left_evidence", "comparison_evidence")]
+        right_ev = [c for c in evidence if c.evidence_category in ("right_evidence", "comparison_evidence")]
+        if not left_ev:
+            gaps.append(f"Missing {left_label}-specific evidence")
+        if not right_ev:
+            gaps.append(f"Missing {right_label}-specific evidence")
+        if not any(c.evidence_category == "comparison_evidence" for c in evidence):
+            gaps.append("Missing direct comparison evidence")
+
     if len(evidence) < 3:
         gaps.append("Weak evidence: fewer than 3 evidence chunks found")
 
@@ -326,6 +366,12 @@ def _extract_from_source(
                 continue
             if is_preferred_ai_coding_source(source):
                 quality_boost = 1.5
+        elif plan.comparison_query and plan.normalized_entities:
+            evidence_category = _classify_generic_comparison_evidence(para, source, plan)
+            if evidence_category == "irrelevant":
+                continue
+            if plan.domain_hint == "operating_system" and _is_preferred_os_source(source, plan):
+                quality_boost = 1.5
 
         relevance = _score_relevance(para, plan)
         quality = _score_chunk_quality(para, source) + quality_boost
@@ -358,7 +404,144 @@ def _chunk_has_entity_relevance(text: str, entity_terms: list[str]) -> bool:
     if not entity_terms:
         return True
     text_lower = text.lower()
-    return any(term in text_lower for term in entity_terms)
+    return any(_contains_entity_term(text_lower, term) for term in entity_terms)
+
+
+def _comparison_entities(plan: ResearchPlan) -> tuple[str, str] | None:
+    if not plan.comparison_query or not plan.normalized_entities:
+        return None
+    entities = list(plan.normalized_entities.values())
+    if len(entities) < 2:
+        return None
+    return entities[0], entities[1]
+
+
+def _entity_aliases(entity: str) -> list[str]:
+    entity = entity.strip()
+    if not entity:
+        return []
+    aliases = [entity.lower()]
+    entity_lower = entity.lower()
+    if entity_lower.startswith("macos"):
+        aliases.append("mac os")
+    if entity_lower == "c++":
+        aliases.append("cplusplus")
+    return aliases
+
+
+def _contains_entity_term(text_lower: str, term: str) -> bool:
+    term_lower = term.lower().strip()
+    if not term_lower:
+        return False
+    if len(term_lower) <= 2 or re.search(r"[+#.]", term_lower):
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(term_lower)}(?![a-z0-9])", text_lower))
+    return term_lower in text_lower
+
+
+def _source_mentions_entity(source: ResearchSource, entity: str) -> bool:
+    searchable = (source.title + " " + source.text[:5000]).lower()
+    return any(_contains_entity_term(searchable, alias) for alias in _entity_aliases(entity))
+
+
+def _text_mentions_entity(text: str, entity: str) -> bool:
+    text_lower = text.lower()
+    return any(_contains_entity_term(text_lower, alias) for alias in _entity_aliases(entity))
+
+
+def _classify_generic_comparison_evidence(
+    text: str,
+    source: ResearchSource,
+    plan: ResearchPlan,
+) -> str:
+    pair = _comparison_entities(plan)
+    if not pair:
+        return "general"
+    left, right = pair
+    combined = f"{source.title} {text}"
+    has_left = _text_mentions_entity(combined, left)
+    has_right = _text_mentions_entity(combined, right)
+    if has_left and has_right:
+        return "comparison_evidence"
+    if has_left:
+        return "left_evidence"
+    if has_right:
+        return "right_evidence"
+    return "irrelevant"
+
+
+def _official_os_domains_for_entity(entity: str) -> tuple[str, ...]:
+    entity_lower = entity.lower()
+    if entity_lower == "ubuntu":
+        return ("ubuntu.com", "help.ubuntu.com", "canonical.com")
+    if entity_lower == "linux mint":
+        return ("linuxmint.com",)
+    if entity_lower == "fedora":
+        return ("fedoraproject.org", "docs.fedoraproject.org")
+    if entity_lower in {"arch", "arch linux"}:
+        return ("archlinux.org", "wiki.archlinux.org")
+    if entity_lower == "manjaro":
+        return ("manjaro.org",)
+    if entity_lower == "debian":
+        return ("debian.org",)
+    if entity_lower == "windows":
+        return ("microsoft.com", "learn.microsoft.com")
+    if entity_lower in {"macos", "mac os"}:
+        return ("apple.com", "support.apple.com")
+    return ()
+
+
+def _is_preferred_os_source(source: ResearchSource, plan: ResearchPlan) -> bool:
+    pair = _comparison_entities(plan)
+    if not pair:
+        return False
+    domain = (source.domain or "").lower()
+    return any(
+        any(official in domain for official in _official_os_domains_for_entity(entity))
+        for entity in pair
+    )
+
+
+def _is_low_quality_os_source(source: ResearchSource, plan: ResearchPlan) -> bool:
+    domain = (source.domain or "").lower()
+    title = (source.title or "").lower()
+    if "geeksforgeeks.org" in domain and re.search(r"\b(introduction|tutorial|what is|linux/unix)\b", title):
+        return True
+    if "wikipedia.org" in domain and re.search(r"^(linux|operating system|unix)", title):
+        return True
+    if "apps.microsoft.com" in domain or "microsoft.com/store" in source.url.lower():
+        query = f"{plan.original_query or ''} {plan.normalized_query or ''}".lower()
+        return "wsl" not in query and "store" not in query and "windows install" not in query
+    return False
+
+
+def _source_is_offtopic_for_os_comparison(source: ResearchSource, plan: ResearchPlan) -> str | None:
+    pair = _comparison_entities(plan)
+    if not pair:
+        return None
+    left, right = pair
+    title = (source.title or "").lower()
+    searchable = (source.title + " " + source.text[:5000]).lower()
+
+    fake_pairs = [
+        f"{left.split()[0]} {right.split()[-1]}".lower(),
+        f"{right.split()[0]} {left.split()[-1]}".lower(),
+    ]
+    if any(fake in title for fake in fake_pairs if fake not in {left.lower(), right.lower()}):
+        return "Wrong merged comparison entity"
+
+    mentions_left = _source_mentions_entity(source, left)
+    mentions_right = _source_mentions_entity(source, right)
+    if not mentions_left and not mentions_right:
+        return "Source content does not mention either compared operating system"
+
+    if _is_low_quality_os_source(source, plan):
+        return "Low-quality or generic operating system source"
+
+    if re.search(r"\b(linux/unix tutorial|introduction to linux|linux tutorial)\b", searchable):
+        if left.lower() != "linux" and right.lower() != "linux":
+            return "Generic Linux tutorial, not the compared distributions"
+
+    return None
 
 
 def _find_contradictions(evidence: list[ResearchEvidenceChunk]) -> list[str]:

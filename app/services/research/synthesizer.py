@@ -36,6 +36,18 @@ EVIDENCE_THRESHOLDS = {
     DepthMode.DEEP: {"min_sources": 5, "min_evidence": 12, "min_domains": 3},
 }
 
+GENERIC_COMPARISON_TABLE_DIMENSIONS = [
+    "Scope / definition",
+    "Key facts",
+    "Direct comparison evidence",
+    "Strengths",
+    "Weaknesses",
+    "Costs / availability",
+    "Best for",
+    "Recommendation",
+    "Unknowns",
+]
+
 SYNTHESIS_SYSTEM_PROMPT = """\
 You are a research report writer for Neo. You produce evidence-based reports in a strict format.
 
@@ -221,6 +233,35 @@ def synthesize_report(
                 "Mention this normalization briefly in Research Scope."
             )
 
+    if plan.comparison_query and plan.expected_output == "comparison" and plan.topic_intent != TOPIC_AI_CODING_TOOLS:
+        entities = plan.normalized_query or " vs ".join(plan.normalized_entities.values()) or user_query
+        mode_instruction += (
+            f"\n\nTOPIC INTENT: General internet comparison ({entities}). "
+            "Keep entity names, variants, dates, editions, model numbers, jurisdictions, and scope qualifiers exact. "
+            "Do NOT mix evidence from a different variant, generation, product tier, country, time period, or entity unless it is clearly labeled as a caveat. "
+            "Do NOT make performance, price, safety, legal, medical, financial, or recommendation claims unless directly supported by cited evidence. "
+            "If evidence only supports a narrow dimension, do not generalize it to the whole topic. "
+            "Section 5 subheadings MUST use ### 5.1, ### 5.2 format (NOT ### 4.1). "
+            "Section 6 MUST be a clean markdown comparison/tradeoff table. "
+            "Use 'Not enough evidence found.' for unsupported cells. "
+            "Section 7 MUST include a clear recommendation when the user asks a comparison or decision question."
+        )
+        if plan.domain_hint == "operating_system":
+            labels = list(plan.normalized_entities.values())
+            left = labels[0] if labels else "Entity A"
+            right = labels[1] if len(labels) > 1 else "Entity B"
+            mode_instruction += (
+                f"\nOperating system comparison domain: compare exactly {left} vs {right}. "
+                "Do NOT invent merged entities such as combining words from both sides. "
+                "Prefer official project websites, official documentation, official download/release pages, "
+                "and reputable desktop/Linux review sources. Generic Linux tutorials, generic Wikipedia pages, "
+                "and Microsoft Store/WSL pages are not primary evidence unless the user asked for that scope. "
+                "Section 6 MUST include rows for desktop experience, ecosystem/documentation, ease of use, "
+                "hardware/resource fit, software availability, update/release model, best fit, and unknowns. "
+                "Section 7 MUST give a direct evidence-backed recommendation. If one side has weak evidence, "
+                "start the recommendation with 'Based on limited evidence'."
+            )
+
     user_msg = (
         f"Research question: {user_query}\n\n"
         f"Research objective: {plan.objective}\n\n"
@@ -250,6 +291,8 @@ def synthesize_report(
         report = _inject_evidence_quality_section(report, stats, evidence_grade, report_mode)
         if report_mode == "partial":
             report = _inject_partial_warning(report)
+        if plan.comparison_query or plan.expected_output == "comparison":
+            report = _ensure_required_report_sections(report, plan, evidence, gaps)
         report = _append_verified_sources(report, sources, evidence)
         return report
     except Exception:
@@ -318,7 +361,7 @@ def _normalize_report_format(report: str) -> str:
                     if key in title_raw:
                         num = n
                         break
-            if num is not None and num not in (3, 10):
+            if num is not None and num != 10:
                 if num not in sections or len(body) > len(sections[num]):
                     sections[num] = body
             i += 2
@@ -430,6 +473,103 @@ def _ai_coding_coverage(
     }
 
 
+def _generic_comparison_coverage(
+    plan: ResearchPlan,
+    evidence: list[ResearchEvidenceChunk],
+    sources: list[ResearchSource],
+) -> dict:
+    """Assess entity/source balance for generic comparison reports."""
+    cited_source_ids = {e.source_id for e in evidence}
+    relevant_sources = [s for s in sources if s.id in cited_source_ids and s.fetched]
+    entities = list(plan.normalized_entities.values())
+    left = entities[0] if entities else ""
+    right = entities[1] if len(entities) > 1 else ""
+
+    left_evidence = [e for e in evidence if e.evidence_category in ("left_evidence", "comparison_evidence")]
+    right_evidence = [e for e in evidence if e.evidence_category in ("right_evidence", "comparison_evidence")]
+    comparison_evidence = [e for e in evidence if e.evidence_category == "comparison_evidence"]
+
+    left_source_ids = {e.source_id for e in left_evidence}
+    right_source_ids = {e.source_id for e in right_evidence}
+
+    left_official = any(
+        _is_official_or_high_quality_for_entity(s, left, plan)
+        for s in relevant_sources
+        if s.id in left_source_ids
+    )
+    right_official = any(
+        _is_official_or_high_quality_for_entity(s, right, plan)
+        for s in relevant_sources
+        if s.id in right_source_ids
+    )
+    low_quality_count = sum(1 for s in relevant_sources if _is_low_quality_generic_source(s, plan))
+    fake_entity = _has_fake_merged_entity(left, right, relevant_sources)
+
+    return {
+        "has_left": bool(left_evidence),
+        "has_right": bool(right_evidence),
+        "has_comparison": bool(comparison_evidence),
+        "left_official": left_official,
+        "right_official": right_official,
+        "low_quality_count": low_quality_count,
+        "fake_entity": fake_entity,
+        "relevant_sources": len(relevant_sources),
+    }
+
+
+def _official_domains_for_entity(entity: str) -> tuple[str, ...]:
+    entity_lower = entity.lower()
+    if entity_lower == "ubuntu":
+        return ("ubuntu.com", "help.ubuntu.com", "canonical.com")
+    if entity_lower == "linux mint":
+        return ("linuxmint.com",)
+    if entity_lower == "fedora":
+        return ("fedoraproject.org", "docs.fedoraproject.org")
+    if entity_lower in {"arch", "arch linux"}:
+        return ("archlinux.org", "wiki.archlinux.org")
+    if entity_lower == "manjaro":
+        return ("manjaro.org",)
+    if entity_lower == "debian":
+        return ("debian.org",)
+    if entity_lower == "windows":
+        return ("microsoft.com", "learn.microsoft.com")
+    if entity_lower in {"macos", "mac os"}:
+        return ("apple.com", "support.apple.com")
+    return ()
+
+
+def _is_official_or_high_quality_for_entity(source: ResearchSource, entity: str, plan: ResearchPlan) -> bool:
+    domain = (source.domain or "").lower()
+    if plan.domain_hint == "operating_system":
+        return any(official in domain for official in _official_domains_for_entity(entity))
+    return source.quality_score >= 7.5
+
+
+def _is_low_quality_generic_source(source: ResearchSource, plan: ResearchPlan) -> bool:
+    if plan.domain_hint != "operating_system":
+        return False
+    domain = (source.domain or "").lower()
+    title = (source.title or "").lower()
+    if "geeksforgeeks.org" in domain and re.search(r"\b(introduction|tutorial|what is|linux/unix)\b", title):
+        return True
+    if "wikipedia.org" in domain and re.search(r"^(linux|operating system|unix)", title):
+        return True
+    if "apps.microsoft.com" in domain or "microsoft.com/store" in source.url.lower():
+        return True
+    return False
+
+
+def _has_fake_merged_entity(left: str, right: str, sources: list[ResearchSource]) -> bool:
+    if not left or not right:
+        return False
+    fake_pairs = {
+        f"{left.split()[0]} {right.split()[-1]}".lower(),
+        f"{right.split()[0]} {left.split()[-1]}".lower(),
+    } - {left.lower(), right.lower()}
+    text = " ".join(s.title or "" for s in sources).lower()
+    return any(fake in text for fake in fake_pairs)
+
+
 def _compute_stats(sources: list[ResearchSource], evidence: list[ResearchEvidenceChunk]) -> dict:
     fetched = [s for s in sources if s.fetched and s.text]
     rejected = [s for s in sources if s.fetch_status == "rejected"]
@@ -492,6 +632,30 @@ def _compute_confidence(
             return "Medium"
         return "Low"
 
+    if (
+        plan
+        and plan.comparison_query
+        and plan.normalized_entities
+        and plan.topic_intent not in (TOPIC_PRODUCT_COMPARISON, TOPIC_AI_CODING_TOOLS)
+        and evidence is not None
+        and sources is not None
+    ):
+        cov = _generic_comparison_coverage(plan, evidence, sources)
+        if cov["fake_entity"] or not cov["has_left"] or not cov["has_right"]:
+            return "Low"
+        high_ok = (
+            cov["has_comparison"]
+            and cov["low_quality_count"] == 0
+            and report_mode == "full"
+        )
+        if plan.domain_hint == "operating_system":
+            high_ok = high_ok and cov["left_official"] and cov["right_official"]
+        if high_ok:
+            return "High"
+        if cov["has_left"] and cov["has_right"]:
+            return "Medium"
+        return "Low"
+
     if report_mode == "partial":
         return "Medium" if stats["relevant"] >= 3 and stats["evidence"] >= 6 else "Low"
     if stats["relevant"] >= 5 and stats["evidence"] >= 12 and stats["unique_domains"] >= 3:
@@ -529,6 +693,27 @@ def _compute_evidence_grade(
         if cov["has_air"] or cov["has_pro"]:
             return "Weak"
         return "Insufficient"
+
+    if (
+        plan
+        and plan.comparison_query
+        and plan.normalized_entities
+        and plan.topic_intent not in (TOPIC_PRODUCT_COMPARISON, TOPIC_AI_CODING_TOOLS)
+        and evidence is not None
+        and sources is not None
+    ):
+        cov = _generic_comparison_coverage(plan, evidence, sources)
+        if cov["fake_entity"] or not cov["has_left"] or not cov["has_right"]:
+            return "Weak" if cov["has_left"] or cov["has_right"] else "Insufficient"
+        if plan.domain_hint == "operating_system":
+            if cov["left_official"] and cov["right_official"] and cov["has_comparison"]:
+                return "Strong"
+            if cov["left_official"] or cov["right_official"] or cov["has_comparison"]:
+                return "Moderate"
+            return "Weak"
+        if cov["has_comparison"]:
+            return "Strong" if stats["unique_domains"] >= 3 else "Moderate"
+        return "Moderate"
 
     if stats["relevant"] >= 5 and stats["evidence"] >= 12 and stats["unique_domains"] >= 3:
         return "Strong"
@@ -578,6 +763,23 @@ def _decide_report_mode(
             return "partial" if mode != "insufficient" else "insufficient"
         if not cov["has_air"] or not cov["has_pro"]:
             return "partial" if mode != "insufficient" else "insufficient"
+        if not cov["has_comparison"]:
+            return "partial"
+
+    if (
+        plan
+        and plan.comparison_query
+        and plan.normalized_entities
+        and plan.topic_intent not in (TOPIC_PRODUCT_COMPARISON, TOPIC_AI_CODING_TOOLS)
+    ):
+        cov = _generic_comparison_coverage(plan, evidence, sources)
+        if cov["fake_entity"] or not cov["has_left"] or not cov["has_right"]:
+            return "partial" if mode != "insufficient" else "insufficient"
+        if plan.domain_hint == "operating_system":
+            if not (cov["left_official"] and cov["right_official"]):
+                return "partial" if mode != "insufficient" else "insufficient"
+            if cov["low_quality_count"] > 0:
+                return "partial"
         if not cov["has_comparison"]:
             return "partial"
 
@@ -700,6 +902,392 @@ def _build_evidence_context(
     return "\n".join(lines)
 
 
+def _fallback_supported_findings(evidence: list[ResearchEvidenceChunk]) -> list[str]:
+    findings: list[str] = []
+    for chunk in evidence:
+        text = _fallback_trim(chunk.text)
+        if text:
+            findings.append(f"{text} [{chunk.source_id}]")
+    return findings
+
+
+def _fallback_trim(text: str, limit: int = 180) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= limit:
+        return cleaned
+    cut = cleaned[:limit].rsplit(" ", 1)[0]
+    return f"{cut}..."
+
+
+def _fallback_matching_evidence(subquestion: str, evidence: list[ResearchEvidenceChunk]) -> list[ResearchEvidenceChunk]:
+    words = set(re.findall(r"[a-z0-9]+", subquestion.lower())) - {
+        "what", "how", "which", "does", "the", "and", "for", "with", "are", "is",
+    }
+    return [chunk for chunk in evidence if any(word in chunk.text.lower() for word in words)]
+
+
+def _fallback_evidence_sentence(chunk: ResearchEvidenceChunk) -> str:
+    return f"{_fallback_trim(chunk.text, 260)} [{chunk.source_id}]"
+
+
+def _fallback_dimension_evidence(dimension: str, evidence: list[ResearchEvidenceChunk]) -> list[ResearchEvidenceChunk]:
+    terms = {
+        "CPU performance": ["cpu", "performance", "benchmark", "faster"],
+        "GPU performance": ["gpu", "graphics"],
+        "Neural/AI performance": ["neural", "ai", "machine learning", "accelerator"],
+        "Memory bandwidth": ["memory bandwidth", "bandwidth"],
+        "Unified memory support": ["unified memory", "memory"],
+        "Battery/efficiency": ["battery", "efficiency", "power"],
+        "Thermals": ["thermal", "heat", "hotter"],
+        "Best for": ["best", "buyer", "recommend"],
+        "Upgrade advice": ["upgrade", "buying", "buyer", "recommend"],
+    }.get(dimension, [dimension.lower()])
+    return [chunk for chunk in evidence if any(term in chunk.text.lower() for term in terms)]
+
+
+def _fallback_dimension_value(chunk: ResearchEvidenceChunk) -> str:
+    return _fallback_trim(chunk.text, 120)
+
+
+def _fallback_generic_comparison_table(plan: ResearchPlan, evidence: list[ResearchEvidenceChunk]) -> list[str]:
+    labels = list(plan.normalized_entities.values()) or ["A", "B"]
+    left = labels[0]
+    right = labels[1] if len(labels) > 1 else "B"
+    dims = (
+        PRODUCT_COMPARISON_TABLE_DIMENSIONS
+        if plan.topic_intent == TOPIC_PRODUCT_COMPARISON
+        else GENERIC_COMPARISON_TABLE_DIMENSIONS
+    )
+    lines = [
+        f"| Dimension | {left} | {right} | Evidence |",
+        "| --- | --- | --- | --- |",
+    ]
+    for dim in dims:
+        matches = _fallback_dimension_evidence(dim, evidence)
+        left_match = _fallback_entity_specific_evidence(matches or evidence, left, "left_evidence")
+        right_match = _fallback_entity_specific_evidence(matches or evidence, right, "right_evidence")
+        evidence_ids = []
+        if left_match:
+            evidence_ids.append(f"[{left_match.source_id}]")
+        if right_match and right_match.source_id != (left_match.source_id if left_match else None):
+            evidence_ids.append(f"[{right_match.source_id}]")
+        if left_match or right_match:
+            left_value = _fallback_dimension_value(left_match) if left_match else "Not enough evidence found."
+            right_value = _fallback_dimension_value(right_match) if right_match else "Not enough evidence found."
+            lines.append(f"| {dim} | {left_value} | {right_value} | {''.join(evidence_ids) or '-'} |")
+        else:
+            lines.append(f"| {dim} | Not enough evidence found. | Not enough evidence found. | - |")
+    return lines
+
+
+def _fallback_recommendation(plan: ResearchPlan, evidence: list[ResearchEvidenceChunk]) -> list[str]:
+    if not plan.comparison_query:
+        return ["No recommendation is needed for this research question."]
+    if evidence:
+        entities = list(plan.normalized_entities.values())
+        left = entities[0] if entities else "the first option"
+        right = entities[1] if len(entities) > 1 else "the second option"
+        left_ev = _fallback_entity_specific_evidence(evidence, left, "left_evidence")
+        right_ev = _fallback_entity_specific_evidence(evidence, right, "right_evidence")
+        refs = "".join(
+            f"[{e.source_id}]"
+            for e in [left_ev, right_ev]
+            if e is not None
+        ) or "".join(f"[{e.source_id}]" for e in evidence[:2])
+        prefix = "Based on limited evidence, " if len({e.source_id for e in evidence}) < 3 else ""
+        return [
+            f"**Recommendation:** {prefix}choose between {left} and {right} by matching the cited evidence to your stated priorities. {refs}",
+            "",
+            "**Reasoning:**",
+            f"* Evidence was found for {left if left_ev else 'only part of the comparison'}"
+            f"{f' [{left_ev.source_id}]' if left_ev else ''}.",
+            f"* Evidence was found for {right if right_ev else 'only part of the comparison'}"
+            f"{f' [{right_ev.source_id}]' if right_ev else ''}.",
+            "* Any stronger recommendation needs more direct comparison evidence for the exact use case.",
+        ]
+    return ["No recommendation can be made from the available evidence."]
+
+
+def _fallback_entity_specific_evidence(
+    evidence: list[ResearchEvidenceChunk],
+    entity: str,
+    category: str,
+) -> ResearchEvidenceChunk | None:
+    entity_lower = entity.lower()
+    for chunk in evidence:
+        if chunk.evidence_category in (category, "comparison_evidence"):
+            return chunk
+    for chunk in evidence:
+        if entity_lower and entity_lower in f"{chunk.source_title} {chunk.text}".lower():
+            return chunk
+    return None
+
+
+def _strict_partial_fallback_report(
+    user_query: str,
+    depth: DepthMode,
+    now: str,
+    plan: ResearchPlan,
+    sources: list[ResearchSource],
+    evidence: list[ResearchEvidenceChunk],
+    gaps: list[str] | None = None,
+) -> str:
+    stats = _compute_stats(sources, evidence)
+    confidence = _compute_confidence(stats, "partial", plan, evidence, sources)
+    grade = _compute_evidence_grade(stats, depth, plan, evidence, sources)
+    title = plan.normalized_query or f"Research: {user_query}"
+    top_evidence = sorted(evidence, key=lambda e: e.relevance_score + e.quality_score, reverse=True)[:8]
+    source_map = {s.id: s for s in sources if s.fetched and s.text}
+    useful_sources = [s for s in sources if s.fetched and s.text and s.evidence_count > 0]
+    supported = _fallback_supported_findings(top_evidence)
+
+    scope_notes = [
+        f"* **Main objective:** {plan.objective or user_query}",
+        "* **Subquestions covered:**",
+    ]
+    for sq in (plan.subquestions or [])[:5]:
+        scope_notes.append(f"  * {sq}")
+    scope_notes.append("* **Out of scope:** Claims not directly supported by extracted evidence.")
+
+    lines = [
+        f"# {title}",
+        "",
+        f"**Query:** {user_query}  ",
+        f"**Mode:** {depth.value}  ",
+        f"**Report type:** Partial Report  ",
+        f"**Generated:** {now}  ",
+        f"**Confidence:** {confidence}",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary",
+        "",
+        "* LLM synthesis failed, so this is a fallback evidence-based summary.",
+    ]
+    if supported:
+        lines.extend(f"* {finding}" for finding in supported[:3])
+    else:
+        lines.append("* Extracted evidence was too limited for a specific finding.")
+    if plan.comparison_query:
+        lines.append("* Recommendation is limited to claims directly supported by the extracted evidence.")
+
+    lines.extend([
+        "",
+        "## 2. Research Scope",
+        "",
+        *scope_notes,
+        "",
+        "## 3. Evidence Quality",
+        "",
+        f"* **Search queries generated:** (see metadata)",
+        f"* **Sources found:** {stats['total']}",
+        f"* **Sources fetched:** {stats['fetched']}",
+        f"* **Sources rejected:** {stats['rejected']}",
+        f"* **Evidence chunks used:** {stats['evidence']}",
+        f"* **Unique domains used:** {stats['unique_domains']}",
+        "",
+        f"**Evidence grade:** {grade}",
+        "",
+        "## 4. Key Findings",
+        "",
+    ])
+    if supported:
+        for i, finding in enumerate(supported[:5], start=1):
+            lines.append(f"{i}. {finding}")
+    else:
+        lines.append("No reliable evidence-based findings could be extracted.")
+
+    lines.extend(["", "## 5. Detailed Analysis", ""])
+    if plan.subquestions:
+        for idx, sq in enumerate(plan.subquestions[:3], start=1):
+            lines.append(f"### 5.{idx} {sq}")
+            lines.append("")
+            matching = _fallback_matching_evidence(sq, top_evidence)
+            if matching:
+                lines.append(_fallback_evidence_sentence(matching[0]))
+            else:
+                lines.append("No reliable evidence was found for this subquestion.")
+            lines.append("")
+    else:
+        lines.append("### 5.1 Evidence Synthesis")
+        lines.append("")
+        lines.append(_fallback_evidence_sentence(top_evidence[0]) if top_evidence else "No reliable evidence was found.")
+        lines.append("")
+
+    lines.extend(["## 6. Comparison / Tradeoffs", ""])
+    if plan.comparison_query:
+        lines.extend(_fallback_generic_comparison_table(plan, top_evidence))
+    else:
+        lines.append("Not applicable.")
+
+    lines.extend(["", "## 7. Recommendation", ""])
+    lines.extend(_fallback_recommendation(plan, top_evidence))
+
+    lines.extend([
+        "",
+        "## 8. Risks, Unknowns, and Gaps",
+        "",
+        "* **Risk/Unknown:** LLM synthesis failed, so this report uses extracted evidence only.",
+        "  * **Why it matters:** Nuance may be missing, and unsupported claims were intentionally omitted.",
+        "  * **What would reduce uncertainty:** Re-run after the synthesis model is available.",
+    ])
+    if gaps:
+        for g in gaps[:5]:
+            lines.append(f"* **Risk/Unknown:** {g}")
+            lines.append("  * **Why it matters:** It may leave part of the comparison weakly supported.")
+            lines.append("  * **What would reduce uncertainty:** Gather direct evidence for this gap.")
+    lines.extend([
+        "",
+        "## 9. Suggested Follow-Up Research",
+        "",
+        "1. Find official or primary sources for each compared entity.",
+        "2. Find direct comparison evidence for the exact query scope.",
+        "3. Find expert analysis that discusses tradeoffs and recommendations.",
+        "",
+        "---",
+        "",
+        "## 10. Sources",
+        "",
+    ])
+    listed: set[int] = set()
+    for ev in top_evidence:
+        src = source_map.get(ev.source_id)
+        if not src or src.id in listed:
+            continue
+        listed.add(src.id)
+        lines.append(f"[{src.id}] {src.title or src.domain} - {src.url}")
+    if not listed:
+        for src in useful_sources[:10]:
+            lines.append(f"[{src.id}] {src.title or src.domain} - {src.url}")
+    return "\n".join(lines)
+
+
+def _ensure_required_report_sections(
+    report: str,
+    plan: ResearchPlan,
+    evidence: list[ResearchEvidenceChunk],
+    gaps: list[str] | None = None,
+) -> str:
+    """Repair comparison reports when LLM synthesis omits required sections."""
+    top_evidence = sorted(evidence, key=lambda e: e.relevance_score + e.quality_score, reverse=True)[:8]
+    repaired = report
+
+    if "## 4. Key Findings" not in repaired:
+        findings = _fallback_supported_findings(top_evidence)
+        body = "\n".join(
+            f"{idx}. {finding}" for idx, finding in enumerate(findings[:5], start=1)
+        ) or "No reliable evidence-based findings could be extracted."
+        repaired = _append_section_before_sources(repaired, "## 4. Key Findings", body)
+
+    if "## 5. Detailed Analysis" not in repaired:
+        lines: list[str] = []
+        if plan.subquestions:
+            for idx, sq in enumerate(plan.subquestions[:3], start=1):
+                lines.append(f"### 5.{idx} {sq}")
+                lines.append("")
+                matching = _fallback_matching_evidence(sq, top_evidence)
+                lines.append(
+                    _fallback_evidence_sentence(matching[0])
+                    if matching
+                    else "No reliable evidence was found for this subquestion."
+                )
+                lines.append("")
+        else:
+            lines.extend([
+                "### 5.1 Evidence Synthesis",
+                "",
+                _fallback_evidence_sentence(top_evidence[0]) if top_evidence else "No reliable evidence was found.",
+            ])
+        repaired = _append_section_before_sources(repaired, "## 5. Detailed Analysis", "\n".join(lines).strip())
+    else:
+        repaired = _fix_detailed_analysis_subsections(repaired)
+
+    section6 = _extract_section(repaired, 6)
+    if "| Dimension |" not in section6:
+        repaired = _replace_or_append_section(
+            repaired,
+            6,
+            "Comparison / Tradeoffs",
+            "\n".join(_fallback_generic_comparison_table(plan, top_evidence)),
+        )
+
+    section7 = _extract_section(repaired, 7)
+    if (
+        not section7
+        or "**Recommendation:**" not in section7
+        or "No recommendation is needed for this research question." in section7
+    ):
+        repaired = _replace_or_append_section(
+            repaired,
+            7,
+            "Recommendation",
+            "\n".join(_fallback_recommendation(plan, top_evidence)),
+        )
+
+    if "## 8. Risks, Unknowns, and Gaps" not in repaired:
+        risk_lines = [
+            "* **Risk/Unknown:** Some comparison dimensions may not be directly supported by extracted evidence.",
+            "  * **Why it matters:** Unsupported claims were omitted instead of inferred.",
+            "  * **What would reduce uncertainty:** Gather direct evidence for the exact query scope.",
+        ]
+        for gap in (gaps or [])[:3]:
+            risk_lines.append(f"* **Risk/Unknown:** {gap}")
+            risk_lines.append("  * **Why it matters:** It may leave part of the comparison weakly supported.")
+            risk_lines.append("  * **What would reduce uncertainty:** Gather direct evidence for this gap.")
+        repaired = _append_section_before_sources(
+            repaired,
+            "## 8. Risks, Unknowns, and Gaps",
+            "\n".join(risk_lines),
+        )
+
+    if "## 9. Suggested Follow-Up Research" not in repaired:
+        repaired = _append_section_before_sources(
+            repaired,
+            "## 9. Suggested Follow-Up Research",
+            "\n".join([
+                "1. Find official or primary sources for each compared entity.",
+                "2. Find direct comparison evidence for the exact query scope.",
+                "3. Find expert analysis that discusses tradeoffs and recommendations.",
+            ]),
+        )
+
+    return _normalize_report_format(repaired)
+
+
+def _extract_section(report: str, number: int) -> str:
+    match = re.search(
+        rf"##\s+{number}\.\s+.*?(?=\n##\s+\d+\.|\n---\n|\Z)",
+        report,
+        flags=re.DOTALL,
+    )
+    return match.group(0) if match else ""
+
+
+def _append_section_before_sources(report: str, heading: str, body: str) -> str:
+    section = f"\n\n{heading}\n\n{body.strip()}\n"
+    source_idx = report.find("\n---\n\n## 10. Sources")
+    if source_idx >= 0:
+        return report[:source_idx].rstrip() + section + report[source_idx:]
+    source_heading = report.find("\n## 10. Sources")
+    if source_heading >= 0:
+        return report[:source_heading].rstrip() + section + report[source_heading:]
+    return report.rstrip() + section
+
+
+def _replace_or_append_section(report: str, number: int, title: str, body: str) -> str:
+    heading = f"## {number}. {title}"
+    pattern = re.compile(
+        rf"##\s+{number}\.\s+.*?(?=\n##\s+\d+\.|\n---\n|\Z)",
+        flags=re.DOTALL,
+    )
+    replacement = f"{heading}\n\n{body.strip()}\n"
+    if pattern.search(report):
+        return pattern.sub(replacement, report, count=1)
+    return _append_section_before_sources(report, heading, body)
+
+
 def _strip_llm_sources_section(report: str) -> str:
     report = re.sub(
         r"(?mi)^#{1,3}\s*(?:\d+\.\s*)?(?:sources?|references?|bibliography)\s*\n.*",
@@ -716,6 +1304,10 @@ def _strict_citation_cleanup(
     sources: list[ResearchSource],
     evidence: list[ResearchEvidenceChunk],
 ) -> str:
+    report = re.sub(r"\(\s*Source\s+\[N\]\s*\)", "", report, flags=re.IGNORECASE)
+    report = re.sub(r"\bSource\s+\[N\]", "", report, flags=re.IGNORECASE)
+    report = re.sub(r"\[N\]", "", report)
+
     fetched_ids = {s.id for s in sources if s.fetched and s.text}
     evidence_source_ids = {e.source_id for e in evidence}
     valid_ids = fetched_ids & evidence_source_ids
@@ -727,6 +1319,16 @@ def _strict_citation_cleanup(
         for inv_id in invalid_ids:
             report = report.replace(f"[{inv_id}]", "")
 
+    def replace_source_wrapper(match: re.Match) -> str:
+        source_id = int(match.group(1))
+        return f"[{source_id}]" if source_id in valid_ids else ""
+
+    report = re.sub(
+        r"\(\s*Source\s+\[(\d+)\]\s*\)",
+        replace_source_wrapper,
+        report,
+        flags=re.IGNORECASE,
+    )
     report = re.sub(r"\(Source:\s*\)", "", report)
     report = re.sub(r"Source:\s*\)", "", report)
     report = re.sub(r"Sources?:\s*,", "", report)
@@ -761,9 +1363,6 @@ def _append_verified_sources(
 
     verified = [s for s in sources if s.id in source_ids_to_list]
     verified.sort(key=lambda s: s.id)
-
-    if not verified:
-        verified = [s for s in sources if s.fetched and s.text][:5]
 
     if not verified:
         return report
@@ -866,6 +1465,8 @@ def _fallback_report(
     evidence: list[ResearchEvidenceChunk],
     gaps: list[str] | None = None,
 ) -> str:
+    return _strict_partial_fallback_report(user_query, depth, now, plan, sources, evidence, gaps)
+
     stats = _compute_stats(sources, evidence)
     fetched = [s for s in sources if s.fetched and s.text]
     confidence = _compute_confidence(stats, "partial", plan, evidence, sources)
@@ -882,7 +1483,7 @@ def _fallback_report(
         "",
         "---",
         "",
-        "**Partial report warning:** LLM synthesis failed. This report contains raw evidence summaries only.",
+        "**Partial report warning:** LLM synthesis failed. This report uses a strict evidence-based partial summary.",
         "",
         "## 1. Executive Summary",
         "",
@@ -910,7 +1511,7 @@ def _fallback_report(
         for src in fetched[:8]:
             ev_chunks = [e for e in evidence if e.source_id == src.id]
             lines.append(f"### [{src.id}] {src.title}")
-            lines.append(f"**Domain:** {src.domain} | **Quality:** {src.quality_score:.1f}/10")
+            lines.append(f"Source domain: {src.domain} | Source quality: {src.quality_score:.1f}/10")
             for chunk in ev_chunks[:2]:
                 lines.append(f"* {chunk.text[:250]}... [{src.id}]")
             lines.append("")

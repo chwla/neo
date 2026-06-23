@@ -77,6 +77,8 @@ class ResearchPlan(BaseModel):
     original_query: str | None = None
     normalized_query: str | None = None
     normalization_reason: str | None = None
+    domain_hint: str | None = None
+    qualifiers: list[str] = Field(default_factory=list)
     ai_workload_focus: bool = False
     product_pair: str | None = None
     comparison_query: bool = True

@@ -180,7 +180,8 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             return _mark_cancelled(job_id)
 
         entity_terms = extract_entity_terms(effective_query, plan)
-        if entity_terms or plan.topic_intent in (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON):
+        intent_filtered_topics = (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON)
+        if entity_terms or plan.topic_intent in intent_filtered_topics:
             sources = filter_irrelevant_sources(
                 sources, entity_terms, plan=plan, user_query=effective_query,
             )
@@ -223,9 +224,13 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
                 return _mark_cancelled(job_id)
 
             if new_results:
+                remaining_pages = max_sources - fetched_count
+                if remaining_pages <= 0:
+                    gaps = []
+                    break
                 new_sources = searcher.fetch_sources(
                     new_results,
-                    max_pages=min(5, max_sources - fetched_count),
+                    max_pages=min(5, remaining_pages),
                     cancelled=cancel.is_set,
                 )
                 next_id = max((s.id for s in sources), default=0) + 1
@@ -235,7 +240,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
                 sources.extend(new_sources)
                 fetched_count = sum(1 for s in sources if s.fetched)
 
-                if entity_terms or plan.topic_intent in (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON):
+                if entity_terms or plan.topic_intent in intent_filtered_topics:
                     filter_irrelevant_sources(
                         new_sources, entity_terms, plan=plan, user_query=effective_query,
                     )
@@ -349,6 +354,8 @@ def _save_final(job_id, report, sources, evidence, queries, plan, gaps, memory_k
             "original_query": plan.original_query,
             "normalized_query": plan.normalized_query,
             "normalization_reason": plan.normalization_reason,
+            "domain_hint": plan.domain_hint,
+            "qualifiers": plan.qualifiers,
             "ai_workload_focus": plan.ai_workload_focus,
             "product_pair": plan.product_pair,
             "fetch_summary": {
