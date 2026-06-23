@@ -48,6 +48,17 @@ GENERIC_COMPARISON_TABLE_DIMENSIONS = [
     "Unknowns",
 ]
 
+OS_COMPARISON_TABLE_DIMENSIONS = [
+    "Desktop experience",
+    "Ecosystem / documentation",
+    "Ease of use",
+    "Hardware / resource fit",
+    "Software availability",
+    "Update / release model",
+    "Best fit",
+    "Unknowns",
+]
+
 SYNTHESIS_SYSTEM_PROMPT = """\
 You are a research report writer for Neo. You produce evidence-based reports in a strict format.
 
@@ -171,13 +182,13 @@ def synthesize_report(
 
     if not evidence:
         return _insufficient_evidence_report(user_query, depth, now, sources, evidence, gaps,
-                                             "No evidence chunks extracted")
+                                             "No evidence chunks extracted", plan=plan)
 
     report_mode = _decide_report_mode(evidence, sources, depth, plan, user_query)
 
     if report_mode == "insufficient":
         return _insufficient_evidence_report(user_query, depth, now, sources, evidence, gaps,
-                                             "Below minimum evidence threshold")
+                                             "Below minimum evidence threshold", plan=plan)
 
     client = ollama or OllamaClient(num_predict=800, timeout=300)
     top_evidence = sorted(evidence, key=lambda e: e.relevance_score + e.quality_score, reverse=True)[:15]
@@ -958,6 +969,8 @@ def _fallback_generic_comparison_table(plan: ResearchPlan, evidence: list[Resear
     dims = (
         PRODUCT_COMPARISON_TABLE_DIMENSIONS
         if plan.topic_intent == TOPIC_PRODUCT_COMPARISON
+        else OS_COMPARISON_TABLE_DIMENSIONS
+        if plan.domain_hint == "operating_system"
         else GENERIC_COMPARISON_TABLE_DIMENSIONS
     )
     lines = [
@@ -997,6 +1010,17 @@ def _fallback_recommendation(plan: ResearchPlan, evidence: list[ResearchEvidence
             if e is not None
         ) or "".join(f"[{e.source_id}]" for e in evidence[:2])
         prefix = "Based on limited evidence, " if len({e.source_id for e in evidence}) < 3 else ""
+        if plan.domain_hint == "operating_system":
+            comparison_ev = next((e for e in evidence if e.evidence_category == "comparison_evidence"), None)
+            comp_ref = f"[{comparison_ev.source_id}]" if comparison_ev else refs
+            return [
+                f"**Recommendation:** {prefix}choose {right} for this personal-use desktop comparison only if the accepted {right} and direct-comparison evidence matches your workflow priorities; choose {left} if the accepted official {left} desktop/download evidence is the better fit for your requirements. {refs}{comp_ref if comp_ref not in refs else ''}",
+                "",
+                "**Reasoning:**",
+                f"* Accepted evidence exists for {left} from source [{left_ev.source_id}]." if left_ev else f"* Evidence for {left} is limited.",
+                f"* Accepted evidence exists for {right} from source [{right_ev.source_id}]." if right_ev else f"* Evidence for {right} is limited.",
+                f"* Direct comparison evidence is available from source [{comparison_ev.source_id}]." if comparison_ev else "* Direct comparison evidence is limited.",
+            ]
         return [
             f"**Recommendation:** {prefix}choose between {left} and {right} by matching the cited evidence to your stated priorities. {refs}",
             "",
@@ -1017,7 +1041,10 @@ def _fallback_entity_specific_evidence(
 ) -> ResearchEvidenceChunk | None:
     entity_lower = entity.lower()
     for chunk in evidence:
-        if chunk.evidence_category in (category, "comparison_evidence"):
+        if chunk.evidence_category == category:
+            return chunk
+    for chunk in evidence:
+        if chunk.evidence_category == "comparison_evidence":
             return chunk
     for chunk in evidence:
         if entity_lower and entity_lower in f"{chunk.source_title} {chunk.text}".lower():
@@ -1205,7 +1232,7 @@ def _ensure_required_report_sections(
         repaired = _fix_detailed_analysis_subsections(repaired)
 
     section6 = _extract_section(repaired, 6)
-    if "| Dimension |" not in section6:
+    if "| Dimension |" not in section6 or "| Evidence |" not in section6:
         repaired = _replace_or_append_section(
             repaired,
             6,
@@ -1214,10 +1241,12 @@ def _ensure_required_report_sections(
         )
 
     section7 = _extract_section(repaired, 7)
+    recommendation_text = re.sub(r"\s+", " ", section7).strip()
     if (
         not section7
         or "**Recommendation:**" not in section7
         or "No recommendation is needed for this research question." in section7
+        or len(recommendation_text) < 80
     ):
         repaired = _replace_or_append_section(
             repaired,
@@ -1388,8 +1417,139 @@ def _insufficient_evidence_report(
     evidence: list[ResearchEvidenceChunk],
     gaps: list[str] | None = None,
     reason: str = "",
+    plan: ResearchPlan | None = None,
 ) -> str:
     stats = _compute_stats(sources, evidence)
+    title = plan.normalized_query if plan and plan.normalized_query else "Insufficient Evidence"
+    objective = plan.objective if plan and plan.objective else user_query
+    subquestions = plan.subquestions if plan else []
+    is_comparison = bool(plan and plan.comparison_query)
+    entities = list(plan.normalized_entities.values()) if plan else []
+    left = entities[0] if entities else "Option A"
+    right = entities[1] if len(entities) > 1 else "Option B"
+    fetched = [s for s in sources if s.fetched and s.text]
+    relevant = [s for s in fetched if s.evidence_count > 0]
+
+    strict_lines = [
+        f"# {title}",
+        "",
+        f"**Query:** {user_query}  ",
+        f"**Mode:** {depth.value}  ",
+        f"**Report type:** Insufficient Evidence  ",
+        f"**Generated:** {now}  ",
+        "**Confidence:** Low",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary",
+        "",
+        "* No reliable evidence was found for this query.",
+        "* The report is intentionally marked Low confidence.",
+        "* No factual recommendation is made because there are no verified sources.",
+        "",
+        "## 2. Research Scope",
+        "",
+        f"* **Main objective:** {objective}",
+        "* **Subquestions covered:**",
+    ]
+    if subquestions:
+        strict_lines.extend(f"  * {sq}" for sq in subquestions[:5])
+    else:
+        strict_lines.append("  * No subquestions were available.")
+
+    strict_lines.extend([
+        "* **Out of scope:** Unsupported claims and uncited recommendations.",
+        "",
+        "## 3. Evidence Quality",
+        "",
+        "* **Search queries generated:** (see metadata)",
+        f"* **Sources found:** {stats['total']}",
+        f"* **Sources fetched:** {stats['fetched']}",
+        f"* **Sources rejected:** {stats['rejected']}",
+        f"* **Evidence chunks used:** {stats['evidence']}",
+        f"* **Unique domains used:** {stats['unique_domains']}",
+        "",
+        "**Evidence grade:** Insufficient",
+        "",
+        "## 4. Key Findings",
+        "",
+        "No reliable evidence-based findings could be extracted.",
+        "",
+        "## 5. Detailed Analysis",
+        "",
+        "### 5.1 Evidence collection outcome",
+        "",
+        "No reliable evidence was found for this subquestion.",
+        "",
+        "## 6. Comparison / Tradeoffs",
+        "",
+    ])
+
+    if is_comparison:
+        strict_lines.extend([
+            f"| Dimension | {left} | {right} | Evidence |",
+            "| --- | --- | --- | --- |",
+            "| Scope / definition | Not enough evidence found. | Not enough evidence found. | - |",
+            "| Key facts | Not enough evidence found. | Not enough evidence found. | - |",
+            "| Direct comparison evidence | Not enough evidence found. | Not enough evidence found. | - |",
+            "| Recommendation | Not enough evidence found. | Not enough evidence found. | - |",
+        ])
+    else:
+        strict_lines.append("Not applicable.")
+
+    strict_lines.extend(["", "## 7. Recommendation", ""])
+    if is_comparison:
+        strict_lines.extend([
+            "**Recommendation:** No recommendation can be made from the available evidence.",
+            "",
+            "**Reasoning:**",
+            "* No verified sources were available for both compared entities.",
+        ])
+    else:
+        strict_lines.append("No recommendation is needed for this research question.")
+
+    strict_lines.extend(["", "## 8. Risks, Unknowns, and Gaps", ""])
+    risk_items: list[str] = []
+    if reason:
+        risk_items.append(reason)
+    if stats["relevant"] < 3:
+        risk_items.append("Too few reliable sources provided usable evidence.")
+    if stats["evidence"] < 6:
+        risk_items.append("Not enough evidence chunks for a comprehensive answer.")
+    if stats["unique_domains"] < 2:
+        risk_items.append("Evidence comes from too few unique domains for cross-verification.")
+    if stats["rejected"] > 0:
+        risk_items.append(f"{stats['rejected']} source(s) were rejected as irrelevant to the query.")
+    if stats["failed"] > 0:
+        risk_items.append(f"{stats['failed']} source(s) failed to fetch.")
+    if gaps:
+        risk_items.extend(gaps[:5])
+    if not risk_items:
+        risk_items.append("No accepted evidence was available.")
+    for item in risk_items:
+        strict_lines.append(f"* **Risk/Unknown:** {item}")
+        strict_lines.append("  * **Why it matters:** The answer would otherwise rely on unsupported claims.")
+        strict_lines.append("  * **What would reduce uncertainty:** Fetch usable sources for the exact query.")
+
+    strict_lines.extend([
+        "",
+        "## 9. Suggested Follow-Up Research",
+        "",
+        "1. Find official or primary sources for each compared entity.",
+        "2. Find direct comparison evidence for the exact query scope.",
+        "3. Retry with additional source providers if no pages were fetched.",
+        "",
+        "---",
+        "",
+        "## 10. Sources",
+        "",
+    ])
+    if relevant:
+        strict_lines.extend(f"[{src.id}] {src.title} - {src.url}" for src in relevant)
+    else:
+        strict_lines.append("No verified sources with accepted evidence.")
+
+    return "\n".join(strict_lines)
 
     lines = [
         f"# Insufficient Evidence",

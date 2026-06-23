@@ -352,7 +352,10 @@ _ENTITY_CASE_OVERRIDES = {
     "ios": "iOS",
     "rhel": "RHEL",
     "pop!_os": "Pop!_OS",
+    "chip": "chip",
 }
+
+_LOWERCASE_ENTITY_WORDS = {"in", "for", "on", "with", "and", "or", "of", "to"}
 
 
 def _extract_generic_comparison(query: str) -> dict[str, str] | None:
@@ -489,12 +492,14 @@ def _split_entity_qualifier(value: str, peer: str) -> tuple[str, str]:
 def _canonicalize_entity(value: str) -> str:
     words = value.split()
     fixed: list[str] = []
-    for word in words:
+    for idx, word in enumerate(words):
         key = word.lower()
         if re.fullmatch(r"[a-zA-Z]\d+[a-zA-Z0-9-]*", word):
             fixed.append(word.upper())
         elif key in _ENTITY_CASE_OVERRIDES:
             fixed.append(_ENTITY_CASE_OVERRIDES[key])
+        elif idx > 0 and key in _LOWERCASE_ENTITY_WORDS:
+            fixed.append(key)
         else:
             fixed.append(word[:1].upper() + word[1:])
     return " ".join(fixed)
