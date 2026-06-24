@@ -175,9 +175,9 @@ function Sidebar({
   onDeleteChat,
   onDeleteProject,
   onOpenSettings,
-  onOpenResearch,
 }) {
   const [projectName, setProjectName] = useState("");
+  const [projectsCollapsed, setProjectsCollapsed] = useState(false);
 
   function submitProject(event) {
     event.preventDefault();
@@ -198,9 +198,6 @@ function Sidebar({
       <NeoButton className="mt-2 w-full justify-start" onClick={onToggleProjectForm}>
         + New Project
       </NeoButton>
-      <NeoButton className="mt-2 w-full justify-start" onClick={onOpenResearch}>
-        Research
-      </NeoButton>
 
       {showNewProjectForm && (
         <form className="sidebar-form" onSubmit={submitProject}>
@@ -218,8 +215,19 @@ function Sidebar({
         </form>
       )}
 
-      <div className="sidebar-section">Projects</div>
-      {sidebar.projects.length === 0 ? (
+      <div className="sidebar-section sidebar-section-row">
+        <span>Projects</span>
+        <button
+          className="sidebar-section-toggle"
+          type="button"
+          aria-label={projectsCollapsed ? "Show projects" : "Hide projects"}
+          title={projectsCollapsed ? "Show projects" : "Hide projects"}
+          onClick={() => setProjectsCollapsed((collapsed) => !collapsed)}
+        >
+          {projectsCollapsed ? "+" : "-"}
+        </button>
+      </div>
+      {projectsCollapsed ? null : sidebar.projects.length === 0 ? (
         <p className="sidebar-caption">No projects yet.</p>
       ) : (
         sidebar.projects.map((project) => (
@@ -689,11 +697,14 @@ function WebSearchSettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenMemory, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenMemory, onOpenResearch, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
       <div className="settings-menu">
+        <NeoButton className="w-full" onClick={onOpenResearch}>
+          Research
+        </NeoButton>
         <NeoButton className="w-full" onClick={onOpenWebSearch}>
           Web Search
         </NeoButton>
@@ -1680,7 +1691,6 @@ export default function App() {
         onDeleteChat={handleDeleteChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
-        onOpenResearch={() => setShowResearch(true)}
       />
 
       {showResearch ? (
@@ -1748,6 +1758,10 @@ export default function App() {
           onOpenMemory={() => {
             setShowSettings(false);
             setShowMemory(true);
+          }}
+          onOpenResearch={() => {
+            setShowSettings(false);
+            setShowResearch(true);
           }}
           onClose={() => setShowSettings(false)}
         />
