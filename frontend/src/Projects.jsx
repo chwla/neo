@@ -46,11 +46,12 @@ function projectChanged(draft, project) {
   );
 }
 
-export default function Projects({ initialProjectId = null, onBack, onOpenNote, onProjectChange }) {
+export default function Projects({ initialProjectId = null, onBack, onOpenNote, onOpenTask, onProjectChange }) {
   const [projects, setProjects] = useState([]);
   const [projectTags, setProjectTags] = useState([]);
   const [notes, setNotes] = useState([]);
   const [linkedNotes, setLinkedNotes] = useState([]);
+  const [projectTasks, setProjectTasks] = useState([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -110,6 +111,7 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
     } else if (!initialProjectId && selectedProject && !isNew) {
       setSelectedProject(null);
       setLinkedNotes([]);
+      setProjectTasks([]);
       setDraft(draftFromProject(null));
       setStatus("");
     }
@@ -124,10 +126,11 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
     setError("");
     setStatus("");
     try {
-      const data = await api.project(projectId);
+      const [data, tasksData] = await Promise.all([api.project(projectId), api.projectTasks(projectId, { includeDone: true })]);
       setSelectedProject(data.project);
       setDraft(draftFromProject(data.project));
       setLinkedNotes(data.notes || []);
+      setProjectTasks(tasksData.tasks || []);
       setIsNew(false);
       setAttachNoteId("");
       onProjectChange?.(data.project.id);
@@ -140,6 +143,7 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
     if (!canLeaveCurrent()) return;
     setSelectedProject(null);
     setLinkedNotes([]);
+    setProjectTasks([]);
     setDraft(draftFromProject(null));
     setIsNew(true);
     setAttachNoteId("");
@@ -211,6 +215,7 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
       await api.deleteWorkspaceProject(selectedProject.id);
       setSelectedProject(null);
       setLinkedNotes([]);
+      setProjectTasks([]);
       setDraft(draftFromProject(null));
       setIsNew(false);
       setStatus("");
@@ -247,6 +252,19 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
       await loadProjects();
     } catch (err) {
       setError(err.message || "Failed to detach note.");
+    }
+  }
+
+  async function createTaskForProject() {
+    if (!selectedProject || isNew) return;
+    setError("");
+    try {
+      const data = await api.createProjectTask(selectedProject.id, { title: "New task" });
+      const tasksData = await api.projectTasks(selectedProject.id, { includeDone: true });
+      setProjectTasks(tasksData.tasks || []);
+      onOpenTask?.(data.task.id);
+    } catch (err) {
+      setError(err.message || "Failed to create project task.");
     }
   }
 
@@ -407,6 +425,29 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
               onChange={(event) => updateDraft("tagsText", event.target.value)}
               placeholder="Tags, separated by commas"
             />
+
+            {!isNew && (
+              <section className="projects-linked-notes project-tasks-section">
+                <div className="projects-section-title">Tasks</div>
+                <div className="project-task-counts">
+                  <span>{projectTasks.filter((task) => !["done", "archived"].includes(task.status)).length} open</span>
+                  <span>{projectTasks.filter((task) => task.status === "blocked").length} blocked</span>
+                  <span>{projectTasks.filter((task) => task.status === "done").length} completed</span>
+                </div>
+                <button type="button" onClick={createTaskForProject}>New Task for this Project</button>
+                {projectTasks.length === 0 ? (
+                  <div className="projects-empty small">No tasks linked to this project.</div>
+                ) : (
+                  <div className="project-task-list">
+                    {projectTasks.slice(0, 8).map((task) => (
+                      <button type="button" key={task.id} onClick={() => onOpenTask?.(task.id)}>
+                        <strong>{task.title}</strong><span>{task.status} · {task.priority}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
 
             {!isNew && (
               <section className="projects-linked-notes">

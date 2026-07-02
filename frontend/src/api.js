@@ -245,4 +245,48 @@ export const api = {
     request(`/projects/${projectId}/notes/${noteId}`, { method: "DELETE" }),
   projectNotes: (projectId) => request(`/projects/${projectId}/notes`),
   noteProjects: (noteId) => request(`/projects/notes/${noteId}/projects`),
+
+  tasksList: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.status) search.set("status", params.status);
+    if (params.priority) search.set("priority", params.priority);
+    if (params.projectId) search.set("project_id", params.projectId);
+    if (params.tag) search.set("tag", params.tag);
+    if (params.dueBefore) search.set("due_before", params.dueBefore);
+    if (params.dueAfter) search.set("due_after", params.dueAfter);
+    if (params.includeArchived) search.set("include_archived", "true");
+    if (params.includeDone === false) search.set("include_done", "false");
+    if (params.pinnedFirst === false) search.set("pinned_first", "false");
+    search.set("limit", String(params.limit ?? 50));
+    search.set("offset", String(params.offset ?? 0));
+    return request(`/tasks?${search.toString()}`);
+  },
+  tasksTags: () => request("/tasks/tags"),
+  task: (taskId) => request(`/tasks/${taskId}`),
+  createTask: (payload) => request("/tasks", { method: "POST", body: JSON.stringify(payload) }),
+  updateTask: (taskId, payload) =>
+    request(`/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  setTaskStatus: (taskId, status) =>
+    request(`/tasks/${taskId}/status`, { method: "POST", body: JSON.stringify({ status }) }),
+  pinTask: (taskId, pinned) =>
+    request(`/tasks/${taskId}/pin`, { method: "POST", body: JSON.stringify({ pinned }) }),
+  archiveTask: (taskId, archived) =>
+    request(`/tasks/${taskId}/archive`, { method: "POST", body: JSON.stringify({ archived }) }),
+  deleteTask: (taskId) => request(`/tasks/${taskId}`, { method: "DELETE" }),
+  attachNoteToTask: (taskId, noteId) =>
+    request(`/tasks/${taskId}/notes`, { method: "POST", body: JSON.stringify({ note_id: noteId }) }),
+  detachNoteFromTask: (taskId, noteId) =>
+    request(`/tasks/${taskId}/notes/${noteId}`, { method: "DELETE" }),
+  taskNotes: (taskId) => request(`/tasks/${taskId}/notes`),
+  noteTasks: (noteId) => request(`/tasks/notes/${noteId}/tasks`),
+  projectTasks: (projectId, params = {}) => {
+    const search = new URLSearchParams();
+    if (params.status) search.set("status", params.status);
+    if (params.includeDone === false) search.set("include_done", "false");
+    if (params.includeArchived) search.set("include_archived", "true");
+    return request(`/projects/${projectId}/tasks?${search.toString()}`);
+  },
+  createProjectTask: (projectId, payload) =>
+    request(`/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
 };

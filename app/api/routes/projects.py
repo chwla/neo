@@ -14,6 +14,8 @@ from app.services.projects import (
     ProjectsService,
 )
 from app.services.projects.service import ProjectsValidationError
+from app.services.tasks import Task, TaskCreate, TaskListItem, TasksService
+from app.services.tasks.service import TasksValidationError
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -55,6 +57,14 @@ class ArchiveRequest(BaseModel):
 
 class AttachNoteRequest(BaseModel):
     note_id: str
+
+
+class ProjectTasksResponse(BaseModel):
+    tasks: list[TaskListItem]
+
+
+class ProjectTaskResponse(BaseModel):
+    task: Task
 
 
 def _service() -> ProjectsService:
@@ -111,6 +121,39 @@ def get_project(project_id: str):
         raise HTTPException(404, "Project not found.")
     project, notes, links = result
     return ProjectReadResponse(project=project, notes=notes, links=links)
+
+
+@router.get("/{project_id}/tasks", response_model=ProjectTasksResponse)
+def list_project_tasks(
+    project_id: str,
+    status: str | None = None,
+    include_done: bool = True,
+    include_archived: bool = False,
+):
+    if _service().get_project(project_id) is None:
+        raise HTTPException(404, "Project not found.")
+    try:
+        tasks, _ = TasksService().list_tasks(
+            project_id=project_id,
+            status=status,
+            include_done=include_done,
+            include_archived=include_archived,
+            limit=100,
+        )
+    except TasksValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return ProjectTasksResponse(tasks=tasks)
+
+
+@router.post("/{project_id}/tasks", response_model=ProjectTaskResponse)
+def create_project_task(project_id: str, payload: TaskCreate):
+    if _service().get_project(project_id) is None:
+        raise HTTPException(404, "Project not found.")
+    try:
+        task = TasksService().create_task(payload.model_copy(update={"project_id": project_id}))
+    except TasksValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return ProjectTaskResponse(task=task)
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)

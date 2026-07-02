@@ -4,6 +4,7 @@ import { api } from "./api.js";
 import Notes from "./Notes.jsx";
 import Projects from "./Projects.jsx";
 import Research from "./Research.jsx";
+import Tasks from "./Tasks.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -215,6 +216,12 @@ function Sidebar({
   onDeleteChat,
   onDeleteProject,
   onOpenSettings,
+  onOpenChatHome,
+  onOpenMemory,
+  onOpenResearch,
+  onOpenNotes,
+  onOpenProjects,
+  onOpenTasks,
 }) {
   const [projectName, setProjectName] = useState("");
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
@@ -232,6 +239,14 @@ function Sidebar({
   return (
     <aside className="neo-sidebar">
       <div className="sidebar-title">Neo</div>
+      <nav className="sidebar-workspace-nav" aria-label="Workspace">
+        <button type="button" onClick={onOpenChatHome}>Chat</button>
+        <button type="button" onClick={onOpenMemory}>Memory</button>
+        <button type="button" onClick={onOpenResearch}>Research</button>
+        <button type="button" onClick={onOpenNotes}>Notes</button>
+        <button type="button" onClick={onOpenProjects}>Projects</button>
+        <button type="button" onClick={onOpenTasks}>Tasks</button>
+      </nav>
       <NeoButton className="w-full justify-start" onClick={() => onNewChat(selectedProjectId)}>
         + New Chat
       </NeoButton>
@@ -981,7 +996,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
@@ -1003,6 +1018,9 @@ function SettingsDialog({ onOpenLLMs, onOpenMemory, onOpenNotes, onOpenProjects,
         </NeoButton>
         <NeoButton className="w-full" onClick={onOpenProjects}>
           Projects
+        </NeoButton>
+        <NeoButton className="w-full" onClick={onOpenTasks}>
+          Tasks
         </NeoButton>
       </div>
     </Modal>
@@ -1658,8 +1676,11 @@ export default function App() {
   const [showResearch, setShowResearch] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const [initialProjectId, setInitialProjectId] = useState(null);
   const [initialNoteId, setInitialNoteId] = useState(null);
+  const [initialTaskId, setInitialTaskId] = useState(null);
+  const [initialTaskProjectId, setInitialTaskProjectId] = useState(null);
   const bootstrapped = useRef(false);
   const visibleChatIdRef = useRef(null);
 
@@ -1809,12 +1830,14 @@ export default function App() {
       const permalink = parsePermalink();
       if (permalink?.type === "chat") {
         setShowProjects(false);
+        setShowTasks(false);
         setShowNotes(false);
         setShowResearch(false);
         await loadChat(permalink.id, { history: "none" });
       } else if (permalink?.type === "project" || permalink?.type === "projects") {
         setInitialProjectId(permalink.id);
         setShowNotes(false);
+        setShowTasks(false);
         setShowResearch(false);
         setShowProjects(true);
       }
@@ -1834,8 +1857,8 @@ export default function App() {
   }, [generationStartedAt]);
 
   useEffect(() => {
-    visibleChatIdRef.current = showProjects || showNotes || showResearch ? null : activeChat?.id ?? null;
-  }, [activeChat?.id, showNotes, showProjects, showResearch]);
+    visibleChatIdRef.current = showProjects || showTasks || showNotes || showResearch ? null : activeChat?.id ?? null;
+  }, [activeChat?.id, showNotes, showProjects, showResearch, showTasks]);
 
   async function handleCreateProject(name) {
     setStatusError("");
@@ -1857,6 +1880,7 @@ export default function App() {
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
+      setShowTasks(false);
       setInitialProjectId(null);
       const chat = await createActiveChat(projectId);
       visibleChatIdRef.current = chat.id;
@@ -1874,6 +1898,7 @@ export default function App() {
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
+      setShowTasks(false);
       setInitialProjectId(null);
       await loadChat(chatId);
       visibleChatIdRef.current = chatId;
@@ -2103,6 +2128,22 @@ export default function App() {
         onDeleteChat={handleDeleteChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenChatHome={() => {
+          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false);
+        }}
+        onOpenMemory={() => setShowMemory(true)}
+        onOpenResearch={() => {
+          setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowResearch(true);
+        }}
+        onOpenNotes={() => {
+          setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowNotes(true);
+        }}
+        onOpenProjects={() => {
+          setInitialProjectId(null); setShowResearch(false); setShowNotes(false); setShowTasks(false); setShowProjects(true);
+        }}
+        onOpenTasks={() => {
+          setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(true);
+        }}
       />
 
       {showProjects ? (
@@ -2119,6 +2160,24 @@ export default function App() {
             setShowResearch(false);
             setShowNotes(true);
           }}
+          onOpenTask={(taskId) => {
+            setInitialTaskId(taskId);
+            setInitialTaskProjectId(null);
+            setShowProjects(false);
+            setShowResearch(false);
+            setShowNotes(false);
+            setShowTasks(true);
+          }}
+        />
+      ) : showTasks ? (
+        <Tasks
+          initialTaskId={initialTaskId}
+          initialProjectId={initialTaskProjectId}
+          onBack={() => { setShowTasks(false); setInitialTaskId(null); setInitialTaskProjectId(null); }}
+          onTaskChange={setInitialTaskId}
+          onOpenNote={(noteId) => {
+            setInitialNoteId(noteId); setShowTasks(false); setShowProjects(false); setShowResearch(false); setShowNotes(true);
+          }}
         />
       ) : showNotes ? (
         <Notes
@@ -2126,6 +2185,9 @@ export default function App() {
           onBack={() => {
             setShowNotes(false);
             setInitialNoteId(null);
+          }}
+          onOpenTask={(taskId) => {
+            setInitialTaskId(taskId); setInitialTaskProjectId(null); setShowNotes(false); setShowProjects(false); setShowResearch(false); setShowTasks(true);
           }}
         />
       ) : showResearch ? (
@@ -2214,6 +2276,7 @@ export default function App() {
             setShowSettings(false);
             setShowNotes(false);
             setShowProjects(false);
+            setShowTasks(false);
             setShowResearch(true);
           }}
           onOpenNotes={() => {
@@ -2221,15 +2284,26 @@ export default function App() {
             setInitialNoteId(null);
             setShowResearch(false);
             setShowProjects(false);
+            setShowTasks(false);
             setShowNotes(true);
           }}
           onOpenProjects={() => {
             setShowSettings(false);
             setShowResearch(false);
             setShowNotes(false);
+            setShowTasks(false);
             setInitialProjectId(null);
             setShowProjects(true);
             updatePermalink(projectPermalink(null));
+          }}
+          onOpenTasks={() => {
+            setShowSettings(false);
+            setInitialTaskId(null);
+            setInitialTaskProjectId(null);
+            setShowResearch(false);
+            setShowNotes(false);
+            setShowProjects(false);
+            setShowTasks(true);
           }}
           onClose={() => setShowSettings(false)}
         />

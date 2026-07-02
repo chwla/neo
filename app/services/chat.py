@@ -16,6 +16,7 @@ from app.services.extraction import ConversationMessage, ExtractionRequest, Memo
 from app.services.explanation import MemoryExplanationService
 from app.services.llm import ChatTurn, LLMClient, LLMMessage
 from app.services.projects import ProjectContextService
+from app.services.tasks import TaskContextService
 from app.services.retrieval import RetrievalRequest
 from app.services.source_citations import CitationFormatter
 from app.services.search.content import FactResult, run_extractors
@@ -60,6 +61,7 @@ class NeoChatService:
         self.direct_answers = DirectMemoryAnswerService()
         self.web_search = WebSearchService()
         self.project_context = ProjectContextService()
+        self.task_context = TaskContextService()
         self.citation_formatter = CitationFormatter()
         self.settings = get_settings()
         self.last_web_debug: dict[str, Any] = {}
@@ -77,9 +79,11 @@ class NeoChatService:
         context: ContextPackage,
         web_context: WebContext | None = None,
         project_context: str | None = None,
+        task_context: str | None = None,
     ) -> list[LLMMessage]:
         web_section = self._compact_web_context(web_context)
         project_section = project_context or "No project context loaded."
+        task_section = task_context or "No task context loaded."
         system_prompt = (
             "You are Neo, a local personal AI assistant. Use the provided memory context "
             "when it is relevant. Do not claim memories that are not present. If memory "
@@ -117,9 +121,12 @@ class NeoChatService:
             "evidence. Do not output raw search-result titles or snippet labels. "
             "Project context is a user-owned workspace layer separate from Memory. Use "
             "project context only when it is provided and relevant. Never write project "
-            "details to memory automatically.\n\n"
+            "details to memory automatically. Task context is also a user-owned workspace "
+            "layer. Use it only when relevant, treat it as read-only, and never write task "
+            "details to Memory automatically.\n\n"
             f"Memory context:\n{self._compact_context(context)}\n\n"
             f"Project context:\n{project_section}\n\n"
+            f"Task context:\n{task_section}\n\n"
             f"Web context:\n{web_section}"
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
@@ -145,13 +152,16 @@ class NeoChatService:
             self.db.rollback()
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
+        task_context = self.task_context.context_for_prompt(prompt)
         follow_up = _is_follow_up_search(prompt)
         web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
         if follow_up:
             web_context = self.web_search.build_context_forced(web_query)
         else:
             web_context = self.web_search.build_context(web_query)
-        direct_reply = None if web_context.needed else self._direct_reply(prompt)
+        direct_reply = None if web_context.needed else (
+            self.task_context.answer_for_prompt(prompt) or self._direct_reply(prompt)
+        )
         if direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", direct_reply)
             self.db.commit()
@@ -178,7 +188,7 @@ class NeoChatService:
                 final_answer=direct_web_reply,
             )
             return direct_web_reply
-        messages = self.build_messages(prompt, history, context, web_context, project_context)
+        messages = self.build_messages(prompt, history, context, web_context, project_context, task_context)
         self.db.rollback()
 
         try:
@@ -227,6 +237,7 @@ class NeoChatService:
                     context,
                     web_context,
                     project_context,
+                    task_context,
                 )
                 try:
                     retry_result = self.ollama.chat_with_metadata(
@@ -274,13 +285,16 @@ class NeoChatService:
             self.db.rollback()
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
+        task_context = self.task_context.context_for_prompt(prompt)
         follow_up = _is_follow_up_search(prompt)
         web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
         if follow_up:
             web_context = self.web_search.build_context_forced(web_query)
         else:
             web_context = self.web_search.build_context(web_query)
-        direct_reply = None if web_context.needed else self._direct_reply(prompt)
+        direct_reply = None if web_context.needed else (
+            self.task_context.answer_for_prompt(prompt) or self._direct_reply(prompt)
+        )
         if direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", direct_reply)
             self.db.commit()
@@ -348,7 +362,7 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        messages = self.build_messages(prompt, history, context, web_context, project_context)
+        messages = self.build_messages(prompt, history, context, web_context, project_context, task_context)
         self.db.rollback()
 
         raw_reply = ""
@@ -425,6 +439,7 @@ class NeoChatService:
                     context,
                     web_context,
                     project_context,
+                    task_context,
                 )
                 try:
                     retry_result = self.ollama.chat_with_metadata(

@@ -41,11 +41,13 @@ function noteChanged(draft, note) {
   );
 }
 
-export default function Notes({ onBack, initialNoteId = null }) {
+export default function Notes({ onBack, onOpenTask, initialNoteId = null }) {
   const [notes, setNotes] = useState([]);
   const [tags, setTags] = useState([]);
   const [projects, setProjects] = useState([]);
   const [linkedProjects, setLinkedProjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [linkedTasks, setLinkedTasks] = useState([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
   const [tagFilter, setTagFilter] = useState("");
@@ -57,6 +59,7 @@ export default function Notes({ onBack, initialNoteId = null }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [attachProjectId, setAttachProjectId] = useState("");
+  const [attachTaskId, setAttachTaskId] = useState("");
 
   const dirty = useMemo(() => noteChanged(draft, isNew ? null : selectedNote), [draft, isNew, selectedNote]);
 
@@ -86,6 +89,11 @@ export default function Notes({ onBack, initialNoteId = null }) {
     setProjects(data.projects || []);
   }, []);
 
+  const loadTasks = useCallback(async () => {
+    const data = await api.tasksList({ includeDone: false, limit: 100 });
+    setTasks(data.tasks || []);
+  }, []);
+
   useEffect(() => {
     loadNotes().catch((err) => setError(err.message || "Failed to load notes."));
   }, [loadNotes]);
@@ -97,6 +105,10 @@ export default function Notes({ onBack, initialNoteId = null }) {
   useEffect(() => {
     loadProjects().catch(() => {});
   }, [loadProjects]);
+
+  useEffect(() => {
+    loadTasks().catch(() => {});
+  }, [loadTasks]);
 
   useEffect(() => {
     if (!initialNoteId) {
@@ -116,13 +128,14 @@ export default function Notes({ onBack, initialNoteId = null }) {
     setError("");
     setStatus("");
     try {
-      const data = await api.note(noteId);
-      const projectData = await api.noteProjects(noteId);
+      const [data, projectData, taskData] = await Promise.all([api.note(noteId), api.noteProjects(noteId), api.noteTasks(noteId)]);
       setSelectedNote(data.note);
       setLinkedProjects(projectData.projects || []);
+      setLinkedTasks(taskData.tasks || []);
       setDraft(draftFromNote(data.note));
       setIsNew(false);
       setAttachProjectId("");
+      setAttachTaskId("");
     } catch (err) {
       setError(err.message || "Failed to open note.");
     }
@@ -134,6 +147,7 @@ export default function Notes({ onBack, initialNoteId = null }) {
     }
     setSelectedNote(null);
     setLinkedProjects([]);
+    setLinkedTasks([]);
     setDraft(draftFromNote(null));
     setIsNew(true);
     setStatus("Unsaved changes");
@@ -159,8 +173,9 @@ export default function Notes({ onBack, initialNoteId = null }) {
         ? await api.createNote(payload)
         : await api.updateNote(selectedNote.id, payload);
       setSelectedNote(data.note);
-      const projectData = await api.noteProjects(data.note.id);
+      const [projectData, taskData] = await Promise.all([api.noteProjects(data.note.id), api.noteTasks(data.note.id)]);
       setLinkedProjects(projectData.projects || []);
+      setLinkedTasks(taskData.tasks || []);
       setDraft(draftFromNote(data.note));
       setIsNew(false);
       setStatus("Saved");
@@ -205,6 +220,7 @@ export default function Notes({ onBack, initialNoteId = null }) {
       await api.deleteNote(selectedNote.id);
       setSelectedNote(null);
       setLinkedProjects([]);
+      setLinkedTasks([]);
       setDraft(draftFromNote(null));
       setIsNew(false);
       setStatus("");
@@ -232,9 +248,23 @@ export default function Notes({ onBack, initialNoteId = null }) {
     }
   }
 
+  async function attachToTask() {
+    if (!selectedNote || isNew || !attachTaskId) return;
+    setError("");
+    try {
+      await api.attachNoteToTask(attachTaskId, selectedNote.id);
+      const taskData = await api.noteTasks(selectedNote.id);
+      setLinkedTasks(taskData.tasks || []);
+      setAttachTaskId("");
+    } catch (err) {
+      setError(err.message || "Failed to attach note to task.");
+    }
+  }
+
   const attachableProjects = projects.filter(
     (project) => !linkedProjects.some((linked) => linked.id === project.id),
   );
+  const attachableTasks = tasks.filter((task) => !linkedTasks.some((linked) => linked.id === task.id));
 
   return (
     <main className="notes-layout">
@@ -360,6 +390,24 @@ export default function Notes({ onBack, initialNoteId = null }) {
                   <button type="button" onClick={attachToProject} disabled={!attachProjectId}>
                     Attach
                   </button>
+                </div>
+              </div>
+            )}
+
+            {!isNew && (
+              <div className="notes-projects-box notes-tasks-box">
+                <div className="notes-projects-title">Tasks</div>
+                <div className="notes-projects-list">
+                  {linkedTasks.length === 0 ? <span>No linked tasks.</span> : linkedTasks.map((task) => (
+                    <button type="button" key={task.id} onClick={() => onOpenTask?.(task.id)}>{task.title} · {task.status}</button>
+                  ))}
+                </div>
+                <div className="notes-projects-attach">
+                  <select value={attachTaskId} onChange={(event) => setAttachTaskId(event.target.value)}>
+                    <option value="">Attach to Task</option>
+                    {attachableTasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}
+                  </select>
+                  <button type="button" onClick={attachToTask} disabled={!attachTaskId}>Attach</button>
                 </div>
               </div>
             )}
