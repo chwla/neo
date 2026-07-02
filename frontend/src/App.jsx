@@ -86,6 +86,44 @@ function parseQueryId(params, key) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function parsePermalink(pathname = window.location.pathname) {
+  const chatMatch = pathname.match(/^\/chats\/(\d+)\/?$/);
+  if (chatMatch) {
+    return { type: "chat", id: Number(chatMatch[1]) };
+  }
+  const projectMatch = pathname.match(/^\/projects\/([^/]+)\/?$/);
+  if (projectMatch) {
+    return { type: "project", id: decodeURIComponent(projectMatch[1]) };
+  }
+  if (/^\/projects\/?$/.test(pathname)) {
+    return { type: "projects", id: null };
+  }
+  return null;
+}
+
+function updatePermalink(path, { replace = false } = {}) {
+  const method = replace ? "replaceState" : "pushState";
+  if (`${window.location.pathname}${window.location.search}` !== path) {
+    window.history[method]({}, "", path);
+  }
+}
+
+function chatPermalink(chatId) {
+  return `/chats/${chatId}`;
+}
+
+function projectPermalink(projectId) {
+  return projectId ? `/projects/${encodeURIComponent(projectId)}` : "/projects";
+}
+
+function handlePermalinkClick(event, open) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+    return;
+  }
+  event.preventDefault();
+  open();
+}
+
 function findChatInSidebar(sidebar, chatId) {
   for (const chat of sidebar.chats) {
     if (chat.id === chatId) {
@@ -262,14 +300,14 @@ function Sidebar({
               + New Chat
             </button>
             {project.chats.map((chat) => (
-              <button
+              <a
                 key={chat.id}
                 className={`project-chat-link ${chat.id === activeChatId ? "active" : ""}`}
-                type="button"
-                onClick={() => onOpenChat(chat.id)}
+                href={chatPermalink(chat.id)}
+                onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
               >
                 {chat.title}
-              </button>
+              </a>
             ))}
           </details>
         ))
@@ -285,13 +323,13 @@ function Sidebar({
             key={chat.id}
             data-chat-id={chat.id}
           >
-            <button
+            <a
               className="chat-item-title"
-              type="button"
-              onClick={() => onOpenChat(chat.id)}
+              href={chatPermalink(chat.id)}
+              onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
             >
               {chat.title}
-            </button>
+            </a>
             <button
               className="chat-item-delete"
               type="button"
@@ -1610,6 +1648,7 @@ export default function App() {
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
   const [sending, setSending] = useState(false);
   const [streamingAssistant, setStreamingAssistant] = useState(null);
+  const [generationChatId, setGenerationChatId] = useState(null);
   const [generationStartedAt, setGenerationStartedAt] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1619,8 +1658,10 @@ export default function App() {
   const [showResearch, setShowResearch] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
+  const [initialProjectId, setInitialProjectId] = useState(null);
   const [initialNoteId, setInitialNoteId] = useState(null);
   const bootstrapped = useRef(false);
+  const visibleChatIdRef = useRef(null);
 
   const refreshSidebar = useCallback(async () => {
     const nextSidebar = await api.sidebar();
@@ -1633,12 +1674,15 @@ export default function App() {
     setSelectedLlmId(next.active_id || "");
   }, []);
 
-  const loadChat = useCallback(async (chatId) => {
+  const loadChat = useCallback(async (chatId, options = {}) => {
     const thread = await api.getChat(chatId);
     setActiveChat(thread.chat);
     setMessages(thread.messages);
     setSelectedProjectId(thread.chat.project_id);
     localStorage.setItem("neo-active-chat-id", String(thread.chat.id));
+    if (options.history !== "none") {
+      updatePermalink(chatPermalink(thread.chat.id), { replace: options.history === "replace" });
+    }
     return thread;
   }, []);
 
@@ -1651,6 +1695,7 @@ export default function App() {
       }
       setSelectedProjectId(chat.project_id);
       localStorage.setItem("neo-active-chat-id", String(chat.id));
+      updatePermalink(chatPermalink(chat.id), { replace: options.history === "replace" });
       await refreshSidebar();
       return chat;
     },
@@ -1675,11 +1720,25 @@ export default function App() {
           setStatusError(`Could not load LLM configurations: ${errorMessage(error)}`);
         }
         const params = new URLSearchParams(window.location.search);
+        const permalink = parsePermalink();
         const openChatId = parseQueryId(params, "open_chat");
         const deleteChatId = parseQueryId(params, "request_delete_chat");
         const deleteProjectId = parseQueryId(params, "request_delete_project");
         const newProjectChatId = parseQueryId(params, "new_project_chat");
         const selectedProjectIdFromQuery = parseQueryId(params, "select_project");
+
+        if (permalink?.type === "project" || permalink?.type === "projects") {
+          setInitialProjectId(permalink.id);
+          setShowProjects(true);
+          clearSidebarQueryActions();
+          return;
+        }
+
+        if (permalink?.type === "chat") {
+          await loadChat(permalink.id, { history: "replace" });
+          clearSidebarQueryActions();
+          return;
+        }
 
         if (selectedProjectIdFromQuery) {
           setSelectedProjectId(selectedProjectIdFromQuery);
@@ -1711,14 +1770,14 @@ export default function App() {
         }
 
         if (newProjectChatId) {
-          await createActiveChat(newProjectChatId);
+          await createActiveChat(newProjectChatId, { history: "replace" });
           clearSidebarQueryActions();
           return;
         }
 
         if (openChatId) {
           try {
-            await loadChat(openChatId);
+            await loadChat(openChatId, { history: "replace" });
           } finally {
             clearSidebarQueryActions();
           }
@@ -1728,14 +1787,14 @@ export default function App() {
         const storedChatId = Number(localStorage.getItem("neo-active-chat-id"));
         if (storedChatId) {
           try {
-            await loadChat(storedChatId);
+            await loadChat(storedChatId, { history: "replace" });
             clearSidebarQueryActions();
             return;
           } catch {
             localStorage.removeItem("neo-active-chat-id");
           }
         }
-        await createActiveChat(selectedProjectIdFromQuery);
+        await createActiveChat(selectedProjectIdFromQuery, { history: "replace" });
         clearSidebarQueryActions();
       } catch (error) {
         setStatusError(errorMessage(error));
@@ -1746,6 +1805,25 @@ export default function App() {
   }, [createActiveChat, loadChat, refreshSidebar]);
 
   useEffect(() => {
+    async function restorePermalink() {
+      const permalink = parsePermalink();
+      if (permalink?.type === "chat") {
+        setShowProjects(false);
+        setShowNotes(false);
+        setShowResearch(false);
+        await loadChat(permalink.id, { history: "none" });
+      } else if (permalink?.type === "project" || permalink?.type === "projects") {
+        setInitialProjectId(permalink.id);
+        setShowNotes(false);
+        setShowResearch(false);
+        setShowProjects(true);
+      }
+    }
+    window.addEventListener("popstate", restorePermalink);
+    return () => window.removeEventListener("popstate", restorePermalink);
+  }, [loadChat]);
+
+  useEffect(() => {
     if (!generationStartedAt) {
       return undefined;
     }
@@ -1754,6 +1832,10 @@ export default function App() {
     const intervalId = window.setInterval(updateElapsed, 100);
     return () => window.clearInterval(intervalId);
   }, [generationStartedAt]);
+
+  useEffect(() => {
+    visibleChatIdRef.current = showProjects || showNotes || showResearch ? null : activeChat?.id ?? null;
+  }, [activeChat?.id, showNotes, showProjects, showResearch]);
 
   async function handleCreateProject(name) {
     setStatusError("");
@@ -1769,23 +1851,52 @@ export default function App() {
 
   async function handleNewChat(projectId = null) {
     setStatusError("");
+    const previousChatId = activeChat?.id ?? null;
+    visibleChatIdRef.current = null;
     try {
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
-      await createActiveChat(projectId);
+      setInitialProjectId(null);
+      const chat = await createActiveChat(projectId);
+      visibleChatIdRef.current = chat.id;
     } catch (error) {
+      visibleChatIdRef.current = previousChatId;
       setStatusError(errorMessage(error));
     }
   }
 
   async function handleOpenChat(chatId) {
     setStatusError("");
+    const previousChatId = activeChat?.id ?? null;
+    visibleChatIdRef.current = null;
     try {
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
+      setInitialProjectId(null);
       await loadChat(chatId);
+      visibleChatIdRef.current = chatId;
+    } catch (error) {
+      visibleChatIdRef.current = previousChatId;
+      setStatusError(errorMessage(error));
+    }
+  }
+
+  async function handleProjectsBack() {
+    setShowProjects(false);
+    setInitialProjectId(null);
+    if (activeChat?.id) {
+      updatePermalink(chatPermalink(activeChat.id));
+      return;
+    }
+    const storedChatId = Number(localStorage.getItem("neo-active-chat-id"));
+    try {
+      if (storedChatId) {
+        await loadChat(storedChatId);
+      } else {
+        await createActiveChat(null);
+      }
     } catch (error) {
       setStatusError(errorMessage(error));
     }
@@ -1903,32 +2014,42 @@ export default function App() {
       created_at: new Date().toISOString(),
     };
     setMessages((current) => [...current, optimisticMessage]);
+    let requestChatId = activeChat?.id ?? null;
 
     try {
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
+      requestChatId = chat.id;
+      setGenerationChatId(chat.id);
       let rawContent = "";
       await api.streamMessage(chat.id, prompt, (event) => {
         if (event.type === "chunk") {
           rawContent += event.content;
-          setStreamingAssistant({
-            rawContent,
-            ...splitGeneratedText(rawContent),
-          });
+          if (visibleChatIdRef.current === chat.id) {
+            setStreamingAssistant({
+              rawContent,
+              ...splitGeneratedText(rawContent),
+            });
+          }
         }
       }, selectedLlmId || null);
-      await loadChat(chat.id);
+      if (visibleChatIdRef.current === chat.id) {
+        await loadChat(chat.id, { history: "none" });
+      }
       await refreshSidebar();
     } catch (error) {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === pendingId ? { ...message, failed: true } : message,
-        ),
-      );
-      setComposerValue(prompt);
-      setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
+      if (visibleChatIdRef.current === requestChatId) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === pendingId ? { ...message, failed: true } : message,
+          ),
+        );
+        setComposerValue(prompt);
+        setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
+      }
     } finally {
       setSending(false);
       setGenerationStartedAt(null);
+      setGenerationChatId(null);
       setStreamingAssistant(null);
     }
   }
@@ -1986,7 +2107,12 @@ export default function App() {
 
       {showProjects ? (
         <Projects
-          onBack={() => setShowProjects(false)}
+          initialProjectId={initialProjectId}
+          onBack={handleProjectsBack}
+          onProjectChange={(projectId, options = {}) => {
+            setInitialProjectId(projectId);
+            updatePermalink(projectPermalink(projectId), options);
+          }}
           onOpenNote={(noteId) => {
             setInitialNoteId(noteId);
             setShowProjects(false);
@@ -2044,7 +2170,9 @@ export default function App() {
             />
           ))}
 
-          {sending && <PendingAssistantMessage generation={streamingAssistant} elapsedMs={elapsedMs} />}
+          {sending && generationChatId === activeChat?.id && (
+            <PendingAssistantMessage generation={streamingAssistant} elapsedMs={elapsedMs} />
+          )}
 
           {showEmptyState && (
             <div className="neo-status">
@@ -2099,7 +2227,9 @@ export default function App() {
             setShowSettings(false);
             setShowResearch(false);
             setShowNotes(false);
+            setInitialProjectId(null);
             setShowProjects(true);
+            updatePermalink(projectPermalink(null));
           }}
           onClose={() => setShowSettings(false)}
         />

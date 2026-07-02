@@ -2499,6 +2499,7 @@ textarea:disabled {
   color: var(--neo-text);
   padding: 10px;
   text-align: left;
+  text-decoration: none;
 }
 
 .projects-item:hover,

@@ -46,7 +46,7 @@ function projectChanged(draft, project) {
   );
 }
 
-export default function Projects({ onBack, onOpenNote }) {
+export default function Projects({ initialProjectId = null, onBack, onOpenNote, onProjectChange }) {
   const [projects, setProjects] = useState([]);
   const [projectTags, setProjectTags] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -104,12 +104,23 @@ export default function Projects({ onBack, onOpenNote }) {
     Promise.all([loadProjectTags(), loadNotes()]).catch(() => {});
   }, [loadProjectTags, loadNotes]);
 
+  useEffect(() => {
+    if (initialProjectId && selectedProject?.id !== initialProjectId) {
+      openProject(initialProjectId, { skipLeaveCheck: true });
+    } else if (!initialProjectId && selectedProject && !isNew) {
+      setSelectedProject(null);
+      setLinkedNotes([]);
+      setDraft(draftFromProject(null));
+      setStatus("");
+    }
+  }, [initialProjectId, isNew, selectedProject?.id]);
+
   function canLeaveCurrent() {
     return !dirty || window.confirm("Discard unsaved project changes?");
   }
 
-  async function openProject(projectId) {
-    if (!canLeaveCurrent()) return;
+  async function openProject(projectId, options = {}) {
+    if (!options.skipLeaveCheck && !canLeaveCurrent()) return;
     setError("");
     setStatus("");
     try {
@@ -119,6 +130,7 @@ export default function Projects({ onBack, onOpenNote }) {
       setLinkedNotes(data.notes || []);
       setIsNew(false);
       setAttachNoteId("");
+      onProjectChange?.(data.project.id);
     } catch (err) {
       setError(err.message || "Failed to open project.");
     }
@@ -133,6 +145,7 @@ export default function Projects({ onBack, onOpenNote }) {
     setAttachNoteId("");
     setStatus("Unsaved changes");
     setError("");
+    onProjectChange?.(null);
   }
 
   async function saveProject() {
@@ -157,6 +170,7 @@ export default function Projects({ onBack, onOpenNote }) {
       if (data.project?.id) {
         const full = await api.project(data.project.id);
         setLinkedNotes(full.notes || []);
+        onProjectChange?.(data.project.id, { replace: isNew });
       }
     } catch (err) {
       setStatus("Unsaved changes");
@@ -200,6 +214,7 @@ export default function Projects({ onBack, onOpenNote }) {
       setDraft(draftFromProject(null));
       setIsNew(false);
       setStatus("");
+      onProjectChange?.(null, { replace: true });
       await Promise.all([loadProjects(), loadProjectTags()]);
     } catch (err) {
       setError(err.message || "Failed to delete project.");
@@ -298,11 +313,15 @@ export default function Projects({ onBack, onOpenNote }) {
             </div>
           ) : (
             projects.map((project) => (
-              <button
+              <a
                 key={project.id}
                 className={`projects-item ${selectedProject?.id === project.id ? "active" : ""}`}
-                type="button"
-                onClick={() => openProject(project.id)}
+                href={`/projects/${encodeURIComponent(project.id)}`}
+                onClick={(event) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  openProject(project.id);
+                }}
               >
                 <span className="projects-item-title">
                   {project.pinned && <span className="projects-pin" title="Pinned">PIN</span>}
@@ -320,7 +339,7 @@ export default function Projects({ onBack, onOpenNote }) {
                   ))}
                 </span>
                 <span className="projects-item-time">{formatTime(project.updated_at)}</span>
-              </button>
+              </a>
             ))
           )}
         </div>
