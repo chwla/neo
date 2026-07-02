@@ -4,7 +4,7 @@ import re
 from urllib.parse import urlparse
 
 from app.core.config import get_settings
-from app.services.ollama_client import OllamaClient, OllamaMessage
+from app.services.llm import LLMClient, LLMMessage as OllamaMessage, get_llm_client
 from app.services.search.content import (
     WebPageFetcher,
     augment_page,
@@ -1031,11 +1031,11 @@ class WebAnswerService:
     def __init__(
         self,
         search: WebSearchService | None = None,
-        ollama: OllamaClient | None = None,
+        ollama: LLMClient | None = None,
         citation_formatter: CitationFormatter | None = None,
     ) -> None:
         self.search = search or WebSearchService()
-        self.ollama = ollama or OllamaClient()
+        self.ollama = ollama or get_llm_client()
         self.citation_formatter = citation_formatter or CitationFormatter()
 
     def answer(self, query: str) -> CitedAnswer:

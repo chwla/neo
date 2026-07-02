@@ -7,7 +7,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from app.services.ollama_client import OllamaClient
+from app.services.llm import get_llm_client
 from app.services.research.evidence import (
     extract_entity_terms,
     extract_evidence,
@@ -132,7 +132,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             _update(job_id, JobStatus.PLANNING, 7, "Memory loaded",
                     f"Loaded memory context: {', '.join(memory_keys)}")
 
-        ollama = OllamaClient(num_predict=512)
+        ollama = get_llm_client(num_predict=512)
 
         intent = classify_topic_intent(effective_query, original_query=user_query)
         plan = generate_plan(
@@ -262,7 +262,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
         report = synthesize_report(
             user_query, plan, evidence, sources, gaps,
-            ollama=OllamaClient(num_predict=800, timeout=300),
+            ollama=get_llm_client(num_predict=800, timeout=300),
             depth=depth,
         )
 

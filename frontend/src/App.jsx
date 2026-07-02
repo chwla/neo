@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import Notes from "./Notes.jsx";
+import Projects from "./Projects.jsx";
 import Research from "./Research.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
@@ -480,7 +482,7 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
           <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>
         </div>
         <div className="thinking-panel live-thinking-panel">
-          {hasThinking ? generation.thinking : "Waiting for model thinking..."}
+          {hasThinking ? generation.thinking : "Waiting for response..."}
         </div>
         {hasContent && <div className="chat-content live-answer">{generation.content}</div>}
       </div>
@@ -488,7 +490,7 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
   );
 }
 
-function ChatComposer({ disabled, value, onChange, onSubmit }) {
+function ChatComposer({ disabled, value, onChange, onSubmit, llms, llmId, onLlmChange }) {
   const textareaRef = useRef(null);
 
   const resizeComposer = useCallback(() => {
@@ -522,6 +524,18 @@ function ChatComposer({ disabled, value, onChange, onSubmit }) {
   return (
     <div className="chat-input-wrap">
       <div className="chat-input-shell">
+        <div className="chat-llm-picker">
+          <select
+            value={llmId || ""}
+            onChange={(event) => onLlmChange(event.target.value)}
+            disabled={disabled}
+            aria-label="Choose LLM"
+          >
+            {llms.filter((llm) => llm.enabled).map((llm) => (
+              <option key={llm.id} value={llm.id}>{llm.name} / {llm.model}</option>
+            ))}
+          </select>
+        </div>
         <form className="chat-input-form" onSubmit={onSubmit}>
           <textarea
             ref={textareaRef}
@@ -697,11 +711,246 @@ function WebSearchSettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenMemory, onOpenResearch, onOpenWebSearch, onClose }) {
+const EMPTY_LLM_FORM = {
+  id: "",
+  name: "",
+  provider: "ollama",
+  model: "",
+  base_url: "http://127.0.0.1:11434",
+  api_key: "",
+  api_key_env: "",
+  enabled: true,
+  timeout_seconds: 240,
+  num_predict: 512,
+};
+
+function LLMSettingsDialog({ onClose, onChanged }) {
+  const [config, setConfig] = useState({ active_id: "", llms: [] });
+  const [form, setForm] = useState(EMPTY_LLM_FORM);
+  const [editingId, setEditingId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testingId, setTestingId] = useState(null);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+
+  const load = useCallback(async () => {
+    const next = await api.llms();
+    setConfig(next);
+    onChanged(next);
+    return next;
+  }, [onChanged]);
+
+  useEffect(() => {
+    let cancelled = false;
+    load()
+      .catch((nextError) => {
+        if (!cancelled) setError(errorMessage(nextError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
+
+  function updateField(key, value) {
+    setForm((current) => {
+      const next = { ...current, [key]: value };
+      if (key === "provider" && !editingId) {
+        next.base_url = value === "ollama" ? "http://127.0.0.1:11434" : "";
+      }
+      return next;
+    });
+  }
+
+  function resetForm() {
+    setEditingId(null);
+    setForm(EMPTY_LLM_FORM);
+  }
+
+  function editLlm(llm) {
+    setEditingId(llm.id);
+    setForm({
+      ...EMPTY_LLM_FORM,
+      ...llm,
+      api_key: "",
+      api_key_env: llm.api_key_env || "",
+    });
+    setStatus("");
+    setError("");
+  }
+
+  async function saveLlm(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setStatus("");
+    try {
+      const payload = {
+        ...form,
+        id: form.id.trim(),
+        name: form.name.trim(),
+        model: form.model.trim(),
+        base_url: form.base_url.trim(),
+        api_key_env: form.api_key_env.trim() || null,
+        timeout_seconds: Number(form.timeout_seconds),
+        num_predict: Number(form.num_predict),
+      };
+      if (!form.api_key) delete payload.api_key;
+      const next = await api.saveLlm(payload);
+      setConfig(next);
+      onChanged(next);
+      setStatus(editingId ? "LLM updated." : "LLM added.");
+      resetForm();
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function selectLlm(id) {
+    setError("");
+    setStatus("");
+    try {
+      const next = await api.selectLlm(id);
+      setConfig(next);
+      onChanged(next);
+      setStatus("Active LLM changed.");
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    }
+  }
+
+  async function testLlm(id) {
+    setTestingId(id);
+    setError("");
+    setStatus("");
+    try {
+      const result = await api.testLlm(id);
+      setStatus(
+        result.available && result.model_available
+          ? "Connection and LLM check passed."
+          : result.available
+            ? "Server is reachable, but the configured LLM was not found."
+            : "Server could not be reached.",
+      );
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setTestingId(null);
+    }
+  }
+
+  async function deleteLlm(id) {
+    setError("");
+    setStatus("");
+    try {
+      await api.deleteLlm(id);
+      const next = await load();
+      setConfig(next);
+      if (editingId === id) resetForm();
+      setStatus("LLM removed.");
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    }
+  }
+
+  return (
+    <Modal title="LLMs" onClose={onClose} wide className="llm-settings-dialog">
+      <div className="llm-settings-layout">
+        <section className="llm-config-list">
+          <div className="llm-section-heading">Configured LLMs</div>
+          {loading ? (
+            <p className="dialog-caption">Loading...</p>
+          ) : config.llms.length === 0 ? (
+            <p className="dialog-caption">No LLMs configured.</p>
+          ) : (
+            config.llms.map((llm) => (
+              <article className={`llm-config-card ${config.active_id === llm.id ? "active" : ""}`} key={llm.id}>
+                <div className="llm-config-title">
+                  <strong>{llm.name}</strong>
+                  {config.active_id === llm.id && <span>Active</span>}
+                </div>
+                <div className="llm-config-meta">{llm.model}</div>
+                <div className="llm-config-meta">{llm.provider === "ollama" ? "Local / Ollama" : "OpenAI-compatible / API or local"}</div>
+                <div className="llm-card-actions">
+                  {config.active_id !== llm.id && <NeoButton onClick={() => selectLlm(llm.id)}>Use</NeoButton>}
+                  <NeoButton onClick={() => testLlm(llm.id)} disabled={testingId === llm.id}>
+                    {testingId === llm.id ? "Testing..." : "Test"}
+                  </NeoButton>
+                  <NeoButton onClick={() => editLlm(llm)}>Edit</NeoButton>
+                  <NeoButton className="danger" onClick={() => deleteLlm(llm.id)}>Delete</NeoButton>
+                </div>
+              </article>
+            ))
+          )}
+        </section>
+
+        <form className="llm-config-form" onSubmit={saveLlm}>
+          <div className="llm-section-heading">{editingId ? "Edit LLM" : "Add LLM"}</div>
+          <Field label="Connection type">
+            <select value={form.provider} onChange={(event) => updateField("provider", event.target.value)}>
+              <option value="ollama">Local / Ollama</option>
+              <option value="openai_compatible">OpenAI-compatible / API or local</option>
+            </select>
+          </Field>
+          <Field label="Configuration ID">
+            <input value={form.id} onChange={(event) => updateField("id", event.target.value)} placeholder="my-llm" disabled={Boolean(editingId)} required />
+          </Field>
+          <Field label="Display name">
+            <input value={form.name} onChange={(event) => updateField("name", event.target.value)} placeholder="My local LLM" required />
+          </Field>
+          <Field label="LLM identifier">
+            <input value={form.model} onChange={(event) => updateField("model", event.target.value)} placeholder={form.provider === "ollama" ? "llama3.2:3b" : "provider-llm-name"} required />
+          </Field>
+          <Field label="Endpoint">
+            <input value={form.base_url} onChange={(event) => updateField("base_url", event.target.value)} placeholder={form.provider === "ollama" ? "http://127.0.0.1:11434" : "https://provider.example/v1"} required />
+          </Field>
+          {form.provider === "openai_compatible" && (
+            <>
+              <Field label="API key">
+                <input type="password" autoComplete="off" value={form.api_key} onChange={(event) => updateField("api_key", event.target.value)} placeholder={editingId && config.llms.find((llm) => llm.id === editingId)?.has_api_key ? "Configured — leave blank to keep" : "Optional for local APIs"} />
+              </Field>
+              <Field label="API key environment variable">
+                <input value={form.api_key_env} onChange={(event) => updateField("api_key_env", event.target.value)} placeholder="MY_LLM_API_KEY" />
+              </Field>
+            </>
+          )}
+          <div className="llm-number-fields">
+            <Field label="Timeout (seconds)">
+              <input type="number" min="1" max="3600" value={form.timeout_seconds} onChange={(event) => updateField("timeout_seconds", event.target.value)} />
+            </Field>
+            <Field label="Output token limit">
+              <input type="number" min="1" max="32768" value={form.num_predict} onChange={(event) => updateField("num_predict", event.target.value)} />
+            </Field>
+          </div>
+          <label className="llm-enabled-toggle">
+            <input type="checkbox" checked={form.enabled} onChange={(event) => updateField("enabled", event.target.checked)} />
+            Enabled
+          </label>
+          <div className="settings-actions">
+            <NeoButton type="submit" disabled={saving}>{saving ? "Saving..." : editingId ? "Save changes" : "Add LLM"}</NeoButton>
+            {editingId && <NeoButton type="button" onClick={resetForm}>Cancel</NeoButton>}
+          </div>
+        </form>
+      </div>
+      {error && <div className="neo-error">{error}</div>}
+      {status && <div className="settings-status">{status}</div>}
+    </Modal>
+  );
+}
+
+function SettingsDialog({ onOpenLLMs, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
       <div className="settings-menu">
+        <NeoButton className="w-full" onClick={onOpenLLMs}>
+          LLMs
+        </NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -710,6 +959,12 @@ function SettingsDialog({ onOpenMemory, onOpenResearch, onOpenWebSearch, onClose
         </NeoButton>
         <NeoButton className="w-full" onClick={onOpenMemory}>
           Memory
+        </NeoButton>
+        <NeoButton className="w-full" onClick={onOpenNotes}>
+          Notes
+        </NeoButton>
+        <NeoButton className="w-full" onClick={onOpenProjects}>
+          Projects
         </NeoButton>
       </div>
     </Modal>
@@ -1345,6 +1600,7 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -1358,13 +1614,23 @@ export default function App() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [statusError, setStatusError] = useState("");
+  const [llms, setLlms] = useState([]);
+  const [selectedLlmId, setSelectedLlmId] = useState("");
   const [showResearch, setShowResearch] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [showProjects, setShowProjects] = useState(false);
+  const [initialNoteId, setInitialNoteId] = useState(null);
   const bootstrapped = useRef(false);
 
   const refreshSidebar = useCallback(async () => {
     const nextSidebar = await api.sidebar();
     setSidebar(nextSidebar);
     return nextSidebar;
+  }, []);
+
+  const handleLlmConfigChanged = useCallback((next) => {
+    setLlms(next.llms || []);
+    setSelectedLlmId(next.active_id || "");
   }, []);
 
   const loadChat = useCallback(async (chatId) => {
@@ -1401,6 +1667,13 @@ export default function App() {
       setStatusError("");
       try {
         const nextSidebar = await refreshSidebar();
+        try {
+          const llmConfig = await api.llms();
+          setLlms(llmConfig.llms || []);
+          setSelectedLlmId(llmConfig.active_id || "");
+        } catch (error) {
+          setStatusError(`Could not load LLM configurations: ${errorMessage(error)}`);
+        }
         const params = new URLSearchParams(window.location.search);
         const openChatId = parseQueryId(params, "open_chat");
         const deleteChatId = parseQueryId(params, "request_delete_chat");
@@ -1497,6 +1770,9 @@ export default function App() {
   async function handleNewChat(projectId = null) {
     setStatusError("");
     try {
+      setShowResearch(false);
+      setShowNotes(false);
+      setShowProjects(false);
       await createActiveChat(projectId);
     } catch (error) {
       setStatusError(errorMessage(error));
@@ -1506,6 +1782,9 @@ export default function App() {
   async function handleOpenChat(chatId) {
     setStatusError("");
     try {
+      setShowResearch(false);
+      setShowNotes(false);
+      setShowProjects(false);
       await loadChat(chatId);
     } catch (error) {
       setStatusError(errorMessage(error));
@@ -1636,7 +1915,7 @@ export default function App() {
             ...splitGeneratedText(rawContent),
           });
         }
-      });
+      }, selectedLlmId || null);
       await loadChat(chat.id);
       await refreshSidebar();
     } catch (error) {
@@ -1664,8 +1943,20 @@ export default function App() {
     await sendPrompt(prompt);
   }
 
-  const showEmptyState = messages.length === 0 && !sending;
+  async function handleLlmChange(llmId) {
+    const previous = selectedLlmId;
+    setSelectedLlmId(llmId);
+    try {
+      const config = await api.selectLlm(llmId);
+      setLlms(config.llms || []);
+      setSelectedLlmId(config.active_id);
+    } catch (error) {
+      setSelectedLlmId(previous);
+      setStatusError(errorMessage(error));
+    }
+  }
 
+  const showEmptyState = messages.length === 0 && !sending;
   return (
     <div className={`neo-app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <button
@@ -1693,8 +1984,33 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
       />
 
-      {showResearch ? (
-        <Research onBack={() => setShowResearch(false)} />
+      {showProjects ? (
+        <Projects
+          onBack={() => setShowProjects(false)}
+          onOpenNote={(noteId) => {
+            setInitialNoteId(noteId);
+            setShowProjects(false);
+            setShowResearch(false);
+            setShowNotes(true);
+          }}
+        />
+      ) : showNotes ? (
+        <Notes
+          initialNoteId={initialNoteId}
+          onBack={() => {
+            setShowNotes(false);
+            setInitialNoteId(null);
+          }}
+        />
+      ) : showResearch ? (
+        <Research
+          onBack={() => setShowResearch(false)}
+          onOpenNote={(noteId) => {
+            setInitialNoteId(noteId);
+            setShowResearch(false);
+            setShowNotes(true);
+          }}
+        />
       ) : (
       <main className="neo-main">
         <section className="neo-shell">
@@ -1745,12 +2061,19 @@ export default function App() {
           onChange={setComposerValue}
           onSubmit={handleSendMessage}
           disabled={sending}
+          llms={llms}
+          llmId={selectedLlmId}
+          onLlmChange={handleLlmChange}
         />
       </main>
       )}
 
       {showSettings && (
         <SettingsDialog
+          onOpenLLMs={() => {
+            setShowSettings(false);
+            setShowLlmSettings(true);
+          }}
           onOpenWebSearch={() => {
             setShowSettings(false);
             setShowWebSearchSettings(true);
@@ -1761,9 +2084,31 @@ export default function App() {
           }}
           onOpenResearch={() => {
             setShowSettings(false);
+            setShowNotes(false);
+            setShowProjects(false);
             setShowResearch(true);
           }}
+          onOpenNotes={() => {
+            setShowSettings(false);
+            setInitialNoteId(null);
+            setShowResearch(false);
+            setShowProjects(false);
+            setShowNotes(true);
+          }}
+          onOpenProjects={() => {
+            setShowSettings(false);
+            setShowResearch(false);
+            setShowNotes(false);
+            setShowProjects(true);
+          }}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showLlmSettings && (
+        <LLMSettingsDialog
+          onClose={() => setShowLlmSettings(false)}
+          onChanged={handleLlmConfigChanged}
         />
       )}
 

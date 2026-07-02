@@ -30,7 +30,7 @@ from app.services.extraction import ExtractionRequest, ExtractionResult, MemoryE
 from app.services.explanation import MemoryExplanation, MemoryExplanationService
 from app.services.lifecycle import AgingPolicy, MemoryLifecycleService
 from app.services.lifecycle_maintenance import MemoryLifecycleMaintenance
-from app.services.ollama_client import OllamaClient
+from app.services.llm import LLMClient, LLMRegistry, get_llm_client
 from app.services.reflection import ReflectionRunRequest, ReflectionRunResult, ReflectionService
 from app.services.retrieval import RetrievalRequest
 from app.services.review import MemoryReviewRequest, MemoryReviewResult, MemoryReviewService
@@ -39,22 +39,21 @@ router = APIRouter()
 StoreDependency = Annotated[MemoryStore, Depends(get_store)]
 
 
-def _ollama_client() -> OllamaClient:
-    settings = get_settings()
-    return OllamaClient(
-        model=settings.chat_model,
-        base_url=settings.ollama_url,
-        timeout=settings.chat_timeout_seconds,
-        num_predict=settings.chat_num_predict,
-    )
+def _llm_client(config_id: str | None = None) -> LLMClient:
+    try:
+        return get_llm_client(config_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def extract_after_turn_background(user_prompt: str, assistant_reply: str) -> None:
+def extract_after_turn_background(
+    user_prompt: str, assistant_reply: str, llm_id: str | None = None,
+) -> None:
     db = SessionLocal()
     try:
         service = NeoChatService(
             db,
-            ollama=_ollama_client(),
+            ollama=_llm_client(llm_id),
         )
         service.extract_after_turn(user_prompt, assistant_reply)
     except Exception:
@@ -109,6 +108,7 @@ class ChatCreateRequest(BaseModel):
 
 class ChatSendRequest(BaseModel):
     prompt: str = Field(min_length=1)
+    llm_id: str | None = Field(default=None, max_length=80)
 
 
 class ChatMessageUpdateRequest(BaseModel):
@@ -389,17 +389,17 @@ def send_chat_message(
     _get_required_chat(store, chat_id)
     service = NeoChatService(
         store.db,
-        ollama=_ollama_client(),
+        ollama=_llm_client(request.llm_id),
     )
     try:
         reply = service.send_message(chat_id, request.prompt)
     except Exception as exc:
-        settings = get_settings()
+        config = LLMRegistry().get(request.llm_id)
         raise HTTPException(
             status_code=502,
             detail=(
-                f"Ollama did not finish the response. Expected {settings.chat_model} "
-                f"at {settings.ollama_url} within {settings.chat_timeout_seconds} seconds. "
+                f"{config.name} did not finish the response. Expected {config.model} "
+                f"at {config.base_url} within {config.timeout_seconds} seconds. "
                 f"Details: {exc}"
             ),
         ) from exc
@@ -422,7 +422,7 @@ def stream_chat_message(
     _get_required_chat(store, chat_id)
     service = NeoChatService(
         store.db,
-        ollama=_ollama_client(),
+        ollama=_llm_client(request.llm_id),
     )
 
     def events():
@@ -434,17 +434,18 @@ def stream_chat_message(
                     extract_after_turn_background,
                     prompt,
                     reply,
+                    request.llm_id,
                 ),
             ):
                 yield json.dumps(event, default=str) + "\n"
         except Exception as exc:
-            settings = get_settings()
+            config = LLMRegistry().get(request.llm_id)
             yield json.dumps(
                 {
                     "type": "error",
                     "detail": (
-                        f"Ollama did not finish the response. Expected {settings.chat_model} "
-                        f"at {settings.ollama_url} within {settings.chat_timeout_seconds} seconds. "
+                        f"{config.name} did not finish the response. Expected {config.model} "
+                        f"at {config.base_url} within {config.timeout_seconds} seconds. "
                         f"Details: {exc}"
                     ),
                     "web_debug": service.last_web_debug,
@@ -568,6 +569,35 @@ def delete_project_memory(project_id: int, store: StoreDependency) -> Response:
     store.delete_project_memory(project_id)
     store.db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/chat-projects", response_model=list[ProjectRead])
+def list_chat_projects(store: StoreDependency) -> list[ProjectRead]:
+    return list_projects(store)
+
+
+@router.post("/chat-projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+def create_chat_project(request: ProjectCreateRequest, store: StoreDependency) -> ProjectRead:
+    return create_project(request, store)
+
+
+@router.patch("/chat-projects/{project_id}", response_model=ProjectRead)
+def update_chat_project(
+    project_id: int,
+    request: ProjectUpdateRequest,
+    store: StoreDependency,
+) -> ProjectRead:
+    return update_project(project_id, request, store)
+
+
+@router.delete("/chat-projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_project(project_id: int, store: StoreDependency) -> Response:
+    return delete_project(project_id, store)
+
+
+@router.delete("/chat-projects/{project_id}/memory", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_project_memory(project_id: int, store: StoreDependency) -> Response:
+    return delete_project_memory(project_id, store)
 
 
 @router.get("/events", response_model=list[EventRead])

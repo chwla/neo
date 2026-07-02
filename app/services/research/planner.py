@@ -6,7 +6,7 @@ import json
 import logging
 import re
 
-from app.services.ollama_client import OllamaClient, OllamaMessage
+from app.services.llm import LLMClient, LLMMessage as OllamaMessage, get_llm_client
 from app.services.research.topic_intent import (
     TOPIC_AI_CODING_TOOLS,
     TopicIntent,
@@ -59,7 +59,7 @@ def generate_plan(
     user_query: str,
     depth: DepthMode = DepthMode.STANDARD,
     memory_context: str = "",
-    ollama: OllamaClient | None = None,
+    ollama: LLMClient | None = None,
     topic_intent: TopicIntent | None = None,
     original_query: str = "",
 ) -> ResearchPlan:
@@ -77,7 +77,7 @@ def generate_plan(
     if comparison:
         return _generic_comparison_plan(user_query, config, comparison, orig)
 
-    client = ollama or OllamaClient(num_predict=512)
+    client = ollama or get_llm_client(num_predict=512)
     entity_hint = _extract_entity_hint(user_query)
 
     user_content = f"Research question: {user_query}"
@@ -247,7 +247,7 @@ def generate_followup_queries(
     user_query: str,
     plan: ResearchPlan,
     gaps: list[str],
-    ollama: OllamaClient | None = None,
+    ollama: LLMClient | None = None,
 ) -> list[str]:
     if not gaps:
         return []
@@ -288,7 +288,7 @@ def generate_followup_queries(
             return filter_offtopic_ai_coding_queries(list(dict.fromkeys(followups)))[:4]
 
     entity_hint = _extract_entity_hint(user_query)
-    client = ollama or OllamaClient(num_predict=256)
+    client = ollama or get_llm_client(num_predict=256)
     prompt = (
         f"Original research question: {user_query}\n"
         f"Research objective: {plan.objective}\n"

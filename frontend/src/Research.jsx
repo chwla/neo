@@ -91,7 +91,7 @@ function renderMarkdown(text) {
   return html;
 }
 
-export default function Research({ onBack }) {
+export default function Research({ onBack, onOpenNote }) {
   const [query, setQuery] = useState("");
   const [depth, setDepth] = useState("standard");
   const [activeJobId, setActiveJobId] = useState(null);
@@ -340,7 +340,7 @@ export default function Research({ onBack }) {
         )}
 
         {isCompleted && report && (
-          <ReportViewer report={report} job={fullJob} />
+          <ReportViewer report={report} job={fullJob} onOpenNote={onOpenNote} />
         )}
 
         {isFailed && fullJob && (
@@ -445,9 +445,30 @@ function ProgressPanel({ status }) {
   );
 }
 
-function ReportViewer({ report, job }) {
+function ReportViewer({ report, job, onOpenNote }) {
   const html = renderMarkdown(report?.report || "");
   const meta = job?.metadata || report?.metadata || {};
+  const [saveState, setSaveState] = useState("");
+  const [savedNoteId, setSavedNoteId] = useState(null);
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function saveToNotes() {
+    if (!report?.job_id || saving) {
+      return;
+    }
+    setSaving(true);
+    setSaveError("");
+    try {
+      const data = await api.researchSaveToNote(report.job_id, {});
+      setSavedNoteId(data.note?.id || null);
+      setSaveState(data.already_saved ? "Already saved" : "Saved to Notes");
+    } catch (err) {
+      setSaveError(err.message || "Failed to save report.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="research-report">
@@ -456,6 +477,28 @@ function ReportViewer({ report, job }) {
         <span>Evidence: {report?.evidence_count ?? meta.evidence_chunks ?? "?"}</span>
         {job?.depth && <span>Depth: {job.depth}</span>}
         {job?.created_at && <span>{formatTime(job.created_at)}</span>}
+      </div>
+
+      <div className="research-report-actions">
+        <button
+          className="research-save-note-btn"
+          type="button"
+          onClick={saveToNotes}
+          disabled={saving || !report?.report}
+        >
+          {saving ? "Saving..." : "Save to Notes"}
+        </button>
+        {saveState && <span className="research-save-note-state">{saveState}</span>}
+        {savedNoteId && onOpenNote && (
+          <button
+            className="research-open-note-btn"
+            type="button"
+            onClick={() => onOpenNote(savedNoteId)}
+          >
+            Open note
+          </button>
+        )}
+        {saveError && <span className="research-save-note-error">{saveError}</span>}
       </div>
 
       <div

@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.services.notes import Note, NotesService
+from app.services.notes.service import NotesValidationError
 from app.services.research import (
     DEPTH_CONFIG,
     DepthMode,
@@ -47,6 +49,16 @@ class StatusResponse(BaseModel):
 class CancelResponse(BaseModel):
     job_id: str
     cancelled: bool
+
+
+class SaveToNoteRequest(BaseModel):
+    title: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class SaveToNoteResponse(BaseModel):
+    note: Note
+    already_saved: bool = False
 
 
 @router.post("/start", response_model=StartResponse)
@@ -139,6 +151,26 @@ def get_research_report(job_id: str):
         "evidence_count": len(job.evidence_chunks),
         "metadata": job.metadata,
     }
+
+
+@router.post("/{job_id}/save-to-note", response_model=SaveToNoteResponse)
+def save_research_to_note(job_id: str, payload: SaveToNoteRequest | None = None):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id} not found.")
+    service = NotesService()
+    existing = service.find_by_source("research_report", job_id)
+    if existing:
+        return SaveToNoteResponse(note=existing, already_saved=True)
+    try:
+        note = service.save_research_report(
+            job,
+            title=payload.title if payload else None,
+            tags=payload.tags if payload else [],
+        )
+    except NotesValidationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return SaveToNoteResponse(note=note)
 
 
 @router.post("/{job_id}/cancel", response_model=CancelResponse)

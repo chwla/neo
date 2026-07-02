@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from app.models import MemoryCandidate
 from app.models.enums import CandidateStatus, CandidateType
 from app.repositories.memory_store import MemoryStore
-from app.services.ollama_client import OllamaClient, OllamaMessage
+from app.services.llm import LLMClient, LLMMessage as OllamaMessage
 from app.services.scoring import score_importance
 
 
@@ -124,7 +124,7 @@ Rules:
     def extract_with_llm(
         self,
         request: ExtractionRequest,
-        ollama: OllamaClient | None,
+        ollama: LLMClient | None,
     ) -> ExtractionResult:
         if ollama is None:
             return self.extract(self._fallback_request(request))

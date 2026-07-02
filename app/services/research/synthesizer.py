@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from app.services.ollama_client import OllamaClient, OllamaMessage
+from app.services.llm import LLMClient, LLMMessage as OllamaMessage, get_llm_client
 from app.services.research.topic_intent import (
     COMPARISON_TABLE_DIMENSIONS,
     TOPIC_AI_CODING_TOOLS,
@@ -174,7 +174,7 @@ def synthesize_report(
     evidence: list[ResearchEvidenceChunk],
     sources: list[ResearchSource],
     gaps: list[str] | None = None,
-    ollama: OllamaClient | None = None,
+    ollama: LLMClient | None = None,
     depth: DepthMode = DepthMode.STANDARD,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -190,7 +190,7 @@ def synthesize_report(
         return _insufficient_evidence_report(user_query, depth, now, sources, evidence, gaps,
                                              "Below minimum evidence threshold", plan=plan)
 
-    client = ollama or OllamaClient(num_predict=800, timeout=300)
+    client = ollama or get_llm_client(num_predict=800, timeout=300)
     top_evidence = sorted(evidence, key=lambda e: e.relevance_score + e.quality_score, reverse=True)[:15]
     evidence_text = _build_evidence_context(top_evidence, sources)
     gaps_text = ""

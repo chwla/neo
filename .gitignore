@@ -20,6 +20,8 @@ build/
 !.env.example
 
 # Runtime data
+neo_llms.json
+neo_llms.json.tmp
 neo_memory.db
 neo_memory.db-shm
 neo_memory.db-wal

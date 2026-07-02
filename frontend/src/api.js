@@ -95,13 +95,23 @@ export const api = {
       body: JSON.stringify({ project_id: projectId }),
     }),
   getChat: (chatId) => request(`/chats/${chatId}`),
-  sendMessage: (chatId, prompt) =>
+  sendMessage: (chatId, prompt, llmId = null) =>
     request(`/chats/${chatId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, llm_id: llmId }),
     }),
-  streamMessage: (chatId, prompt, onEvent) =>
-    streamRequest(`/chats/${chatId}/messages/stream`, { prompt }, onEvent),
+  streamMessage: (chatId, prompt, onEvent, llmId = null) =>
+    streamRequest(`/chats/${chatId}/messages/stream`, { prompt, llm_id: llmId }, onEvent),
+  llms: () => request("/llms"),
+  selectLlm: (id) =>
+    request("/llms/active/select", { method: "PUT", body: JSON.stringify({ id }) }),
+  saveLlm: (config) =>
+    request(`/llms/${encodeURIComponent(config.id)}`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  deleteLlm: (id) => request(`/llms/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  testLlm: (id) => request(`/llms/${encodeURIComponent(id)}/test`, { method: "POST" }),
   updateChatMessage: (chatId, messageId, content) =>
     request(`/chats/${chatId}/messages/${messageId}`, {
       method: "PATCH",
@@ -109,17 +119,17 @@ export const api = {
     }),
   deleteChat: (chatId) => request(`/chats/${chatId}`, { method: "DELETE" }),
   createProject: (name) =>
-    request("/projects", {
+    request("/chat-projects", {
       method: "POST",
       body: JSON.stringify({ name }),
     }),
-  deleteProject: (projectId) => request(`/projects/${projectId}`, { method: "DELETE" }),
+  deleteProject: (projectId) => request(`/chat-projects/${projectId}`, { method: "DELETE" }),
   memory: () =>
     Promise.all([
       request("/profile"),
       request("/preferences"),
       request("/goals"),
-      request("/projects"),
+      request("/chat-projects"),
       request("/events"),
       request("/memories"),
     ]).then(([profile, preferences, goals, projects, events, memories]) => ({
@@ -140,8 +150,8 @@ export const api = {
     request(`/goals/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteGoal: (id) => request(`/goals/${id}`, { method: "DELETE" }),
   updateProjectMemory: (id, payload) =>
-    request(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteProjectMemory: (id) => request(`/projects/${id}/memory`, { method: "DELETE" }),
+    request(`/chat-projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteProjectMemory: (id) => request(`/chat-projects/${id}/memory`, { method: "DELETE" }),
   updateEvent: (id, payload) =>
     request(`/events/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteEvent: (id) => request(`/events/${id}`, { method: "DELETE" }),
@@ -163,5 +173,76 @@ export const api = {
   researchReport: (jobId) => request(`/research/${jobId}/report`),
   researchCancel: (jobId) =>
     request(`/research/${jobId}/cancel`, { method: "POST" }),
+  researchSaveToNote: (jobId, payload = {}) =>
+    request(`/research/${jobId}/save-to-note`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   researchEvents: (jobId) => `${API_BASE}/research/${jobId}/events`,
+
+  notesList: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.tag) search.set("tag", params.tag);
+    if (params.includeArchived) search.set("include_archived", "true");
+    if (params.pinnedFirst === false) search.set("pinned_first", "false");
+    search.set("limit", String(params.limit ?? 50));
+    search.set("offset", String(params.offset ?? 0));
+    return request(`/notes?${search.toString()}`);
+  },
+  notesTags: () => request("/notes/tags"),
+  note: (noteId) => request(`/notes/${noteId}`),
+  createNote: (payload) =>
+    request("/notes", { method: "POST", body: JSON.stringify(payload) }),
+  updateNote: (noteId, payload) =>
+    request(`/notes/${noteId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  pinNote: (noteId, pinned) =>
+    request(`/notes/${noteId}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    }),
+  archiveNote: (noteId, archived) =>
+    request(`/notes/${noteId}/archive`, {
+      method: "POST",
+      body: JSON.stringify({ archived }),
+    }),
+  deleteNote: (noteId) => request(`/notes/${noteId}`, { method: "DELETE" }),
+
+  projectsList: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.tag) search.set("tag", params.tag);
+    if (params.status) search.set("status", params.status);
+    if (params.includeArchived) search.set("include_archived", "true");
+    if (params.pinnedFirst === false) search.set("pinned_first", "false");
+    search.set("limit", String(params.limit ?? 50));
+    search.set("offset", String(params.offset ?? 0));
+    return request(`/projects?${search.toString()}`);
+  },
+  projectsTags: () => request("/projects/tags"),
+  project: (projectId) => request(`/projects/${projectId}`),
+  createWorkspaceProject: (payload) =>
+    request("/projects", { method: "POST", body: JSON.stringify(payload) }),
+  updateWorkspaceProject: (projectId, payload) =>
+    request(`/projects/${projectId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  pinProject: (projectId, pinned) =>
+    request(`/projects/${projectId}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    }),
+  archiveProject: (projectId, archived) =>
+    request(`/projects/${projectId}/archive`, {
+      method: "POST",
+      body: JSON.stringify({ archived }),
+    }),
+  deleteWorkspaceProject: (projectId) => request(`/projects/${projectId}`, { method: "DELETE" }),
+  attachNoteToProject: (projectId, noteId) =>
+    request(`/projects/${projectId}/notes`, {
+      method: "POST",
+      body: JSON.stringify({ note_id: noteId }),
+    }),
+  detachNoteFromProject: (projectId, noteId) =>
+    request(`/projects/${projectId}/notes/${noteId}`, { method: "DELETE" }),
+  projectNotes: (projectId) => request(`/projects/${projectId}/notes`),
+  noteProjects: (noteId) => request(`/projects/notes/${noteId}/projects`),
 };

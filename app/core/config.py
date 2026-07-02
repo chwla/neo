@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     chat_model: str = Field(default="llama3.2:3b")
     chat_timeout_seconds: int = Field(default=240)
     chat_num_predict: int = Field(default=160)
+    llm_config_path: str = Field(default="neo_llms.json")
     simple_chat_num_predict: int = Field(default=96)
     extraction_after_turn_enabled: bool = Field(default=False)
     semantic_retrieval_enabled: bool = Field(default=False)
