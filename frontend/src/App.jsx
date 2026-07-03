@@ -30,6 +30,7 @@ const MEMORY_SORT_OPTIONS = [
   ["az", "A \u2192 Z"],
   ["za", "Z \u2192 A"],
 ];
+const ACTIVE_AGENT_RUN_STATUSES = new Set(["queued", "planning", "running", "waiting_approval"]);
 
 function formatMemoryType(value) {
   return value
@@ -48,6 +49,17 @@ function errorMessage(error) {
     return "";
   }
   return error.message || String(error);
+}
+
+function formatAgentStatus(value) {
+  if (value === "waiting_approval") return "Waiting for approval";
+  return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatAgentTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
 function createdTime(record) {
@@ -543,7 +555,37 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
   );
 }
 
-function ChatComposer({ disabled, value, onChange, onSubmit, llms, llmId, onLlmChange }) {
+function ChatComposer({
+  disabled,
+  value,
+  onChange,
+  onSubmit,
+  llms,
+  llmId,
+  onLlmChange,
+  mode,
+  onModeChange,
+  tasks,
+  tasksLoading,
+  selectedTaskId,
+  onTaskChange,
+  projects,
+  selectedProjectId,
+  onProjectChange,
+  onPlanAgentTasks,
+  planningTasks,
+  proposedPlan,
+  onCreatePlannedTasks,
+  onCreatePlannedTasksAndRun,
+  onCancelPlan,
+  createdTasks,
+  agentRun,
+  agentMessage,
+  agentDetailsOpen,
+  onToggleAgentDetails,
+  onOpenAgentTask,
+  onSaveAgentRun,
+}) {
   const textareaRef = useRef(null);
 
   const resizeComposer = useCallback(() => {
@@ -575,19 +617,48 @@ function ChatComposer({ disabled, value, onChange, onSubmit, llms, llmId, onLlmC
   }, [resizeComposer]);
 
   return (
-    <div className="chat-input-wrap">
+    <div className={`chat-input-wrap ${mode === "agent" ? "agent-mode" : "chatbot-mode"}`}>
       <div className="chat-input-shell">
-        <div className="chat-llm-picker">
-          <select
-            value={llmId || ""}
-            onChange={(event) => onLlmChange(event.target.value)}
-            disabled={disabled}
-            aria-label="Choose LLM"
-          >
-            {llms.filter((llm) => llm.enabled).map((llm) => (
-              <option key={llm.id} value={llm.id}>{llm.name} / {llm.model}</option>
-            ))}
-          </select>
+        <div className="chat-mode-row">
+          <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
+            <button type="button" role="tab" aria-selected={mode === "chatbot"}
+              className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chatbot</button>
+            <button type="button" role="tab" aria-selected={mode === "agent"}
+              className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
+          </div>
+          {mode === "chatbot" ? (
+            <div className="chat-llm-picker">
+              <select
+                value={llmId || ""}
+                onChange={(event) => onLlmChange(event.target.value)}
+                disabled={disabled}
+                aria-label="Choose LLM"
+              >
+                {llms.filter((llm) => llm.enabled).map((llm) => (
+                  <option key={llm.id} value={llm.id}>{llm.name} / {llm.model}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="agent-context-pickers">
+              <label className="agent-task-picker">
+                <span>Project</span>
+                <select value={selectedProjectId} onChange={(event) => onProjectChange(event.target.value)}
+                  disabled={disabled || tasksLoading} aria-label="Select optional project for agent">
+                  <option value="">Optional project</option>
+                  {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
+                </select>
+              </label>
+              <label className="agent-task-picker">
+                <span>Task</span>
+                <select value={selectedTaskId} onChange={(event) => onTaskChange(event.target.value)}
+                  disabled={disabled || tasksLoading} aria-label="Select optional existing task for agent">
+                  <option value="">{tasksLoading ? "Loading tasks…" : "Optional existing task"}</option>
+                  {tasks.map((task) => <option key={task.id} value={task.id}>{task.title} · {task.status}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
         </div>
         <form className="chat-input-form" onSubmit={onSubmit}>
           <textarea
@@ -598,7 +669,7 @@ function ChatComposer({ disabled, value, onChange, onSubmit, llms, llmId, onLlmC
               requestAnimationFrame(resizeComposer);
             }}
             onInput={resizeComposer}
-            placeholder="Message Neo"
+            placeholder={mode === "agent" ? "What should the agent work on?" : "Message Neo"}
             rows={1}
             disabled={disabled}
             onKeyDown={(event) => {
@@ -608,19 +679,74 @@ function ChatComposer({ disabled, value, onChange, onSubmit, llms, llmId, onLlmC
               }
             }}
           />
-          <NeoButton
-            type="submit"
-            className="send-button"
-            disabled={disabled || !value.trim()}
-            aria-label="Send message"
-            title="Send message"
-          >
-            {"\u2191"}
-          </NeoButton>
+          {mode === "agent" ? (
+            <div className="agent-submit-actions">
+              <button type="button" className="neo-button secondary" onClick={onPlanAgentTasks}
+                disabled={disabled || planningTasks || !value.trim()}>Plan Tasks</button>
+              <NeoButton type="submit" className="agent-run-button"
+                disabled={disabled || (!selectedTaskId && !value.trim())}
+                aria-label="Run Agent" title="Run Agent">Run Agent</NeoButton>
+            </div>
+          ) : (
+            <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
+              aria-label="Send message" title="Send message">{"\u2191"}</NeoButton>
+          )}
         </form>
+        {mode === "agent" && !selectedTaskId && !value.trim() && !tasksLoading ? (
+          <div className="agent-mode-hint">Select an existing task or enter an objective.</div>
+        ) : null}
+        {mode === "agent" && agentMessage ? <div className="agent-mode-message">{agentMessage}</div> : null}
+        {mode === "agent" && proposedPlan ? (
+          <div className="agent-plan-preview">
+            <div className="agent-plan-preview-head">
+              <div><strong>{proposedPlan.parent_task.title}</strong><span>{proposedPlan.subtasks.length} proposed subtasks</span></div>
+              <button type="button" onClick={onCancelPlan}>Cancel</button>
+            </div>
+            <ol>{proposedPlan.subtasks.map((task) => <li key={task.order}><strong>{task.title}</strong><span>{task.description}</span></li>)}</ol>
+            <div className="agent-plan-actions">
+              <button type="button" onClick={onCreatePlannedTasks} disabled={disabled}>Create Tasks</button>
+              <button type="button" onClick={onCreatePlannedTasksAndRun} disabled={disabled}>Create Tasks &amp; Run Agent</button>
+            </div>
+          </div>
+        ) : null}
+        {mode === "agent" && createdTasks?.length ? (
+          <div className="agent-created-tasks">
+            <strong>Created {createdTasks.length} tasks</strong>
+            <span>{createdTasks[0].title} with {Math.max(0, createdTasks.length - 1)} subtasks.</span>
+          </div>
+        ) : null}
+        {mode === "agent" && agentRun ? (
+          <div className="chat-agent-status" aria-live="polite">
+            <div className="chat-agent-status-main">
+              <div>
+                <strong>{agentRun.run.title}</strong>
+                <span>{formatAgentTime(agentRun.run.created_at)}</span>
+              </div>
+              <span className={`agent-status ${agentRun.run.status}`}>{formatAgentStatus(agentRun.run.status)}</span>
+            </div>
+            <div className="chat-agent-actions">
+              <button type="button" onClick={() => onOpenAgentTask(agentRun.run.task_id)}>Open Task</button>
+              <button type="button" onClick={onToggleAgentDetails}>{agentDetailsOpen ? "Hide Run" : "Open Run"}</button>
+              {agentRun.run.status === "completed" ? (
+                <button type="button" onClick={onSaveAgentRun} disabled={disabled}>Save Output to Note</button>
+              ) : null}
+            </div>
+            {agentDetailsOpen ? (
+              <div className="chat-agent-details">
+                {agentRun.steps.map((step) => (
+                  <div key={step.id}><span>{step.title}</span><span>{formatAgentStatus(step.status)}</span></div>
+                ))}
+                {agentRun.run.error ? <div className="chat-agent-error">{agentRun.run.error}</div> : null}
+                {agentRun.run.final_output ? <pre>{agentRun.run.final_output}</pre> : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <div className="chat-input-disclaimer">
-        Neo is an AI and it can make mistakes. Please double-check responses.
+        {mode === "agent"
+          ? "Agent runs are task-linked and audited. No chat message is sent in Agent mode."
+          : "Neo is an AI and it can make mistakes. Please double-check responses."}
       </div>
     </div>
   );
@@ -1681,6 +1807,19 @@ export default function App() {
   const [initialNoteId, setInitialNoteId] = useState(null);
   const [initialTaskId, setInitialTaskId] = useState(null);
   const [initialTaskProjectId, setInitialTaskProjectId] = useState(null);
+  const [chatMode, setChatMode] = useState("chatbot");
+  const [agentTasks, setAgentTasks] = useState([]);
+  const [agentProjects, setAgentProjects] = useState([]);
+  const [agentTasksLoading, setAgentTasksLoading] = useState(false);
+  const [selectedAgentTaskId, setSelectedAgentTaskId] = useState("");
+  const [selectedAgentProjectId, setSelectedAgentProjectId] = useState("");
+  const [agentTaskPlan, setAgentTaskPlan] = useState(null);
+  const [agentCreatedTasks, setAgentCreatedTasks] = useState([]);
+  const [agentPlanning, setAgentPlanning] = useState(false);
+  const [chatAgentRun, setChatAgentRun] = useState(null);
+  const [chatAgentBusy, setChatAgentBusy] = useState(false);
+  const [chatAgentMessage, setChatAgentMessage] = useState("");
+  const [chatAgentDetailsOpen, setChatAgentDetailsOpen] = useState(false);
   const bootstrapped = useRef(false);
   const visibleChatIdRef = useRef(null);
 
@@ -1689,6 +1828,48 @@ export default function App() {
     setSidebar(nextSidebar);
     return nextSidebar;
   }, []);
+
+  const loadAgentContext = useCallback(async () => {
+    setAgentTasksLoading(true);
+    try {
+      const [taskData, projectData] = await Promise.all([
+        api.tasksList({ includeArchived: false, pinnedFirst: true, limit: 100 }),
+        api.projectsList({ includeArchived: false, pinnedFirst: true, limit: 100 }),
+      ]);
+      setAgentTasks(taskData.tasks || []);
+      setAgentProjects(projectData.projects || []);
+    } catch (error) {
+      setStatusError(`Could not load Agent mode context: ${errorMessage(error)}`);
+    } finally {
+      setAgentTasksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (chatMode === "agent") loadAgentContext();
+  }, [chatMode, loadAgentContext]);
+
+  useEffect(() => {
+    const runId = chatAgentRun?.run?.id;
+    const status = chatAgentRun?.run?.status;
+    if (!runId || !ACTIVE_AGENT_RUN_STATUSES.has(status)) return undefined;
+    const interval = window.setInterval(async () => {
+      try {
+        const detail = await api.agentRun(runId);
+        setChatAgentRun(detail);
+        if (!ACTIVE_AGENT_RUN_STATUSES.has(detail.run.status)) {
+          setChatAgentMessage(
+            detail.run.status === "completed"
+              ? "Agent run completed."
+              : `Agent run ${formatAgentStatus(detail.run.status).toLowerCase()}.`,
+          );
+        }
+      } catch (error) {
+        setChatAgentMessage(`Could not refresh the agent run: ${errorMessage(error)}`);
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [chatAgentRun?.run?.id, chatAgentRun?.run?.status]);
 
   const handleLlmConfigChanged = useCallback((next) => {
     setLlms(next.llms || []);
@@ -2089,6 +2270,148 @@ export default function App() {
     await sendPrompt(prompt);
   }
 
+  async function handleStartChatAgent(event) {
+    event.preventDefault();
+    const objective = composerValue.trim();
+    if ((!selectedAgentTaskId && !objective) || chatAgentBusy || agentPlanning) {
+      if (!selectedAgentTaskId && !objective) setChatAgentMessage("Select an existing task or enter an objective.");
+      return;
+    }
+    setChatAgentBusy(true);
+    setChatAgentMessage("");
+    setStatusError("");
+    try {
+      let created;
+      if (selectedAgentTaskId) {
+        created = await api.startAgentRun({
+          task_id: selectedAgentTaskId,
+          objective: objective || null,
+          mode: "assist",
+        });
+      } else {
+        const result = await api.startAgentRunFromObjective({
+          objective,
+          project_id: selectedAgentProjectId || null,
+          mode: "assist",
+          auto_create_tasks: true,
+        });
+        created = { run: result.run };
+        setSelectedAgentTaskId(result.parent_task.id);
+        setAgentCreatedTasks([result.parent_task, ...result.subtasks]);
+        setAgentTaskPlan(null);
+        await loadAgentContext();
+      }
+      setComposerValue("");
+      setChatAgentDetailsOpen(false);
+      setChatAgentRun(await api.agentRun(created.run.id));
+      setChatAgentMessage("Agent run started.");
+    } catch (error) {
+      setChatAgentMessage(`Could not start the agent run: ${errorMessage(error)}`);
+    } finally {
+      setChatAgentBusy(false);
+    }
+  }
+
+  async function handlePlanAgentTasks() {
+    const objective = composerValue.trim();
+    if (!objective || agentPlanning || chatAgentBusy) {
+      if (!objective) setChatAgentMessage("Enter an objective to plan tasks.");
+      return;
+    }
+    setAgentPlanning(true);
+    setChatAgentMessage("Planning tasks…");
+    setAgentCreatedTasks([]);
+    try {
+      const result = await api.planAgentTasks({
+        objective,
+        project_id: selectedAgentProjectId || null,
+        dry_run: true,
+      });
+      setAgentTaskPlan(result.plan);
+      setChatAgentMessage("Task plan ready for review. No tasks were created.");
+    } catch (error) {
+      setChatAgentMessage(`Could not plan tasks: ${errorMessage(error)}`);
+    } finally {
+      setAgentPlanning(false);
+    }
+  }
+
+  async function handleCreatePlannedTasks() {
+    const objective = composerValue.trim();
+    if (!objective || chatAgentBusy) return;
+    setChatAgentBusy(true);
+    try {
+      const result = await api.planAgentTasks({
+        objective,
+        project_id: selectedAgentProjectId || null,
+        dry_run: false,
+      });
+      setAgentCreatedTasks(result.tasks || []);
+      setSelectedAgentTaskId(result.tasks?.[0]?.id || "");
+      setAgentTaskPlan(null);
+      setChatAgentMessage(`Created ${result.tasks?.length || 0} tasks. The parent task is selected.`);
+      await loadAgentContext();
+    } catch (error) {
+      setChatAgentMessage(`Could not create tasks: ${errorMessage(error)}`);
+    } finally {
+      setChatAgentBusy(false);
+    }
+  }
+
+  async function handleCreatePlannedTasksAndRun() {
+    const objective = composerValue.trim();
+    if (!objective || chatAgentBusy) return;
+    setChatAgentBusy(true);
+    try {
+      const result = await api.startAgentRunFromObjective({
+        objective,
+        project_id: selectedAgentProjectId || null,
+        mode: "assist",
+        auto_create_tasks: true,
+      });
+      setAgentCreatedTasks([result.parent_task, ...result.subtasks]);
+      setSelectedAgentTaskId(result.parent_task.id);
+      setAgentTaskPlan(null);
+      setComposerValue("");
+      setChatAgentDetailsOpen(false);
+      setChatAgentRun(await api.agentRun(result.run.id));
+      setChatAgentMessage("Tasks created and Agent run started.");
+      await loadAgentContext();
+    } catch (error) {
+      setChatAgentMessage(`Could not create tasks and run: ${errorMessage(error)}`);
+    } finally {
+      setChatAgentBusy(false);
+    }
+  }
+
+  function handleComposerSubmit(event) {
+    if (chatMode === "agent") return handleStartChatAgent(event);
+    return handleSendMessage(event);
+  }
+
+  async function handleSaveChatAgentRun() {
+    if (!chatAgentRun || chatAgentBusy) return;
+    setChatAgentBusy(true);
+    try {
+      const saved = await api.saveAgentRunToNote(chatAgentRun.run.id, { tags: ["agent", "task-output"] });
+      setChatAgentRun(await api.agentRun(chatAgentRun.run.id));
+      setChatAgentMessage(saved.already_saved ? "Output was already saved to this Note." : "Output saved to Note.");
+    } catch (error) {
+      setChatAgentMessage(`Could not save the output: ${errorMessage(error)}`);
+    } finally {
+      setChatAgentBusy(false);
+    }
+  }
+
+  function openAgentTask(taskId) {
+    setInitialTaskId(taskId);
+    setInitialTaskProjectId(null);
+    setShowResearch(false);
+    setShowNotes(false);
+    setShowProjects(false);
+    setShowTasks(true);
+  }
+
   async function handleLlmChange(llmId) {
     const previous = selectedLlmId;
     setSelectedLlmId(llmId);
@@ -2200,7 +2523,7 @@ export default function App() {
           }}
         />
       ) : (
-      <main className="neo-main">
+      <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
         <section className="neo-shell">
           {showEmptyState && (
             <div className="neo-empty-state">
@@ -2249,11 +2572,35 @@ export default function App() {
         <ChatComposer
           value={composerValue}
           onChange={setComposerValue}
-          onSubmit={handleSendMessage}
-          disabled={sending}
+          onSubmit={handleComposerSubmit}
+          disabled={chatMode === "chatbot"
+            ? sending
+            : chatAgentBusy || agentPlanning || ACTIVE_AGENT_RUN_STATUSES.has(chatAgentRun?.run?.status)}
           llms={llms}
           llmId={selectedLlmId}
           onLlmChange={handleLlmChange}
+          mode={chatMode}
+          onModeChange={setChatMode}
+          tasks={agentTasks}
+          tasksLoading={agentTasksLoading}
+          selectedTaskId={selectedAgentTaskId}
+          onTaskChange={(taskId) => { setSelectedAgentTaskId(taskId); setAgentTaskPlan(null); }}
+          projects={agentProjects}
+          selectedProjectId={selectedAgentProjectId}
+          onProjectChange={(projectId) => { setSelectedAgentProjectId(projectId); setAgentTaskPlan(null); }}
+          onPlanAgentTasks={handlePlanAgentTasks}
+          planningTasks={agentPlanning}
+          proposedPlan={agentTaskPlan}
+          onCreatePlannedTasks={handleCreatePlannedTasks}
+          onCreatePlannedTasksAndRun={handleCreatePlannedTasksAndRun}
+          onCancelPlan={() => setAgentTaskPlan(null)}
+          createdTasks={agentCreatedTasks}
+          agentRun={chatAgentRun}
+          agentMessage={chatAgentMessage}
+          agentDetailsOpen={chatAgentDetailsOpen}
+          onToggleAgentDetails={() => setChatAgentDetailsOpen((open) => !open)}
+          onOpenAgentTask={openAgentTask}
+          onSaveAgentRun={handleSaveChatAgentRun}
         />
       </main>
       )}

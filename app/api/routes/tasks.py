@@ -19,6 +19,7 @@ class TaskReadResponse(BaseModel):
     project: Project | None
     notes: list[TaskNote]
     links: list[TaskLink]
+    subtasks: list[TaskListItem]
 
 
 class TasksListResponse(BaseModel):
@@ -70,11 +71,12 @@ def create_task(payload: TaskCreate):
 def list_tasks(q: str | None = None, status: str | None = None, priority: str | None = None,
                project_id: str | None = None, tag: str | None = None, due_before: str | None = None,
                due_after: str | None = None, include_archived: bool = False, include_done: bool = True,
-               pinned_first: bool = True, limit: int = 50, offset: int = 0):
+               pinned_first: bool = True, parent_task_id: str | None = None, limit: int = 50, offset: int = 0):
     try:
         tasks, total = _service().list_tasks(q=q, status=status, priority=priority, project_id=project_id,
             tag=tag, due_before=due_before, due_after=due_after, include_archived=include_archived,
-            include_done=include_done, pinned_first=pinned_first, limit=limit, offset=offset)
+            include_done=include_done, pinned_first=pinned_first, parent_task_id=parent_task_id,
+            limit=limit, offset=offset)
         return TasksListResponse(tasks=tasks, total=total)
     except TasksValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -92,11 +94,11 @@ def get_tasks_for_note(note_id: str):
 
 @router.get("/{task_id}", response_model=TaskReadResponse)
 def get_task(task_id: str):
-    result = _service().read_task(task_id)
+    result = _service().read_task_detail(task_id)
     if result is None:
         raise HTTPException(404, "Task not found.")
-    task, project, notes, links = result
-    return TaskReadResponse(task=task, project=project, notes=notes, links=links)
+    task, project, notes, links, subtasks = result
+    return TaskReadResponse(task=task, project=project, notes=notes, links=links, subtasks=subtasks)
 
 
 @router.patch("/{task_id}", response_model=TaskResponse)

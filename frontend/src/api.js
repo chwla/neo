@@ -252,6 +252,7 @@ export const api = {
     if (params.status) search.set("status", params.status);
     if (params.priority) search.set("priority", params.priority);
     if (params.projectId) search.set("project_id", params.projectId);
+    if (params.parentTaskId) search.set("parent_task_id", params.parentTaskId);
     if (params.tag) search.set("tag", params.tag);
     if (params.dueBefore) search.set("due_before", params.dueBefore);
     if (params.dueAfter) search.set("due_after", params.dueAfter);
@@ -303,6 +304,10 @@ export const api = {
   agentRun: (runId) => request(`/agents/runs/${runId}`),
   startAgentRun: (payload) =>
     request("/agents/runs", { method: "POST", body: JSON.stringify(payload) }),
+  planAgentTasks: (payload) =>
+    request("/agents/plan-tasks", { method: "POST", body: JSON.stringify(payload) }),
+  startAgentRunFromObjective: (payload) =>
+    request("/agents/runs/from-objective", { method: "POST", body: JSON.stringify(payload) }),
   cancelAgentRun: (runId) =>
     request(`/agents/runs/${runId}/cancel`, { method: "POST" }),
   approveAgentStep: (runId, stepId, approved) =>

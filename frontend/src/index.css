@@ -801,10 +801,45 @@ textarea:disabled {
   left: 0;
 }
 
+.neo-main.agent-chat-mode { padding-bottom: 500px; }
+
 .chat-input-shell {
   width: min(1220px, 100%);
   margin: 0 auto;
   padding: 0;
+}
+
+.chat-mode-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+
+.chat-mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  background: #020702;
+  padding: 2px;
+}
+
+.chat-mode-switch button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--neo-muted);
+  cursor: pointer;
+  padding: 5px 13px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.chat-mode-switch button.active {
+  background: #0b2410;
+  box-shadow: 0 0 12px rgba(57,255,20,.12);
+  color: var(--neo-green);
 }
 
 .chat-llm-picker {
@@ -812,9 +847,35 @@ textarea:disabled {
   align-items: center;
   gap: 8px;
   width: fit-content;
-  margin: 0 0 6px auto;
+  margin: 0 0 0 auto;
   color: var(--neo-muted);
   font-size: 11px;
+}
+
+.agent-task-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--neo-muted);
+  font-size: 12px;
+}
+
+.agent-context-pickers {
+  display: grid;
+  grid-template-columns: minmax(180px, .75fr) minmax(260px, 1.25fr);
+  gap: 10px;
+  width: min(680px, 65vw);
+}
+
+.agent-task-picker select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--neo-line);
+  border-radius: 6px;
+  background: #061006;
+  color: var(--neo-text);
+  padding: 6px 8px;
 }
 
 .chat-llm-picker select {
@@ -903,6 +964,90 @@ textarea:disabled {
   color: rgba(137, 173, 137, .72);
   opacity: 1;
 }
+
+.chat-input-form .agent-run-button {
+  min-width: 108px;
+  height: 42px;
+  border-color: rgba(57,255,20,.46);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.agent-submit-actions { display: flex; align-items: center; gap: 8px; }
+.agent-submit-actions > button { min-width: 104px; height: 42px; white-space: nowrap; }
+
+.agent-mode-hint, .agent-mode-message {
+  margin-top: 6px;
+  color: var(--neo-muted);
+  font-size: 12px;
+}
+
+.agent-mode-message { color: var(--neo-green); }
+
+.agent-plan-preview, .agent-created-tasks {
+  margin-top: 8px;
+  border: 1px solid rgba(57,255,20,.22);
+  border-radius: 8px;
+  background: rgba(3,12,4,.96);
+  padding: 9px 10px;
+}
+
+.agent-plan-preview-head, .agent-plan-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-plan-preview-head > div, .agent-created-tasks { display: grid; gap: 3px; }
+.agent-plan-preview-head span, .agent-created-tasks span { color: var(--neo-muted); font-size: 11px; }
+.agent-plan-preview-head button, .agent-plan-actions button {
+  border: 1px solid var(--neo-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--neo-text);
+  cursor: pointer;
+  padding: 6px 9px;
+}
+.agent-plan-preview ol { max-height: 190px; overflow: auto; margin: 8px 0; padding-left: 25px; }
+.agent-plan-preview li { margin: 5px 0; padding-left: 2px; color: var(--neo-muted); font-size: 11px; }
+.agent-plan-preview li strong, .agent-plan-preview li span { display: block; }
+.agent-plan-preview li strong { color: var(--neo-text); font-size: 12px; }
+.agent-plan-actions { justify-content: flex-end; flex-wrap: wrap; }
+
+.chat-agent-status {
+  margin-top: 8px;
+  border: 1px solid rgba(57,255,20,.22);
+  border-radius: 8px;
+  background: rgba(3,12,4,.94);
+  padding: 9px 10px;
+}
+
+.chat-agent-status-main, .chat-agent-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-agent-status-main > div { display: grid; gap: 2px; min-width: 0; }
+.chat-agent-status-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.chat-agent-status-main span:not(.agent-status) { color: var(--neo-muted); font-size: 11px; }
+.chat-agent-actions { justify-content: flex-start; flex-wrap: wrap; margin-top: 7px; }
+.chat-agent-actions button {
+  border: 1px solid var(--neo-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--neo-text);
+  cursor: pointer;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.chat-agent-details { display: grid; gap: 5px; margin-top: 8px; border-top: 1px solid var(--neo-line); padding-top: 8px; }
+.chat-agent-details > div { display: flex; justify-content: space-between; gap: 10px; color: var(--neo-muted); font-size: 11px; }
+.chat-agent-details pre { max-height: 210px; overflow: auto; margin: 3px 0 0; border-radius: 6px; background: #020602; padding: 9px; color: var(--neo-text); white-space: pre-wrap; font: inherit; font-size: 12px; line-height: 1.45; }
+.chat-agent-details .chat-agent-error { display: block; color: #ff9a9a; }
 
 .chat-input-disclaimer {
   max-width: 1220px;
@@ -1444,10 +1589,25 @@ textarea:disabled {
     padding: 10px;
   }
 
+  .neo-main.agent-chat-mode { padding-bottom: 540px; }
+
+  .chat-mode-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .agent-context-pickers { grid-template-columns: 1fr; width: 100%; }
+  .agent-task-picker { min-width: 0; width: 100%; }
+
   .chat-input-form {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 42px;
   }
+
+  .agent-mode .chat-input-form { grid-template-columns: minmax(0, 1fr) auto; }
+  .agent-submit-actions { align-items: stretch; flex-direction: column; }
+  .agent-submit-actions > button { height: auto; min-height: 34px; }
 
   .chat-input-form textarea {
     --composer-max-height: 190px;
@@ -2788,6 +2948,10 @@ textarea:disabled {
 .task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .task-help, .task-completion-meta { margin: 0; color: var(--neo-muted); font-size: 13px; line-height: 1.5; }
 .task-notes-section { margin-top: 10px; border-top: 1px solid var(--neo-line); padding-top: 16px; }
+.task-subtasks-section { margin-top: 10px; border-top: 1px solid var(--neo-line); padding-top: 16px; }
+.task-subtask-list { display: grid; gap: 7px; }
+.task-subtask-list button { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid rgba(57,255,20,.18); border-radius: 7px; background: #061006; color: var(--neo-text); cursor: pointer; padding: 8px 10px; text-align: left; }
+.task-subtask-list button:hover { border-color: var(--neo-green); }
 .task-section-title { margin-bottom: 9px; font-weight: 700; }
 .task-linked-list, .project-task-list { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
 .task-linked-row { display: flex; justify-content: space-between; gap: 8px; border: 1px solid rgba(57,255,20,.18); border-radius: 7px; padding: 8px; }

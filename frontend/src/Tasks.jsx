@@ -40,6 +40,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
   const [taskTags, setTaskTags] = useState([]);
   const [selectedTask, setSelectedTask] = useState(null);
   const [linkedNotes, setLinkedNotes] = useState([]);
+  const [subtasks, setSubtasks] = useState([]);
   const [draft, setDraft] = useState(toDraft(null));
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
@@ -103,6 +104,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
       setSelectedTask(data.task);
       setDraft(toDraft(data.task));
       setLinkedNotes(data.notes || []);
+      setSubtasks(data.subtasks || []);
       await refreshAgentRuns(data.task.id, null, true);
       onTaskChange?.(data.task.id);
     } catch (err) {
@@ -122,6 +124,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
       setSelectedTask(data.task);
       setDraft(toDraft(data.task));
       setLinkedNotes([]);
+      setSubtasks([]);
       setAgentRuns([]);
       setSelectedRun(null);
       setRunObjective("");
@@ -171,7 +174,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
   async function removeTask() {
     if (!window.confirm("Delete this task?")) return;
     await api.deleteTask(selectedTask.id);
-    setSelectedTask(null); setLinkedNotes([]); setDraft(toDraft(null)); onTaskChange?.(null); await loadTasks();
+    setSelectedTask(null); setLinkedNotes([]); setSubtasks([]); setDraft(toDraft(null)); onTaskChange?.(null); await loadTasks();
     setAgentRuns([]); setSelectedRun(null); setRunObjective("");
   }
 
@@ -282,8 +285,9 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
         <div className="tasks-list">
           {tasks.length === 0 ? <p className="tasks-empty">No tasks yet.<br />Create a task or add one from a project.</p> : tasks.map((task) => (
             <button key={task.id} type="button" className={`task-card ${selectedTask?.id === task.id ? "selected" : ""}`} onClick={() => openTask(task.id)}>
-              <div className="task-card-title">{task.pinned ? "★ " : ""}{task.title}</div>
+              <div className="task-card-title">{task.parent_task_id ? "↳ " : ""}{task.pinned ? "★ " : ""}{task.title}</div>
               <div className="task-card-meta"><span className={`task-status ${task.status}`}>{task.status}</span><span className={`task-priority ${task.priority}`}>{task.priority}</span>{task.project_title ? <span>{task.project_title}</span> : null}</div>
+              {task.subtask_count ? <div className="task-card-updated">{task.open_subtask_count}/{task.subtask_count} subtasks open</div> : null}
               {task.due_at ? <div className="task-card-due">Due {formatTime(task.due_at)}</div> : null}
               {task.tags?.length ? <div className="task-tags">{task.tags.map((item) => <span key={item}>#{item}</span>)}</div> : null}
               <div className="task-card-updated">Updated {formatTime(task.updated_at)}</div>
@@ -324,6 +328,20 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
                 <div className="task-linked-list">{linkedNotes.map((note) => <div key={note.id} className="task-linked-row"><button type="button" onClick={() => onOpenNote?.(note.id)}>{note.title}</button><button type="button" onClick={() => detachNote(note.id)}>Detach</button></div>)}</div>
               )}
             </div>
+
+            {subtasks.length ? (
+              <section className="task-subtasks-section">
+                <div className="task-section-title">Subtasks</div>
+                <div className="task-subtask-list">
+                  {subtasks.map((subtask, index) => (
+                    <button type="button" key={subtask.id} onClick={() => openTask(subtask.id)}>
+                      <span>{index + 1}. {subtask.title}</span>
+                      <span className={`task-status ${subtask.status}`}>{subtask.status}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
             <section className="agent-runs-section">
               <div className="agent-runs-header">

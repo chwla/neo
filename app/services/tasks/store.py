@@ -43,15 +43,20 @@ def initialize_task_tables() -> None:
                 priority TEXT NOT NULL DEFAULT 'medium',
                 due_at TEXT,
                 project_id TEXT,
+                parent_task_id TEXT,
                 pinned INTEGER NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                FOREIGN KEY (project_id) REFERENCES workspace_projects(id)
+                FOREIGN KEY (project_id) REFERENCES workspace_projects(id),
+                FOREIGN KEY (parent_task_id) REFERENCES workspace_tasks(id)
             )
         """)
+        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workspace_tasks)").fetchall()}
+        if "parent_task_id" not in existing_columns:
+            conn.execute("ALTER TABLE workspace_tasks ADD COLUMN parent_task_id TEXT REFERENCES workspace_tasks(id)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS workspace_task_tags (
                 task_id TEXT NOT NULL,
@@ -86,6 +91,7 @@ def initialize_task_tables() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_visible ON workspace_tasks(deleted, archived, status, priority, updated_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_project ON workspace_tasks(project_id, deleted, archived, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_due ON workspace_tasks(due_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_parent ON workspace_tasks(parent_task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_task_tags_tag ON workspace_task_tags(tag)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_task_notes_task ON workspace_task_notes(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_task_notes_note ON workspace_task_notes(note_id)")
@@ -100,10 +106,10 @@ def insert_task(task: dict) -> dict:
         conn.execute(
             """
             INSERT INTO workspace_tasks (
-                id, title, description, status, priority, due_at, project_id,
+                id, title, description, status, priority, due_at, project_id, parent_task_id,
                 pinned, archived, deleted, completed_at, created_at, updated_at
             ) VALUES (
-                :id, :title, :description, :status, :priority, :due_at, :project_id,
+                :id, :title, :description, :status, :priority, :due_at, :project_id, :parent_task_id,
                 :pinned, :archived, :deleted, :completed_at, :created_at, :updated_at
             )
             """,
@@ -134,6 +140,7 @@ def list_tasks(
     status: str | None = None,
     priority: str | None = None,
     project_id: str | None = None,
+    parent_task_id: str | None = None,
     tag: str | None = None,
     due_before: str | None = None,
     due_after: str | None = None,
@@ -162,6 +169,9 @@ def list_tasks(
         if project_id:
             where.append("t.project_id = ?")
             params.append(project_id)
+        if parent_task_id:
+            where.append("t.parent_task_id = ?")
+            params.append(parent_task_id)
         if tag:
             joins += " JOIN workspace_task_tags ft ON ft.task_id = t.id"
             where.append("ft.tag = ?")
@@ -182,7 +192,9 @@ def list_tasks(
             params.extend([like, like, like, like])
         where_sql = " AND ".join(where)
         pin_sort = "t.pinned DESC, " if pinned_first else ""
-        if sort_mode == "completed_recent":
+        if parent_task_id:
+            order_sql = "t.created_at ASC"
+        elif sort_mode == "completed_recent":
             order_sql = f"{pin_sort}CASE WHEN t.completed_at IS NULL THEN 1 ELSE 0 END, t.completed_at DESC, t.updated_at DESC"
         elif sort_mode == "due_soon":
             order_sql = (
@@ -203,7 +215,12 @@ def list_tasks(
             f"""
             SELECT DISTINCT t.*, p.title AS project_title,
                 (SELECT COUNT(*) FROM workspace_task_notes tn JOIN notes n ON n.id = tn.note_id
-                 WHERE tn.task_id = t.id AND n.deleted = 0) AS linked_notes_count
+                 WHERE tn.task_id = t.id AND n.deleted = 0) AS linked_notes_count,
+                (SELECT COUNT(*) FROM workspace_tasks child
+                 WHERE child.parent_task_id = t.id AND child.deleted = 0) AS subtask_count,
+                (SELECT COUNT(*) FROM workspace_tasks child
+                 WHERE child.parent_task_id = t.id AND child.deleted = 0
+                   AND child.archived = 0 AND child.status != 'done') AS open_subtask_count
             FROM workspace_tasks t{joins}
             WHERE {where_sql}
             ORDER BY {order_sql}
@@ -224,7 +241,7 @@ def update_task(task_id: str, updates: dict) -> dict | None:
             return None
         columns: list[str] = []
         params: list = []
-        for key in ("title", "description", "status", "priority", "due_at", "project_id", "completed_at"):
+        for key in ("title", "description", "status", "priority", "due_at", "project_id", "parent_task_id", "completed_at"):
             if key in updates:
                 columns.append(f"{key} = ?")
                 params.append(updates[key])
@@ -259,6 +276,13 @@ def list_tags() -> list[dict]:
         return [{"tag": row["tag"], "count": int(row["count"])} for row in rows]
     finally:
         conn.close()
+
+
+def list_subtasks(parent_task_id: str) -> list[dict] | None:
+    if get_task(parent_task_id) is None:
+        return None
+    tasks, _ = list_tasks(parent_task_id=parent_task_id, include_archived=True, limit=100)
+    return tasks
 
 
 def attach_note(task_id: str, note_id: str) -> bool:
@@ -333,7 +357,13 @@ def list_links(task_id: str) -> list[dict] | None:
 
 
 def _task_params(task: dict) -> dict:
-    return {**task, "pinned": int(bool(task.get("pinned"))), "archived": int(bool(task.get("archived"))), "deleted": int(bool(task.get("deleted")))}
+    return {
+        **task,
+        "parent_task_id": task.get("parent_task_id"),
+        "pinned": int(bool(task.get("pinned"))),
+        "archived": int(bool(task.get("archived"))),
+        "deleted": int(bool(task.get("deleted"))),
+    }
 
 
 def _replace_tags(conn: sqlite3.Connection, task_id: str, tags: list[str]) -> None:
@@ -348,6 +378,15 @@ def _row_to_task(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     tags = conn.execute("SELECT tag FROM workspace_task_tags WHERE task_id = ? ORDER BY tag ASC", (data["id"],)).fetchall()
     data["tags"] = [item["tag"] for item in tags]
     data["linked_notes_count"] = int(data.get("linked_notes_count") or 0)
+    if "subtask_count" not in data:
+        data["subtask_count"] = int(conn.execute(
+            "SELECT COUNT(*) FROM workspace_tasks WHERE parent_task_id = ? AND deleted = 0", (data["id"],)
+        ).fetchone()[0])
+    if "open_subtask_count" not in data:
+        data["open_subtask_count"] = int(conn.execute(
+            "SELECT COUNT(*) FROM workspace_tasks WHERE parent_task_id = ? AND deleted = 0 AND archived = 0 AND status != 'done'",
+            (data["id"],),
+        ).fetchone()[0])
     return data
 
 

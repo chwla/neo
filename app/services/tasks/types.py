@@ -18,6 +18,7 @@ class Task(BaseModel):
     priority: TaskPriority = "medium"
     due_at: str | None = None
     project_id: str | None = None
+    parent_task_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     pinned: bool = False
     archived: bool = False
@@ -25,6 +26,8 @@ class Task(BaseModel):
     completed_at: str | None = None
     created_at: str
     updated_at: str
+    subtask_count: int = 0
+    open_subtask_count: int = 0
 
 
 class TaskListItem(Task):
@@ -40,6 +43,7 @@ class TaskCreate(BaseModel):
     priority: TaskPriority = "medium"
     due_at: str | None = None
     project_id: str | None = None
+    parent_task_id: str | None = None
     tags: list[str] = Field(default_factory=list)
 
 
@@ -50,6 +54,7 @@ class TaskUpdate(BaseModel):
     priority: TaskPriority | None = None
     due_at: str | None = None
     project_id: str | None = None
+    parent_task_id: str | None = None
     tags: list[str] | None = None
     completed_at: str | None = None
 

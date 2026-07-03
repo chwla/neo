@@ -103,7 +103,8 @@ class AgentRunner:
                 })
 
     def _read_context(self, run: dict) -> str:
-        result = TasksService().read_task(run["task_id"])
+        tasks_service = TasksService()
+        result = tasks_service.read_task(run["task_id"])
         if result is None:
             raise RuntimeError("Task no longer exists.")
         task, project, notes, _links = result
@@ -122,6 +123,12 @@ class AgentRunner:
             for note in notes[:5]:
                 excerpt = (note.summary or note.body or "").strip().replace("\n", " ")[:1200]
                 lines.append(f"- {note.title}: {excerpt}")
+        subtasks = tasks_service.list_subtasks(task.id)
+        if subtasks:
+            lines.append("Created task plan:")
+            for index, subtask in enumerate(subtasks[:8], start=1):
+                lines.append(f"{index}. {subtask.title} [{subtask.status}, {subtask.priority}]")
+            lines.append(f"Recommended next subtask: {subtasks[0].title}")
         recent, _ = store.list_runs(task_id=task.id, limit=6)
         previous = [item for item in recent if item["id"] != run["id"]][:5]
         if previous:

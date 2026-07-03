@@ -4,9 +4,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services.agents import AgentArtifact, AgentRun, AgentRunCreate, AgentStep, AgentsService, SaveRunToNoteRequest
+from app.services.agents.planner import AgentPlannerValidationError, AgentTaskPlanningService
 from app.services.agents.service import AgentsValidationError
-from app.services.agents.types import ApprovalRequest
+from app.services.agents.types import ApprovalRequest, AgentTaskPlan, PlanTasksRequest, PlanTasksResult, RunFromObjectiveRequest
 from app.services.notes.types import Note
+from app.services.tasks.types import Task
+from app.services.tasks.service import TasksValidationError
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 task_router = APIRouter(prefix="/tasks", tags=["agents"])
@@ -36,8 +39,32 @@ class SaveNoteResponse(BaseModel):
     already_saved: bool
 
 
+class RunFromObjectiveResponse(BaseModel):
+    run: AgentRun
+    parent_task: Task
+    subtasks: list[Task]
+    plan: AgentTaskPlan
+
+
 def _service() -> AgentsService:
     return AgentsService()
+
+
+@router.post("/plan-tasks", response_model=PlanTasksResult)
+def plan_tasks(payload: PlanTasksRequest):
+    try:
+        return AgentTaskPlanningService().plan_tasks(payload)
+    except (AgentPlannerValidationError, TasksValidationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/runs/from-objective", response_model=RunFromObjectiveResponse)
+def run_from_objective(payload: RunFromObjectiveRequest):
+    try:
+        run, parent, subtasks, plan = AgentTaskPlanningService().run_from_objective(payload)
+        return RunFromObjectiveResponse(run=run, parent_task=parent, subtasks=subtasks, plan=plan)
+    except (AgentPlannerValidationError, TasksValidationError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/runs", response_model=RunResponse)

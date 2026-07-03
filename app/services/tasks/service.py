@@ -33,6 +33,7 @@ class TasksService:
             "priority": _validate_priority(payload.priority),
             "due_at": _validate_due_at(payload.due_at),
             "project_id": project_id,
+            "parent_task_id": _validate_parent_task(payload.parent_task_id),
             "tags": _normalize_tags(payload.tags),
             "pinned": False,
             "archived": status == "archived",
@@ -56,6 +57,19 @@ class TasksService:
         links = store.list_links(task_id) or []
         return task, Project(**project) if project else None, notes, [TaskLink(**link) for link in links]
 
+    def read_task_detail(self, task_id: str) -> tuple[Task, Project | None, list[TaskNote], list[TaskLink], list[TaskListItem]] | None:
+        result = self.read_task(task_id)
+        if result is None:
+            return None
+        task, project, notes, links = result
+        return task, project, notes, links, self.list_subtasks(task_id)
+
+    def list_subtasks(self, parent_task_id: str) -> list[TaskListItem]:
+        rows = store.list_subtasks(parent_task_id)
+        if rows is None:
+            raise TasksValidationError("Task not found.")
+        return [TaskListItem(**{**task, "preview": _preview(task["description"])}) for task in rows]
+
     def list_tasks(self, **filters) -> tuple[list[TaskListItem], int]:
         status = _validate_status(filters.get("status")) if filters.get("status") else None
         priority = _validate_priority(filters.get("priority")) if filters.get("priority") else None
@@ -66,6 +80,7 @@ class TasksService:
             status=status,
             priority=priority,
             project_id=project_id,
+            parent_task_id=(filters.get("parent_task_id") or "").strip() or None,
             tag=tag,
             due_before=_validate_due_at(filters.get("due_before")),
             due_after=_validate_due_at(filters.get("due_after")),
@@ -94,6 +109,11 @@ class TasksService:
             updates["due_at"] = _validate_due_at(payload.due_at)
         if "project_id" in fields_set:
             updates["project_id"] = _validate_project(payload.project_id)
+        if "parent_task_id" in fields_set:
+            parent_task_id = _validate_parent_task(payload.parent_task_id)
+            if parent_task_id == task_id:
+                raise TasksValidationError("A task cannot be its own parent.")
+            updates["parent_task_id"] = parent_task_id
         if payload.tags is not None:
             updates["tags"] = _normalize_tags(payload.tags)
         if payload.status is not None:
@@ -263,6 +283,14 @@ def _validate_project(project_id: str | None) -> str | None:
     if projects_store.get_project(project_id) is None:
         raise TasksValidationError("Project not found.")
     return project_id
+
+
+def _validate_parent_task(parent_task_id: str | None) -> str | None:
+    if parent_task_id is None or not parent_task_id.strip():
+        return None
+    if store.get_task(parent_task_id) is None:
+        raise TasksValidationError("Parent task not found.")
+    return parent_task_id
 
 
 def _normalize_tags(tags: list[str]) -> list[str]:
