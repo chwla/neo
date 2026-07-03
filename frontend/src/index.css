@@ -2745,15 +2745,17 @@ textarea:disabled {
 
 /* Tasks */
 .tasks-layout {
-  grid-column: 2;
   display: grid;
   grid-template-columns: minmax(310px, 38%) minmax(0, 1fr);
   height: 100vh;
   min-width: 0;
+  margin-left: 300px;
+  overflow: hidden;
   background: var(--neo-black);
+  transition: margin-left .18s ease;
 }
 
-.neo-app.sidebar-collapsed .tasks-layout { grid-column: 1 / -1; }
+.neo-app.sidebar-collapsed .tasks-layout { margin-left: 0; }
 .tasks-list-pane, .tasks-editor-pane { min-width: 0; overflow: auto; padding: 22px; }
 .tasks-list-pane { border-right: 1px solid var(--neo-line); background: var(--neo-panel); }
 .tasks-pane-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -2797,6 +2799,35 @@ textarea:disabled {
 .project-task-list button span { color: var(--neo-muted); font-size: 12px; }
 .notes-tasks-box .notes-projects-list { align-items: stretch; }
 .notes-tasks-box .notes-projects-list button { border: 1px solid rgba(57,255,20,.2); border-radius: 6px; padding: 6px 8px; }
+
+.agent-runs-section { margin-top: 10px; border-top: 1px solid var(--neo-line); padding-top: 16px; }
+.agent-runs-header, .agent-run-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.agent-objective-input { min-height: 74px !important; margin-top: 10px; }
+.agent-message, .agent-failure { margin-top: 9px; border: 1px solid var(--neo-line); border-radius: 7px; padding: 9px 10px; color: var(--neo-muted); line-height: 1.45; }
+.agent-failure { border-color: rgba(255,80,80,.45); color: #ff9a9a; background: rgba(255,60,60,.08); }
+.agent-run-list { display: grid; gap: 7px; margin-top: 12px; }
+.agent-run-list > button { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; border: 1px solid rgba(57,255,20,.18); border-radius: 7px; background: #061006; color: var(--neo-text); padding: 9px; text-align: left; cursor: pointer; }
+.agent-run-list > button.selected, .agent-run-list > button:hover { border-color: var(--neo-green); }
+.agent-run-list small { grid-column: 1 / -1; color: var(--neo-muted); }
+.agent-status { display: inline-flex; width: fit-content; border: 1px solid var(--neo-line); border-radius: 999px; padding: 2px 7px; color: var(--neo-muted); font-size: 11px; text-transform: capitalize; }
+.agent-status.running, .agent-status.planning { color: #ffe17c; }
+.agent-status.waiting_approval { color: #ffb86c; border-color: rgba(255,184,108,.45); }
+.agent-status.completed { color: var(--neo-green); }
+.agent-status.failed, .agent-status.cancelled { color: #ff8a8a; border-color: rgba(255,80,80,.45); }
+.agent-run-detail { margin-top: 14px; border: 1px solid rgba(57,255,20,.2); border-radius: 8px; padding: 12px; background: rgba(3,10,3,.7); }
+.agent-run-toolbar { justify-content: flex-start; flex-wrap: wrap; }
+.agent-run-toolbar button, .agent-approval-actions button, .agent-artifacts button { border: 1px solid var(--neo-line); border-radius: 6px; background: transparent; color: var(--neo-text); padding: 6px 9px; cursor: pointer; }
+.agent-run-objective { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
+.agent-run-objective span { white-space: pre-wrap; }
+.agent-run-objective small { color: var(--neo-muted); }
+.agent-step-list { display: grid; gap: 8px; }
+.agent-step { border: 1px solid rgba(57,255,20,.15); border-radius: 7px; padding: 9px; }
+.agent-step > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-step pre, .agent-final-output pre { max-height: 330px; overflow: auto; margin: 8px 0 0; border-radius: 6px; background: #020602; color: var(--neo-text); padding: 10px; white-space: pre-wrap; font: inherit; line-height: 1.5; }
+.agent-approval-actions { display: flex; gap: 7px; margin-top: 8px; }
+.agent-final-output { margin-top: 14px; }
+.agent-artifacts { display: grid; gap: 7px; margin-top: 14px; }
+.agent-artifacts > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 @media (max-width: 900px) {
   .tasks-layout { grid-template-columns: 1fr; height: auto; min-height: 100vh; }

@@ -289,4 +289,30 @@ export const api = {
   },
   createProjectTask: (projectId, payload) =>
     request(`/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
+
+  agentRuns: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.taskId) search.set("task_id", params.taskId);
+    if (params.projectId) search.set("project_id", params.projectId);
+    if (params.status) search.set("status", params.status);
+    search.set("limit", String(params.limit ?? 50));
+    search.set("offset", String(params.offset ?? 0));
+    return request(`/agents/runs?${search.toString()}`);
+  },
+  taskAgentRuns: (taskId) => request(`/tasks/${taskId}/agent-runs`),
+  agentRun: (runId) => request(`/agents/runs/${runId}`),
+  startAgentRun: (payload) =>
+    request("/agents/runs", { method: "POST", body: JSON.stringify(payload) }),
+  cancelAgentRun: (runId) =>
+    request(`/agents/runs/${runId}/cancel`, { method: "POST" }),
+  approveAgentStep: (runId, stepId, approved) =>
+    request(`/agents/runs/${runId}/steps/${stepId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approved }),
+    }),
+  saveAgentRunToNote: (runId, payload = {}) =>
+    request(`/agents/runs/${runId}/save-to-note`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

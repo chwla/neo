@@ -11,6 +11,7 @@ SourceType = Literal[
     "web_source",
     "memory_candidate",
     "project",
+    "agent_run",
 ]
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import app.services.projects.store as projects_store
 import app.services.tasks.store as store
@@ -72,6 +72,7 @@ class TasksService:
             include_archived=bool(filters.get("include_archived", False)),
             include_done=bool(filters.get("include_done", True)),
             pinned_first=bool(filters.get("pinned_first", True)),
+            sort_mode=filters.get("sort_mode"),
             limit=max(1, min(int(filters.get("limit", 50)), 100)),
             offset=max(0, int(filters.get("offset", 0))),
         )
@@ -100,6 +101,8 @@ class TasksService:
             updates["status"] = status
             if status == "archived":
                 updates["archived"] = True
+            elif existing.get("status") == "archived":
+                updates["archived"] = False
             if status == "done":
                 updates["completed_at"] = existing.get("completed_at") or store.now_iso()
             elif "completed_at" not in fields_set:
@@ -119,7 +122,13 @@ class TasksService:
         return Task(**task) if task else None
 
     def set_archived(self, task_id: str, archived: bool) -> Task | None:
-        task = store.update_task(task_id, {"archived": archived})
+        existing = store.get_task(task_id)
+        if existing is None:
+            return None
+        updates: dict = {"archived": archived}
+        if not archived and existing.get("status") == "archived":
+            updates.update({"status": "todo", "completed_at": None})
+        task = store.update_task(task_id, updates)
         return Task(**task) if task else None
 
     def soft_delete(self, task_id: str) -> bool:
@@ -148,34 +157,28 @@ class TasksService:
 class TaskContextService:
     def answer_for_prompt(self, prompt: str) -> str | None:
         lowered = prompt.lower()
-        if not _asks_task_read_question(lowered):
+        intent = _task_query_intent(lowered)
+        if intent is None:
             return None
-        tasks = self._tasks_for_prompt(lowered)
+        tasks = self._tasks_for_prompt(lowered, intent)
         if not tasks:
-            return "No matching tasks found."
-        if re.search(r"\bblocked\b", lowered):
-            heading = "Blocked tasks:"
-        elif re.search(r"\b(finish(?:ed)?|completed?|done)\b", lowered):
-            heading = "Recently finished tasks:"
-        elif re.search(r"\bwhat should i work on next\b", lowered):
-            heading = "Work on next:"
-        else:
-            heading = "Open tasks:"
-        lines = [heading]
-        for task in tasks[:10]:
-            details = [task.status, task.priority]
-            if task.due_at:
-                details.append(f"due {task.due_at}")
-            if task.project_title:
-                details.append(f"project {task.project_title}")
-            lines.append(f"- {task.title} ({', '.join(details)})")
-        return "\n".join(lines)
+            return "I found no stored tasks matching that request."
+        if intent == "next":
+            return _format_next_tasks(tasks)
+        heading = {
+            "blocked": "Blocked tasks:",
+            "completed": "Recently completed tasks:",
+            "due": "Tasks due soon:",
+            "critical": "Critical tasks:",
+        }.get(intent, "Open tasks:")
+        return "\n".join(["Based on your stored tasks:", heading, *[_format_task_line(task, intent) for task in tasks[:10]]])
 
     def context_for_prompt(self, prompt: str) -> str:
         lowered = prompt.lower()
         if not _looks_task_related(lowered):
             return "No task context loaded."
-        tasks = self._tasks_for_prompt(lowered)
+        intent = _task_query_intent(lowered) or "open"
+        tasks = self._tasks_for_prompt(lowered, intent)
         if not tasks:
             return "Task context loaded: no matching tasks."
         lines = ["Relevant tasks:"]
@@ -191,12 +194,20 @@ class TaskContextService:
             lines.append(line)
         return "\n".join(lines)
 
-    def _tasks_for_prompt(self, lowered: str) -> list[TaskListItem]:
+    def _tasks_for_prompt(self, lowered: str, intent: str) -> list[TaskListItem]:
         filters: dict = {"limit": 10}
-        if re.search(r"\bblocked\b", lowered):
+        if intent == "blocked":
             filters["status"] = "blocked"
-        elif re.search(r"\b(finish(?:ed)?|completed?|done)\b", lowered):
+        elif intent == "completed":
             filters["status"] = "done"
+            filters["sort_mode"] = "completed_recent"
+        elif intent == "due":
+            filters["include_done"] = False
+            filters["due_before"] = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+            filters["sort_mode"] = "due_soon"
+        elif intent == "critical":
+            filters["priority"] = "critical"
+            filters["include_done"] = False
         else:
             filters["include_done"] = False
         matches = projects_store.context_candidates(lowered, limit=1)
@@ -276,15 +287,58 @@ def _preview(text: str) -> str:
 
 
 def _looks_task_related(prompt_lower: str) -> bool:
-    return bool(re.search(r"\b(task|tasks|todo|to-do|blocked|work on next|finish(?:ed)? recently|completed? recently)\b", prompt_lower))
+    return _task_query_intent(prompt_lower) is not None
 
 
-def _asks_task_read_question(prompt_lower: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(what should i work on next|what (?:task|tasks|is blocked|did i finish)|"
-            r"tasks? (?:are|is) open|show (?:me )?(?:my )?tasks|list (?:my )?tasks|"
-            r"what did i (?:finish|complete))\b",
-            prompt_lower,
-        )
-    )
+def _task_query_intent(prompt_lower: str) -> str | None:
+    text = re.sub(r"\s+", " ", prompt_lower.strip())
+    if re.search(r"\b(python|javascript|typescript|asyncio|code|function|class|thread|process|sql|algorithm)\b", text) and not re.search(r"\b(my|stored|project)\b", text):
+        return None
+    if re.search(r"\b(what|which|show|list)\b.{0,30}\b(blocked tasks?|tasks? (?:are )?blocked)\b", text) or re.fullmatch(r"what(?: all)? is blocked(?:(?: right)? now| for .+)?[?!.]*", text):
+        return "blocked"
+    if re.search(r"\b(what|which|show|list)\b.{0,35}\b(finish(?:ed)?|complete(?:d)?|done)\b", text) or re.search(r"\b(recently completed|completed recently|finished recently)\b", text):
+        return "completed"
+    if re.search(r"\b(what|which|show|list)\b.{0,30}\b(due soon|tasks? due|upcoming tasks?)\b", text) or re.fullmatch(r"what(?: all)? is due(?: soon)?[?!.]*", text):
+        return "due"
+    if re.search(r"\b(show|list|what|which)\b.{0,30}\b(critical|urgent|highest priority) tasks?\b", text):
+        return "critical"
+    if re.search(r"\b(what should i (?:work on|do|focus on)|what to work on|prioriti[sz]e)\b.{0,20}\b(next|today|now)\b", text):
+        return "next"
+    if re.search(r"\b(tasks?|to-?dos?)\b.{0,30}\b(open|pending|active)\b", text) or re.search(r"\b(open|pending|active) tasks?\b", text):
+        return "open"
+    if re.search(r"\b(show|list|find|get|what|which)\b.{0,40}\btasks?\b", text):
+        return "open"
+    return None
+
+
+def _format_task_line(task: TaskListItem, intent: str) -> str:
+    details: list[str] = []
+    if task.project_title:
+        details.append(task.project_title)
+    details.append(task.priority)
+    if task.due_at:
+        details.append(f"due {task.due_at}")
+    if intent == "completed" and task.completed_at:
+        details.append(f"completed {task.completed_at}")
+    line = f"- {task.title} — {', '.join(details)}"
+    if intent == "blocked" and task.description:
+        line += f" — {task.description[:220]}"
+    return line
+
+
+def _format_next_tasks(tasks: list[TaskListItem]) -> str:
+    lines = ["Based on your stored tasks:"]
+    doing = [task for task in tasks if task.status == "doing"]
+    blocked = [task for task in tasks if task.status == "blocked"]
+    actionable = [task for task in tasks if task.status != "blocked"]
+    if doing:
+        lines.extend(["Doing:", *[_format_task_line(task, "next") for task in doing[:4]]])
+    if blocked:
+        lines.extend(["Blocked:", *[_format_task_line(task, "blocked") for task in blocked[:4]]])
+    if actionable:
+        best = actionable[0]
+        lines.extend(["Best next task:", _format_task_line(best, "next")])
+    remaining = [task for task in tasks if task not in doing and task not in blocked and task not in actionable[:1]]
+    if remaining:
+        lines.extend(["Other open tasks:", *[_format_task_line(task, "next") for task in remaining[:5]]])
+    return "\n".join(lines)

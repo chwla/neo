@@ -140,6 +140,7 @@ def list_tasks(
     include_archived: bool = False,
     include_done: bool = True,
     pinned_first: bool = True,
+    sort_mode: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
@@ -181,12 +182,20 @@ def list_tasks(
             params.extend([like, like, like, like])
         where_sql = " AND ".join(where)
         pin_sort = "t.pinned DESC, " if pinned_first else ""
-        order_sql = (
-            f"{pin_sort}"
-            "CASE t.status WHEN 'doing' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, "
-            "CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
-            "CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END, t.due_at ASC, t.updated_at DESC"
-        )
+        if sort_mode == "completed_recent":
+            order_sql = f"{pin_sort}CASE WHEN t.completed_at IS NULL THEN 1 ELSE 0 END, t.completed_at DESC, t.updated_at DESC"
+        elif sort_mode == "due_soon":
+            order_sql = (
+                f"{pin_sort}CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END, t.due_at ASC, "
+                "CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.updated_at DESC"
+            )
+        else:
+            order_sql = (
+                f"{pin_sort}"
+                "CASE t.status WHEN 'doing' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, "
+                "CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
+                "CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END, t.due_at ASC, t.updated_at DESC"
+            )
         total = conn.execute(
             f"SELECT COUNT(DISTINCT t.id) FROM workspace_tasks t{joins} WHERE {where_sql}", params
         ).fetchone()[0]

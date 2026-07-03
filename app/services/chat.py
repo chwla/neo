@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.repositories.memory_store import MemoryStore
 from app.services.context import ContextAssemblyService, ContextPackage
+from app.services.agents.guidance import agent_run_guidance
 from app.services.direct_answer import DirectMemoryAnswerService
 from app.services.extraction import ConversationMessage, ExtractionRequest, MemoryExtractionService
 from app.services.explanation import MemoryExplanationService
@@ -146,6 +147,15 @@ class NeoChatService:
         self.store.rename_chat_from_prompt(chat_id, prompt)
         self.db.commit()
 
+        agent_guidance = agent_run_guidance(prompt)
+        if agent_guidance is not None:
+            self.store.add_chat_message(chat_id, "assistant", agent_guidance)
+            self.db.commit()
+            self.last_web_debug = {
+                "agent_guidance": True,
+                "web_search_needed": False,
+            }
+            return agent_guidance
         try:
             self.extract_user_prompt(prompt, chat_id)
         except Exception:
@@ -153,15 +163,22 @@ class NeoChatService:
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
         task_context = self.task_context.context_for_prompt(prompt)
+        task_direct_reply = self.task_context.answer_for_prompt(prompt)
+        if task_direct_reply is not None:
+            self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
+            self.db.commit()
+            self.last_web_debug = {
+                "task_context_loaded": True,
+                "web_search_needed": False,
+            }
+            return task_direct_reply
         follow_up = _is_follow_up_search(prompt)
         web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
         if follow_up:
             web_context = self.web_search.build_context_forced(web_query)
         else:
             web_context = self.web_search.build_context(web_query)
-        direct_reply = None if web_context.needed else (
-            self.task_context.answer_for_prompt(prompt) or self._direct_reply(prompt)
-        )
+        direct_reply = None if web_context.needed else self._direct_reply(prompt)
         if direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", direct_reply)
             self.db.commit()
@@ -279,6 +296,28 @@ class NeoChatService:
         self.store.rename_chat_from_prompt(chat_id, prompt)
         self.db.commit()
 
+        agent_guidance = agent_run_guidance(prompt)
+        if agent_guidance is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", agent_guidance)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {
+                "agent_guidance": True,
+                "web_search_needed": False,
+            }
+            yield {"type": "chunk", "content": agent_guidance}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": agent_guidance,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
         try:
             self.extract_user_prompt(prompt, chat_id)
         except Exception:
@@ -286,15 +325,35 @@ class NeoChatService:
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
         task_context = self.task_context.context_for_prompt(prompt)
+        task_direct_reply = self.task_context.answer_for_prompt(prompt)
+        if task_direct_reply is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {
+                "task_context_loaded": True,
+                "web_search_needed": False,
+            }
+            yield {"type": "chunk", "content": task_direct_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": task_direct_reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
         follow_up = _is_follow_up_search(prompt)
         web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
         if follow_up:
             web_context = self.web_search.build_context_forced(web_query)
         else:
             web_context = self.web_search.build_context(web_query)
-        direct_reply = None if web_context.needed else (
-            self.task_context.answer_for_prompt(prompt) or self._direct_reply(prompt)
-        )
+        direct_reply = None if web_context.needed else self._direct_reply(prompt)
         if direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", direct_reply)
             self.db.commit()
