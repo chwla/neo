@@ -11,9 +11,9 @@ import requests
 from app.core.config import get_settings
 from app.services.search.types import SearchResult, WebSearchResponse
 
-
 PROVIDER_INFO = {
-    "searxng": ("SearXNG", False, True),
+    "external_searxng": ("External SearXNG", False, True),
+    "searxng": ("SearXNG (legacy alias)", False, True),
     "tavily": ("Tavily", True, False),
     "brave": ("Brave Search", True, False),
     "duckduckgo": ("DuckDuckGo", False, False),
@@ -179,7 +179,7 @@ def provider_available(provider: str) -> bool:
     info = PROVIDER_INFO.get(provider)
     if not info:
         return False
-    if provider == "searxng":
+    if provider in {"external_searxng", "searxng"}:
         try:
             normalize_searxng_instance(get_settings().searxng_instance)
         except ValueError:
@@ -196,11 +196,13 @@ class SearXNGSearchProvider(WebSearchProvider):
         instance_url: str | None = None,
         timeout_seconds: float | None = None,
         user_agent: str | None = None,
+        provider_name: str | None = None,
     ) -> None:
         settings = get_settings()
         self.instance_url = (instance_url or settings.searxng_instance).strip()
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
         self.user_agent = user_agent or settings.web_search_user_agent
+        self.name = provider_name or self.name
 
     def search(
         self, query: str, max_results: int, time_filter: str | None = None
@@ -229,11 +231,15 @@ class SearXNGSearchProvider(WebSearchProvider):
             payload = response.json()
         except requests.Timeout:
             return WebSearchResponse(
-                query=query, provider=self.name, error="SearXNG instance timed out."
+                query=query,
+                provider=self.name,
+                error="Configured SearXNG endpoint is unavailable.",
             )
-        except requests.ConnectionError as exc:
+        except requests.ConnectionError:
             return WebSearchResponse(
-                query=query, provider=self.name, error=f"SearXNG instance is unreachable: {exc}"
+                query=query,
+                provider=self.name,
+                error="Configured SearXNG endpoint is unavailable.",
             )
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
@@ -482,7 +488,7 @@ class DisabledSearchProvider(WebSearchProvider):
         return WebSearchResponse(
             query=query,
             provider=self.name,
-            error="Web search is disabled or no supported provider is configured.",
+            error="Web search is disabled in this runtime.",
         )
 
 
@@ -492,6 +498,8 @@ class ProviderRegistry:
 
     def provider(self, name: str) -> WebSearchProvider:
         normalized = name.lower().strip()
+        if normalized == "external_searxng":
+            return SearXNGSearchProvider(provider_name="external_searxng")
         if normalized == "searxng":
             return SearXNGSearchProvider()
         if normalized == "tavily":
@@ -515,10 +523,10 @@ class ProviderRegistry:
         if not self.settings.web_search_enabled:
             return [DisabledSearchProvider()]
         names = [self.settings.web_search_provider.lower().strip()]
+        if names[0] == "disabled":
+            return [DisabledSearchProvider()]
         configured = self.settings.web_search_fallback_providers
         fallback_names = [item.strip().lower() for item in configured.split(",") if item.strip()]
-        if not fallback_names:
-            fallback_names = ["duckduckgo", "bing_html"]
         if names[0] != "tavily":
             fallback_names = [name for name in fallback_names if name != "tavily"]
         for name in fallback_names:

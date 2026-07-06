@@ -9,7 +9,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_store
-from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models import ChatMessage
 from app.models.enums import CandidateStatus, GoalStatus, MemoryType, ProjectStatus
@@ -26,8 +25,8 @@ from app.schemas.memory_objects import (
 from app.services.archives import QdrantArchiveService
 from app.services.chat import NeoChatService
 from app.services.context import ContextAssemblyService, ContextPackage
-from app.services.extraction import ExtractionRequest, ExtractionResult, MemoryExtractionService
 from app.services.explanation import MemoryExplanation, MemoryExplanationService
+from app.services.extraction import ExtractionRequest, ExtractionResult, MemoryExtractionService
 from app.services.lifecycle import AgingPolicy, MemoryLifecycleService
 from app.services.lifecycle_maintenance import MemoryLifecycleMaintenance
 from app.services.llm import LLMClient, LLMRegistry, get_llm_client
@@ -638,6 +637,7 @@ def delete_event(event_id: int, store: StoreDependency) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/memory", response_model=list[MemoryRead])
 @router.get("/memories", response_model=list[MemoryRead])
 def list_memories(store: StoreDependency) -> list[MemoryRead]:
     return [MemoryRead.model_validate(memory) for memory in store.list_memories()]

@@ -4,7 +4,8 @@ import re
 from urllib.parse import urlparse
 
 from app.core.config import get_settings
-from app.services.llm import LLMClient, LLMMessage as OllamaMessage, get_llm_client
+from app.services.llm import LLMClient, get_llm_client
+from app.services.llm import LLMMessage as OllamaMessage
 from app.services.search.content import (
     WebPageFetcher,
     augment_page,
@@ -25,8 +26,7 @@ from app.services.search.types import (
     WebSearchDecision,
     WebSearchResponse,
 )
-from app.services.source_citations import CitedAnswer, CitationFormatter
-
+from app.services.source_citations import CitationFormatter, CitedAnswer
 
 GROUNDING_FAILURE_MESSAGE = "I searched the web but could not find sufficiently relevant sources."
 EXTRACTION_FAILURE_MESSAGE = "I found sources but could not extract a reliable answer."
@@ -180,7 +180,9 @@ class WebSearchService:
         if self._uses_custom_dependencies:
             if not self.settings.web_search_enabled:
                 return WebSearchResponse(
-                    query=query, provider="disabled", error="Web search is disabled."
+                    query=query,
+                    provider="disabled",
+                    error="Web search is disabled in this runtime.",
                 )
             rewritten_query = provider_query(query)
             limit = min(max_results or self.settings.web_search_max_results, 10)
@@ -357,7 +359,7 @@ def comprehensive_web_search(
             query=query,
             provider_used="disabled",
             rewritten_query=rewritten_query,
-            errors=["Web search is disabled."],
+            errors=["Web search is disabled in this runtime."],
         )
 
     search = _run_provider_chain(
@@ -474,17 +476,26 @@ def _run_provider_chain(query: str, options: SearchOptions) -> WebSearchResponse
     limit = min(options.max_results or settings.web_search_max_results, 10)
     attempted: dict[str, str] = {}
     if not settings.web_search_enabled:
-        return WebSearchResponse(query=query, provider="disabled", error="Web search is disabled.")
+        return WebSearchResponse(
+            query=query,
+            provider="disabled",
+            error="Web search is disabled in this runtime.",
+        )
     for provider in registry.chain():
         response = provider.search(rewritten_query, limit, options.time_filter)
         attempted[provider.name] = response.error or f"ok ({len(response.results)})"
+        if provider.name == "disabled":
+            response.query = query
+            response.provider_query = rewritten_query
+            response.attempted_providers = attempted
+            return response
         if response.results:
             response.query = query
             response.provider_query = rewritten_query
             response.attempted_providers = attempted
             return with_source_hints(rewritten_query, response, limit)
-        if provider.name in {"searxng", "tavily"} and _is_provider_configuration_error(
-            response.error
+        if provider.name in {"external_searxng", "searxng", "tavily"} and (
+            _is_provider_configuration_error(response.error)
         ):
             return WebSearchResponse(
                 query=query,
@@ -699,6 +710,7 @@ def _is_provider_configuration_error(error: str | None) -> bool:
             "unreachable",
             "timed out",
             "returned http",
+            "unavailable",
             "rejected",
         )
     )

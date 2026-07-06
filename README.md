@@ -54,3 +54,5 @@ npm run dev
 ```
 
 The Vite dev server proxies `/api` requests to `http://127.0.0.1:8000`.
+
+For the single-container deployment, see [docs/deployment.md](docs/deployment.md).

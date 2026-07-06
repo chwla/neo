@@ -10,7 +10,6 @@ from app.services.search import (
     ComprehensiveSearchResult,
     ProviderRegistry,
     SearchOptions,
-    SearchResult,
     WebPageFetcher,
     comprehensive_web_search,
 )
@@ -80,8 +79,11 @@ def search_config() -> dict[str, object]:
 def update_search_config(request: SearchConfigUpdateRequest) -> dict[str, object]:
     settings = get_settings()
     provider = (request.provider or settings.web_search_provider).strip().lower()
-    if provider not in {"searxng", "tavily"}:
-        raise HTTPException(status_code=422, detail="Provider must be either searxng or tavily.")
+    if provider not in {"disabled", "external_searxng", "searxng", "tavily"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Provider must be disabled, external_searxng, searxng, or tavily.",
+        )
 
     searxng_instance = settings.searxng_instance
     if request.searxng_instance is not None:
@@ -109,13 +111,16 @@ def test_search_provider(request: SearchTestRequest) -> dict[str, object]:
     started = perf_counter()
     response = provider.search(request.query, request.count, request.time_filter)
     latency_ms = round((perf_counter() - started) * 1000)
+    available = bool(response.results and not response.error)
     return {
-        "success": bool(response.results and not response.error),
+        "success": available,
+        "available": available,
         "provider": response.provider,
         "provider_used": response.provider,
         "result_count": len(response.results),
         "latency_ms": latency_ms,
         "error": response.error,
+        "message": response.error or "Configured web search provider is available.",
     }
 
 

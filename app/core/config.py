@@ -1,6 +1,7 @@
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,15 +10,24 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="NEO_", env_file=".env", extra="ignore")
 
+    host: str = Field(default="127.0.0.1")
+    port: int = Field(default=8000, ge=1, le=65535)
+    data_dir: str | None = Field(default=None)
     database_url: str = Field(default="sqlite:///./neo_memory.db")
     qdrant_url: str = Field(default="http://localhost:6333")
-    ollama_url: str = Field(default="http://127.0.0.1:11434")
+    ollama_url: str = Field(
+        default="http://127.0.0.1:11434",
+        validation_alias=AliasChoices(
+            "OLLAMA_BASE_URL", "NEO_OLLAMA_BASE_URL", "NEO_OLLAMA_URL"
+        ),
+    )
     chat_model: str = Field(default="llama3.2:3b")
     chat_timeout_seconds: int = Field(default=240)
     chat_num_predict: int = Field(default=160)
     llm_config_path: str = Field(default="neo_llms.json")
     workspace_files_dir: str = Field(default="data/workspace_files")
     workspace_repos_dir: str = Field(default="data/workspace_repos")
+    frontend_dir: str = Field(default="app/static")
     workspace_repo_max_files: int = Field(default=500, ge=1)
     workspace_repo_max_total_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     workspace_repo_max_file_bytes: int = Field(default=1024 * 1024, ge=1)
@@ -41,19 +51,29 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WEB_SEARCH_ENABLED", "NEO_WEB_SEARCH_ENABLED"),
     )
     web_search_provider: str = Field(
-        default="searxng",
-        validation_alias=AliasChoices("WEB_SEARCH_PROVIDER", "NEO_WEB_SEARCH_PROVIDER"),
+        default="disabled",
+        validation_alias=AliasChoices(
+            "NEO_SEARCH_PROVIDER",
+            "SEARCH_PROVIDER",
+            "WEB_SEARCH_PROVIDER",
+            "NEO_WEB_SEARCH_PROVIDER",
+        ),
     )
     searxng_instance: str = Field(
         default="http://localhost:8080",
-        validation_alias=AliasChoices("SEARXNG_INSTANCE", "NEO_SEARXNG_INSTANCE"),
+        validation_alias=AliasChoices(
+            "NEO_SEARXNG_URL",
+            "SEARXNG_URL",
+            "SEARXNG_INSTANCE",
+            "NEO_SEARXNG_INSTANCE",
+        ),
     )
     web_search_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "NEO_WEB_SEARCH_API_KEY"),
     )
     web_search_fallback_providers: str = Field(
-        default="duckduckgo,bing_html",
+        default="",
         validation_alias=AliasChoices(
             "WEB_SEARCH_FALLBACK_PROVIDERS",
             "NEO_WEB_SEARCH_FALLBACK_PROVIDERS",
@@ -139,6 +159,25 @@ class Settings(BaseSettings):
             "NEO_RESEARCH_FETCH_RETRIES",
         ),
     )
+
+    @model_validator(mode="after")
+    def apply_data_directory(self) -> "Settings":
+        fields_set = self.model_fields_set
+        if "web_search_enabled" not in fields_set:
+            self.web_search_enabled = self.web_search_provider != "disabled"
+        if not self.data_dir:
+            return self
+        data_root = Path(self.data_dir).expanduser().resolve()
+        data_root.mkdir(parents=True, exist_ok=True)
+        if "database_url" not in fields_set:
+            self.database_url = f"sqlite:///{data_root / 'neo.db'}"
+        if "workspace_files_dir" not in fields_set:
+            self.workspace_files_dir = str(data_root / "workspace_files")
+        if "workspace_repos_dir" not in fields_set:
+            self.workspace_repos_dir = str(data_root / "workspace_repos")
+        if "llm_config_path" not in fields_set:
+            self.llm_config_path = str(data_root / "neo_llms.json")
+        return self
 
 
 @lru_cache

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -15,7 +14,6 @@ from app.services.notes import Note, NotesService
 from app.services.notes.service import NotesValidationError
 from app.services.research import (
     DEPTH_CONFIG,
-    DepthMode,
     JobStatus,
     StartResearchRequest,
     cancel_job,
@@ -83,6 +81,7 @@ def start_research(req: StartResearchRequest):
     return StartResponse(job_id=job.id, status=job.status.value)
 
 
+@router.get("", response_model=None)
 @router.get("/list", response_model=None)
 def list_research_jobs(limit: int = 20, offset: int = 0):
     jobs = list_jobs(limit=min(limit, 100), offset=offset)

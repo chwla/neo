@@ -1,10 +1,15 @@
-from fastapi import FastAPI
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.agents import router as agents_router
 from app.api.routes.agents import task_router as agent_task_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.files import router as files_router
+from app.api.routes.health import router as health_router
 from app.api.routes.llms import router as llms_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.notes import router as notes_router
@@ -16,6 +21,7 @@ from app.api.routes.search import router as search_router
 from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.web import router as web_router
+from app.core.config import get_settings
 from app.services.agents.store import initialize_agent_tables, recover_interrupted_runs
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.notes.store import initialize_notes_tables
@@ -51,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(web_router)
     app.include_router(web_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
+    app.include_router(health_router, prefix="/api")
     app.include_router(patches_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
     app.include_router(code_index_router, prefix="/api")
@@ -62,6 +69,18 @@ def create_app() -> FastAPI:
     recover_interrupted_runs()
     initialize_research_tables()
     initialize_workspace_file_tables()
+    frontend_dir = Path(get_settings().frontend_dir).resolve()
+    index_file = frontend_dir / "index.html"
+    assets_dir = frontend_dir / "assets"
+    if index_file.is_file():
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def frontend(full_path: str) -> FileResponse:
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            return FileResponse(index_file)
     return app
 
 
