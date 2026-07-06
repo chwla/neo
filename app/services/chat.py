@@ -12,11 +12,13 @@ from app.core.config import get_settings
 from app.repositories.memory_store import MemoryStore
 from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.agents.guidance import agent_run_guidance
+from app.services.code_index.service import CodeIndexService
 from app.services.direct_answer import DirectMemoryAnswerService
 from app.services.extraction import ConversationMessage, ExtractionRequest, MemoryExtractionService
 from app.services.explanation import MemoryExplanationService
 from app.services.llm import ChatTurn, LLMClient, LLMMessage
 from app.services.projects import ProjectContextService
+from app.services.files.service import WorkspaceFilesService
 from app.services.tasks import TaskContextService
 from app.services.retrieval import RetrievalRequest
 from app.services.source_citations import CitationFormatter
@@ -63,6 +65,8 @@ class NeoChatService:
         self.web_search = WebSearchService()
         self.project_context = ProjectContextService()
         self.task_context = TaskContextService()
+        self.file_context = WorkspaceFilesService()
+        self.code_index = CodeIndexService()
         self.citation_formatter = CitationFormatter()
         self.settings = get_settings()
         self.last_web_debug: dict[str, Any] = {}
@@ -131,10 +135,7 @@ class NeoChatService:
             f"Web context:\n{web_section}"
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
-        messages.extend(
-            LLMMessage(role=turn.role, content=turn.content)
-            for turn in history[-12:]
-        )
+        messages.extend(LLMMessage(role=turn.role, content=turn.content) for turn in history[-12:])
         messages.append(LLMMessage(role="user", content=prompt))
         return messages
 
@@ -163,6 +164,8 @@ class NeoChatService:
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
         task_context = self.task_context.context_for_prompt(prompt)
+        task_context = f"{task_context}\n\n{self.file_context.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.code_index.context_for_prompt(prompt)}"
         task_direct_reply = self.task_context.answer_for_prompt(prompt)
         if task_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
@@ -173,7 +176,9 @@ class NeoChatService:
             }
             return task_direct_reply
         follow_up = _is_follow_up_search(prompt)
-        web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
+        web_query = self._web_query_with_memory_region(
+            resolve_web_search_query(prompt, history), context
+        )
         if follow_up:
             web_context = self.web_search.build_context_forced(web_query)
         else:
@@ -182,7 +187,9 @@ class NeoChatService:
         if direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", direct_reply)
             self.db.commit()
-            self.last_web_debug = self._web_debug(web_context, context=context, final_answer=direct_reply)
+            self.last_web_debug = self._web_debug(
+                web_context, context=context, final_answer=direct_reply
+            )
             return direct_reply
         web_failure = self._web_failure_reply(web_context)
         if web_failure is not None:
@@ -205,7 +212,9 @@ class NeoChatService:
                 final_answer=direct_web_reply,
             )
             return direct_web_reply
-        messages = self.build_messages(prompt, history, context, web_context, project_context, task_context)
+        messages = self.build_messages(
+            prompt, history, context, web_context, project_context, task_context
+        )
         self.db.rollback()
 
         try:
@@ -214,7 +223,9 @@ class NeoChatService:
                 temperature=0.2,
                 num_predict=self._num_predict(prompt, context),
             )
-            if web_context.citations and not self._has_web_citation_marker(result.content, web_context):
+            if web_context.citations and not self._has_web_citation_marker(
+                result.content, web_context
+            ):
                 reply = self._web_generation_fallback(
                     prompt,
                     web_context,
@@ -242,7 +253,11 @@ class NeoChatService:
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                 )
                 raise
-        if not web_context.needed and _reply_expresses_uncertainty(reply) and _is_factual_entity_query(prompt):
+        if (
+            not web_context.needed
+            and _reply_expresses_uncertainty(reply)
+            and _is_factual_entity_query(prompt)
+        ):
             web_context = self.web_search.build_context_forced(web_query)
             direct_web_reply = self._direct_web_reply(web_query, web_context)
             if direct_web_reply is not None:
@@ -258,11 +273,15 @@ class NeoChatService:
                 )
                 try:
                     retry_result = self.ollama.chat_with_metadata(
-                        retry_messages, temperature=0.2, num_predict=self._num_predict(prompt, context),
+                        retry_messages,
+                        temperature=0.2,
+                        num_predict=self._num_predict(prompt, context),
                     )
                     reply = self._with_web_citations(retry_result.content, web_context)
                 except Exception:
-                    reply = self._web_generation_fallback(prompt, web_context, RuntimeError("retry failed"))
+                    reply = self._web_generation_fallback(
+                        prompt, web_context, RuntimeError("retry failed")
+                    )
         self.store.add_chat_message(
             chat_id,
             "assistant",
@@ -325,6 +344,8 @@ class NeoChatService:
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
         task_context = self.task_context.context_for_prompt(prompt)
+        task_context = f"{task_context}\n\n{self.file_context.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.code_index.context_for_prompt(prompt)}"
         task_direct_reply = self.task_context.answer_for_prompt(prompt)
         if task_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
@@ -348,7 +369,9 @@ class NeoChatService:
             }
             return
         follow_up = _is_follow_up_search(prompt)
-        web_query = self._web_query_with_memory_region(resolve_web_search_query(prompt, history), context)
+        web_query = self._web_query_with_memory_region(
+            resolve_web_search_query(prompt, history), context
+        )
         if follow_up:
             web_context = self.web_search.build_context_forced(web_query)
         else:
@@ -358,7 +381,9 @@ class NeoChatService:
             assistant = self.store.add_chat_message(chat_id, "assistant", direct_reply)
             self.db.commit()
             self.db.refresh(assistant)
-            self.last_web_debug = self._web_debug(web_context, context=context, final_answer=direct_reply)
+            self.last_web_debug = self._web_debug(
+                web_context, context=context, final_answer=direct_reply
+            )
             yield {"type": "chunk", "content": direct_reply}
             yield {
                 "type": "done",
@@ -421,7 +446,9 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        messages = self.build_messages(prompt, history, context, web_context, project_context, task_context)
+        messages = self.build_messages(
+            prompt, history, context, web_context, project_context, task_context
+        )
         self.db.rollback()
 
         raw_reply = ""
@@ -485,7 +512,11 @@ class NeoChatService:
             )
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
-        if not web_context.needed and _reply_expresses_uncertainty(reply) and _is_factual_entity_query(prompt):
+        if (
+            not web_context.needed
+            and _reply_expresses_uncertainty(reply)
+            and _is_factual_entity_query(prompt)
+        ):
             web_context = self.web_search.build_context_forced(web_query)
             direct_web_reply = self._direct_web_reply(web_query, web_context)
             if direct_web_reply is not None:
@@ -502,11 +533,15 @@ class NeoChatService:
                 )
                 try:
                     retry_result = self.ollama.chat_with_metadata(
-                        retry_messages, temperature=0.2, num_predict=self._num_predict(prompt, context),
+                        retry_messages,
+                        temperature=0.2,
+                        num_predict=self._num_predict(prompt, context),
                     )
                     reply = self._with_web_citations(retry_result.content, web_context)
                 except Exception:
-                    reply = self._web_generation_fallback(prompt, web_context, RuntimeError("retry failed"))
+                    reply = self._web_generation_fallback(
+                        prompt, web_context, RuntimeError("retry failed")
+                    )
                 yield {"type": "replace", "content": reply}
         thinking = self.ollama.extract_thinking(raw_reply)
         assistant = self.store.add_chat_message(
@@ -569,7 +604,11 @@ class NeoChatService:
 
     def _is_release_date_query(self, query: str) -> bool:
         return bool(
-            re.search(r"\b(release|released|releasing|premiere|date|when|coming out)\b", query, re.IGNORECASE)
+            re.search(
+                r"\b(release|released|releasing|premiere|date|when|coming out)\b",
+                query,
+                re.IGNORECASE,
+            )
             and re.search(
                 r"\b(movie|film|season|show|series|spider-?man|spiderman|odyssey|avengers|doomsday|dune|supergirl|god of war)\b",
                 query,
@@ -623,10 +662,7 @@ class NeoChatService:
             f"project: {item.name}" + (f" - {item.description}" if item.description else "")
             for item in context.projects
         )
-        lines.extend(
-            f"memory #{item.id}: {item.memory_text}"
-            for item in context.relevant_memories
-        )
+        lines.extend(f"memory #{item.id}: {item.memory_text}" for item in context.relevant_memories)
         lines.extend(f"event: {item.event}" for item in context.events)
         if not lines:
             return "No relevant personal memory loaded."
@@ -673,7 +709,9 @@ class NeoChatService:
     def _has_web_citation_marker(self, reply: str, web_context: WebContext) -> bool:
         return any(f"[{citation.index}]" in reply for citation in web_context.citations)
 
-    def _web_generation_fallback(self, prompt: str, web_context: WebContext, error: Exception) -> str:
+    def _web_generation_fallback(
+        self, prompt: str, web_context: WebContext, error: Exception
+    ) -> str:
         if web_context.answer_mode == "fact_lookup":
             fact = run_extractors(prompt, web_context.evidence_chunks)
             if fact is not None:
@@ -693,7 +731,9 @@ class NeoChatService:
             if citations:
                 lines.extend(["", citations])
             return "\n".join(lines)
-        return "I searched the web but could not find sufficiently reliable evidence to answer that."
+        return (
+            "I searched the web but could not find sufficiently reliable evidence to answer that."
+        )
 
     def _direct_web_reply(self, prompt: str, web_context: WebContext) -> str | None:
         if not web_context.needed or not web_context.evidence_chunks or not web_context.citations:
@@ -707,7 +747,9 @@ class NeoChatService:
             planned_match = self._planned_seasons_from_evidence(prompt, web_context)
             if planned_match is not None:
                 planned, source_index = planned_match
-                answer = f"Robert Kirkman has described the plan as {planned} seasons [{source_index}]."
+                answer = (
+                    f"Robert Kirkman has described the plan as {planned} seasons [{source_index}]."
+                )
                 citations = self.citation_formatter.format_citations(web_context.citations)
                 return f"{answer}\n\n{citations}" if citations else answer
             return None
@@ -718,7 +760,9 @@ class NeoChatService:
                 for cluster_label, cluster_chunks in clusters.items():
                     lines.append(f"\n**{cluster_label}:**")
                     for chunk in cluster_chunks[:2]:
-                        lines.append(f"- {_clean_snippet_text(chunk.text[:350])} [{chunk.source_index}]")
+                        lines.append(
+                            f"- {_clean_snippet_text(chunk.text[:350])} [{chunk.source_index}]"
+                        )
                 citations = self.citation_formatter.format_citations(web_context.citations)
                 if citations:
                     lines.extend(["", citations])
@@ -744,7 +788,9 @@ class NeoChatService:
     def _format_fact_answer(self, prompt: str, fact: FactResult) -> str:
         """Format a structured fact extraction result into a user-facing answer."""
         lowered = prompt.lower()
-        if re.search(r"\b(season|seasons)\b", lowered) and not re.search(r"\b(episode|episodes)\b", lowered):
+        if re.search(r"\b(season|seasons)\b", lowered) and not re.search(
+            r"\b(episode|episodes)\b", lowered
+        ):
             return f"The series has {fact.answer} [{fact.source_index}]."
         if re.search(r"\b(episode|episodes)\b", lowered):
             return f"The listed episode count is {fact.answer} [{fact.source_index}]."
@@ -752,7 +798,9 @@ class NeoChatService:
             if "champion" in fact.match_reason:
                 return f"The current world chess champion is {fact.answer} [{fact.source_index}]."
             return f"The top-rated player is {fact.answer} [{fact.source_index}]."
-        if re.search(r"\b(version|latest)\b", lowered) and re.search(r"\b(next\.?js|react|node|npm|python)\b", lowered):
+        if re.search(r"\b(version|latest)\b", lowered) and re.search(
+            r"\b(next\.?js|react|node|npm|python)\b", lowered
+        ):
             return f"The latest version is {fact.answer} [{fact.source_index}]."
         if re.search(r"\b(price|cost|how much)\b", lowered):
             region = self._target_region(prompt)
@@ -760,7 +808,11 @@ class NeoChatService:
             return f"{prefix} listed price is {fact.answer} [{fact.source_index}]."
         if re.search(r"\b(release|released|premiere|when|coming out|date)\b", lowered):
             region = self._target_region(prompt)
-            prefix = "In India, the listed release date is" if region == "india" else "The listed release date is"
+            prefix = (
+                "In India, the listed release date is"
+                if region == "india"
+                else "The listed release date is"
+            )
             return f"{prefix} {fact.answer} [{fact.source_index}]."
         return f"{fact.answer} [{fact.source_index}]."
 
@@ -779,19 +831,29 @@ class NeoChatService:
         }
         return 0 if domain in official_domains else 1
 
-    def _planned_seasons_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[str, int] | None:
+    def _planned_seasons_from_evidence(
+        self, prompt: str, web_context: WebContext
+    ) -> tuple[str, int] | None:
         if not re.search(r"\b(kirkman|planning|planned|how many seasons)\b", prompt, re.IGNORECASE):
             return None
         for position, chunk in enumerate(web_context.evidence_chunks):
             text = f"{chunk.source_title}. {chunk.text}"
-            if re.search(r"\b(7-9|7\s+to\s+9|seven,\s*eight,\s*or\s*nine|seven\s+or\s+eight\s+or\s+nine)\s+seasons\b", text, re.IGNORECASE):
+            if re.search(
+                r"\b(7-9|7\s+to\s+9|seven,\s*eight,\s*or\s*nine|seven\s+or\s+eight\s+or\s+nine)\s+seasons\b",
+                text,
+                re.IGNORECASE,
+            ):
                 return "seven to nine", chunk.source_index or position + 1
             if re.search(r"\b(7-8|7\s+to\s+8|seven\s+to\s+eight)\s+seasons\b", text, re.IGNORECASE):
                 return "seven to eight", chunk.source_index or position + 1
         return None
 
-    def _release_date_from_evidence(self, prompt: str, web_context: WebContext) -> tuple[str, int] | None:
-        if not re.search(r"\b(release|released|releasing|premiere|date|when)\b", prompt, re.IGNORECASE):
+    def _release_date_from_evidence(
+        self, prompt: str, web_context: WebContext
+    ) -> tuple[str, int] | None:
+        if not re.search(
+            r"\b(release|released|releasing|premiere|date|when)\b", prompt, re.IGNORECASE
+        ):
             return None
         target_region = self._target_region(prompt)
         candidates: list[tuple[tuple[int, int, int, int, int], str, int]] = []
@@ -800,7 +862,9 @@ class NeoChatService:
             text = f"{chunk.source_title}. {chunk.source_url}. {chunk.text}"
             region_penalty = self._region_penalty(target_region, domain, text)
             source_penalty = self._release_source_penalty(target_region, domain)
-            for match in re.finditer(rf"\b(?P<date>{DATE_WITH_OPTIONAL_YEAR_PATTERN})\b", text, flags=re.IGNORECASE):
+            for match in re.finditer(
+                rf"\b(?P<date>{DATE_WITH_OPTIONAL_YEAR_PATTERN})\b", text, flags=re.IGNORECASE
+            ):
                 normalized_date = self._normalize_release_date(match.group("date"), text)
                 if normalized_date is None:
                     continue
@@ -808,7 +872,9 @@ class NeoChatService:
                 release_penalty = self._release_context_penalty(context)
                 if release_penalty >= 8:
                     continue
-                booking_penalty = 4 if self._booking_date_context(context) and release_penalty > 0 else 0
+                booking_penalty = (
+                    4 if self._booking_date_context(context) and release_penalty > 0 else 0
+                )
                 priority = (
                     region_penalty,
                     release_penalty,
@@ -853,14 +919,25 @@ class NeoChatService:
             domain in india_domains
             or f"www.{domain}" in india_domains
             or domain.startswith("in.")
-            or bool(re.search(r"\b(india|indian|mumbai|delhi|chennai|bengaluru|gurgaon|hindi|tamil|telugu)\b", lowered))
+            or bool(
+                re.search(
+                    r"\b(india|indian|mumbai|delhi|chennai|bengaluru|gurgaon|hindi|tamil|telugu)\b",
+                    lowered,
+                )
+            )
         )
 
     def _release_source_penalty(self, target_region: str | None, domain: str) -> int:
         if target_region == "india":
             if domain in {"in.bookmyshow.com"}:
                 return 0
-            if domain in {"thehindu.com", "indiatoday.in", "business-standard.com", "timesnownews.com", "gadgets360.com"}:
+            if domain in {
+                "thehindu.com",
+                "indiatoday.in",
+                "business-standard.com",
+                "timesnownews.com",
+                "gadgets360.com",
+            }:
                 return 1
             if domain in {"district.in"}:
                 return 2
@@ -953,7 +1030,9 @@ class NeoChatService:
             )
         return {
             "web_search_needed": bool(web_context and web_context.needed),
-            "web_search_provider": search.provider if search is not None else self.web_search.provider.name,
+            "web_search_provider": search.provider
+            if search is not None
+            else self.web_search.provider.name,
             "web_provider_query": search.provider_query if search is not None else None,
             "web_search_called": search is not None,
             "web_decision_warning": web_context.warning if web_context is not None else None,
@@ -987,7 +1066,9 @@ class NeoChatService:
                 if web_context is not None
                 else []
             ),
-            "web_selected_results_count": len(web_context.selected_results) if web_context is not None else 0,
+            "web_selected_results_count": len(web_context.selected_results)
+            if web_context is not None
+            else 0,
             "web_fetched_count": (
                 sum(1 for page in web_context.pages if page.fetched)
                 if web_context is not None
@@ -1009,7 +1090,9 @@ class NeoChatService:
             ),
             "web_sources_count": len(web_context.citations) if web_context is not None else 0,
             "web_context_length": len(web_context.context_text) if web_context is not None else 0,
-            "web_evidence_chunks_count": len(web_context.evidence_chunks) if web_context is not None else 0,
+            "web_evidence_chunks_count": len(web_context.evidence_chunks)
+            if web_context is not None
+            else 0,
             "web_answer_mode": web_context.answer_mode if web_context is not None else None,
             "memory_context_loaded": memory_context_loaded,
             "web_context_entered_final_prompt": web_context_in_prompt,
@@ -1030,7 +1113,9 @@ class NeoChatService:
             return self.settings.simple_chat_num_predict
         if self.web_search.should_search(prompt).needed:
             return self.settings.chat_num_predict
-        if re.search(r"\b(summarize|roadmap|what should|recommend|suggest|build next)\b", prompt.lower()):
+        if re.search(
+            r"\b(summarize|roadmap|what should|recommend|suggest|build next)\b", prompt.lower()
+        ):
             return self.settings.chat_num_predict
         return min(self.settings.chat_num_predict, 128)
 
@@ -1053,10 +1138,42 @@ class NeoChatService:
 
 
 ENTITY_CLUSTER_PATTERNS: list[tuple[str, list[re.Pattern[str]]]] = [
-    ("Xbox/Video Game", [re.compile(r"\b(xbox|playstation|ps5|ps4|nintendo|game(?:play)?|rpg|lionhead|playground games|fable (?:game|reboot|remake|trilogy))\b", re.IGNORECASE)]),
-    ("AI/Technology", [re.compile(r"\b(ai|artificial intelligence|model|llm|anthropic|openai|claude|gpt|machine learning|neural|fable\s+\d)\b", re.IGNORECASE)]),
-    ("TV Series", [re.compile(r"\b(tv|television|series|season|episode|streaming|netflix|hulu|peacock|paramount|prime video|showrunner|renewed|cancelled|canceled)\b", re.IGNORECASE)]),
-    ("Movie/Film", [re.compile(r"\b(movie|film|cinema|theatrical|box office|director|starring|trailer)\b", re.IGNORECASE)]),
+    (
+        "Xbox/Video Game",
+        [
+            re.compile(
+                r"\b(xbox|playstation|ps5|ps4|nintendo|game(?:play)?|rpg|lionhead|playground games|fable (?:game|reboot|remake|trilogy))\b",
+                re.IGNORECASE,
+            )
+        ],
+    ),
+    (
+        "AI/Technology",
+        [
+            re.compile(
+                r"\b(ai|artificial intelligence|model|llm|anthropic|openai|claude|gpt|machine learning|neural|fable\s+\d)\b",
+                re.IGNORECASE,
+            )
+        ],
+    ),
+    (
+        "TV Series",
+        [
+            re.compile(
+                r"\b(tv|television|series|season|episode|streaming|netflix|hulu|peacock|paramount|prime video|showrunner|renewed|cancelled|canceled)\b",
+                re.IGNORECASE,
+            )
+        ],
+    ),
+    (
+        "Movie/Film",
+        [
+            re.compile(
+                r"\b(movie|film|cinema|theatrical|box office|director|starring|trailer)\b",
+                re.IGNORECASE,
+            )
+        ],
+    ),
 ]
 
 
@@ -1101,7 +1218,9 @@ def _strip_llm_sources_block(reply: str) -> str:
         reply,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"\n{1,3}(?:Sources|References|Citations)\s*:\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\n{1,3}(?:Sources|References|Citations)\s*:\s*$", "", cleaned, flags=re.IGNORECASE
+    )
     return cleaned.strip()
 
 
@@ -1202,7 +1321,9 @@ def _short_input_clarification(prompt: str) -> str | None:
     if hint is not None:
         return f"Did you mean {hint}?"
     if re.match(r"^[a-z]{2,10}$", lowered):
-        return f"Did you mean `{lowered}`? Could you give me a bit more context about what you need?"
+        return (
+            f"Did you mean `{lowered}`? Could you give me a bit more context about what you need?"
+        )
     return None
 
 
@@ -1216,12 +1337,17 @@ def _is_factual_entity_query(prompt: str) -> bool:
 
 def _is_follow_up_search(prompt: str) -> bool:
     cleaned = prompt.strip()
-    return bool(FOLLOW_UP_SEARCH_COMMAND.match(cleaned) or WebSearchDecisionService.BARE_COMMAND.match(cleaned))
+    return bool(
+        FOLLOW_UP_SEARCH_COMMAND.match(cleaned)
+        or WebSearchDecisionService.BARE_COMMAND.match(cleaned)
+    )
 
 
 def resolve_web_search_query(prompt: str, history: list[ChatTurn]) -> str:
     cleaned = prompt.strip()
-    if not WebSearchDecisionService.BARE_COMMAND.match(cleaned) and not FOLLOW_UP_SEARCH_COMMAND.match(cleaned):
+    if not WebSearchDecisionService.BARE_COMMAND.match(
+        cleaned
+    ) and not FOLLOW_UP_SEARCH_COMMAND.match(cleaned):
         return prompt
     for turn in reversed(history):
         if turn.role != "user":

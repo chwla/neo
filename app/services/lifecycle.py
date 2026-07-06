@@ -324,7 +324,17 @@ def infer_canonical_slot(memory_type: MemoryType | str, memory_text: str) -> str
 def infer_slot_value(canonical_slot: str | None, memory_text: str) -> str | None:
     normalized = normalize_memory_text(memory_text)
     if canonical_slot == "preference:programming_language":
-        for language in ("python", "typescript", "javascript", "java", "c++", "cpp", "c", "rust", "go"):
+        for language in (
+            "python",
+            "typescript",
+            "javascript",
+            "java",
+            "c++",
+            "cpp",
+            "c",
+            "rust",
+            "go",
+        ):
             if re.search(rf"\b{re.escape(language)}\b", normalized):
                 return "c++" if language == "cpp" else language
     if canonical_slot == "current_hardware":

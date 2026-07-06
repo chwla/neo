@@ -6,11 +6,24 @@ from pydantic import BaseModel, Field
 
 from app.services.tasks.types import Task, TaskPriority, TaskStatus
 
-RunStatus = Literal["queued", "planning", "running", "waiting_approval", "completed", "failed", "cancelled"]
-StepStatus = Literal["pending", "running", "waiting_approval", "completed", "failed", "skipped", "cancelled"]
+RunStatus = Literal[
+    "queued", "planning", "running", "waiting_approval", "completed", "failed", "cancelled"
+]
+StepStatus = Literal[
+    "pending", "running", "waiting_approval", "completed", "failed", "skipped", "cancelled"
+]
 StepType = Literal[
-    "plan", "read_context", "think", "web_search", "research", "draft",
-    "summarize", "save_note", "task_update_request", "final",
+    "plan",
+    "read_context",
+    "think",
+    "web_search",
+    "research",
+    "draft",
+    "summarize",
+    "save_note",
+    "task_update_request",
+    "final",
+    "patch_proposal",
 ]
 
 

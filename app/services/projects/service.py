@@ -51,7 +51,9 @@ class ProjectsService:
         project = store.get_project(project_id)
         return Project(**project) if project else None
 
-    def read_project(self, project_id: str) -> tuple[Project, list[ProjectNote], list[ProjectLink]] | None:
+    def read_project(
+        self, project_id: str
+    ) -> tuple[Project, list[ProjectNote], list[ProjectLink]] | None:
         project = self.get_project(project_id)
         if project is None:
             return None

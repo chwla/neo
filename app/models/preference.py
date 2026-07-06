@@ -21,4 +21,3 @@ class Preference(TimestampMixin, Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
-

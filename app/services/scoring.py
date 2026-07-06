@@ -27,4 +27,3 @@ def score_importance(text: str, explicit_priority: int | None = None) -> int:
     if len(text) < 25:
         score -= 1
     return max(1, min(10, score))
-

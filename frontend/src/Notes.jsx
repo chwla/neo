@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
+import FileAttachments from "./FileAttachments.jsx";
 
 function formatTime(iso) {
   if (!iso) return "";
@@ -41,7 +42,7 @@ function noteChanged(draft, note) {
   );
 }
 
-export default function Notes({ onBack, onOpenTask, initialNoteId = null }) {
+export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = null }) {
   const [notes, setNotes] = useState([]);
   const [tags, setTags] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -411,6 +412,8 @@ export default function Notes({ onBack, onOpenTask, initialNoteId = null }) {
                 </div>
               </div>
             )}
+
+            {!isNew && <FileAttachments linkType="note" targetId={selectedNote.id} onOpenFile={onOpenFile} />}
 
             <input
               className="notes-title-input"

@@ -86,7 +86,10 @@ class WebSearchDecisionService:
     COMPOUND_TRIGGERS: list[tuple[re.Pattern[str], re.Pattern[str]]] = [
         (
             re.compile(r"\bnext\b", re.IGNORECASE),
-            re.compile(r"\b(match|game|series|tournament|event|release|update|cup|championship|world cup|worldcup)\b", re.IGNORECASE),
+            re.compile(
+                r"\b(match|game|series|tournament|event|release|update|cup|championship|world cup|worldcup)\b",
+                re.IGNORECASE,
+            ),
         ),
         (
             re.compile(r"\bwhen\b", re.IGNORECASE),
@@ -105,11 +108,17 @@ class WebSearchDecisionService:
         ),
         (
             re.compile(r"\bseason\s+\d+\b", re.IGNORECASE),
-            re.compile(r"\b(about|plot|story|release|released|premiere|trailer|review|episode|episodes|count)\b", re.IGNORECASE),
+            re.compile(
+                r"\b(about|plot|story|release|released|premiere|trailer|review|episode|episodes|count)\b",
+                re.IGNORECASE,
+            ),
         ),
         (
             re.compile(r"\bs\d+\b", re.IGNORECASE),
-            re.compile(r"\b(about|plot|story|release|released|premiere|trailer|review|episode|episodes|count)\b", re.IGNORECASE),
+            re.compile(
+                r"\b(about|plot|story|release|released|premiere|trailer|review|episode|episodes|count)\b",
+                re.IGNORECASE,
+            ),
         ),
         (
             re.compile(r"\binvincible\b", re.IGNORECASE),
@@ -128,12 +137,16 @@ class WebSearchDecisionService:
         if self.BARE_COMMAND.match(lowered.strip()):
             return WebSearchDecision(needed=False, reason="Search command with no topic.")
         if self.SHOULD_SEARCH.search(lowered):
-            return WebSearchDecision(needed=True, reason="Query asks for current or verifiable web information.")
+            return WebSearchDecision(
+                needed=True, reason="Query asks for current or verifiable web information."
+            )
         if self.NAMED_ENTITY_FACT_LOOKUP.search(lowered):
             return WebSearchDecision(needed=True, reason="Named-entity factual lookup.")
         for pattern_a, pattern_b in self.COMPOUND_TRIGGERS:
             if pattern_a.search(lowered) and pattern_b.search(lowered):
-                return WebSearchDecision(needed=True, reason="Query asks for current or verifiable web information.")
+                return WebSearchDecision(
+                    needed=True, reason="Query asks for current or verifiable web information."
+                )
         return WebSearchDecision(needed=False, reason="No web trigger detected.")
 
 
@@ -158,17 +171,23 @@ class WebSearchService:
         if not self.settings.web_search_enabled and decision.needed:
             return WebSearchDecision(needed=True, reason="Web search is disabled.")
         if not self.settings.web_search_enabled:
-            return WebSearchDecision(needed=False, reason="Web search disabled; no web trigger detected.")
+            return WebSearchDecision(
+                needed=False, reason="Web search disabled; no web trigger detected."
+            )
         return decision
 
     def search(self, query: str, max_results: int | None = None) -> WebSearchResponse:
         if self._uses_custom_dependencies:
             if not self.settings.web_search_enabled:
-                return WebSearchResponse(query=query, provider="disabled", error="Web search is disabled.")
+                return WebSearchResponse(
+                    query=query, provider="disabled", error="Web search is disabled."
+                )
             rewritten_query = provider_query(query)
             limit = min(max_results or self.settings.web_search_max_results, 10)
             try:
-                response = self.provider.search(rewritten_query, limit, _time_filter_for_query(query))
+                response = self.provider.search(
+                    rewritten_query, limit, _time_filter_for_query(query)
+                )
             except TypeError:
                 response = self.provider.search(rewritten_query, limit)  # type: ignore[call-arg]
             response.query = query
@@ -327,7 +346,9 @@ def comprehensive_web_search(
     opts = options if isinstance(options, SearchOptions) else SearchOptions(**(options or {}))
     rewritten_query = provider_query(query)
     max_results = min(opts.max_results or settings.web_search_max_results, 10)
-    max_pages = min(opts.max_pages if opts.max_pages is not None else settings.web_fetch_max_pages, 5)
+    max_pages = min(
+        opts.max_pages if opts.max_pages is not None else settings.web_fetch_max_pages, 5
+    )
     warnings: list[str] = []
     errors: list[str] = []
 
@@ -371,7 +392,10 @@ def comprehensive_web_search(
     for page in fetch_pages(ranked_results, max_pages):
         result = next((item for item in ranked_results if item.url == page.url), None)
         if result is None:
-            result = next((item for item in ranked_results if urlparse(item.url).netloc == page.domain), ranked_results[0])
+            result = next(
+                (item for item in ranked_results if urlparse(item.url).netloc == page.domain),
+                ranked_results[0],
+            )
         page = augment_page(query, page)
         relevant_page = relevant_fetched_page(profile, result, page)
         if relevant_page is None:
@@ -382,7 +406,8 @@ def comprehensive_web_search(
             break
 
     if answer_mode in {"news_summary", "overview"} or (
-        answer_mode == "fact_lookup" and re.search(r"\b(release|released|releasing|premiere|date)\b", query, re.IGNORECASE)
+        answer_mode == "fact_lookup"
+        and re.search(r"\b(release|released|releasing|premiere|date)\b", query, re.IGNORECASE)
     ):
         fetched_pages = _merge_pages(
             _snippet_fallback_pages(profile, answer_mode, ranked_results, max_pages),
@@ -409,7 +434,9 @@ def comprehensive_web_search(
             title=citation.title,
             url=citation.url,
             source=citation.source,
-            evidence_count=sum(1 for chunk in indexed_chunks if chunk.source_index == citation.index),
+            evidence_count=sum(
+                1 for chunk in indexed_chunks if chunk.source_index == citation.index
+            ),
         )
         for citation in citations
     ]
@@ -456,7 +483,9 @@ def _run_provider_chain(query: str, options: SearchOptions) -> WebSearchResponse
             response.provider_query = rewritten_query
             response.attempted_providers = attempted
             return with_source_hints(rewritten_query, response, limit)
-        if provider.name in {"searxng", "tavily"} and _is_provider_configuration_error(response.error):
+        if provider.name in {"searxng", "tavily"} and _is_provider_configuration_error(
+            response.error
+        ):
             return WebSearchResponse(
                 query=query,
                 provider=provider.name,
@@ -527,18 +556,30 @@ def provider_query(query: str) -> str:
     if creators_match:
         return f"{creators_match.group(1).strip()} creators founders original team"
     cleaned = re.sub(r"^(what|when|where|who|how)\s+is\s+the\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^(what|when|where|who|how)\s+(?:is|are|does|do)\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\bindian cricket team(?:'s)?\b", "India cricket team", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\binvincible\s+s(\d+)\b", r"Invincible season \1", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^(what|when|where|who|how)\s+(?:is|are|does|do)\s+", "", cleaned, flags=re.IGNORECASE
+    )
+    cleaned = re.sub(
+        r"\bindian cricket team(?:'s)?\b", "India cricket team", cleaned, flags=re.IGNORECASE
+    )
+    cleaned = re.sub(
+        r"\binvincible\s+s(\d+)\b", r"Invincible season \1", cleaned, flags=re.IGNORECASE
+    )
     cleaned = cleaned.strip(" .?!")
     if re.search(r"\bavengers\s+doomsday\b", cleaned, flags=re.IGNORECASE):
-        if re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE):
+        if re.search(
+            r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE
+        ):
             if wants_india:
                 return "Avengers Doomsday India release date"
             return "Avengers Doomsday release date"
         return "Avengers Doomsday movie"
-    if re.search(r"\b(spiderman|spider-man|spider man)\s+brand\s+new\s+day\b", cleaned, flags=re.IGNORECASE):
-        if re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE):
+    if re.search(
+        r"\b(spiderman|spider-man|spider man)\s+brand\s+new\s+day\b", cleaned, flags=re.IGNORECASE
+    ):
+        if re.search(
+            r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE
+        ):
             if wants_india:
                 return "Spider-Man Brand New Day India release date"
             return "Spider-Man Brand New Day movie release date"
@@ -552,7 +593,9 @@ def provider_query(query: str) -> str:
             return "The Odyssey 2026 India release date"
         return "The Odyssey 2026 release date"
     if re.search(r"\binvincible\s+season\s+\d+\b", cleaned, flags=re.IGNORECASE):
-        season = re.search(r"\binvincible\s+season\s+(?P<season>\d+)\b", cleaned, flags=re.IGNORECASE).group("season")
+        season = re.search(
+            r"\binvincible\s+season\s+(?P<season>\d+)\b", cleaned, flags=re.IGNORECASE
+        ).group("season")
         if re.search(r"\b(about|plot|story)\b", query, flags=re.IGNORECASE):
             return f"Invincible season {season} plot official"
         if re.search(r"\b(episode|episodes|how many|count)\b", query, flags=re.IGNORECASE):
@@ -565,21 +608,35 @@ def provider_query(query: str) -> str:
     ):
         return "Robert Kirkman Invincible planned seasons"
     if re.search(r"\bgod of war\b", cleaned, flags=re.IGNORECASE):
-        if re.search(r"\b(release|released|releasing|premiere|date|when|coming out)\b", query, flags=re.IGNORECASE):
+        if re.search(
+            r"\b(release|released|releasing|premiere|date|when|coming out)\b",
+            query,
+            flags=re.IGNORECASE,
+        ):
             return "God of War Laufey release date 2026"
         if re.search(r"\b(news|latest|recent|updates)\b", query, flags=re.IGNORECASE):
             return "God of War Laufey latest news"
         return "God of War Laufey game"
     if re.search(r"\bsupergirl\b", cleaned, flags=re.IGNORECASE):
-        if re.search(r"\b(release|released|releasing|premiere|date|when|coming out)\b", query, flags=re.IGNORECASE):
+        if re.search(
+            r"\b(release|released|releasing|premiere|date|when|coming out)\b",
+            query,
+            flags=re.IGNORECASE,
+        ):
             return "Supergirl movie 2026 release date"
         if re.search(r"\b(news|latest|recent|updates)\b", query, flags=re.IGNORECASE):
             return "Supergirl movie 2026 latest news"
         if re.search(r"\b20\d{2}\b", query, flags=re.IGNORECASE):
             return "Supergirl movie 2026"
         return "Supergirl movie 2026"
-    if re.search(r"\bdune\s+(?:part\s+)?3|dune:\s*part\s+three|dune\s+part\s+three\b", cleaned, flags=re.IGNORECASE):
-        if re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE):
+    if re.search(
+        r"\bdune\s+(?:part\s+)?3|dune:\s*part\s+three|dune\s+part\s+three\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    ):
+        if re.search(
+            r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE
+        ):
             if wants_india:
                 return "Dune Part Three India release date"
             return "Dune Part Three release date"
@@ -647,7 +704,9 @@ def _is_provider_configuration_error(error: str | None) -> bool:
     )
 
 
-def with_source_hints(provider_query_value: str, response: WebSearchResponse, max_results: int) -> WebSearchResponse:
+def with_source_hints(
+    provider_query_value: str, response: WebSearchResponse, max_results: int
+) -> WebSearchResponse:
     hints = source_hints(provider_query_value)
     if not hints:
         return response
@@ -715,7 +774,7 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                 snippet="Official Prime Video page for Invincible season 4.",
                 source="www.primevideo.com",
                 rank=2,
-            )
+            ),
         ]
     if re.search(r"\binvincible\s+season\s+5\b", lowered) and re.search(
         r"\b(about|plot|story|episode|episodes|count|official)\b",
@@ -730,7 +789,9 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                 rank=1,
             )
         ]
-    if re.search(r"\brobert\s+kirkman\b.*\binvincible\b|\binvincible\b.*\bplanned\s+seasons\b", lowered):
+    if re.search(
+        r"\brobert\s+kirkman\b.*\binvincible\b|\binvincible\b.*\bplanned\s+seasons\b", lowered
+    ):
         return [
             SearchResult(
                 title="Robert Kirkman Says He Still Plans to Wrap Up Invincible in '7, 8, 9' Seasons",
@@ -750,7 +811,9 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                 rank=1,
             )
         ]
-    if re.search(r"\b(facebook|meta)\b", lowered) and re.search(r"\b(latest|current|recent|news|updates)\b", lowered):
+    if re.search(r"\b(facebook|meta)\b", lowered) and re.search(
+        r"\b(latest|current|recent|news|updates)\b", lowered
+    ):
         return [
             SearchResult(
                 title="Meta Newsroom",
@@ -770,7 +833,9 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                 rank=1,
             )
         ]
-    if re.search(r"\b(spiderman|spider-man|spider man)\s+brand\s+new\s+day\b", lowered) and re.search(
+    if re.search(
+        r"\b(spiderman|spider-man|spider man)\s+brand\s+new\s+day\b", lowered
+    ) and re.search(
         r"\b(movie|release|released|releasing|premiere|date)\b",
         lowered,
     ):
@@ -906,7 +971,9 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                 rank=1,
             )
         ]
-    if "india cricket team" in lowered and re.search(r"\b(upcoming|match|schedule|fixture|fixtures)\b", lowered):
+    if "india cricket team" in lowered and re.search(
+        r"\b(upcoming|match|schedule|fixture|fixtures)\b", lowered
+    ):
         return [
             SearchResult(
                 title="India Cricket Team Fixtures and Results | BCCI.tv",
@@ -923,7 +990,9 @@ def source_hints(provider_query_value: str) -> list[SearchResult]:
                 rank=2,
             ),
         ]
-    if re.search(r"\bnext\.?js\b", lowered) and re.search(r"\b(latest|version|release|npm)\b", lowered):
+    if re.search(r"\bnext\.?js\b", lowered) and re.search(
+        r"\b(latest|version|release|npm)\b", lowered
+    ):
         return [
             SearchResult(
                 title="next latest package metadata - npm registry",
@@ -960,7 +1029,10 @@ def build_evidence_pack(chunks: list[EvidenceChunk], answer_mode: str) -> str:
     for source_index in sorted(chunks_by_source):
         source_chunks = chunks_by_source[source_index]
         first = source_chunks[0]
-        passages = "\n".join(f"- Passage score {chunk.relevance_score:.1f}: {_clean_snippet_text(chunk.text[:900])}" for chunk in source_chunks)
+        passages = "\n".join(
+            f"- Passage score {chunk.relevance_score:.1f}: {_clean_snippet_text(chunk.text[:900])}"
+            for chunk in source_chunks
+        )
         block = (
             f"[{source_index}] {first.source_title}\n"
             f"URL: {first.source_url}\n"
@@ -1014,7 +1086,9 @@ def _snippet_fallback_pages(
     return pages
 
 
-def _merge_pages(primary: list[FetchedPage], secondary: list[FetchedPage], limit: int) -> list[FetchedPage]:
+def _merge_pages(
+    primary: list[FetchedPage], secondary: list[FetchedPage], limit: int
+) -> list[FetchedPage]:
     merged: list[FetchedPage] = []
     seen: set[str] = set()
     for page in [*primary, *secondary]:
@@ -1056,7 +1130,12 @@ class WebAnswerService:
             citations_text = self.citation_formatter.format_citations(context.citations)
             if citations_text:
                 direct_answer = f"{direct_answer.strip()}\n\n{citations_text}"
-            return CitedAnswer(answer=direct_answer, citations=context.citations, used_web=True, warning=context.warning)
+            return CitedAnswer(
+                answer=direct_answer,
+                citations=context.citations,
+                used_web=True,
+                warning=context.warning,
+            )
 
         messages = [
             OllamaMessage(
@@ -1085,19 +1164,27 @@ class WebAnswerService:
             answer = self._evidence_answer(context, exc)
         else:
             if not any(f"[{citation.index}]" in answer for citation in context.citations):
-                answer = self._evidence_answer(context, RuntimeError("generated web answer lacked citation markers"))
+                answer = self._evidence_answer(
+                    context, RuntimeError("generated web answer lacked citation markers")
+                )
         citations_text = self.citation_formatter.format_citations(context.citations)
         if citations_text:
             answer = f"{answer.strip()}\n\n{citations_text}"
-        return CitedAnswer(answer=answer, citations=context.citations, used_web=True, warning=context.warning)
+        return CitedAnswer(
+            answer=answer, citations=context.citations, used_web=True, warning=context.warning
+        )
 
     def _direct_answer(self, query: str, context: WebContext) -> str | None:
         if context.answer_mode != "fact_lookup":
             return None
         combined = "\n".join(chunk.text for chunk in context.evidence_chunks)
-        next_version = re.search(r"\bPackage\s+next\s+latest version:\s*([0-9][0-9A-Za-z.\-]*)", combined)
+        next_version = re.search(
+            r"\bPackage\s+next\s+latest version:\s*([0-9][0-9A-Za-z.\-]*)", combined
+        )
         if not next_version:
-            next_version = re.search(r'"name"\s*:\s*"next".{0,200}?"version"\s*:\s*"([0-9][0-9A-Za-z.\-]*)"', combined)
+            next_version = re.search(
+                r'"name"\s*:\s*"next".{0,200}?"version"\s*:\s*"([0-9][0-9A-Za-z.\-]*)"', combined
+            )
         if next_version:
             return f"The latest Next.js version is {next_version.group(1).rstrip('.')} [{self._first_chunk_index(context)}]."
 
@@ -1126,7 +1213,9 @@ class WebAnswerService:
                 r"\b(?P<date>(?:[A-Z][a-z]+\s+\d{1,2},\s+20\d{2})|(?:\d{1,2}\s+[A-Z][a-z]+,?\s+20\d{2}))\b",
                 combined,
             )
-        if release_date and re.search(r"\b(release|released|releasing|premiere|date|when)\b", query, re.IGNORECASE):
+        if release_date and re.search(
+            r"\b(release|released|releasing|premiere|date|when)\b", query, re.IGNORECASE
+        ):
             return f"The listed release date is {release_date.group('date').rstrip('.')} [{self._first_chunk_index(context)}]."
         return None
 
@@ -1138,6 +1227,7 @@ class WebAnswerService:
             return EXTRACTION_FAILURE_MESSAGE
         if context.answer_mode == "fact_lookup":
             from app.services.search.content import run_extractors
+
             fact = run_extractors(context.query, context.evidence_chunks)
             if fact is not None:
                 return f"{fact.answer} [{fact.source_index}]"
@@ -1158,7 +1248,9 @@ def _answer_mode(query: str) -> str:
         lowered,
     ):
         return "fact_lookup"
-    if re.search(r"\b(about|plot|story|recap|overview)\b", lowered) and re.search(r"\b(season|s\d+|movie|film|show|series)\b", lowered):
+    if re.search(r"\b(about|plot|story|recap|overview)\b", lowered) and re.search(
+        r"\b(season|s\d+|movie|film|show|series)\b", lowered
+    ):
         return "overview"
     if re.search(r"\b(news|latest|recent|recently|updates|headlines)\b", lowered):
         return "news_summary"
@@ -1167,12 +1259,30 @@ def _answer_mode(query: str) -> str:
 
 def _time_filter_for_query(query: str) -> str | None:
     lowered = query.lower()
-    if any(term in lowered for term in ("today", "latest", "breaking", "right now", "currently", "newest")):
+    if any(
+        term in lowered
+        for term in ("today", "latest", "breaking", "right now", "currently", "newest")
+    ):
         return "day"
-    if any(term in lowered for term in ("this week", "past week", "recent news", "last few days", "recent")):
+    if any(
+        term in lowered
+        for term in ("this week", "past week", "recent news", "last few days", "recent")
+    ):
         return "week"
     if "news" in lowered:
         return "week"
-    if any(term in lowered for term in ("ranking", "rankings", "ranked", "rated", "fide", "champion", "world champion", "world cup")):
+    if any(
+        term in lowered
+        for term in (
+            "ranking",
+            "rankings",
+            "ranked",
+            "rated",
+            "fide",
+            "champion",
+            "world champion",
+            "world cup",
+        )
+    ):
         return "week"
     return None

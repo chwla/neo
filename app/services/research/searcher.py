@@ -20,11 +20,13 @@ from app.services.research.types import ResearchSource
 
 logger = logging.getLogger(__name__)
 
-_NON_RETRYABLE_ERRORS = frozenset({
-    "Invalid or unsupported URL.",
-    "Blocked unsafe or unsupported URL.",
-    "Blocked unsafe redirect.",
-})
+_NON_RETRYABLE_ERRORS = frozenset(
+    {
+        "Invalid or unsupported URL.",
+        "Blocked unsafe or unsupported URL.",
+        "Blocked unsafe redirect.",
+    }
+)
 
 _NON_RETRYABLE_STATUS = frozenset({400, 401, 403, 404, 405, 410, 451})
 
@@ -86,16 +88,13 @@ class ResearchSearcher:
             if canonical not in seen:
                 seen.add(canonical)
                 to_fetch.append(r)
-        to_fetch = to_fetch[:limit * 2]
+        to_fetch = to_fetch[: limit * 2]
 
         sources: list[ResearchSource] = []
         fetched_count = 0
 
         with ThreadPoolExecutor(max_workers=min(limit, self.max_workers)) as executor:
-            future_map = {
-                executor.submit(self._fetch_with_retry, r.url): r
-                for r in to_fetch
-            }
+            future_map = {executor.submit(self._fetch_with_retry, r.url): r for r in to_fetch}
             for future in as_completed(future_map):
                 if cancelled and cancelled():
                     break
@@ -103,14 +102,16 @@ class ResearchSearcher:
                 try:
                     page, attempts, error_detail = future.result()
                 except Exception as exc:
-                    sources.append(ResearchSource(
-                        url=result.url,
-                        title=result.title,
-                        domain=result.source,
-                        fetch_status="failed",
-                        fetch_error=str(exc),
-                        error=str(exc),
-                    ))
+                    sources.append(
+                        ResearchSource(
+                            url=result.url,
+                            title=result.title,
+                            domain=result.source,
+                            fetch_status="failed",
+                            fetch_error=str(exc),
+                            error=str(exc),
+                        )
+                    )
                     continue
 
                 source = ResearchSource(
@@ -154,7 +155,11 @@ class ResearchSearcher:
                 last_error = page.error
                 if page.error in _NON_RETRYABLE_ERRORS:
                     return page, attempt + 1, page.error
-                if page.content_type and "text" not in page.content_type and "json" not in page.content_type:
+                if (
+                    page.content_type
+                    and "text" not in page.content_type
+                    and "json" not in page.content_type
+                ):
                     return page, attempt + 1, f"Unsupported content type: {page.content_type}"
 
             if attempt < self.max_retries:
@@ -184,20 +189,39 @@ def _canonical_url(url: str) -> str:
     return f"{parsed.netloc}{path}".lower()
 
 
-_OFFICIAL_DOMAINS = frozenset({
-    "github.com", "docs.python.org", "developer.mozilla.org",
-    "arxiv.org", "stackoverflow.com", "en.wikipedia.org",
-    "docs.microsoft.com", "learn.microsoft.com",
-    "docs.google.com", "cloud.google.com",
-    "aws.amazon.com", "huggingface.co",
-    "nextjs.org", "fastapi.tiangolo.com", "postgresql.org",
-    "ollama.com", "tavily.com", "docs.searxng.org",
-})
+_OFFICIAL_DOMAINS = frozenset(
+    {
+        "github.com",
+        "docs.python.org",
+        "developer.mozilla.org",
+        "arxiv.org",
+        "stackoverflow.com",
+        "en.wikipedia.org",
+        "docs.microsoft.com",
+        "learn.microsoft.com",
+        "docs.google.com",
+        "cloud.google.com",
+        "aws.amazon.com",
+        "huggingface.co",
+        "nextjs.org",
+        "fastapi.tiangolo.com",
+        "postgresql.org",
+        "ollama.com",
+        "tavily.com",
+        "docs.searxng.org",
+    }
+)
 
-_SPAM_PATTERNS = frozenset({
-    "pinterest.com", "quora.com", "facebook.com",
-    "instagram.com", "tiktok.com", "youtube.com",
-})
+_SPAM_PATTERNS = frozenset(
+    {
+        "pinterest.com",
+        "quora.com",
+        "facebook.com",
+        "instagram.com",
+        "tiktok.com",
+        "youtube.com",
+    }
+)
 
 
 def _score_source_quality(page: FetchedPage, result: SearchResult) -> float:

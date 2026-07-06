@@ -88,7 +88,8 @@ def _build_scoped_context(store: MemoryStore, query: str) -> tuple[str, list[str
 
 def _get_hardware(store: MemoryStore) -> str:
     memories = [
-        m for m in store.active_memories_by_type(MemoryType.KNOWLEDGE)
+        m
+        for m in store.active_memories_by_type(MemoryType.KNOWLEDGE)
         if m.canonical_slot == "current_hardware"
         or m.memory_text.lower().startswith("current hardware:")
     ]

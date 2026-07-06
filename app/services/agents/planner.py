@@ -43,7 +43,9 @@ class AgentTaskPlanner:
             title = _clean_title(objective)
             subtasks = _fallback_subtasks(objective, project["id"] if project else None)
             risks = ["Requirements may need refinement before implementation."]
-            assumptions = ["The objective will be completed through bounded, task-linked assisted runs."]
+            assumptions = [
+                "The objective will be completed through bounded, task-linked assisted runs."
+            ]
         summary = "\n".join(f"{item.order}. {item.title}" for item in subtasks)
         parent = PlannedTask(
             title=title,
@@ -70,22 +72,32 @@ class AgentTaskPlanner:
     def _model_plan(self, objective: str, project: dict | None) -> dict:
         project_context = (
             f"Project: {project['title']}\nDescription: {project.get('description') or '(none)'}"
-            if project else "No project selected or inferred."
+            if project
+            else "No project selected or inferred."
         )
-        result = self.llm_factory().chat_with_metadata([
-            LLMMessage(role="system", content=(
-                "You are Neo Agent Task Planner v1. Decompose only the supplied objective. "
-                "Return strict JSON with parent_title, subtasks, risks, assumptions. "
-                "subtasks must contain 3 to 8 concrete ordered items with title, description, and priority. "
-                "Do not include shell, filesystem, browser, email, purchase, deletion, or Memory actions."
-            )),
-            LLMMessage(role="user", content=f"Objective:\n{objective}\n\n{project_context}"),
-        ], temperature=0.1, num_predict=900)
+        result = self.llm_factory().chat_with_metadata(
+            [
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "You are Neo Agent Task Planner v1. Decompose only the supplied objective. "
+                        "Return strict JSON with parent_title, subtasks, risks, assumptions. "
+                        "subtasks must contain 3 to 8 concrete ordered items with title, description, and priority. "
+                        "Do not include shell, filesystem, browser, email, purchase, deletion, or Memory actions."
+                    ),
+                ),
+                LLMMessage(role="user", content=f"Objective:\n{objective}\n\n{project_context}"),
+            ],
+            temperature=0.1,
+            num_predict=900,
+        )
         return _parse_json_object(result.content)
 
 
 class AgentTaskPlanningService:
-    def __init__(self, planner: AgentTaskPlanner | None = None, agents: AgentsService | None = None) -> None:
+    def __init__(
+        self, planner: AgentTaskPlanner | None = None, agents: AgentsService | None = None
+    ) -> None:
         self.planner = planner or get_agent_task_planner()
         self.agents = agents or AgentsService()
         self.tasks = TasksService()
@@ -101,38 +113,46 @@ class AgentTaskPlanningService:
         if payload.mode != "assist":
             raise AgentPlannerValidationError("Agent Task Planner v1 supports assist mode only.")
         if not payload.auto_create_tasks:
-            raise AgentPlannerValidationError("auto_create_tasks must be true for an objective run.")
+            raise AgentPlannerValidationError(
+                "auto_create_tasks must be true for an objective run."
+            )
         plan = self.planner.plan(payload.objective, payload.project_id)
         parent, subtasks = self._create_tasks(plan)
         try:
-            run = self.agents.create_run(AgentRunCreate(
-                task_id=parent.id,
-                objective=plan.objective,
-                mode=payload.mode,
-            ))
+            run = self.agents.create_run(
+                AgentRunCreate(
+                    task_id=parent.id,
+                    objective=plan.objective,
+                    mode=payload.mode,
+                )
+            )
         except AgentsValidationError as exc:
             raise AgentPlannerValidationError(str(exc)) from exc
         return run, parent, subtasks, plan
 
     def _create_tasks(self, plan: AgentTaskPlan) -> tuple[Task, list[Task]]:
-        parent = self.tasks.create_task(TaskCreate(
-            title=plan.parent_task.title,
-            description=plan.parent_task.description,
-            status="doing",
-            priority=plan.parent_task.priority,
-            project_id=plan.project_id,
-            tags=["agent", "auto-created"],
-        ))
-        subtasks = [
-            self.tasks.create_task(TaskCreate(
-                title=item.title,
-                description=item.description,
-                status="todo",
-                priority=item.priority,
+        parent = self.tasks.create_task(
+            TaskCreate(
+                title=plan.parent_task.title,
+                description=plan.parent_task.description,
+                status="doing",
+                priority=plan.parent_task.priority,
                 project_id=plan.project_id,
-                parent_task_id=parent.id,
-                tags=["agent", "subtask"],
-            ))
+                tags=["agent", "auto-created"],
+            )
+        )
+        subtasks = [
+            self.tasks.create_task(
+                TaskCreate(
+                    title=item.title,
+                    description=item.description,
+                    status="todo",
+                    priority=item.priority,
+                    project_id=plan.project_id,
+                    parent_task_id=parent.id,
+                    tags=["agent", "subtask"],
+                )
+            )
             for item in plan.subtasks
         ]
         return parent, subtasks
@@ -165,7 +185,7 @@ def _parse_json_object(content: str) -> dict:
     else:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start >= 0 and end > start:
-            cleaned = cleaned[start:end + 1]
+            cleaned = cleaned[start : end + 1]
     data = json.loads(cleaned)
     if not isinstance(data, dict):
         raise ValueError("Planner output must be an object.")
@@ -189,19 +209,34 @@ def _clean_subtasks(raw: object, project_id: str | None) -> list[PlannedTask]:
         title = _clean_title(item.get("title", ""))
         if len(title.split()) < 2:
             raise ValueError("Subtask titles must be concrete.")
-        description = re.sub(r"\s+", " ", str(item.get("description") or f"Complete: {title}.")).strip()
+        description = re.sub(
+            r"\s+", " ", str(item.get("description") or f"Complete: {title}.")
+        ).strip()
         priority = str(item.get("priority") or "medium").lower()
         if priority not in {"low", "medium", "high", "critical"}:
             priority = "medium"
-        result.append(PlannedTask(
-            title=title, description=description[:2000], priority=priority,
-            status="todo", project_id=project_id, tags=["agent", "subtask"], order=index,
-        ))
+        result.append(
+            PlannedTask(
+                title=title,
+                description=description[:2000],
+                priority=priority,
+                status="todo",
+                project_id=project_id,
+                tags=["agent", "subtask"],
+                order=index,
+            )
+        )
     return result
 
 
 def _fallback_subtasks(objective: str, project_id: str | None) -> list[PlannedTask]:
-    coding = bool(re.search(r"\b(build|implement|code|api|backend|frontend|database|ui|test|software|app)\b", objective, re.I))
+    coding = bool(
+        re.search(
+            r"\b(build|implement|code|api|backend|frontend|database|ui|test|software|app)\b",
+            objective,
+            re.I,
+        )
+    )
     titles = (
         [
             "Clarify requirements and success criteria",
@@ -211,7 +246,9 @@ def _fallback_subtasks(objective: str, project_id: str | None) -> list[PlannedTa
             "Implement the frontend and user workflow",
             "Add regression tests and validate end to end",
             "Prepare the final implementation report",
-        ] if coding else [
+        ]
+        if coding
+        else [
             "Clarify the objective and success criteria",
             "Gather the available context and constraints",
             "Design an ordered execution approach",
@@ -221,12 +258,18 @@ def _fallback_subtasks(objective: str, project_id: str | None) -> list[PlannedTa
             "Prepare recommendations and next steps",
         ]
     )
-    return [PlannedTask(
-        title=title,
-        description=f"For the objective '{objective}', {title.lower()}.",
-        priority="medium", status="todo", project_id=project_id,
-        tags=["agent", "subtask"], order=index,
-    ) for index, title in enumerate(titles, start=1)]
+    return [
+        PlannedTask(
+            title=title,
+            description=f"For the objective '{objective}', {title.lower()}.",
+            priority="medium",
+            status="todo",
+            project_id=project_id,
+            tags=["agent", "subtask"],
+            order=index,
+        )
+        for index, title in enumerate(titles, start=1)
+    ]
 
 
 def _clean_list(value: object) -> list[str]:

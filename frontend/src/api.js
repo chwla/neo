@@ -3,12 +3,13 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 async function request(path, options = {}) {
   let response;
   try {
+    const isForm = options.body instanceof FormData;
     response = await fetch(`${API_BASE}${path}`, {
+      ...options,
       headers: {
-        "Content-Type": "application/json",
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
         ...(options.headers ?? {}),
       },
-      ...options,
     });
   } catch (error) {
     throw new Error(
@@ -88,6 +89,102 @@ async function streamRequest(path, payload, onEvent) {
 }
 
 export const api = {
+  codeIndex: (repoId) => request(`/code-index/repos/${repoId}`),
+  buildCodeIndex: (repoId, force = false) => request(`/code-index/repos/${repoId}/build`, {
+    method: "POST", body: JSON.stringify({ force, summarize: true }),
+  }),
+  codeSymbols: (repoId, params = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.symbolType) search.set("symbol_type", params.symbolType);
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/code-index/repos/${repoId}/symbols?${search.toString()}`);
+  },
+  codeRoutes: (repoId) => request(`/code-index/repos/${repoId}/routes`),
+  codeDependencies: (repoId, relativePath = "") => {
+    const search = new URLSearchParams();
+    if (relativePath) search.set("relative_path", relativePath);
+    return request(`/code-index/repos/${repoId}/dependencies?${search.toString()}`);
+  },
+  codeSearch: (repoId, q) => request(
+    `/code-index/repos/${repoId}/search?${new URLSearchParams({ q, limit: "50" })}`,
+  ),
+  reposList: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.projectId) search.set("project_id", params.projectId);
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/repos?${search.toString()}`);
+  },
+  registerRepo: (payload) => request("/repos/register", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  repo: (repoId) => request(`/repos/${repoId}`),
+  repoFiles: (repoId, params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      q: params.q, extension: params.extension, language: params.language,
+    })) if (value) search.set(key, value);
+    search.set("limit", String(params.limit ?? 500));
+    return request(`/repos/${repoId}/files?${search.toString()}`);
+  },
+  repoFile: (repoId, repoFileId) => request(`/repos/${repoId}/files/${repoFileId}`),
+  deleteRepo: (repoId) => request(`/repos/${repoId}`, { method: "DELETE" }),
+  filesList: (params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      q: params.q, extension: params.extension, project_id: params.projectId,
+      task_id: params.taskId, note_id: params.noteId,
+    })) if (value) search.set(key, value);
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/files?${search.toString()}`);
+  },
+  file: (fileId) => request(`/files/${fileId}`),
+  uploadFile: (file, links = {}) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (links.projectId) form.append("project_id", links.projectId);
+    if (links.taskId) form.append("task_id", links.taskId);
+    if (links.noteId) form.append("note_id", links.noteId);
+    return request("/files/upload", { method: "POST", body: form });
+  },
+  deleteFile: (fileId) => request(`/files/${fileId}`, { method: "DELETE" }),
+  summarizeFile: (fileId) => request(`/files/${fileId}/summarize`, { method: "POST" }),
+  attachFile: (fileId, linkType, targetId) => request(`/files/${fileId}/links`, {
+    method: "POST", body: JSON.stringify({ link_type: linkType, target_id: targetId }),
+  }),
+  detachFile: (fileId, linkId) => request(`/files/${fileId}/links/${linkId}`, { method: "DELETE" }),
+  fileDownloadUrl: (fileId) => `${API_BASE}/files/${fileId}/download`,
+  artifactsList: (params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({ project_id: params.projectId, task_id: params.taskId,
+      agent_run_id: params.agentRunId, artifact_type: params.artifactType })) if (value) search.set(key, value);
+    return request(`/artifacts?${search.toString()}`);
+  },
+  createArtifact: (payload) => request("/artifacts", { method: "POST", body: JSON.stringify(payload) }),
+  artifact: (artifactId) => request(`/artifacts/${artifactId}`),
+  artifactDownloadUrl: (artifactId) => `${API_BASE}/artifacts/${artifactId}/download`,
+  proposePatch: (payload) => request("/patches/propose", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  validatePatchApply: (artifactId, fileId = null) => request(
+    `/patches/${artifactId}/validate-apply`, {
+      method: "POST", body: JSON.stringify({ file_id: fileId }),
+    },
+  ),
+  applyPatch: (artifactId, fileId = null) => request(`/patches/${artifactId}/apply`, {
+    method: "POST", body: JSON.stringify({ file_id: fileId, confirm: true }),
+  }),
+  patchApplications: (params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      artifact_id: params.artifactId, file_id: params.fileId, task_id: params.taskId,
+      project_id: params.projectId, agent_run_id: params.agentRunId,
+    })) if (value) search.set(key, value);
+    return request(`/patches/applications?${search.toString()}`);
+  },
+  patchApplication: (applicationId) => request(`/patches/applications/${applicationId}`),
+  patchApplicationDownloadUrl: (applicationId, version) =>
+    `${API_BASE}/patches/applications/${applicationId}/download?version=${version}`,
   sidebar: () => request("/sidebar"),
   createChat: (projectId = null) =>
     request("/chats", {

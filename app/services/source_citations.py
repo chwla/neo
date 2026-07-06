@@ -35,8 +35,7 @@ class CitationFormatter:
             return ""
         lines = ["Sources:"]
         lines.extend(
-            f"[{citation.index}] {citation.title} — {citation.url}"
-            for citation in citations
+            f"[{citation.index}] {citation.title} — {citation.url}" for citation in citations
         )
         return "\n".join(lines)
 

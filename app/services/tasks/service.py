@@ -7,7 +7,15 @@ from datetime import date, datetime, timedelta, timezone
 import app.services.projects.store as projects_store
 import app.services.tasks.store as store
 from app.services.projects.types import Project
-from app.services.tasks.types import Task, TaskCreate, TaskLink, TaskListItem, TaskNote, TaskTag, TaskUpdate
+from app.services.tasks.types import (
+    Task,
+    TaskCreate,
+    TaskLink,
+    TaskListItem,
+    TaskNote,
+    TaskTag,
+    TaskUpdate,
+)
 
 MAX_TITLE_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 50_000
@@ -48,16 +56,25 @@ class TasksService:
         task = store.get_task(task_id)
         return Task(**task) if task else None
 
-    def read_task(self, task_id: str) -> tuple[Task, Project | None, list[TaskNote], list[TaskLink]] | None:
+    def read_task(
+        self, task_id: str
+    ) -> tuple[Task, Project | None, list[TaskNote], list[TaskLink]] | None:
         task = self.get_task(task_id)
         if task is None:
             return None
         project = projects_store.get_project(task.project_id) if task.project_id else None
         notes = self.list_task_notes(task_id)
         links = store.list_links(task_id) or []
-        return task, Project(**project) if project else None, notes, [TaskLink(**link) for link in links]
+        return (
+            task,
+            Project(**project) if project else None,
+            notes,
+            [TaskLink(**link) for link in links],
+        )
 
-    def read_task_detail(self, task_id: str) -> tuple[Task, Project | None, list[TaskNote], list[TaskLink], list[TaskListItem]] | None:
+    def read_task_detail(
+        self, task_id: str
+    ) -> tuple[Task, Project | None, list[TaskNote], list[TaskLink], list[TaskListItem]] | None:
         result = self.read_task(task_id)
         if result is None:
             return None
@@ -73,7 +90,9 @@ class TasksService:
     def list_tasks(self, **filters) -> tuple[list[TaskListItem], int]:
         status = _validate_status(filters.get("status")) if filters.get("status") else None
         priority = _validate_priority(filters.get("priority")) if filters.get("priority") else None
-        project_id = _validate_project(filters.get("project_id")) if filters.get("project_id") else None
+        project_id = (
+            _validate_project(filters.get("project_id")) if filters.get("project_id") else None
+        )
         tag = _normalize_tag(filters.get("tag", "")) or None
         tasks, total = store.list_tasks(
             q=(filters.get("q") or "").strip() or None,
@@ -91,13 +110,19 @@ class TasksService:
             limit=max(1, min(int(filters.get("limit", 50)), 100)),
             offset=max(0, int(filters.get("offset", 0))),
         )
-        return [TaskListItem(**{**task, "preview": _preview(task["description"])}) for task in tasks], total
+        return [
+            TaskListItem(**{**task, "preview": _preview(task["description"])}) for task in tasks
+        ], total
 
     def update_task(self, task_id: str, payload: TaskUpdate) -> Task | None:
         existing = store.get_task(task_id)
         if existing is None:
             return None
-        fields_set = payload.model_fields_set if hasattr(payload, "model_fields_set") else payload.__fields_set__
+        fields_set = (
+            payload.model_fields_set
+            if hasattr(payload, "model_fields_set")
+            else payload.__fields_set__
+        )
         updates: dict = {}
         if payload.title is not None:
             updates["title"] = _clean_title(payload.title)
@@ -171,7 +196,9 @@ class TasksService:
 
     def list_note_tasks(self, note_id: str) -> list[TaskListItem]:
         tasks = store.list_note_tasks(note_id)
-        return [TaskListItem(**{**task, "preview": _preview(task["description"])}) for task in tasks]
+        return [
+            TaskListItem(**{**task, "preview": _preview(task["description"])}) for task in tasks
+        ]
 
 
 class TaskContextService:
@@ -191,7 +218,13 @@ class TaskContextService:
             "due": "Tasks due soon:",
             "critical": "Critical tasks:",
         }.get(intent, "Open tasks:")
-        return "\n".join(["Based on your stored tasks:", heading, *[_format_task_line(task, intent) for task in tasks[:10]]])
+        return "\n".join(
+            [
+                "Based on your stored tasks:",
+                heading,
+                *[_format_task_line(task, intent) for task in tasks[:10]],
+            ]
+        )
 
     def context_for_prompt(self, prompt: str) -> str:
         lowered = prompt.lower()
@@ -320,19 +353,35 @@ def _looks_task_related(prompt_lower: str) -> bool:
 
 def _task_query_intent(prompt_lower: str) -> str | None:
     text = re.sub(r"\s+", " ", prompt_lower.strip())
-    if re.search(r"\b(python|javascript|typescript|asyncio|code|function|class|thread|process|sql|algorithm)\b", text) and not re.search(r"\b(my|stored|project)\b", text):
+    if re.search(
+        r"\b(python|javascript|typescript|asyncio|code|function|class|thread|process|sql|algorithm)\b",
+        text,
+    ) and not re.search(r"\b(my|stored|project)\b", text):
         return None
-    if re.search(r"\b(what|which|show|list)\b.{0,30}\b(blocked tasks?|tasks? (?:are )?blocked)\b", text) or re.fullmatch(r"what(?: all)? is blocked(?:(?: right)? now| for .+)?[?!.]*", text):
+    if re.search(
+        r"\b(what|which|show|list)\b.{0,30}\b(blocked tasks?|tasks? (?:are )?blocked)\b", text
+    ) or re.fullmatch(r"what(?: all)? is blocked(?:(?: right)? now| for .+)?[?!.]*", text):
         return "blocked"
-    if re.search(r"\b(what|which|show|list)\b.{0,35}\b(finish(?:ed)?|complete(?:d)?|done)\b", text) or re.search(r"\b(recently completed|completed recently|finished recently)\b", text):
+    if re.search(
+        r"\b(what|which|show|list)\b.{0,35}\b(finish(?:ed)?|complete(?:d)?|done)\b", text
+    ) or re.search(r"\b(recently completed|completed recently|finished recently)\b", text):
         return "completed"
-    if re.search(r"\b(what|which|show|list)\b.{0,30}\b(due soon|tasks? due|upcoming tasks?)\b", text) or re.fullmatch(r"what(?: all)? is due(?: soon)?[?!.]*", text):
+    if re.search(
+        r"\b(what|which|show|list)\b.{0,30}\b(due soon|tasks? due|upcoming tasks?)\b", text
+    ) or re.fullmatch(r"what(?: all)? is due(?: soon)?[?!.]*", text):
         return "due"
-    if re.search(r"\b(show|list|what|which)\b.{0,30}\b(critical|urgent|highest priority) tasks?\b", text):
+    if re.search(
+        r"\b(show|list|what|which)\b.{0,30}\b(critical|urgent|highest priority) tasks?\b", text
+    ):
         return "critical"
-    if re.search(r"\b(what should i (?:work on|do|focus on)|what to work on|prioriti[sz]e)\b.{0,20}\b(next|today|now)\b", text):
+    if re.search(
+        r"\b(what should i (?:work on|do|focus on)|what to work on|prioriti[sz]e)\b.{0,20}\b(next|today|now)\b",
+        text,
+    ):
         return "next"
-    if re.search(r"\b(tasks?|to-?dos?)\b.{0,30}\b(open|pending|active)\b", text) or re.search(r"\b(open|pending|active) tasks?\b", text):
+    if re.search(r"\b(tasks?|to-?dos?)\b.{0,30}\b(open|pending|active)\b", text) or re.search(
+        r"\b(open|pending|active) tasks?\b", text
+    ):
         return "open"
     if re.search(r"\b(show|list|find|get|what|which)\b.{0,40}\btasks?\b", text):
         return "open"
@@ -366,7 +415,13 @@ def _format_next_tasks(tasks: list[TaskListItem]) -> str:
     if actionable:
         best = actionable[0]
         lines.extend(["Best next task:", _format_task_line(best, "next")])
-    remaining = [task for task in tasks if task not in doing and task not in blocked and task not in actionable[:1]]
+    remaining = [
+        task
+        for task in tasks
+        if task not in doing and task not in blocked and task not in actionable[:1]
+    ]
     if remaining:
-        lines.extend(["Other open tasks:", *[_format_task_line(task, "next") for task in remaining[:5]]])
+        lines.extend(
+            ["Other open tasks:", *[_format_task_line(task, "next") for task in remaining[:5]]]
+        )
     return "\n".join(lines)

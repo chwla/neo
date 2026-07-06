@@ -15,4 +15,3 @@ event_project_links = Table(
     Column("event_id", ForeignKey("events.id", ondelete="CASCADE"), primary_key=True),
     Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
 )
-

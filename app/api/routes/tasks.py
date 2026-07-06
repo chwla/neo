@@ -4,7 +4,16 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services.projects.types import Project
-from app.services.tasks import Task, TaskCreate, TaskLink, TaskListItem, TaskNote, TaskTag, TaskUpdate, TasksService
+from app.services.tasks import (
+    Task,
+    TaskCreate,
+    TaskLink,
+    TaskListItem,
+    TaskNote,
+    TaskTag,
+    TaskUpdate,
+    TasksService,
+)
 from app.services.tasks.service import TasksValidationError
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -68,15 +77,37 @@ def create_task(payload: TaskCreate):
 
 
 @router.get("", response_model=TasksListResponse)
-def list_tasks(q: str | None = None, status: str | None = None, priority: str | None = None,
-               project_id: str | None = None, tag: str | None = None, due_before: str | None = None,
-               due_after: str | None = None, include_archived: bool = False, include_done: bool = True,
-               pinned_first: bool = True, parent_task_id: str | None = None, limit: int = 50, offset: int = 0):
+def list_tasks(
+    q: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
+    project_id: str | None = None,
+    tag: str | None = None,
+    due_before: str | None = None,
+    due_after: str | None = None,
+    include_archived: bool = False,
+    include_done: bool = True,
+    pinned_first: bool = True,
+    parent_task_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
     try:
-        tasks, total = _service().list_tasks(q=q, status=status, priority=priority, project_id=project_id,
-            tag=tag, due_before=due_before, due_after=due_after, include_archived=include_archived,
-            include_done=include_done, pinned_first=pinned_first, parent_task_id=parent_task_id,
-            limit=limit, offset=offset)
+        tasks, total = _service().list_tasks(
+            q=q,
+            status=status,
+            priority=priority,
+            project_id=project_id,
+            tag=tag,
+            due_before=due_before,
+            due_after=due_after,
+            include_archived=include_archived,
+            include_done=include_done,
+            pinned_first=pinned_first,
+            parent_task_id=parent_task_id,
+            limit=limit,
+            offset=offset,
+        )
         return TasksListResponse(tasks=tasks, total=total)
     except TasksValidationError as exc:
         raise HTTPException(400, str(exc)) from exc

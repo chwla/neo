@@ -155,7 +155,11 @@ def build_relevance_profile(query: str, provider_query: str) -> QueryRelevancePr
                 aliases.append(alias)
                 seen.add(alias)
     requires_freshness = bool(
-        re.search(r"\b(latest|current|currently|recent|recently|today|news|updates|version|release|newest|ranking|rankings|ranked|rated|right now|fide|updated|champion|world champion|world cup|upcoming|coming out)\b", query, re.IGNORECASE)
+        re.search(
+            r"\b(latest|current|currently|recent|recently|today|news|updates|version|release|newest|ranking|rankings|ranked|rated|right now|fide|updated|champion|world champion|world cup|upcoming|coming out)\b",
+            query,
+            re.IGNORECASE,
+        )
     )
     return QueryRelevanceProfile(
         query=query,
@@ -174,11 +178,16 @@ def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) ->
         for result in scored
         if result.relevance_score >= MIN_FETCH_RELEVANCE_SCORE
         and has_alias_hit(profile, f"{result.title} {result.url} {result.snippet or ''}")
-        and term_hit_count(profile, f"{result.title} {result.url} {result.snippet or ''}") >= minimum_term_hits
+        and term_hit_count(profile, f"{result.title} {result.url} {result.snippet or ''}")
+        >= minimum_term_hits
         and not is_low_quality_result(result)
         and not (
             is_video_or_social_result(result)
-            and not re.search(r"\b(video|youtube|trailer|clip|watch|instagram|reddit|facebook|social|post)\b", profile.query, re.IGNORECASE)
+            and not re.search(
+                r"\b(video|youtube|trailer|clip|watch|instagram|reddit|facebook|social|post)\b",
+                profile.query,
+                re.IGNORECASE,
+            )
         )
         and (
             not profile.requires_freshness
@@ -217,16 +226,22 @@ def score_result(profile: QueryRelevanceProfile, result: SearchResult) -> Search
         reasons.append("trusted")
     result_text = f"{result.title} {result.url} {result.snippet or ''}".lower()
     if "india" in profile.terms or "indian" in profile.terms:
-        if domain in INDIA_SOURCE_DOMAINS or f"www.{domain}" in INDIA_SOURCE_DOMAINS or re.search(
-            r"\b(india|indian|mumbai|delhi|chennai|bengaluru|gurgaon|hindi|tamil|telugu)\b",
-            result_text,
+        if (
+            domain in INDIA_SOURCE_DOMAINS
+            or f"www.{domain}" in INDIA_SOURCE_DOMAINS
+            or re.search(
+                r"\b(india|indian|mumbai|delhi|chennai|bengaluru|gurgaon|hindi|tamil|telugu)\b",
+                result_text,
+            )
         ):
             score += 5.0
             reasons.append("india_source")
         else:
             score -= 2.0
             reasons.append("missing_india_signal")
-    if is_video_or_social_result(result) and not re.search(r"\b(video|youtube|trailer|clip|watch)\b", profile.query, re.IGNORECASE):
+    if is_video_or_social_result(result) and not re.search(
+        r"\b(video|youtube|trailer|clip|watch)\b", profile.query, re.IGNORECASE
+    ):
         score -= 7.0
         reasons.append("video_social")
     if is_low_quality_result(result):
@@ -318,7 +333,12 @@ def is_low_quality_result(result: SearchResult) -> bool:
     parsed = urlparse(result.url)
     path = parsed.path.lower().strip("/")
     domain = parsed.netloc.lower()
-    if path in {"", "home"} and domain not in {"openai.com", "www.anthropic.com", "nextjs.org", "about.fb.com"}:
+    if path in {"", "home"} and domain not in {
+        "openai.com",
+        "www.anthropic.com",
+        "nextjs.org",
+        "about.fb.com",
+    }:
         return True
     low_quality_parts = (
         "/account",
@@ -355,7 +375,15 @@ def is_low_quality_page(page: FetchedPage) -> bool:
     text = normalize_for_relevance(page.text[:1200])
     navigation_terms = sum(
         1
-        for term in ("login", "sign up", "subscribe", "privacy policy", "terms", "menu", "follow us")
+        for term in (
+            "login",
+            "sign up",
+            "subscribe",
+            "privacy policy",
+            "terms",
+            "menu",
+            "follow us",
+        )
         if term in text
     )
     has_evidence_signal = has_freshness_hit(page.text) or bool(

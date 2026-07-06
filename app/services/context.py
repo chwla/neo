@@ -36,4 +36,3 @@ class ContextAssemblyService:
             events=result.events,
             archive_results=result.archive_results,
         )
-

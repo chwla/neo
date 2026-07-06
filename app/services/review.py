@@ -97,7 +97,9 @@ class MemoryReviewService:
         if memory is None:
             raise ValueError(f"Memory {merged_into_memory_id} does not exist.")
         if not memory.is_active or memory.status != "active":
-            raise ValueError(f"Memory {merged_into_memory_id} is not active and cannot be merged into.")
+            raise ValueError(
+                f"Memory {merged_into_memory_id} is not active and cannot be merged into."
+            )
         memory.memory_text = f"{memory.memory_text}\n{candidate.candidate_text}"
         memory.importance = max(memory.importance, candidate.importance)
         memory.update_reason = "Merged accepted candidate into active memory."
@@ -122,11 +124,7 @@ class MemoryReviewService:
             memory_text = f"{key} = {value}"
             existing_memory = self._existing_memory(store, MemoryType.IDENTITY, memory_text)
             existing_profile = next(
-                (
-                    fact
-                    for fact in store.active_profile_by_key(key)
-                    if fact.value == value
-                ),
+                (fact for fact in store.active_profile_by_key(key) if fact.value == value),
                 None,
             )
             if existing_profile is not None:
@@ -223,7 +221,9 @@ class MemoryReviewService:
                 if self._same_text(existing_project.name, project_name):
                     if project_description and project_description != existing_project.description:
                         existing_project.description = project_description
-                        existing_project.priority = max(existing_project.priority, candidate.importance)
+                        existing_project.priority = max(
+                            existing_project.priority, candidate.importance
+                        )
                     existing_memory = self._existing_memory(
                         store,
                         MemoryType.PROJECT_RELATED,
@@ -334,7 +334,9 @@ class MemoryReviewService:
             source=f"memory_candidate:{candidate.id}",
             source_sentence=str(attrs.get("source_sentence") or candidate.candidate_text),
             source_conversation_id=self._optional_int(attrs.get("source_conversation_id")),
-            canonical_slot=str(attrs.get("canonical_slot") or self._canonical_slot(memory_type, text)),
+            canonical_slot=str(
+                attrs.get("canonical_slot") or self._canonical_slot(memory_type, text)
+            ),
             status="active",
             supersedes_id=supersedes_id,
             update_reason=update_reason or str(attrs.get("update_reason") or ""),
@@ -361,9 +363,15 @@ class MemoryReviewService:
     def _candidate_memory_identity(self, candidate) -> tuple[MemoryType, str]:
         attrs = self._attributes(candidate.reasoning)
         if candidate.candidate_type == CandidateType.IDENTITY:
-            return MemoryType.IDENTITY, f"{attrs.get('key', 'general')} = {attrs.get('value', candidate.candidate_text)}"
+            return (
+                MemoryType.IDENTITY,
+                f"{attrs.get('key', 'general')} = {attrs.get('value', candidate.candidate_text)}",
+            )
         if candidate.candidate_type == CandidateType.PREFERENCE:
-            return MemoryType.PREFERENCE, f"{attrs.get('category', 'general')} = {attrs.get('value', candidate.candidate_text)}"
+            return (
+                MemoryType.PREFERENCE,
+                f"{attrs.get('category', 'general')} = {attrs.get('value', candidate.candidate_text)}",
+            )
         if candidate.candidate_type == CandidateType.GOAL:
             return MemoryType.GOAL_RELATED, str(attrs.get("goal", candidate.candidate_text))
         if candidate.candidate_type == CandidateType.PROJECT:

@@ -111,4 +111,3 @@ class QdrantArchiveService:
     def _validate_collection(self, collection: str) -> None:
         if collection not in self.COLLECTIONS:
             raise ValueError(f"Unsupported archive collection: {collection}")
-

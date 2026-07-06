@@ -82,7 +82,7 @@ def generate_plan(
 
     user_content = f"Research question: {user_query}"
     if entity_hint:
-        user_content += f"\n\nEntity disambiguation: the main subject is \"{entity_hint}\". All search queries MUST include this entity name."
+        user_content += f'\n\nEntity disambiguation: the main subject is "{entity_hint}". All search queries MUST include this entity name.'
     if memory_context:
         user_content += f"\n\nUser context (use for personalization only):\n{memory_context}"
     user_content += f"\n\nGenerate {config['min_queries']}-{config['max_queries']} search queries."
@@ -106,7 +106,10 @@ def generate_plan(
 
 
 def _product_comparison_plan(
-    user_query: str, config: dict, intent: TopicIntent, original_query: str,
+    user_query: str,
+    config: dict,
+    intent: TopicIntent,
+    original_query: str,
 ) -> ResearchPlan:
     product = intent_from_topic(intent)
     payload = build_product_plan(product, user_query)
@@ -289,24 +292,26 @@ def generate_followup_queries(
 
     entity_hint = _extract_entity_hint(user_query)
     client = ollama or get_llm_client(num_predict=256)
-    prompt = (
-        f"Original research question: {user_query}\n"
-        f"Research objective: {plan.objective}\n"
-    )
+    prompt = f"Original research question: {user_query}\nResearch objective: {plan.objective}\n"
     if entity_hint:
         prompt += f"Main entity: {entity_hint}\n"
     prompt += (
         f"Gaps found after initial research:\n"
         + "\n".join(f"- {g}" for g in gaps)
         + "\n\nGenerate 2-4 follow-up web search queries to fill these gaps. "
-        f"Every query MUST include the entity name \"{entity_hint or user_query}\". "
+        f'Every query MUST include the entity name "{entity_hint or user_query}". '
         "Output ONLY a JSON array of query strings."
     )
 
     try:
         raw = client.chat(
-            [OllamaMessage(role="system", content="You generate web search queries. Output ONLY a JSON array of strings."),
-             OllamaMessage(role="user", content=prompt)],
+            [
+                OllamaMessage(
+                    role="system",
+                    content="You generate web search queries. Output ONLY a JSON array of strings.",
+                ),
+                OllamaMessage(role="user", content=prompt),
+            ],
             temperature=0.3,
         )
         queries = _parse_json_array(raw)
@@ -330,9 +335,24 @@ _QUALIFIER_SPLIT = re.compile(
 )
 
 _OPERATING_SYSTEM_TERMS = {
-    "ubuntu", "linux mint", "fedora", "arch", "arch linux", "manjaro",
-    "windows", "linux", "macos", "mac os", "debian", "pop!_os", "pop os",
-    "elementary os", "zorin os", "opensuse", "red hat", "rhel",
+    "ubuntu",
+    "linux mint",
+    "fedora",
+    "arch",
+    "arch linux",
+    "manjaro",
+    "windows",
+    "linux",
+    "macos",
+    "mac os",
+    "debian",
+    "pop!_os",
+    "pop os",
+    "elementary os",
+    "zorin os",
+    "opensuse",
+    "red hat",
+    "rhel",
 }
 
 _ENTITY_CASE_OVERRIDES = {
@@ -469,8 +489,8 @@ def _split_entity_qualifier(value: str, peer: str) -> tuple[str, str]:
     if not match:
         return value, ""
 
-    before = value[:match.start()].strip()
-    after = value[match.start():].strip()
+    before = value[: match.start()].strip()
+    after = value[match.start() :].strip()
     if not before or not after:
         return value, ""
 
@@ -481,8 +501,8 @@ def _split_entity_qualifier(value: str, peer: str) -> tuple[str, str]:
     before_words = before.split()
     peer_words = peer.split()
     if len(before_words) > len(peer_words) and len(peer_words) <= 2:
-        descriptor = " ".join(before_words[len(peer_words):])
-        entity = " ".join(before_words[:len(peer_words)])
+        descriptor = " ".join(before_words[len(peer_words) :])
+        entity = " ".join(before_words[: len(peer_words)])
         if descriptor:
             return entity, f"{descriptor} {after}".strip()
 
@@ -510,7 +530,11 @@ def _detect_comparison_domain(left: str, right: str, context: str) -> str:
     entities = {left.lower(), right.lower()}
     if entities & _OPERATING_SYSTEM_TERMS:
         return "operating_system"
-    if "operating system" in combined or "linux distribution" in combined or "desktop linux" in combined:
+    if (
+        "operating system" in combined
+        or "linux distribution" in combined
+        or "desktop linux" in combined
+    ):
         return "operating_system"
     return ""
 
@@ -567,10 +591,29 @@ def _anchor_queries(queries: list[str], user_query: str, entity_hint: str) -> li
         missing = [t for t in core_terms if t.lower() not in q_lower]
         if missing:
             q_lower_words = set(q_lower.split())
-            stop = {"the", "a", "an", "is", "are", "of", "for", "and", "or", "to", "in", "on", "with", "how", "what", "why"}
+            stop = {
+                "the",
+                "a",
+                "an",
+                "is",
+                "are",
+                "of",
+                "for",
+                "and",
+                "or",
+                "to",
+                "in",
+                "on",
+                "with",
+                "how",
+                "what",
+                "why",
+            }
             useful_words = q_lower_words - stop
             if not useful_words or _is_offtopic_query(q, entity_hint):
-                anchored.append(f"{entity_hint} {' '.join(w for w in q.split() if w.lower() not in stop)[:60]}")
+                anchored.append(
+                    f"{entity_hint} {' '.join(w for w in q.split() if w.lower() not in stop)[:60]}"
+                )
             else:
                 anchored.append(f"{' '.join(missing)} {q}"[:120])
         else:
@@ -586,7 +629,11 @@ def _get_core_terms(entity_hint: str) -> list[str]:
         return ["Amazing Spider-Man"]
     if "spider-man" in hint_lower:
         return ["Spider-Man"]
-    words = [w for w in entity_hint.split() if len(w) > 2 and w.lower() not in ("the", "comics", "dc", "marvel")]
+    words = [
+        w
+        for w in entity_hint.split()
+        if len(w) > 2 and w.lower() not in ("the", "comics", "dc", "marvel")
+    ]
     return words[:2] if words else []
 
 
@@ -621,7 +668,7 @@ def _parse_plan_json(raw: str, config: dict) -> ResearchPlan | None:
         if not isinstance(queries, list) or not queries:
             return None
         queries = [q for q in queries if isinstance(q, str) and len(q.strip()) > 3]
-        queries = queries[:config["max_queries"]]
+        queries = queries[: config["max_queries"]]
 
         subquestions = data.get("subquestions", [])
         if not isinstance(subquestions, list):
@@ -633,7 +680,9 @@ def _parse_plan_json(raw: str, config: dict) -> ResearchPlan | None:
             subquestions=subquestions[:8],
             queries=queries,
             freshness_required=bool(data.get("freshness_required", False)),
-            source_preferences=[str(s) for s in data.get("source_preferences", []) if isinstance(s, str)],
+            source_preferences=[
+                str(s) for s in data.get("source_preferences", []) if isinstance(s, str)
+            ],
             expected_output=str(data.get("expected_output", "overview")),
         )
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -679,7 +728,7 @@ def _fallback_plan(query: str, config: dict, entity_hint: str = "") -> ResearchP
     base_queries.append(f"{anchor} Reddit")
     base_queries.append(f"{anchor} guide")
 
-    queries = list(dict.fromkeys(base_queries))[:config["max_queries"]]
+    queries = list(dict.fromkeys(base_queries))[: config["max_queries"]]
 
     subquestions = [f"What is {anchor}?"]
     if is_comparison:
@@ -696,6 +745,11 @@ def _fallback_plan(query: str, config: dict, entity_hint: str = "") -> ResearchP
         subquestions=subquestions,
         queries=queries,
         freshness_required=True,
-        source_preferences=["official sources", "Wikipedia", "dedicated databases", "expert articles"],
+        source_preferences=[
+            "official sources",
+            "Wikipedia",
+            "dedicated databases",
+            "expert articles",
+        ],
         expected_output="comparison" if is_comparison else "overview",
     )

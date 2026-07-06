@@ -129,22 +129,33 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         # --- SCOPED MEMORY ---
         memory_context, memory_keys = retrieve_scoped_memory(user_query)
         if memory_context:
-            _update(job_id, JobStatus.PLANNING, 7, "Memory loaded",
-                    f"Loaded memory context: {', '.join(memory_keys)}")
+            _update(
+                job_id,
+                JobStatus.PLANNING,
+                7,
+                "Memory loaded",
+                f"Loaded memory context: {', '.join(memory_keys)}",
+            )
 
         ollama = get_llm_client(num_predict=512)
 
         intent = classify_topic_intent(effective_query, original_query=user_query)
         plan = generate_plan(
-            effective_query, depth,
+            effective_query,
+            depth,
             memory_context=memory_context,
             ollama=ollama,
             topic_intent=intent,
             original_query=user_query,
         )
         _save_plan(job_id, plan)
-        _update(job_id, JobStatus.PLANNING, 10, "Plan ready",
-                f"Generated {len(plan.queries)} search queries, {len(plan.subquestions)} sub-questions")
+        _update(
+            job_id,
+            JobStatus.PLANNING,
+            10,
+            "Plan ready",
+            f"Generated {len(plan.queries)} search queries, {len(plan.subquestions)} sub-questions",
+        )
 
         if cancel.is_set():
             return _mark_cancelled(job_id)
@@ -156,10 +167,17 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
         def on_query_done(done: int, total: int, query: str) -> None:
             pct = 15 + int((done / total) * 25)
-            _update(job_id, JobStatus.SEARCHING, pct,
-                    f"Searching {done}/{total}", f"Searched: {query}")
+            _update(
+                job_id, JobStatus.SEARCHING, pct, f"Searching {done}/{total}", f"Searched: {query}"
+            )
 
-        _update(job_id, JobStatus.SEARCHING, 15, "Searching web", f"Running {len(plan.queries)} queries...")
+        _update(
+            job_id,
+            JobStatus.SEARCHING,
+            15,
+            "Searching web",
+            f"Running {len(plan.queries)} queries...",
+        )
         search_results = searcher.search_multiple(
             plan.queries,
             on_query_done=on_query_done,
@@ -168,8 +186,13 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         if cancel.is_set():
             return _mark_cancelled(job_id)
 
-        _update(job_id, JobStatus.FETCHING, 42, "Fetching sources",
-                f"Fetching top {min(max_sources, len(search_results))} sources...")
+        _update(
+            job_id,
+            JobStatus.FETCHING,
+            42,
+            "Fetching sources",
+            f"Fetching top {min(max_sources, len(search_results))} sources...",
+        )
         sources = searcher.fetch_sources(
             search_results,
             max_pages=max_sources,
@@ -183,16 +206,26 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         intent_filtered_topics = (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON)
         if entity_terms or plan.topic_intent in intent_filtered_topics:
             sources = filter_irrelevant_sources(
-                sources, entity_terms, plan=plan, user_query=effective_query,
+                sources,
+                entity_terms,
+                plan=plan,
+                user_query=effective_query,
             )
 
         fetched_count = sum(1 for s in sources if s.fetched)
         rejected_count = sum(1 for s in sources if s.fetch_status == "rejected")
         failed_count = sum(1 for s in sources if s.fetch_status == "failed")
-        _update(job_id, JobStatus.EXTRACTING, 55, "Extracting evidence",
-                f"Fetched {fetched_count} pages ({failed_count} failed, {rejected_count} rejected), extracting evidence...")
+        _update(
+            job_id,
+            JobStatus.EXTRACTING,
+            55,
+            "Extracting evidence",
+            f"Fetched {fetched_count} pages ({failed_count} failed, {rejected_count} rejected), extracting evidence...",
+        )
 
-        evidence = extract_evidence(sources, plan, entity_terms=entity_terms, user_query=effective_query)
+        evidence = extract_evidence(
+            sources, plan, entity_terms=entity_terms, user_query=effective_query
+        )
 
         for src in sources:
             src.evidence_count = sum(1 for e in evidence if e.source_id == src.id)
@@ -200,8 +233,13 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         _save_evidence(job_id, evidence)
         _save_sources(job_id, sources, all_queries)
 
-        _update(job_id, JobStatus.EXTRACTING, 60, "Checking gaps",
-                f"Extracted {len(evidence)} evidence chunks, checking for gaps...")
+        _update(
+            job_id,
+            JobStatus.EXTRACTING,
+            60,
+            "Checking gaps",
+            f"Extracted {len(evidence)} evidence chunks, checking for gaps...",
+        )
         gaps = identify_gaps(plan, evidence, user_query=effective_query)
 
         # --- FOLLOW-UP ROUNDS ---
@@ -212,9 +250,13 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
                 break
 
             all_queries.extend(followup_queries)
-            _update(job_id, JobStatus.SEARCHING, 62 + current_round * 5,
-                    f"Follow-up round {current_round}",
-                    f"Running {len(followup_queries)} follow-up queries...")
+            _update(
+                job_id,
+                JobStatus.SEARCHING,
+                62 + current_round * 5,
+                f"Follow-up round {current_round}",
+                f"Running {len(followup_queries)} follow-up queries...",
+            )
 
             new_results = searcher.search_multiple(
                 followup_queries,
@@ -242,10 +284,16 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
                 if entity_terms or plan.topic_intent in intent_filtered_topics:
                     filter_irrelevant_sources(
-                        new_sources, entity_terms, plan=plan, user_query=effective_query,
+                        new_sources,
+                        entity_terms,
+                        plan=plan,
+                        user_query=effective_query,
                     )
                 evidence = extract_evidence(
-                    sources, plan, entity_terms=entity_terms, user_query=effective_query,
+                    sources,
+                    plan,
+                    entity_terms=entity_terms,
+                    user_query=effective_query,
                 )
                 for src in sources:
                     src.evidence_count = sum(1 for e in evidence if e.source_id == src.id)
@@ -257,23 +305,38 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             return _mark_cancelled(job_id)
 
         # --- SYNTHESIS ---
-        _update(job_id, JobStatus.SYNTHESIZING, 75, "Synthesizing report",
-                f"Writing report from {len(evidence)} evidence chunks, {fetched_count} sources...")
+        _update(
+            job_id,
+            JobStatus.SYNTHESIZING,
+            75,
+            "Synthesizing report",
+            f"Writing report from {len(evidence)} evidence chunks, {fetched_count} sources...",
+        )
 
         report = synthesize_report(
-            user_query, plan, evidence, sources, gaps,
+            user_query,
+            plan,
+            evidence,
+            sources,
+            gaps,
             ollama=get_llm_client(num_predict=800, timeout=300),
             depth=depth,
         )
 
         _save_final(job_id, report, sources, evidence, all_queries, plan, gaps, memory_keys)
-        _update(job_id, JobStatus.COMPLETED, 100, "Research complete",
-                f"Report ready: {len(evidence)} evidence chunks from {fetched_count} sources")
+        _update(
+            job_id,
+            JobStatus.COMPLETED,
+            100,
+            "Research complete",
+            f"Report ready: {len(evidence)} evidence chunks from {fetched_count} sources",
+        )
 
     except Exception as exc:
         logger.exception("Research pipeline failed for job %s", job_id)
         update_job_status(
-            job_id, JobStatus.FAILED.value,
+            job_id,
+            JobStatus.FAILED.value,
             error=str(exc),
             current_step="Pipeline failed",
             progress_percent=0,
@@ -291,16 +354,19 @@ def _update(job_id: str, status: JobStatus, pct: int, step: str, message: str) -
     if job_data.get("status") == JobStatus.CANCELLED.value:
         return
     log = job_data.get("progress_log", [])
-    log.append(ProgressEvent(
-        status=status.value,
-        progress_percent=pct,
-        current_step=step,
-        message=message,
-        timestamp=now,
-    ).model_dump())
+    log.append(
+        ProgressEvent(
+            status=status.value,
+            progress_percent=pct,
+            current_step=step,
+            message=message,
+            timestamp=now,
+        ).model_dump()
+    )
 
     update_job_status(
-        job_id, status.value,
+        job_id,
+        status.value,
         progress_percent=pct,
         current_step=step,
         progress_log_json=log,
@@ -309,7 +375,8 @@ def _update(job_id: str, status: JobStatus, pct: int, step: str, message: str) -
 
 def _save_plan(job_id: str, plan) -> None:
     update_job_status(
-        job_id, JobStatus.PLANNING.value,
+        job_id,
+        JobStatus.PLANNING.value,
         plan_json=plan.model_dump(),
         generated_queries_json=plan.queries,
     )
@@ -317,7 +384,8 @@ def _save_plan(job_id: str, plan) -> None:
 
 def _save_sources(job_id: str, sources, queries) -> None:
     update_job_status(
-        job_id, JobStatus.FETCHING.value,
+        job_id,
+        JobStatus.FETCHING.value,
         sources_json=[s.model_dump() for s in sources],
         generated_queries_json=queries,
     )
@@ -325,7 +393,8 @@ def _save_sources(job_id: str, sources, queries) -> None:
 
 def _save_evidence(job_id: str, evidence) -> None:
     update_job_status(
-        job_id, JobStatus.EXTRACTING.value,
+        job_id,
+        JobStatus.EXTRACTING.value,
         evidence_json=[e.model_dump() for e in evidence],
     )
 
@@ -373,7 +442,8 @@ def _save_final(job_id, report, sources, evidence, queries, plan, gaps, memory_k
 
 def _mark_cancelled(job_id: str) -> None:
     update_job_status(
-        job_id, JobStatus.CANCELLED.value,
+        job_id,
+        JobStatus.CANCELLED.value,
         current_step="Cancelled by user",
     )
     with _lock:

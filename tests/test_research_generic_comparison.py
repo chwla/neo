@@ -37,7 +37,9 @@ class GenericComparisonRegressionTests(unittest.TestCase):
         self.assertEqual(("Cursor", "Codex"), (generic["left"], generic["right"]))
 
     def test_os_comparison_keeps_qualifier_out_of_entities(self):
-        plan = generate_plan("ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD)
+        plan = generate_plan(
+            "ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD
+        )
 
         self.assertEqual("operating_system", plan.domain_hint)
         self.assertEqual(("Ubuntu", "Linux Mint"), tuple(plan.normalized_entities.values()))
@@ -48,7 +50,9 @@ class GenericComparisonRegressionTests(unittest.TestCase):
         self.assertTrue(any("site:linuxmint.com Linux Mint" in q for q in plan.queries))
 
     def test_os_filter_rejects_generic_linux_pollution(self):
-        plan = generate_plan("ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD)
+        plan = generate_plan(
+            "ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD
+        )
         sources = [
             ResearchSource(
                 id=1,
@@ -72,14 +76,21 @@ class GenericComparisonRegressionTests(unittest.TestCase):
             ),
         ]
 
-        filtered = filter_irrelevant_sources(sources, extract_entity_terms(plan.original_query or "", plan), plan, plan.original_query or "")
+        filtered = filter_irrelevant_sources(
+            sources,
+            extract_entity_terms(plan.original_query or "", plan),
+            plan,
+            plan.original_query or "",
+        )
 
         self.assertEqual("rejected", filtered[0].fetch_status)
         self.assertTrue(filtered[1].fetched)
         self.assertGreater(filtered[1].quality_score, 6.0)
 
     def test_generic_confidence_caps_unbalanced_comparison(self):
-        plan = generate_plan("ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD)
+        plan = generate_plan(
+            "ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD
+        )
         source = ResearchSource(
             id=1,
             url="https://ubuntu.com/desktop",
@@ -91,15 +102,23 @@ class GenericComparisonRegressionTests(unittest.TestCase):
             quality_score=9.0,
             evidence_count=1,
         )
-        evidence = extract_evidence([source], plan, extract_entity_terms(plan.original_query or "", plan), plan.original_query or "")
-
-        self.assertEqual("Low", _compute_confidence(
-            {"relevant": 5, "evidence": 12, "unique_domains": 3},
-            "full",
-            plan,
-            evidence,
+        evidence = extract_evidence(
             [source],
-        ))
+            plan,
+            extract_entity_terms(plan.original_query or "", plan),
+            plan.original_query or "",
+        )
+
+        self.assertEqual(
+            "Low",
+            _compute_confidence(
+                {"relevant": 5, "evidence": 12, "unique_domains": 3},
+                "full",
+                plan,
+                evidence,
+                [source],
+            ),
+        )
 
     def test_format_repair_preserves_evidence_quality_and_removes_invalid_placeholder(self):
         report = (
@@ -116,7 +135,9 @@ class GenericComparisonRegressionTests(unittest.TestCase):
         self.assertNotIn("(Source [N])", normalized)
 
     def test_insufficient_report_uses_required_section_format(self):
-        plan = generate_plan("ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD)
+        plan = generate_plan(
+            "ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD
+        )
         report = _insufficient_evidence_report(
             "ubuntu vs linux mint for personal use operating system",
             DepthMode.STANDARD,
@@ -144,7 +165,9 @@ class GenericComparisonRegressionTests(unittest.TestCase):
         self.assertNotIn("Ubuntu Mint", report)
 
     def test_repair_replaces_malformed_os_table_and_short_recommendation(self):
-        plan = generate_plan("ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD)
+        plan = generate_plan(
+            "ubuntu vs linux mint for personal use operating system", DepthMode.STANDARD
+        )
         evidence = [
             ResearchEvidenceChunk(
                 source_id=1,

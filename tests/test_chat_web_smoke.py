@@ -14,13 +14,15 @@ class FakeSearchProvider:
         return WebSearchResponse(
             query=query,
             provider=self.name,
-            results=[SearchResult(
-                title="Neo smoke result",
-                url="https://example.com/neo-smoke",
-                snippet="A deterministic Web Search smoke result.",
-                source="example.com",
-                rank=1,
-            )],
+            results=[
+                SearchResult(
+                    title="Neo smoke result",
+                    url="https://example.com/neo-smoke",
+                    snippet="A deterministic Web Search smoke result.",
+                    source="example.com",
+                    rank=1,
+                )
+            ],
         )
 
 
@@ -33,8 +35,13 @@ class ChatAndWebSearchSmokeTest(unittest.TestCase):
     def test_chat_prompt_reaches_model_with_system_context(self):
         service = object.__new__(NeoChatService)
         context = ContextPackage(
-            profile=[], preferences=[], goals=[], projects=[], relevant_memories=[],
-            events=[], archive_results=[],
+            profile=[],
+            preferences=[],
+            goals=[],
+            projects=[],
+            relevant_memories=[],
+            events=[],
+            archive_results=[],
         )
         messages = service.build_messages("Hello Neo", [], context)
         response = FakeChatModel().chat_with_metadata(messages)

@@ -27,7 +27,9 @@ class WebSearchProvider(ABC):
     name: str
 
     @abstractmethod
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         raise NotImplementedError
 
 
@@ -43,7 +45,11 @@ class _DuckDuckGoHTMLParser(HTMLParser):
         attr = dict(attrs)
         class_name = attr.get("class", "")
         if tag == "a" and "result__a" in class_name:
-            self._current = {"title": "", "url": self._clean_url(attr.get("href", "")), "snippet": ""}
+            self._current = {
+                "title": "",
+                "url": self._clean_url(attr.get("href", "")),
+                "snippet": "",
+            }
             self._in_title = True
         elif self._current is not None and tag in {"a", "div"} and "result__snippet" in class_name:
             self._in_snippet = True
@@ -196,7 +202,9 @@ class SearXNGSearchProvider(WebSearchProvider):
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
         self.user_agent = user_agent or settings.web_search_user_agent
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         try:
             instance = normalize_searxng_instance(self.instance_url)
         except ValueError as exc:
@@ -220,14 +228,22 @@ class SearXNGSearchProvider(WebSearchProvider):
             response.raise_for_status()
             payload = response.json()
         except requests.Timeout:
-            return WebSearchResponse(query=query, provider=self.name, error="SearXNG instance timed out.")
+            return WebSearchResponse(
+                query=query, provider=self.name, error="SearXNG instance timed out."
+            )
         except requests.ConnectionError as exc:
-            return WebSearchResponse(query=query, provider=self.name, error=f"SearXNG instance is unreachable: {exc}")
+            return WebSearchResponse(
+                query=query, provider=self.name, error=f"SearXNG instance is unreachable: {exc}"
+            )
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
-            return WebSearchResponse(query=query, provider=self.name, error=f"SearXNG returned HTTP {status}.")
+            return WebSearchResponse(
+                query=query, provider=self.name, error=f"SearXNG returned HTTP {status}."
+            )
         except (requests.RequestException, json.JSONDecodeError) as exc:
-            return WebSearchResponse(query=query, provider=self.name, error=f"SearXNG search failed: {exc}")
+            return WebSearchResponse(
+                query=query, provider=self.name, error=f"SearXNG search failed: {exc}"
+            )
 
         raw = [
             {
@@ -249,7 +265,9 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
         self.user_agent = user_agent or settings.web_search_user_agent
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         try:
             response = requests.get(
                 f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
@@ -258,7 +276,9 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
             )
             response.raise_for_status()
         except requests.Timeout:
-            return WebSearchResponse(query=query, provider=self.name, error="Search provider timed out.")
+            return WebSearchResponse(
+                query=query, provider=self.name, error="Search provider timed out."
+            )
         except requests.RequestException as exc:
             return WebSearchResponse(query=query, provider=self.name, error=f"Search failed: {exc}")
 
@@ -275,7 +295,9 @@ class BingHTMLSearchProvider(WebSearchProvider):
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
         self.user_agent = user_agent or settings.web_search_user_agent
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         try:
             response = requests.get(
                 "https://www.bing.com/search",
@@ -285,7 +307,9 @@ class BingHTMLSearchProvider(WebSearchProvider):
             )
             response.raise_for_status()
         except requests.Timeout:
-            return WebSearchResponse(query=query, provider=self.name, error="Search provider timed out.")
+            return WebSearchResponse(
+                query=query, provider=self.name, error="Search provider timed out."
+            )
         except requests.RequestException as exc:
             return WebSearchResponse(query=query, provider=self.name, error=f"Search failed: {exc}")
 
@@ -308,9 +332,15 @@ class BraveSearchProvider(WebSearchProvider):
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
         self.user_agent = user_agent or settings.web_search_user_agent
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         if not self.api_key:
-            return WebSearchResponse(query=query, provider=self.name, error="Brave Search requires WEB_SEARCH_API_KEY or BRAVE_API_KEY.")
+            return WebSearchResponse(
+                query=query,
+                provider=self.name,
+                error="Brave Search requires WEB_SEARCH_API_KEY or BRAVE_API_KEY.",
+            )
         params = {"q": query, "count": max_results}
         if time_filter in {"day", "week", "month", "year"}:
             params["freshness"] = time_filter
@@ -350,25 +380,42 @@ class TavilySearchProvider(WebSearchProvider):
         self.api_key = _settings_key(self.name)
         self.timeout_seconds = settings.web_fetch_timeout_seconds
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         if not self.api_key:
-            return WebSearchResponse(query=query, provider=self.name, error="Tavily requires TAVILY_API_KEY.")
-        payload: dict[str, object] = {"query": query, "max_results": max_results, "include_answer": False}
+            return WebSearchResponse(
+                query=query, provider=self.name, error="Tavily requires TAVILY_API_KEY."
+            )
+        payload: dict[str, object] = {
+            "query": query,
+            "max_results": max_results,
+            "include_answer": False,
+        }
         if time_filter in {"day", "week", "month", "year"}:
             payload["days"] = {"day": 1, "week": 7, "month": 30, "year": 365}[time_filter]
         try:
             response = requests.post(
                 "https://api.tavily.com/search",
                 json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
             data = response.json()
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code in {401, 403}:
-                return WebSearchResponse(query=query, provider=self.name, error="Tavily API key was rejected.")
-            return WebSearchResponse(query=query, provider=self.name, error=f"Tavily returned HTTP {exc.response.status_code if exc.response is not None else 'unknown'}.")
+                return WebSearchResponse(
+                    query=query, provider=self.name, error="Tavily API key was rejected."
+                )
+            return WebSearchResponse(
+                query=query,
+                provider=self.name,
+                error=f"Tavily returned HTTP {exc.response.status_code if exc.response is not None else 'unknown'}.",
+            )
         except (requests.RequestException, json.JSONDecodeError) as exc:
             return WebSearchResponse(query=query, provider=self.name, error=f"Search failed: {exc}")
         raw = [
@@ -391,12 +438,18 @@ class SerperSearchProvider(WebSearchProvider):
         self.api_key = _settings_key(self.name)
         self.timeout_seconds = settings.web_fetch_timeout_seconds
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         if not self.api_key:
-            return WebSearchResponse(query=query, provider=self.name, error="Serper requires SERPER_API_KEY.")
+            return WebSearchResponse(
+                query=query, provider=self.name, error="Serper requires SERPER_API_KEY."
+            )
         payload: dict[str, object] = {"q": query, "num": max_results}
         if time_filter in {"day", "week", "month", "year"}:
-            payload["tbs"] = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}[time_filter]
+            payload["tbs"] = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}[
+                time_filter
+            ]
         try:
             response = requests.post(
                 "https://google.serper.dev/search",
@@ -423,7 +476,9 @@ class SerperSearchProvider(WebSearchProvider):
 class DisabledSearchProvider(WebSearchProvider):
     name = "disabled"
 
-    def search(self, query: str, max_results: int, time_filter: str | None = None) -> WebSearchResponse:
+    def search(
+        self, query: str, max_results: int, time_filter: str | None = None
+    ) -> WebSearchResponse:
         return WebSearchResponse(
             query=query,
             provider=self.name,

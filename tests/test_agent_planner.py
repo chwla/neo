@@ -4,7 +4,11 @@ import unittest
 
 from app.core.config import get_settings
 from app.services.agents import AgentsService
-from app.services.agents.planner import AgentPlannerValidationError, AgentTaskPlanner, AgentTaskPlanningService
+from app.services.agents.planner import (
+    AgentPlannerValidationError,
+    AgentTaskPlanner,
+    AgentTaskPlanningService,
+)
 from app.services.agents.store import initialize_agent_tables
 from app.services.agents.types import AgentRunCreate, PlanTasksRequest, RunFromObjectiveRequest
 from app.services.notes.store import initialize_notes_tables
@@ -51,9 +55,13 @@ class AgentTaskPlannerTest(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_dry_run_returns_parent_and_three_to_eight_subtasks_without_writes(self):
-        result = self.service.plan_tasks(PlanTasksRequest(
-            objective="Build File Workspace v1", project_id=self.project.id, dry_run=True,
-        ))
+        result = self.service.plan_tasks(
+            PlanTasksRequest(
+                objective="Build File Workspace v1",
+                project_id=self.project.id,
+                dry_run=True,
+            )
+        )
         self.assertFalse(result.created)
         self.assertEqual(result.tasks, [])
         self.assertEqual(result.plan.parent_task.status, "doing")
@@ -63,9 +71,13 @@ class AgentTaskPlannerTest(unittest.TestCase):
         self.assertEqual(self.tasks.list_tasks(include_archived=True)[1], 0)
 
     def test_create_mode_persists_parent_subtasks_counts_and_filter(self):
-        result = self.service.plan_tasks(PlanTasksRequest(
-            objective="Build File Workspace v1", project_id=self.project.id, dry_run=False,
-        ))
+        result = self.service.plan_tasks(
+            PlanTasksRequest(
+                objective="Build File Workspace v1",
+                project_id=self.project.id,
+                dry_run=False,
+            )
+        )
         parent, subtasks = result.tasks[0], result.tasks[1:]
         self.assertTrue(result.created)
         self.assertEqual(parent.status, "doing")
@@ -81,9 +93,12 @@ class AgentTaskPlannerTest(unittest.TestCase):
         self.assertEqual(len(detail[4]), len(subtasks))
 
     def test_run_from_objective_creates_tasks_and_task_linked_run(self):
-        run, parent, subtasks, plan = self.service.run_from_objective(RunFromObjectiveRequest(
-            objective="Build File Workspace v1", project_id=self.project.id,
-        ))
+        run, parent, subtasks, plan = self.service.run_from_objective(
+            RunFromObjectiveRequest(
+                objective="Build File Workspace v1",
+                project_id=self.project.id,
+            )
+        )
         self.assertEqual(run.task_id, parent.id)
         self.assertEqual(run.project_id, self.project.id)
         self.assertEqual(run.objective, plan.objective)
@@ -102,7 +117,9 @@ class AgentTaskPlannerTest(unittest.TestCase):
         with self.assertRaises(AgentPlannerValidationError):
             self.service.plan_tasks(PlanTasksRequest(objective="", dry_run=True))
         with self.assertRaises(AgentPlannerValidationError):
-            self.service.plan_tasks(PlanTasksRequest(objective="Build feature", project_id="missing", dry_run=True))
+            self.service.plan_tasks(
+                PlanTasksRequest(objective="Build feature", project_id="missing", dry_run=True)
+            )
 
 
 if __name__ == "__main__":

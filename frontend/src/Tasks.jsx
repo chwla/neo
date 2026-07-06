@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
+import FileAttachments from "./FileAttachments.jsx";
+import ArtifactsPanel from "./ArtifactsPanel.jsx";
+import PatchApplications from "./PatchApplications.jsx";
 
 const STATUSES = ["todo", "doing", "blocked", "done"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -33,7 +36,7 @@ function formatStatus(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-export default function Tasks({ initialTaskId = null, initialProjectId = null, onBack, onOpenNote, onTaskChange }) {
+export default function Tasks({ initialTaskId = null, initialProjectId = null, onBack, onOpenNote, onOpenFile, onTaskChange }) {
   const [tasks, setTasks] = useState([]);
   const [projects, setProjects] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -55,6 +58,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
   const [runObjective, setRunObjective] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentMessage, setAgentMessage] = useState("");
+  const [artifactRefresh, setArtifactRefresh] = useState(0);
 
   const loadTasks = useCallback(async () => {
     const data = await api.tasksList({ q: query, status, priority, projectId: projectFilter, tag, includeArchived });
@@ -225,6 +229,24 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
     }
   }
 
+  async function createPatchProposal() {
+    if (!selectedTask) return;
+    setAgentBusy(true); setAgentMessage(""); setError("");
+    try {
+      const linked = await api.filesList({ taskId: selectedTask.id });
+      if (!linked.files?.length) throw new Error("Attach at least one text or code file first.");
+      const objective = runObjective.trim() || selectedTask.description || selectedTask.title;
+      const data = await api.proposePatch({
+        objective, task_id: selectedTask.id, project_id: selectedTask.project_id || null,
+        file_ids: linked.files.map((item) => item.id),
+      });
+      setArtifactRefresh((value) => value + 1);
+      setAgentMessage(data.artifact.artifact_type === "patch_proposal"
+        ? "Patch proposal created for review. It has not been applied."
+        : "An analysis artifact was created because a reliable diff was not available.");
+    } catch (err) { setError(err.message); } finally { setAgentBusy(false); }
+  }
+
   async function cancelAgentRun() {
     if (!selectedRun) return;
     setAgentBusy(true);
@@ -343,6 +365,14 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
               </section>
             ) : null}
 
+            <FileAttachments linkType="task" targetId={selectedTask.id} onOpenFile={onOpenFile} />
+            <div className="task-patch-action">
+              <button className="neo-button" type="button" onClick={createPatchProposal} disabled={agentBusy}>Create Patch Proposal</button>
+              <p className="task-help">Uses attached task files and creates a review-only artifact. No files are changed.</p>
+            </div>
+            <ArtifactsPanel taskId={selectedTask.id} refreshKey={artifactRefresh} onApplied={() => setArtifactRefresh((value) => value + 1)} />
+            <PatchApplications taskId={selectedTask.id} refreshKey={artifactRefresh} />
+
             <section className="agent-runs-section">
               <div className="agent-runs-header">
                 <div>
@@ -402,6 +432,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
                   </div>
                   {selectedRun.run.final_output ? <div className="agent-final-output"><strong>Final output</strong><pre>{selectedRun.run.final_output}</pre></div> : null}
                   {selectedRun.artifacts.length ? <div className="agent-artifacts"><strong>Artifacts</strong>{selectedRun.artifacts.map((artifact) => <div key={artifact.id}><span>{artifact.title}</span>{artifact.note_id ? <button type="button" onClick={() => onOpenNote?.(artifact.note_id)}>Open Note</button> : null}</div>)}</div> : null}
+                  <ArtifactsPanel agentRunId={selectedRun.run.id} refreshKey={artifactRefresh} onApplied={() => setArtifactRefresh((value) => value + 1)} />
                 </div>
               ) : null}
             </section>

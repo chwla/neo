@@ -17,8 +17,7 @@ class EmbeddingProvider(Protocol):
     provider_name: str
     model_name: str
 
-    def embed(self, text: str) -> list[float]:
-        ...
+    def embed(self, text: str) -> list[float]: ...
 
 
 class OllamaEmbeddingProvider:
@@ -73,7 +72,9 @@ class MemoryEmbeddingService:
     def embedding_text(self, memory: Memory) -> str:
         parts = [
             memory.canonical_slot or "",
-            memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type),
+            memory.memory_type.value
+            if hasattr(memory.memory_type, "value")
+            else str(memory.memory_type),
             memory.memory_text,
             memory.source_sentence or "",
         ]

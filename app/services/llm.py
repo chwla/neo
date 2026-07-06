@@ -43,11 +43,15 @@ class LLMClient(Protocol):
     def model_is_installed(self) -> bool: ...
     def chat(self, messages: list[LLMMessage], temperature: float = 0.4) -> str: ...
     def chat_with_metadata(
-        self, messages: list[LLMMessage], temperature: float = 0.4,
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.4,
         num_predict: int | None = None,
     ) -> LLMChatResult: ...
     def chat_stream(
-        self, messages: list[LLMMessage], temperature: float = 0.4,
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.4,
         num_predict: int | None = None,
     ) -> Iterator[dict[str, Any]]: ...
     def clean_response(self, content: str) -> str: ...
@@ -117,35 +121,54 @@ class OllamaClient(BaseLLMClient):
     def _options(self, temperature: float, num_predict: int | None) -> dict[str, Any]:
         return {"temperature": temperature, "num_predict": num_predict or self.num_predict}
 
-    def chat_with_metadata(self, messages: list[LLMMessage], temperature: float = 0.4,
-                           num_predict: int | None = None) -> LLMChatResult:
+    def chat_with_metadata(
+        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+    ) -> LLMChatResult:
         started = time.perf_counter()
-        response = requests.post(f"{self.base_url}/api/chat", json={
-            "model": self.model, "messages": [m.model_dump() for m in messages],
-            "stream": False, "options": self._options(temperature, num_predict),
-        }, timeout=self.timeout)
+        response = requests.post(
+            f"{self.base_url}/api/chat",
+            json={
+                "model": self.model,
+                "messages": [m.model_dump() for m in messages],
+                "stream": False,
+                "options": self._options(temperature, num_predict),
+            },
+            timeout=self.timeout,
+        )
         response.raise_for_status()
         payload = response.json()
         raw = str(payload["message"]["content"])
         prompt, completion = payload.get("prompt_eval_count"), payload.get("eval_count")
         elapsed = int((time.perf_counter() - started) * 1000)
         duration = payload.get("total_duration")
-        return LLMChatResult(content=self.clean_response(raw), thinking=self.extract_thinking(raw),
-            prompt_tokens=prompt, completion_tokens=completion,
+        return LLMChatResult(
+            content=self.clean_response(raw),
+            thinking=self.extract_thinking(raw),
+            prompt_tokens=prompt,
+            completion_tokens=completion,
             total_tokens=(
                 prompt + completion
                 if isinstance(prompt, int) and isinstance(completion, int)
                 else None
             ),
-            duration_ms=int(duration / 1_000_000) if duration else elapsed)
+            duration_ms=int(duration / 1_000_000) if duration else elapsed,
+        )
 
-    def chat_stream(self, messages: list[LLMMessage], temperature: float = 0.4,
-                    num_predict: int | None = None) -> Iterator[dict[str, Any]]:
+    def chat_stream(
+        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+    ) -> Iterator[dict[str, Any]]:
         started = time.perf_counter()
-        response = requests.post(f"{self.base_url}/api/chat", json={
-            "model": self.model, "messages": [m.model_dump() for m in messages],
-            "stream": True, "options": self._options(temperature, num_predict),
-        }, stream=True, timeout=self.timeout)
+        response = requests.post(
+            f"{self.base_url}/api/chat",
+            json={
+                "model": self.model,
+                "messages": [m.model_dump() for m in messages],
+                "stream": True,
+                "options": self._options(temperature, num_predict),
+            },
+            stream=True,
+            timeout=self.timeout,
+        )
         response.raise_for_status()
         for line in response.iter_lines():
             if not line:
@@ -157,7 +180,10 @@ class OllamaClient(BaseLLMClient):
             if chunk.get("done"):
                 prompt, completion = chunk.get("prompt_eval_count"), chunk.get("eval_count")
                 duration = chunk.get("total_duration")
-                yield {"type": "done", "prompt_tokens": prompt, "completion_tokens": completion,
+                yield {
+                    "type": "done",
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
                     "total_tokens": (
                         prompt + completion
                         if isinstance(prompt, int) and isinstance(completion, int)
@@ -173,8 +199,9 @@ class OllamaClient(BaseLLMClient):
 
 
 class OpenAICompatibleClient(BaseLLMClient):
-    def __init__(self, model: str, base_url: str, timeout: int, num_predict: int,
-                 api_key: str | None = None) -> None:
+    def __init__(
+        self, model: str, base_url: str, timeout: int, num_predict: int, api_key: str | None = None
+    ) -> None:
         self.model, self.base_url = model, base_url.rstrip("/")
         self.timeout, self.num_predict, self.api_key = timeout, num_predict, api_key
 
@@ -198,8 +225,9 @@ class OpenAICompatibleClient(BaseLLMClient):
         except requests.RequestException:
             return False
 
-    def _payload(self, messages: list[LLMMessage], temperature: float,
-                 num_predict: int | None, stream: bool) -> dict[str, Any]:
+    def _payload(
+        self, messages: list[LLMMessage], temperature: float, num_predict: int | None, stream: bool
+    ) -> dict[str, Any]:
         return {
             "model": self.model,
             "messages": [m.model_dump() for m in messages],
@@ -208,26 +236,36 @@ class OpenAICompatibleClient(BaseLLMClient):
             "stream": stream,
         }
 
-    def chat_with_metadata(self, messages: list[LLMMessage], temperature: float = 0.4,
-                           num_predict: int | None = None) -> LLMChatResult:
+    def chat_with_metadata(
+        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+    ) -> LLMChatResult:
         started = time.perf_counter()
-        response = requests.post(f"{self.base_url}/chat/completions", headers=self.headers,
-            json=self._payload(messages, temperature, num_predict, False), timeout=self.timeout)
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=self.headers,
+            json=self._payload(messages, temperature, num_predict, False),
+            timeout=self.timeout,
+        )
         response.raise_for_status()
         payload = response.json()
         raw = str(payload["choices"][0]["message"].get("content") or "")
         usage = payload.get("usage") or {}
-        return LLMChatResult(content=self.clean_response(raw), thinking=self.extract_thinking(raw),
+        return LLMChatResult(
+            content=self.clean_response(raw),
+            thinking=self.extract_thinking(raw),
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
 
-    def chat_stream(self, messages: list[LLMMessage], temperature: float = 0.4,
-                    num_predict: int | None = None) -> Iterator[dict[str, Any]]:
+    def chat_stream(
+        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+    ) -> Iterator[dict[str, Any]]:
         started = time.perf_counter()
-        response = requests.post(f"{self.base_url}/chat/completions", headers=self.headers,
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=self.headers,
             json=self._payload(messages, temperature, num_predict, True),
             stream=True,
             timeout=self.timeout,
@@ -261,8 +299,12 @@ class LLMRegistry:
         self._settings = settings
 
     def _default(self) -> tuple[list[LLMConfig], str]:
-        config = LLMConfig(id="ollama-default", name="Ollama", provider="ollama",
-            model=self._settings.chat_model, base_url=self._settings.ollama_url,
+        config = LLMConfig(
+            id="ollama-default",
+            name="Ollama",
+            provider="ollama",
+            model=self._settings.chat_model,
+            base_url=self._settings.ollama_url,
             timeout_seconds=self._settings.chat_timeout_seconds,
             num_predict=self._settings.chat_num_predict,
         )
@@ -342,17 +384,26 @@ class LLMRegistry:
             raise ValueError(f"LLM configuration '{wanted}' was not found or is disabled")
         return config
 
-    def client(self, config_id: str | None = None, *, num_predict: int | None = None,
-               timeout: int | None = None) -> LLMClient:
+    def client(
+        self,
+        config_id: str | None = None,
+        *,
+        num_predict: int | None = None,
+        timeout: int | None = None,
+    ) -> LLMClient:
         config = self.get(config_id)
-        common = {"model": config.model, "base_url": config.base_url,
-                  "timeout": timeout or config.timeout_seconds,
-                  "num_predict": num_predict or config.num_predict}
+        common = {
+            "model": config.model,
+            "base_url": config.base_url,
+            "timeout": timeout or config.timeout_seconds,
+            "num_predict": num_predict or config.num_predict,
+        }
         if config.provider == "ollama":
             return OllamaClient(**common)
         return OpenAICompatibleClient(**common, api_key=config.resolved_api_key())
 
 
-def get_llm_client(config_id: str | None = None, *, num_predict: int | None = None,
-                   timeout: int | None = None) -> LLMClient:
+def get_llm_client(
+    config_id: str | None = None, *, num_predict: int | None = None, timeout: int | None = None
+) -> LLMClient:
     return LLMRegistry().client(config_id, num_predict=num_predict, timeout=timeout)

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
+import FileAttachments from "./FileAttachments.jsx";
+import Repos from "./Repos.jsx";
 
 const STATUSES = ["active", "paused", "completed", "archived"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -46,7 +48,7 @@ function projectChanged(draft, project) {
   );
 }
 
-export default function Projects({ initialProjectId = null, onBack, onOpenNote, onOpenTask, onProjectChange }) {
+export default function Projects({ initialProjectId = null, onBack, onOpenNote, onOpenTask, onOpenFile, onProjectChange }) {
   const [projects, setProjects] = useState([]);
   const [projectTags, setProjectTags] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -447,6 +449,14 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
                   </div>
                 )}
               </section>
+            )}
+
+            {!isNew && (
+              <FileAttachments linkType="project" targetId={selectedProject.id} onOpenFile={onOpenFile} />
+            )}
+
+            {!isNew && (
+              <Repos projectId={selectedProject.id} onOpenFile={onOpenFile} compact />
             )}
 
             {!isNew && (

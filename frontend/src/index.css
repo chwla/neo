@@ -2998,3 +2998,83 @@ textarea:disabled {
   .tasks-list-pane { border-right: 0; border-bottom: 1px solid var(--neo-line); }
   .task-field-grid { grid-template-columns: 1fr; }
 }
+/* File Workspace v1 */
+.files-layout { display: grid; grid-template-columns: minmax(280px, 34%) 1fr; height: 100vh; margin-left: 300px; background: #f7f7f5; color: #20211f; transition: margin-left .18s ease; }
+.neo-app.sidebar-collapsed .files-layout { margin-left: 0; }
+.files-list-pane, .files-detail-pane { padding: 24px; overflow: auto; }
+.files-list-pane { border-right: 1px solid #dddcd7; display: flex; flex-direction: column; gap: 12px; }
+.files-header, .files-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.files-header h2, .files-detail-header h2 { margin: 0; }
+.files-list { display: flex; flex-direction: column; gap: 7px; }
+.files-list > button { text-align: left; border: 1px solid #dddcd7; border-radius: 10px; background: white; padding: 12px; display: grid; gap: 4px; }
+.files-list > button.selected { border-color: #4d6b55; box-shadow: 0 0 0 1px #4d6b55; }
+.files-list span, .files-list small { color: #6c6e68; }
+.files-detail-pane section { margin-top: 22px; padding: 16px; background: white; border: 1px solid #e1e0db; border-radius: 12px; }
+.files-detail-header > div:last-child { display: flex; gap: 8px; }
+.file-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.file-link-badge { display: inline-block; margin: 3px; padding: 5px 9px; border-radius: 99px; background: #eef1ec; font-size: 12px; }
+.file-attachments { margin-top: 20px; padding: 16px; border: 1px solid #dddcd7; border-radius: 12px; background: #fafaf8; }
+.file-attachments-title { font-weight: 700; margin-bottom: 10px; }
+.file-attachments-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.file-attachment-list { display: grid; gap: 7px; margin-top: 10px; }
+.file-attachment-list button { display: flex; justify-content: space-between; text-align: left; padding: 9px; border: 1px solid #dddcd7; border-radius: 8px; background: white; }
+.file-attachment-list span { color: #777; font-size: 12px; }
+@media (max-width: 760px) { .files-layout { grid-template-columns: 1fr; overflow: auto; } .files-list-pane { border-right: 0; border-bottom: 1px solid #dddcd7; } }
+.patch-proposal-form textarea { width: 100%; resize: vertical; margin-bottom: 10px; }
+.patch-proposal-form > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.task-patch-action { margin-top: 10px; display: flex; align-items: center; gap: 12px; }
+.artifacts-panel { margin-top: 18px; padding: 16px; border: 1px solid #dddcd7; border-radius: 12px; background: #fafaf8; }
+.artifact-list { display: grid; gap: 7px; }
+.artifact-list > button { display: flex; justify-content: space-between; text-align: left; padding: 10px; border: 1px solid #dddcd7; border-radius: 8px; background: white; }
+.artifact-list span, .artifact-viewer-header span { color: #6c6e68; font-size: 12px; text-transform: capitalize; }
+.artifact-viewer { margin-top: 12px; border-top: 1px solid #dddcd7; padding-top: 12px; }
+.artifact-viewer-header, .artifact-viewer-header > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.artifact-viewer-header > div:first-child { align-items: flex-start; flex-direction: column; }
+.artifact-viewer pre { max-height: 55vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #20211f; color: #f2f4ef; border-radius: 8px; padding: 14px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.patch-apply-controls { margin-top: 14px; padding: 14px; border: 1px solid #c99b35; border-radius: 10px; background: #fff8e7; color: #29251d; }
+.patch-apply-controls > div:last-of-type { display: flex; gap: 8px; margin-top: 10px; }
+.patch-hash-review { display: grid !important; gap: 4px !important; padding: 10px; background: white; border-radius: 7px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.patch-applications { margin-top: 16px; padding: 14px; border: 1px solid #dddcd7; border-radius: 10px; background: #fafaf8; color: #20211f; }
+.patch-application-list { display: grid; gap: 7px; }
+.patch-application-list button { text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; padding: 10px; background: white; border: 1px solid #dddcd7; border-radius: 8px; }
+.patch-application-list small { grid-column: 1 / -1; color: #6c6e68; }
+.patch-application-status { text-transform: capitalize; font-weight: 700; }
+.patch-application-status.applied { color: #23733c; }
+.patch-application-status.failed, .patch-application-status.rejected { color: #a52b2b; }
+.patch-application-detail { margin-top: 12px; }
+.patch-application-detail > div:first-child { display: flex; justify-content: space-between; }
+.patch-snapshot-grid { display: grid !important; grid-template-columns: 1fr 1fr; gap: 10px !important; }
+.patch-snapshot-grid label { min-width: 0; font-weight: 700; }
+.patch-snapshot-grid pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #20211f; color: #f2f4ef; border-radius: 7px; padding: 10px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (max-width: 760px) { .patch-snapshot-grid { grid-template-columns: 1fr; } }
+
+/* Repo Workspace v1 */
+.repos-layout { min-height: 100vh; margin-left: 300px; padding: 24px; overflow: auto; background: #f7f7f5; color: #20211f; }
+.neo-app.sidebar-collapsed .repos-layout { margin-left: 0; }
+.repos-layout section, .project-repos { border: 1px solid #dddcd7; border-radius: 12px; background: white; padding: 16px; }
+.repos-title-row, .repos-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.repos-title-row h2, .repos-detail-header h3 { margin: 0; }
+.repos-register form { display: grid; gap: 9px; margin-top: 14px; }
+.repos-register label { display: flex; align-items: center; gap: 8px; color: #5f625d; font-size: 13px; }
+.repos-register label input { width: auto; }
+.repos-message { color: #47604d; }
+.repos-browser { display: grid; grid-template-columns: minmax(230px, 30%) 1fr; gap: 16px; margin-top: 16px; }
+.repos-list, .repo-file-list { display: grid; gap: 7px; align-content: start; }
+.repos-list > button, .repo-file-list > button { display: grid; gap: 3px; border: 1px solid #dddcd7; border-radius: 8px; background: #fafaf8; padding: 10px; text-align: left; }
+.repos-list > button.selected { border-color: #4d6b55; box-shadow: 0 0 0 1px #4d6b55; }
+.repos-list span, .repos-list small, .repo-file-list span, .repos-detail-header p { color: #6c6e68; font-size: 12px; }
+.repos-filters { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin: 12px 0; }
+.project-repos { margin-top: 20px; background: #fafaf8; }
+.project-repos .repos-browser { grid-template-columns: minmax(190px, 30%) 1fr; }
+@media (max-width: 760px) { .repos-browser, .project-repos .repos-browser { grid-template-columns: 1fr; } .repos-filters { grid-template-columns: 1fr; } }
+.code-index-panel { margin-top: 18px; border-top: 1px solid #dddcd7; padding-top: 16px; }
+.code-index-header, .code-index-stats, .code-index-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.code-index-header { justify-content: space-between; }
+.code-index-header h3, .code-index-header p { margin: 0; }
+.code-index-stats { margin: 10px 0; color: #5f625d; font-size: 12px; }
+.code-index-stats span { border: 1px solid #dddcd7; border-radius: 99px; padding: 4px 8px; }
+.code-index-tabs { margin: 12px 0 8px; }
+.code-index-tabs button.selected { border-color: #4d6b55; background: #eef1ec; }
+.code-index-results { display: grid; gap: 6px; margin-top: 10px; max-height: 380px; overflow: auto; }
+.code-index-results button { display: grid; gap: 3px; border: 1px solid #dddcd7; border-radius: 8px; background: white; padding: 9px; text-align: left; }
+.code-index-results span, .code-index-results small { color: #6c6e68; font-size: 12px; }

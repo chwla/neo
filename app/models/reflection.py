@@ -16,4 +16,3 @@ class Reflection(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     reflection: Mapped[str] = mapped_column(Text, nullable=False)
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-

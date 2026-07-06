@@ -265,7 +265,9 @@ Rules:
                     description = "; ".join(descriptions) or list_item
                     self._append_unique(
                         result,
-                        self._project_item(list_item, description, "Structured main project entry."),
+                        self._project_item(
+                            list_item, description, "Structured main project entry."
+                        ),
                     )
                     index = cursor
                     continue
@@ -536,8 +538,8 @@ Rules:
                 r"\bfor (?P<context>[A-Za-z /+.-]{2,80}),?\s+my preferred "
                 r"(?P<subject>[A-Za-z /+.-]{2,60}?) is (?P<value>[^.]{2,120})",
                 sentence,
-            flags=re.IGNORECASE,
-        )
+                flags=re.IGNORECASE,
+            )
         if context_preference:
             context = context_preference.group("context").strip()
             value = self._preferred_side(context_preference.group("value").strip(" ,;"))
@@ -818,7 +820,9 @@ Rules:
     def _source_sentence(self, item: ExtractedItem, request: ExtractionRequest) -> str:
         text = self._request_text(request)
         for sentence in self._sentences(text):
-            if item.text.lower() in sentence.lower() or self._source_sentence_matches_item(sentence, item):
+            if item.text.lower() in sentence.lower() or self._source_sentence_matches_item(
+                sentence, item
+            ):
                 return sentence
         return text.strip() or item.text
 

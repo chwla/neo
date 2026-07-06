@@ -69,7 +69,9 @@ class NotesService:
             limit=max(1, min(limit, 100)),
             offset=max(0, offset),
         )
-        return [NoteListItem(**{**note, "preview": _preview(note["body"])}) for note in notes], total
+        return [
+            NoteListItem(**{**note, "preview": _preview(note["body"])}) for note in notes
+        ], total
 
     def update_note(self, note_id: str, payload: NoteUpdate) -> Note | None:
         updates: dict[str, Any] = {}

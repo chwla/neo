@@ -20,6 +20,8 @@ build/
 !.env.example
 
 # Runtime data
+data/workspace_files/
+data/workspace_repos/
 neo_llms.json
 neo_llms.json.tmp
 neo_memory.db

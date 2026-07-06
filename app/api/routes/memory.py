@@ -47,7 +47,9 @@ def _llm_client(config_id: str | None = None) -> LLMClient:
 
 
 def extract_after_turn_background(
-    user_prompt: str, assistant_reply: str, llm_id: str | None = None,
+    user_prompt: str,
+    assistant_reply: str,
+    llm_id: str | None = None,
 ) -> None:
     db = SessionLocal()
     try:
@@ -440,17 +442,20 @@ def stream_chat_message(
                 yield json.dumps(event, default=str) + "\n"
         except Exception as exc:
             config = LLMRegistry().get(request.llm_id)
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "detail": (
-                        f"{config.name} did not finish the response. Expected {config.model} "
-                        f"at {config.base_url} within {config.timeout_seconds} seconds. "
-                        f"Details: {exc}"
-                    ),
-                    "web_debug": service.last_web_debug,
-                }
-            ) + "\n"
+            yield (
+                json.dumps(
+                    {
+                        "type": "error",
+                        "detail": (
+                            f"{config.name} did not finish the response. Expected {config.model} "
+                            f"at {config.base_url} within {config.timeout_seconds} seconds. "
+                            f"Details: {exc}"
+                        ),
+                        "web_debug": service.last_web_debug,
+                    }
+                )
+                + "\n"
+            )
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
@@ -521,8 +526,7 @@ def delete_goal(goal_id: int, store: StoreDependency) -> Response:
 @router.get("/projects", response_model=list[ProjectRead])
 def list_projects(store: StoreDependency) -> list[ProjectRead]:
     return [
-        ProjectRead.model_validate(project)
-        for project in store.list_projects(ProjectStatus.ACTIVE)
+        ProjectRead.model_validate(project) for project in store.list_projects(ProjectStatus.ACTIVE)
     ]
 
 
@@ -833,10 +837,7 @@ def delete_profile(profile_id: int, store: StoreDependency) -> Response:
 
 @router.get("/preferences", response_model=list[PreferenceRead])
 def list_preferences(store: StoreDependency) -> list[PreferenceRead]:
-    return [
-        PreferenceRead.model_validate(preference)
-        for preference in store.list_preferences()
-    ]
+    return [PreferenceRead.model_validate(preference) for preference in store.list_preferences()]
 
 
 @router.patch("/preferences/{preference_id}", response_model=PreferenceRead)

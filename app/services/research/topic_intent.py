@@ -51,43 +51,96 @@ _OFFTOPIC_SOURCE_TITLE = re.compile(
     re.IGNORECASE,
 )
 
-_LOW_QUALITY_DOMAINS = frozenset({
-    "linkedin.com", "medium.com", "quora.com", "pinterest.com",
-    "finance.yahoo.com", "podcasts.apple.com", "spotify.com",
-})
+_LOW_QUALITY_DOMAINS = frozenset(
+    {
+        "linkedin.com",
+        "medium.com",
+        "quora.com",
+        "pinterest.com",
+        "finance.yahoo.com",
+        "podcasts.apple.com",
+        "spotify.com",
+    }
+)
 
-_CURSOR_EVIDENCE_TERMS = frozenset({
-    "cursor ai", "cursor.com", "cursor ide", "cursor editor",
-    "ai editor", "ai ide", "codebase indexing", "codebase index",
-    "composer", "cursor agent", "vs code fork", "vscode fork",
-    "cursor pro", "anysphere",
-})
+_CURSOR_EVIDENCE_TERMS = frozenset(
+    {
+        "cursor ai",
+        "cursor.com",
+        "cursor ide",
+        "cursor editor",
+        "ai editor",
+        "ai ide",
+        "codebase indexing",
+        "codebase index",
+        "composer",
+        "cursor agent",
+        "vs code fork",
+        "vscode fork",
+        "cursor pro",
+        "anysphere",
+    }
+)
 
-_CODEX_EVIDENCE_TERMS = frozenset({
-    "openai codex", "codex cli", "coding agent", "cloud coding agent",
-    "openai coding agent", "chatgpt codex", "openai/codex", "github.com/openai/codex",
-    "codex pro", "openai.com/codex",
-})
+_CODEX_EVIDENCE_TERMS = frozenset(
+    {
+        "openai codex",
+        "codex cli",
+        "coding agent",
+        "cloud coding agent",
+        "openai coding agent",
+        "chatgpt codex",
+        "openai/codex",
+        "github.com/openai/codex",
+        "codex pro",
+        "openai.com/codex",
+    }
+)
 
-_CLAUDE_EVIDENCE_TERMS = frozenset({
-    "claude code", "anthropic claude code", "anthropic.com",
-})
+_CLAUDE_EVIDENCE_TERMS = frozenset(
+    {
+        "claude code",
+        "anthropic claude code",
+        "anthropic.com",
+    }
+)
 
-_COPILOT_EVIDENCE_TERMS = frozenset({
-    "github copilot", "copilot", "docs.github.com/copilot",
-})
+_COPILOT_EVIDENCE_TERMS = frozenset(
+    {
+        "github copilot",
+        "copilot",
+        "docs.github.com/copilot",
+    }
+)
 
-_WINDSURF_EVIDENCE_TERMS = frozenset({
-    "windsurf", "codeium windsurf", "windsurf editor",
-})
+_WINDSURF_EVIDENCE_TERMS = frozenset(
+    {
+        "windsurf",
+        "codeium windsurf",
+        "windsurf editor",
+    }
+)
 
-_REJECT_EVIDENCE_TERMS = frozenset({
-    "sql cursor", "database cursor", "server-side cursor", "fetch cursor",
-    "mouse cursor", "ui cursor", "cursor pointer", "blinking cursor",
-    "text cursor", "screen cursor",
-    "ancient codex", "medieval codex", "manuscript codex", "codex book",
-    "historical codex", "codex as book",
-})
+_REJECT_EVIDENCE_TERMS = frozenset(
+    {
+        "sql cursor",
+        "database cursor",
+        "server-side cursor",
+        "fetch cursor",
+        "mouse cursor",
+        "ui cursor",
+        "cursor pointer",
+        "blinking cursor",
+        "text cursor",
+        "screen cursor",
+        "ancient codex",
+        "medieval codex",
+        "manuscript codex",
+        "codex book",
+        "historical codex",
+        "codex as book",
+    }
+)
 
 _TOOL_EVIDENCE_MAP: dict[str, frozenset[str]] = {
     "cursor": _CURSOR_EVIDENCE_TERMS,
@@ -177,7 +230,12 @@ def _detect_ai_coding_tools(query: str) -> list[str]:
             start, end = match.span()
             if any(start < u_end and end > u_start for u_start, u_end in used_spans):
                 continue
-            slug = alias.split()[0] if alias in ("claude code", "codex cli", "cursor pro", "codex pro", "github copilot") else alias
+            slug = (
+                alias.split()[0]
+                if alias
+                in ("claude code", "codex cli", "cursor pro", "codex pro", "github copilot")
+                else alias
+            )
             if alias == "claude code":
                 slug = "claude code"
             elif alias == "codex cli":
@@ -210,7 +268,9 @@ def build_ai_coding_plan(intent: TopicIntent, user_query: str) -> dict:
     tools = intent.tools
     entities = list(intent.normalized_entities.values())
     entity_a = intent.normalized_entities.get(tools[0], tools[0]) if tools else "Cursor AI"
-    entity_b = intent.normalized_entities.get(tools[1], tools[1]) if len(tools) > 1 else "OpenAI Codex"
+    entity_b = (
+        intent.normalized_entities.get(tools[1], tools[1]) if len(tools) > 1 else "OpenAI Codex"
+    )
 
     subquestions = [
         f"What is {entity_a} and what is it best for?",
@@ -220,7 +280,9 @@ def build_ai_coding_plan(intent: TopicIntent, user_query: str) -> dict:
         "What are the main tradeoffs for a developer choosing between them?",
     ]
     if intent.pricing_focus:
-        subquestions.insert(2, f"How do {entity_a} and {entity_b} pricing plans compare (Pro/Plus/Team)?")
+        subquestions.insert(
+            2, f"How do {entity_a} and {entity_b} pricing plans compare (Pro/Plus/Team)?"
+        )
 
     queries = [
         "Cursor AI editor official pricing features",
@@ -236,20 +298,26 @@ def build_ai_coding_plan(intent: TopicIntent, user_query: str) -> dict:
     ]
 
     if "claude" in tools or "claude code" in tools:
-        queries.extend([
-            "Anthropic Claude Code official documentation pricing",
-            "Claude Code vs Cursor AI comparison",
-        ])
+        queries.extend(
+            [
+                "Anthropic Claude Code official documentation pricing",
+                "Claude Code vs Cursor AI comparison",
+            ]
+        )
     if "copilot" in tools:
-        queries.extend([
-            "GitHub Copilot official pricing features documentation",
-            "GitHub Copilot vs Cursor AI comparison",
-        ])
+        queries.extend(
+            [
+                "GitHub Copilot official pricing features documentation",
+                "GitHub Copilot vs Cursor AI comparison",
+            ]
+        )
     if "windsurf" in tools:
-        queries.extend([
-            "Windsurf AI editor official pricing features",
-            "Windsurf vs Cursor AI comparison",
-        ])
+        queries.extend(
+            [
+                "Windsurf AI editor official pricing features",
+                "Windsurf vs Cursor AI comparison",
+            ]
+        )
 
     if intent.pricing_focus:
         queries = [
@@ -357,7 +425,11 @@ def source_is_offtopic_for_ai_coding(source: "ResearchSource", intent: TopicInte
         return "Irrelevant domain (SQL cursor tutorial)"
 
     if "wikipedia.org" in domain:
-        if re.search(r"\bcursor\b", title) and "computing" in combined[:500] and "ai" not in combined[:800]:
+        if (
+            re.search(r"\bcursor\b", title)
+            and "computing" in combined[:500]
+            and "ai" not in combined[:800]
+        ):
             if "cursor.com" not in combined and "cursor ai" not in combined:
                 return "Irrelevant Wikipedia (UI/computing cursor)"
 

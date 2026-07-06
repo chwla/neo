@@ -73,11 +73,17 @@ def extract_entity_terms(user_query: str, plan: ResearchPlan) -> list[str]:
     entity_groups: list[list[str]] = []
 
     if "amazing spider-man" in combined or "amazing spiderman" in combined:
-        entity_groups.append([
-            "amazing spider-man", "the amazing spider-man",
-            "spider-man", "peter parker", "marvel comics",
-            "stan lee", "steve ditko",
-        ])
+        entity_groups.append(
+            [
+                "amazing spider-man",
+                "the amazing spider-man",
+                "spider-man",
+                "peter parker",
+                "marvel comics",
+                "stan lee",
+                "steve ditko",
+            ]
+        )
     elif "spider-man" in combined or "spiderman" in combined:
         entity_groups.append(["spider-man", "spiderman", "peter parker", "marvel"])
     elif "batman" in combined:
@@ -87,14 +93,36 @@ def extract_entity_terms(user_query: str, plan: ResearchPlan) -> list[str]:
 
     if not entity_groups:
         words = set(re.findall(r"[a-z0-9][a-z0-9+.-]*", query_lower)) - {
-            "research", "the", "a", "an", "of", "for", "and", "or", "to",
-            "in", "on", "with", "about", "how", "what", "why", "best",
-            "should", "compare", "comparison", "compared", "versus", "vs",
-            "difference", "between", "current", "latest",
+            "research",
+            "the",
+            "a",
+            "an",
+            "of",
+            "for",
+            "and",
+            "or",
+            "to",
+            "in",
+            "on",
+            "with",
+            "about",
+            "how",
+            "what",
+            "why",
+            "best",
+            "should",
+            "compare",
+            "comparison",
+            "compared",
+            "versus",
+            "vs",
+            "difference",
+            "between",
+            "current",
+            "latest",
         }
         significant = [
-            w for w in words
-            if len(w) > 3 or (len(w) >= 2 and any(ch.isdigit() for ch in w))
+            w for w in words if len(w) > 3 or (len(w) >= 2 and any(ch.isdigit() for ch in w))
         ]
         if significant:
             entity_groups.append(significant)
@@ -135,10 +163,16 @@ def filter_irrelevant_sources(
         return sources
 
     _IRRELEVANT_DOMAINS = {
-        "vocabulary.com", "dictionary.com", "merriam-webster.com",
-        "thesaurus.com", "wordreference.com", "collinsdictionary.com",
-        "cambridge.org", "oxfordlearnersdictionaries.com",
-        "yourdictionary.com", "urbandictionary.com",
+        "vocabulary.com",
+        "dictionary.com",
+        "merriam-webster.com",
+        "thesaurus.com",
+        "wordreference.com",
+        "collinsdictionary.com",
+        "cambridge.org",
+        "oxfordlearnersdictionaries.com",
+        "yourdictionary.com",
+        "urbandictionary.com",
     }
     _IRRELEVANT_TITLE_PATTERNS = re.compile(
         r"(meaning\s+in\s+english|definition\s+of|"
@@ -170,7 +204,9 @@ def filter_irrelevant_sources(
                 src.fetch_error = reject_reason
                 src.text = ""
                 continue
-            if is_low_quality_product_source(src) and not is_preferred_product_source(src, product_intent):
+            if is_low_quality_product_source(src) and not is_preferred_product_source(
+                src, product_intent
+            ):
                 src.quality_score = max(0.0, src.quality_score - 2.0)
             elif is_preferred_product_source(src, product_intent):
                 src.quality_score = min(10.0, src.quality_score + 1.0)
@@ -235,7 +271,11 @@ def extract_evidence(
         if not source.fetched or not source.text:
             continue
         chunks = _extract_from_source(
-            source, plan, entity_terms or [], intent, product_intent,
+            source,
+            plan,
+            entity_terms or [],
+            intent,
+            product_intent,
         )
         for chunk in chunks:
             h = _chunk_hash(chunk.text)
@@ -244,7 +284,7 @@ def extract_evidence(
             seen_hashes.add(h)
             all_chunks.append(chunk)
 
-    all_chunks.sort(key=lambda c: (c.quality_score + c.relevance_score), reverse=True)
+    all_chunks.sort(key=lambda c: c.quality_score + c.relevance_score, reverse=True)
     return all_chunks
 
 
@@ -262,16 +302,17 @@ def identify_gaps(
 
     for subq in plan.subquestions:
         if subq not in covered_subquestions:
-            has_partial = any(
-                _text_overlap(subq, chunk.text) > 0.2
-                for chunk in evidence
-            )
+            has_partial = any(_text_overlap(subq, chunk.text) > 0.2 for chunk in evidence)
             if not has_partial:
                 gaps.append(f"Unanswered: {subq}")
 
     if plan.topic_intent == TOPIC_PRODUCT_COMPARISON and plan.comparison_tools:
-        air_ev = [c for c in evidence if c.evidence_category in ("air_evidence", "comparison_evidence")]
-        pro_ev = [c for c in evidence if c.evidence_category in ("pro_evidence", "comparison_evidence")]
+        air_ev = [
+            c for c in evidence if c.evidence_category in ("air_evidence", "comparison_evidence")
+        ]
+        pro_ev = [
+            c for c in evidence if c.evidence_category in ("pro_evidence", "comparison_evidence")
+        ]
         if "macbook air" in (plan.comparison_tools or []) and not air_ev:
             gaps.append("Missing MacBook Air-specific evidence")
         if "macbook pro" in (plan.comparison_tools or []) and not pro_ev:
@@ -308,8 +349,12 @@ def identify_gaps(
         entities = list(plan.normalized_entities.values())
         left_label = entities[0] if entities else "left entity"
         right_label = entities[1] if len(entities) > 1 else "right entity"
-        left_ev = [c for c in evidence if c.evidence_category in ("left_evidence", "comparison_evidence")]
-        right_ev = [c for c in evidence if c.evidence_category in ("right_evidence", "comparison_evidence")]
+        left_ev = [
+            c for c in evidence if c.evidence_category in ("left_evidence", "comparison_evidence")
+        ]
+        right_ev = [
+            c for c in evidence if c.evidence_category in ("right_evidence", "comparison_evidence")
+        ]
         if not left_ev:
             gaps.append(f"Missing {left_label}-specific evidence")
         if not right_ev:
@@ -382,18 +427,20 @@ def _extract_from_source(
         subq = _find_supporting_subquestion(para, plan)
         claim_type = _classify_claim(para)
 
-        chunks.append(ResearchEvidenceChunk(
-            source_id=source.id,
-            source_url=source.url,
-            source_title=source.title,
-            text=para[:_MAX_CHUNK_LENGTH],
-            relevance_score=relevance,
-            quality_score=quality,
-            claim_type=claim_type,
-            evidence_category=evidence_category,
-            supports_subquestion=subq,
-            extracted_at=now,
-        ))
+        chunks.append(
+            ResearchEvidenceChunk(
+                source_id=source.id,
+                source_url=source.url,
+                source_title=source.title,
+                text=para[:_MAX_CHUNK_LENGTH],
+                relevance_score=relevance,
+                quality_score=quality,
+                claim_type=claim_type,
+                evidence_category=evidence_category,
+                supports_subquestion=subq,
+                extracted_at=now,
+            )
+        )
 
     chunks.sort(key=lambda c: c.relevance_score + c.quality_score, reverse=True)
     return chunks[:8]
@@ -504,7 +551,9 @@ def _is_preferred_os_source(source: ResearchSource, plan: ResearchPlan) -> bool:
 def _is_low_quality_os_source(source: ResearchSource, plan: ResearchPlan) -> bool:
     domain = (source.domain or "").lower()
     title = (source.title or "").lower()
-    if "geeksforgeeks.org" in domain and re.search(r"\b(introduction|tutorial|what is|linux/unix)\b", title):
+    if "geeksforgeeks.org" in domain and re.search(
+        r"\b(introduction|tutorial|what is|linux/unix)\b", title
+    ):
         return True
     if "wikipedia.org" in domain and re.search(r"^(linux|operating system|unix)", title):
         return True
@@ -546,7 +595,19 @@ def _source_is_offtopic_for_os_comparison(source: ResearchSource, plan: Research
 
 def _find_contradictions(evidence: list[ResearchEvidenceChunk]) -> list[str]:
     contradictions: list[str] = []
-    negative_words = {"not", "no", "never", "cannot", "doesn't", "don't", "isn't", "won't", "lack", "lacks", "without"}
+    negative_words = {
+        "not",
+        "no",
+        "never",
+        "cannot",
+        "doesn't",
+        "don't",
+        "isn't",
+        "won't",
+        "lack",
+        "lacks",
+        "without",
+    }
 
     claims_by_subq: dict[str, list[ResearchEvidenceChunk]] = {}
     for chunk in evidence:
@@ -557,7 +618,7 @@ def _find_contradictions(evidence: list[ResearchEvidenceChunk]) -> list[str]:
         if len(chunks) < 2:
             continue
         for i, a in enumerate(chunks):
-            for b in chunks[i + 1:]:
+            for b in chunks[i + 1 :]:
                 if a.source_url == b.source_url:
                     continue
                 a_neg = sum(1 for w in a.text.lower().split() if w in negative_words)
@@ -600,13 +661,36 @@ def _score_relevance(text: str, plan: ResearchPlan) -> float:
     text_lower = text.lower()
 
     objective_words = set(plan.objective.lower().split())
-    objective_words -= {"the", "a", "an", "is", "are", "of", "for", "and", "or", "to", "in", "on", "with"}
+    objective_words -= {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "of",
+        "for",
+        "and",
+        "or",
+        "to",
+        "in",
+        "on",
+        "with",
+    }
     if objective_words:
         hits = sum(1 for w in objective_words if w in text_lower)
         score += (hits / len(objective_words)) * 4.0
 
     for subq in plan.subquestions:
-        subq_words = set(subq.lower().split()) - {"what", "how", "which", "does", "is", "are", "the", "a"}
+        subq_words = set(subq.lower().split()) - {
+            "what",
+            "how",
+            "which",
+            "does",
+            "is",
+            "are",
+            "the",
+            "a",
+        }
         if subq_words:
             hits = sum(1 for w in subq_words if w in text_lower)
             if hits >= len(subq_words) * 0.4:
@@ -673,13 +757,27 @@ def _classify_claim(text: str) -> str:
         return "recommendation"
     if re.search(r"(risk|warning|caution|limitation|drawback|downside|caveat)", text_lower):
         return "risk"
-    if re.search(r"(released|version|v\d|\d+\.\d+|first\s+appear|issue\s+#?\d|published)", text_lower):
+    if re.search(
+        r"(released|version|v\d|\d+\.\d+|first\s+appear|issue\s+#?\d|published)", text_lower
+    ):
         return "version_info"
     return "general"
 
 
 def _text_overlap(a: str, b: str) -> float:
-    words_a = set(a.lower().split()) - {"what", "how", "which", "does", "is", "are", "the", "a", "an", "of", "for"}
+    words_a = set(a.lower().split()) - {
+        "what",
+        "how",
+        "which",
+        "does",
+        "is",
+        "are",
+        "the",
+        "a",
+        "an",
+        "of",
+        "for",
+    }
     words_b = set(b.lower().split())
     if not words_a:
         return 0.0

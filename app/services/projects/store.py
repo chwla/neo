@@ -240,7 +240,9 @@ def update_project(project_id: str, updates: dict) -> dict | None:
         if "tags" in updates:
             _replace_tags(conn, project_id, updates["tags"])
         conn.commit()
-        row = conn.execute("SELECT * FROM workspace_projects WHERE id = ?", (project_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM workspace_projects WHERE id = ?", (project_id,)
+        ).fetchone()
         return _row_to_project(conn, row)
     finally:
         conn.close()

@@ -64,7 +64,7 @@ class MemoryExplanationService:
         primary = active[0] if active else memories[0]
         source_sentence = primary.source_sentence or primary.memory_text
         status = "updated memory" if primary.supersedes_id else "directly stated memory"
-        answer = f"I believe this from a {status}: \"{source_sentence}\"."
+        answer = f'I believe this from a {status}: "{source_sentence}".'
         if self._asks_when(query):
             answer += f" It was recorded at {primary.created_at.isoformat()}."
         if self._asks_direct_or_inferred(query):
@@ -155,7 +155,9 @@ class MemoryExplanationService:
         return MemoryEvidence(
             memory_id=memory.id,
             memory_text=memory.memory_text,
-            memory_type=memory.memory_type.value if isinstance(memory.memory_type, MemoryType) else str(memory.memory_type),
+            memory_type=memory.memory_type.value
+            if isinstance(memory.memory_type, MemoryType)
+            else str(memory.memory_type),
             status=memory.status,
             confidence=memory.confidence,
             source_sentence=memory.source_sentence,

@@ -55,15 +55,30 @@ _OFFTOPIC_SOURCE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-_PREFERRED_DOMAINS = frozenset({
-    "apple.com", "macrumors.com", "9to5mac.com", "theverge.com",
-    "pcmag.com", "zdnet.com", "nytimes.com", "wirecutter.com",
-    "tomsguide.com", "techradar.com", "arstechnica.com",
-})
+_PREFERRED_DOMAINS = frozenset(
+    {
+        "apple.com",
+        "macrumors.com",
+        "9to5mac.com",
+        "theverge.com",
+        "pcmag.com",
+        "zdnet.com",
+        "nytimes.com",
+        "wirecutter.com",
+        "tomsguide.com",
+        "techradar.com",
+        "arstechnica.com",
+    }
+)
 
-_LOW_QUALITY_DOMAINS = frozenset({
-    "pinterest.com", "quora.com", "reddit.com", "facebook.com",
-})
+_LOW_QUALITY_DOMAINS = frozenset(
+    {
+        "pinterest.com",
+        "quora.com",
+        "reddit.com",
+        "facebook.com",
+    }
+)
 
 # Product pair definitions: (slug_a, slug_b, label_a, label_b, detect patterns)
 _PRODUCT_PAIRS: list[dict] = [
@@ -111,21 +126,48 @@ _PRODUCT_PAIRS: list[dict] = [
     },
 ]
 
-_AIR_EVIDENCE_TERMS = frozenset({
-    "macbook air", "13-inch air", "15-inch air", "13 inch air", "15 inch air",
-    "m2 air", "m3 air", "m4 air", "m5 air", "apple.com/macbook-air",
-})
+_AIR_EVIDENCE_TERMS = frozenset(
+    {
+        "macbook air",
+        "13-inch air",
+        "15-inch air",
+        "13 inch air",
+        "15 inch air",
+        "m2 air",
+        "m3 air",
+        "m4 air",
+        "m5 air",
+        "apple.com/macbook-air",
+    }
+)
 
-_PRO_EVIDENCE_TERMS = frozenset({
-    "macbook pro", "14-inch pro", "16-inch pro", "14 inch pro", "16 inch pro",
-    "m3 pro", "m4 pro", "m5 pro", "m3 max", "m4 max", "m5 max",
-    "apple.com/macbook-pro",
-})
+_PRO_EVIDENCE_TERMS = frozenset(
+    {
+        "macbook pro",
+        "14-inch pro",
+        "16-inch pro",
+        "14 inch pro",
+        "16 inch pro",
+        "m3 pro",
+        "m4 pro",
+        "m5 pro",
+        "m3 max",
+        "m4 max",
+        "m5 max",
+        "apple.com/macbook-pro",
+    }
+)
 
-_REJECT_MACBOOK_EVIDENCE = frozenset({
-    "macbook neo", "macbook ai", "best macbook for ai",
-    "windows ai pc", "copilot+ pc", "ai laptop",
-})
+_REJECT_MACBOOK_EVIDENCE = frozenset(
+    {
+        "macbook neo",
+        "macbook ai",
+        "best macbook for ai",
+        "windows ai pc",
+        "copilot+ pc",
+        "ai laptop",
+    }
+)
 
 PRODUCT_COMPARISON_TABLE_DIMENSIONS = [
     "Product role",
@@ -289,9 +331,7 @@ def _macbook_air_pro_plan(intent: ProductIntent, user_query: str) -> dict:
         "What are the current RAM/storage and pricing options?",
     ]
     if intent.ai_workload_focus:
-        subquestions.append(
-            f"How do {air} and {pro} compare for local AI/ML workloads?"
-        )
+        subquestions.append(f"How do {air} and {pro} compare for local AI/ML workloads?")
     if intent.pricing_focus or "india" in user_query.lower():
         subquestions.append(f"How do {air} and {pro} pricing compare in India?")
 
@@ -432,17 +472,17 @@ def _mentions_air(text: str, url: str = "") -> bool:
         return True
     if "macbook ai" in text and "macbook air" not in text:
         return False
-    return any(t in text for t in _AIR_EVIDENCE_TERMS) or bool(re.search(
-        r"\bmacbook\s+air\b|\b\d{2}[- ]inch\s+air\b|\bm[2345]\s+air\b", text
-    ))
+    return any(t in text for t in _AIR_EVIDENCE_TERMS) or bool(
+        re.search(r"\bmacbook\s+air\b|\b\d{2}[- ]inch\s+air\b|\bm[2345]\s+air\b", text)
+    )
 
 
 def _mentions_pro(text: str, url: str = "") -> bool:
     if "macbook-pro" in url or "/pro" in url and "macbook" in url:
         return True
-    return any(t in text for t in _PRO_EVIDENCE_TERMS) or bool(re.search(
-        r"\bmacbook\s+pro\b|\b\d{2}[- ]inch\s+pro\b|\bm[2345]\s+(pro|max)\b", text
-    ))
+    return any(t in text for t in _PRO_EVIDENCE_TERMS) or bool(
+        re.search(r"\bmacbook\s+pro\b|\b\d{2}[- ]inch\s+pro\b|\bm[2345]\s+(pro|max)\b", text)
+    )
 
 
 def _is_macbook_ai_pollution(text: str, intent: ProductIntent, url: str = "") -> bool:

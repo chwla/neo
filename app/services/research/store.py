@@ -185,10 +185,27 @@ def clear_all_jobs() -> int:
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
-    for json_col in ("plan_json", "generated_queries_json", "sources_json", "evidence_json", "metadata_json", "progress_log_json"):
+    for json_col in (
+        "plan_json",
+        "generated_queries_json",
+        "sources_json",
+        "evidence_json",
+        "metadata_json",
+        "progress_log_json",
+    ):
         base = json_col.replace("_json", "")
         raw = d.pop(json_col, None)
-        d[base] = json.loads(raw) if raw else ([] if base in ("generated_queries", "sources", "evidence_chunks", "progress_log") else None if base == "plan" else {})
+        d[base] = (
+            json.loads(raw)
+            if raw
+            else (
+                []
+                if base in ("generated_queries", "sources", "evidence_chunks", "progress_log")
+                else None
+                if base == "plan"
+                else {}
+            )
+        )
     if "evidence" in d:
         d["evidence_chunks"] = d.pop("evidence")
     return d

@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 ALLOWED_STEP_TYPES = {
-    "plan", "read_context", "think", "web_search", "research", "draft",
-    "summarize", "save_note", "task_update_request", "final",
+    "plan",
+    "read_context",
+    "think",
+    "web_search",
+    "research",
+    "draft",
+    "summarize",
+    "save_note",
+    "task_update_request",
+    "patch_proposal",
+    "final",
 }
 APPROVAL_REQUIRED_STEP_TYPES = {"save_note", "task_update_request"}
 FORBIDDEN_ACTIONS = {
-    "shell", "terminal", "file_write", "file_delete", "browser", "email",
-    "purchase", "memory_write", "archive", "delete",
+    "shell",
+    "terminal",
+    "file_write",
+    "file_delete",
+    "browser",
+    "email",
+    "purchase",
+    "memory_write",
+    "archive",
+    "delete",
 }
 
 
@@ -30,11 +47,13 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         requires_approval = bool(raw.get("requires_approval", False))
         if step_type in APPROVAL_REQUIRED_STEP_TYPES:
             requires_approval = True
-        cleaned.append({
-            "title": str(raw.get("title") or step_type.replace("_", " ").title())[:200],
-            "type": step_type,
-            "requires_approval": requires_approval,
-        })
+        cleaned.append(
+            {
+                "title": str(raw.get("title") or step_type.replace("_", " ").title())[:200],
+                "type": step_type,
+                "requires_approval": requires_approval,
+            }
+        )
     return cleaned
 
 

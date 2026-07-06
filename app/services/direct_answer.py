@@ -51,7 +51,8 @@ class DirectMemoryAnswerService:
             fact
             for fact in store.list_profile()
             if getattr(fact, "is_active", True)
-            and str(getattr(fact, "key", "")).lower() in {"name", "age", "location", "country", "nationality", "occupation", "education"}
+            and str(getattr(fact, "key", "")).lower()
+            in {"name", "age", "location", "country", "nationality", "occupation", "education"}
         ]
         if not facts:
             return "I do not have enough stored profile information to answer that yet."
@@ -66,9 +67,15 @@ class DirectMemoryAnswerService:
         }
         facts = sorted(
             facts,
-            key=lambda fact: (order.get(str(getattr(fact, "key", "")).lower(), 99), str(getattr(fact, "key", ""))),
+            key=lambda fact: (
+                order.get(str(getattr(fact, "key", "")).lower(), 99),
+                str(getattr(fact, "key", "")),
+            ),
         )
-        parts = [self._profile_fact_sentence(str(fact.key).lower(), str(fact.value)) for fact in facts[:8]]
+        parts = [
+            self._profile_fact_sentence(str(fact.key).lower(), str(fact.value))
+            for fact in facts[:8]
+        ]
         return "From memory, " + "; ".join(part for part in parts if part) + "."
 
     def _profile_fact_sentence(self, key: str, value: str) -> str:
@@ -104,7 +111,9 @@ class DirectMemoryAnswerService:
             return "No. Your stored current hardware says you have integrated graphics, not a dedicated GPU."
         if re.search(r"\b(rtx|gtx|nvidia|radeon|amd gpu|dedicated gpu)\b", lowered):
             return f"Your stored current hardware mentions a dedicated GPU: {memory.memory_text}."
-        return "I do not have enough stored hardware detail to know whether you have a dedicated GPU."
+        return (
+            "I do not have enough stored hardware detail to know whether you have a dedicated GPU."
+        )
 
     def _preference_answer(self, store: MemoryStore, category: str, template: str) -> str | None:
         preference = self._active_preference(store, category)
@@ -125,7 +134,11 @@ class DirectMemoryAnswerService:
             return "I do not have any active goals stored for you yet."
         lines = ["Your active goals are:"]
         for goal in goals[:8]:
-            description = f" - {goal.description}" if goal.description and goal.description != goal.goal else ""
+            description = (
+                f" - {goal.description}"
+                if goal.description and goal.description != goal.goal
+                else ""
+            )
             lines.append(f"- {goal.goal}{description}")
         return "\n".join(lines)
 
@@ -164,18 +177,24 @@ class DirectMemoryAnswerService:
             if memory.canonical_slot == "current_hardware"
             or memory.memory_text.lower().startswith("current hardware:")
         ]
-        return sorted(memories, key=lambda memory: memory.updated_at, reverse=True)[0] if memories else None
+        return (
+            sorted(memories, key=lambda memory: memory.updated_at, reverse=True)[0]
+            if memories
+            else None
+        )
 
     def _active_preference(self, store: MemoryStore, category: str) -> Preference | None:
         preferences = store.active_preferences_by_category(category)
-        return sorted(preferences, key=lambda preference: preference.updated_at, reverse=True)[0] if preferences else None
+        return (
+            sorted(preferences, key=lambda preference: preference.updated_at, reverse=True)[0]
+            if preferences
+            else None
+        )
 
     def _flutter_priority_answer(self, store: MemoryStore) -> str | None:
         goals = store.list_goals(GoalStatus.ACTIVE)
         goal_text = " ".join(
-            part
-            for goal in goals
-            for part in [goal.goal, goal.description or ""]
+            part for goal in goals for part in [goal.goal, goal.description or ""]
         ).lower()
         if not goal_text:
             return None
@@ -208,16 +227,26 @@ class DirectMemoryAnswerService:
         )
 
     def _asks_name(self, lowered: str) -> bool:
-        return bool(re.search(r"\b(what'?s|what is|tell me)\s+my\s+name\b|\bwho am i named\b", lowered))
+        return bool(
+            re.search(r"\b(what'?s|what is|tell me)\s+my\s+name\b|\bwho am i named\b", lowered)
+        )
 
     def _asks_age(self, lowered: str) -> bool:
         return bool(re.search(r"\b(how old am i|what'?s my age|what is my age)\b", lowered))
 
     def _asks_location(self, lowered: str) -> bool:
-        return bool(re.search(r"\b(where am i|where do i live|what'?s my location|what is my location)\b", lowered))
+        return bool(
+            re.search(
+                r"\b(where am i|where do i live|what'?s my location|what is my location)\b", lowered
+            )
+        )
 
     def _asks_goals(self, lowered: str) -> bool:
-        return bool(re.search(r"\b(what are my goals|what goals do i have|my goals|active goals)\b", lowered))
+        return bool(
+            re.search(
+                r"\b(what are my goals|what goals do i have|my goals|active goals)\b", lowered
+            )
+        )
 
     def _asks_working_on(self, lowered: str) -> bool:
         return bool(

@@ -8,9 +8,18 @@ from app.core.config import get_settings
 from app.services.agents import AgentRunCreate, AgentsService, SaveRunToNoteRequest
 from app.services.agents.guidance import agent_run_guidance
 from app.services.agents.runner import AgentRunner
-from app.services.agents.store import initialize_agent_tables, insert_step, list_steps, now_iso, recover_interrupted_runs
+from app.services.agents.store import (
+    initialize_agent_tables,
+    insert_step,
+    list_steps,
+    now_iso,
+    recover_interrupted_runs,
+)
 from app.services.notes import NoteCreate, NotesService
 from app.services.notes.store import initialize_notes_tables
+from app.services.files.service import WorkspaceFilesService
+from app.services.files.types import FileLinkCreate
+from app.services.files import store as file_store
 from app.services.projects import ProjectCreate, ProjectsService
 from app.services.projects.store import initialize_project_tables
 from app.services.search.types import WebContext
@@ -26,7 +35,32 @@ class FakeLLM:
         if self.fail:
             raise RuntimeError("model failure sentinel")
         prompt = messages[-1].content
-        if "Create the task deliverable" in prompt:
+        if "valid unified diff" in prompt:
+            content = """# Patch Proposal
+## Objective
+Change code
+## Target files
+- agent.py
+## Summary
+Proposed change.
+## Proposed changes
+Update value.
+## Unified diff
+```diff
+diff --git a/agent.py b/agent.py
+--- a/agent.py
++++ b/agent.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+```
+## Risks
+Review required.
+## Validation needed
+Manual validation.
+## Notes
+This patch has not been applied."""
+        elif "Create the task deliverable" in prompt:
             content = "Summary\nA safe task output.\n\nNext steps\nReview the draft."
         else:
             content = "The task needs a scoped deliverable and has no destructive actions."
@@ -67,6 +101,11 @@ class AgentGuidanceTest(unittest.TestCase):
     def test_unrelated_chat_does_not_trigger_guidance(self):
         self.assertIsNone(agent_run_guidance("Summarize this task"))
 
+    def test_patch_apply_request_returns_manual_review_guidance(self):
+        reply = agent_run_guidance("Apply the patch")
+        self.assertIn("Validate Patch", reply)
+        self.assertIn("never apply patches automatically", reply)
+
 
 class AgentsServiceTest(unittest.TestCase):
     def setUp(self):
@@ -81,12 +120,16 @@ class AgentsServiceTest(unittest.TestCase):
         self.projects = ProjectsService()
         self.tasks = TasksService()
         self.project = self.projects.create_project(ProjectCreate(title="Neo Agent Test"))
-        self.note = self.notes.create_note(NoteCreate(title="Agent context", body="Important linked context."))
-        self.task = self.tasks.create_task(TaskCreate(
-            title="Draft implementation plan",
-            description="Prepare a safe coding plan.",
-            project_id=self.project.id,
-        ))
+        self.note = self.notes.create_note(
+            NoteCreate(title="Agent context", body="Important linked context.")
+        )
+        self.task = self.tasks.create_task(
+            TaskCreate(
+                title="Draft implementation plan",
+                description="Prepare a safe coding plan.",
+                project_id=self.project.id,
+            )
+        )
         self.tasks.attach_note(self.task.id, self.note.id)
 
     def tearDown(self):
@@ -117,12 +160,32 @@ class AgentsServiceTest(unittest.TestCase):
         self.assertEqual(total, 1)
         self.assertEqual(persisted[0].id, run.id)
 
+    def test_code_task_with_attached_file_creates_patch_proposal(self):
+        workspace = WorkspaceFilesService(storage_root=self.tmpdir.name + "/files")
+        item = workspace.import_bytes(original_filename="agent.py", content=b"VALUE = 1\n")
+        workspace.attach(item["id"], FileLinkCreate(link_type="task", target_id=self.task.id))
+        run = AgentsService(runner=ImmediateRunner()).create_run(
+            AgentRunCreate(
+                task_id=self.task.id,
+                objective="Modify the code value safely",
+            )
+        )
+        completed, steps, _ = AgentsService(runner=PassiveRunner()).read_run(run.id)
+        self.assertEqual(completed.status, "completed", completed.error)
+        self.assertTrue(any(step.step_type == "patch_proposal" for step in steps))
+        patches = file_store.list_artifacts(agent_run_id=run.id, artifact_type="patch_proposal")
+        self.assertEqual(len(patches), 1)
+        self.assertIn("This patch has not been applied.", patches[0]["content"])
+        self.assertIn("Patch proposal created", completed.final_output)
+
     def test_web_unavailable_is_logged_and_run_still_completes(self):
         service = AgentsService(runner=ImmediateRunner())
-        run = service.create_run(AgentRunCreate(
-            task_id=self.task.id,
-            objective="Research the latest implementation options",
-        ))
+        run = service.create_run(
+            AgentRunCreate(
+                task_id=self.task.id,
+                objective="Research the latest implementation options",
+            )
+        )
         completed, steps, _ = service.read_run(run.id)
         self.assertEqual(completed.status, "completed")
         web_step = next(step for step in steps if step.step_type == "web_search")
@@ -151,14 +214,25 @@ class AgentsServiceTest(unittest.TestCase):
         service = AgentsService(runner=runner)
         run = service.create_run(AgentRunCreate(task_id=self.task.id))
         now = now_iso()
-        step = insert_step({
-            "id": str(uuid.uuid4()), "run_id": run.id, "step_index": 99,
-            "step_type": "save_note", "title": "Request note save",
-            "status": "waiting_approval", "input": {}, "output_text": None,
-            "error": None, "requires_approval": True, "approval_status": "pending",
-            "created_at": now, "updated_at": now, "started_at": now,
-            "completed_at": None,
-        })
+        step = insert_step(
+            {
+                "id": str(uuid.uuid4()),
+                "run_id": run.id,
+                "step_index": 99,
+                "step_type": "save_note",
+                "title": "Request note save",
+                "status": "waiting_approval",
+                "input": {},
+                "output_text": None,
+                "error": None,
+                "requires_approval": True,
+                "approval_status": "pending",
+                "created_at": now,
+                "updated_at": now,
+                "started_at": now,
+                "completed_at": None,
+            }
+        )
         approved = service.approve_step(run.id, step["id"], True)
         self.assertEqual(approved.approval_status, "approved")
         self.assertIn("no external action was executed", approved.output_text)
@@ -175,14 +249,18 @@ class AgentsServiceTest(unittest.TestCase):
         self.assertEqual(first.source_type, "agent_run")
         self.assertEqual(first.source_id, run.id)
         self.assertIn(first.id, [note.id for note in self.tasks.list_task_notes(self.task.id)])
-        self.assertIn(first.id, [note.id for note in self.projects.list_project_notes(self.project.id)])
+        self.assertIn(
+            first.id, [note.id for note in self.projects.list_project_notes(self.project.id)]
+        )
         _, _, artifacts = service.read_run(run.id)
         self.assertEqual(len([item for item in artifacts if item.note_id == first.id]), 1)
 
     def test_restart_recovery_marks_active_runs_failed_and_preserves_completed(self):
         passive = AgentsService(runner=PassiveRunner())
         active = passive.create_run(AgentRunCreate(task_id=self.task.id))
-        completed = AgentsService(runner=ImmediateRunner()).create_run(AgentRunCreate(task_id=self.task.id))
+        completed = AgentsService(runner=ImmediateRunner()).create_run(
+            AgentRunCreate(task_id=self.task.id)
+        )
         self.assertGreaterEqual(recover_interrupted_runs(), 1)
         recovered, _, _ = passive.read_run(active.id)
         still_completed, _, _ = passive.read_run(completed.id)

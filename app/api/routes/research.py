@@ -204,17 +204,21 @@ async def research_events(job_id: str):
                 last_pct = current.progress_percent
                 last_step = current.current_step
                 progress = current.current_progress()
-                yield _sse_event({
-                    "type": "progress",
-                    **progress.model_dump(),
-                })
+                yield _sse_event(
+                    {
+                        "type": "progress",
+                        **progress.model_dump(),
+                    }
+                )
 
             if current.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
-                yield _sse_event({
-                    "type": "complete",
-                    "status": current.status.value,
-                    "has_report": bool(current.report),
-                })
+                yield _sse_event(
+                    {
+                        "type": "complete",
+                        "status": current.status.value,
+                        "has_report": bool(current.report),
+                    }
+                )
                 break
 
             await asyncio.sleep(1.5)

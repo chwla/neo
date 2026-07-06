@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.115",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
+    "python-multipart>=0.0.9",
     "qdrant-client>=1.11",
     "requests>=2.34",
     "sqlalchemy>=2.0",

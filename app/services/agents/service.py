@@ -4,12 +4,26 @@ import uuid
 
 import app.services.agents.store as store
 from app.services.agents.runner import get_agent_runner
-from app.services.agents.types import AgentArtifact, AgentRun, AgentRunCreate, AgentStep, SaveRunToNoteRequest
+from app.services.agents.types import (
+    AgentArtifact,
+    AgentRun,
+    AgentRunCreate,
+    AgentStep,
+    SaveRunToNoteRequest,
+)
 from app.services.notes import NoteCreate, NotesService
 from app.services.projects import ProjectsService
 from app.services.tasks import TasksService
 
-ALLOWED_RUN_STATUSES = {"queued", "planning", "running", "waiting_approval", "completed", "failed", "cancelled"}
+ALLOWED_RUN_STATUSES = {
+    "queued",
+    "planning",
+    "running",
+    "waiting_approval",
+    "completed",
+    "failed",
+    "cancelled",
+}
 
 
 class AgentsValidationError(ValueError):
@@ -30,13 +44,25 @@ class AgentsService:
         if not objective:
             raise AgentsValidationError("Run objective is required.")
         now = store.now_iso()
-        run = store.insert_run({
-            "id": str(uuid.uuid4()), "task_id": task.id, "project_id": task.project_id,
-            "title": f"Agent run: {task.title}"[:200], "objective": objective[:10000],
-            "status": "queued", "mode": "assist", "plan": [], "final_output": None,
-            "error": None, "created_at": now, "updated_at": now, "started_at": None,
-            "completed_at": None, "cancelled_at": None,
-        })
+        run = store.insert_run(
+            {
+                "id": str(uuid.uuid4()),
+                "task_id": task.id,
+                "project_id": task.project_id,
+                "title": f"Agent run: {task.title}"[:200],
+                "objective": objective[:10000],
+                "status": "queued",
+                "mode": "assist",
+                "plan": [],
+                "final_output": None,
+                "error": None,
+                "created_at": now,
+                "updated_at": now,
+                "started_at": None,
+                "completed_at": None,
+                "cancelled_at": None,
+            }
+        )
         self._create_initial_step(run["id"], 0, "read_context", "Read task context")
         self._create_initial_step(run["id"], 1, "plan", "Create a safe plan")
         self.runner.start(run["id"])
@@ -47,8 +73,11 @@ class AgentsService:
         if status and status not in ALLOWED_RUN_STATUSES:
             raise AgentsValidationError("Invalid agent run status.")
         rows, total = store.list_runs(
-            task_id=filters.get("task_id"), project_id=filters.get("project_id"), status=status,
-            limit=max(1, min(int(filters.get("limit", 50)), 100)), offset=max(0, int(filters.get("offset", 0))),
+            task_id=filters.get("task_id"),
+            project_id=filters.get("project_id"),
+            status=status,
+            limit=max(1, min(int(filters.get("limit", 50)), 100)),
+            offset=max(0, int(filters.get("offset", 0))),
         )
         return [AgentRun(**row) for row in rows], total
 
@@ -74,11 +103,20 @@ class AgentsService:
         if not step["requires_approval"]:
             raise AgentsValidationError("This step does not require approval.")
         status = "completed" if approved else "skipped"
-        output = "Approved; no external action was executed in Agent Runner v1." if approved else "User denied this action."
-        updated = store.update_step(step_id, {
-            "status": status, "approval_status": "approved" if approved else "denied",
-            "output_text": output, "completed_at": store.now_iso(),
-        })
+        output = (
+            "Approved; no external action was executed in Agent Runner v1."
+            if approved
+            else "User denied this action."
+        )
+        updated = store.update_step(
+            step_id,
+            {
+                "status": status,
+                "approval_status": "approved" if approved else "denied",
+                "output_text": output,
+                "completed_at": store.now_iso(),
+            },
+        )
         store.update_run(run_id, {"status": "running"})
         self.runner.start(run_id)
         return AgentStep(**updated)
@@ -92,31 +130,57 @@ class AgentsService:
         notes = NotesService()
         existing = notes.find_by_source("agent_run", run_id)
         already_saved = existing is not None
-        note = existing or notes.create_note(NoteCreate(
-            title=payload.title or run["title"], body=run["final_output"], tags=payload.tags,
-            summary=f"Output from Agent Runner for task {run['task_id']}",
-            source_type="agent_run", source_id=run_id, source_title=run["title"],
-            source_metadata={"task_id": run["task_id"], "project_id": run.get("project_id")},
-        ))
+        note = existing or notes.create_note(
+            NoteCreate(
+                title=payload.title or run["title"],
+                body=run["final_output"],
+                tags=payload.tags,
+                summary=f"Output from Agent Runner for task {run['task_id']}",
+                source_type="agent_run",
+                source_id=run_id,
+                source_title=run["title"],
+                source_metadata={"task_id": run["task_id"], "project_id": run.get("project_id")},
+            )
+        )
         TasksService().attach_note(run["task_id"], note.id)
         if run.get("project_id"):
             ProjectsService().attach_note(run["project_id"], note.id)
         artifacts = store.list_artifacts(run_id)
         if not any(item.get("note_id") == note.id for item in artifacts):
-            store.insert_artifact({
-                "id": str(uuid.uuid4()), "run_id": run_id, "artifact_type": "note",
-                "title": note.title, "content": None, "note_id": note.id,
-                "task_id": run["task_id"], "project_id": run.get("project_id"),
-                "metadata": {"source_type": "agent_run"}, "created_at": store.now_iso(),
-            })
+            store.insert_artifact(
+                {
+                    "id": str(uuid.uuid4()),
+                    "run_id": run_id,
+                    "artifact_type": "note",
+                    "title": note.title,
+                    "content": None,
+                    "note_id": note.id,
+                    "task_id": run["task_id"],
+                    "project_id": run.get("project_id"),
+                    "metadata": {"source_type": "agent_run"},
+                    "created_at": store.now_iso(),
+                }
+            )
         return note, already_saved
 
     def _create_initial_step(self, run_id: str, index: int, step_type: str, title: str) -> None:
         now = store.now_iso()
-        store.insert_step({
-            "id": str(uuid.uuid4()), "run_id": run_id, "step_index": index,
-            "step_type": step_type, "title": title, "status": "pending", "input": {},
-            "output_text": None, "error": None, "requires_approval": False,
-            "approval_status": None, "created_at": now, "updated_at": now,
-            "started_at": None, "completed_at": None,
-        })
+        store.insert_step(
+            {
+                "id": str(uuid.uuid4()),
+                "run_id": run_id,
+                "step_index": index,
+                "step_type": step_type,
+                "title": title,
+                "status": "pending",
+                "input": {},
+                "output_text": None,
+                "error": None,
+                "requires_approval": False,
+                "approval_status": None,
+                "created_at": now,
+                "updated_at": now,
+                "started_at": None,
+                "completed_at": None,
+            }
+        )

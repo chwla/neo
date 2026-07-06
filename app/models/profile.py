@@ -19,4 +19,3 @@ class ProfileFact(TimestampMixin, Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
-

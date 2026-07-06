@@ -79,7 +79,9 @@ class MemoryStore:
         self._memory_fts_available: bool | None = None
         settings = get_settings()
         self.semantic_enabled = (
-            semantic_enabled if semantic_enabled is not None else settings.semantic_retrieval_enabled
+            semantic_enabled
+            if semantic_enabled is not None
+            else settings.semantic_retrieval_enabled
         )
         self.auto_embed = auto_embed if auto_embed is not None else settings.auto_embed_memories
         self.embedding_provider = embedding_provider
@@ -132,9 +134,7 @@ class MemoryStore:
         elif project_id is not None:
             stmt = stmt.where(Chat.project_id == project_id)
         if with_messages_only:
-            stmt = stmt.where(
-                exists().where(ChatMessage.chat_id == Chat.id)
-            )
+            stmt = stmt.where(exists().where(ChatMessage.chat_id == Chat.id))
         return list(self.db.scalars(stmt))
 
     def list_chat_messages(self, chat_id: int) -> list[ChatMessage]:
@@ -251,9 +251,7 @@ class MemoryStore:
 
     def list_memories(self, active_only: bool = True, limit: int = 50) -> list[Memory]:
         stmt = (
-            select(Memory)
-            .order_by(Memory.importance.desc(), Memory.updated_at.desc())
-            .limit(limit)
+            select(Memory).order_by(Memory.importance.desc(), Memory.updated_at.desc()).limit(limit)
         )
         if active_only:
             stmt = stmt.where(Memory.is_active.is_(True), Memory.status == "active")
@@ -493,7 +491,9 @@ class MemoryStore:
             Memory.status.in_(["deleted", "archived", "superseded"]),
         )
         for memory in self.db.scalars(stmt):
-            memory_identity = tombstone_identity(memory.memory_type, memory.memory_text, memory.canonical_slot)
+            memory_identity = tombstone_identity(
+                memory.memory_type, memory.memory_text, memory.canonical_slot
+            )
             if candidate_identity and memory_identity == candidate_identity:
                 return memory
             if canonical_slot and memory.canonical_slot == canonical_slot:
@@ -552,7 +552,9 @@ class MemoryStore:
             reason=reason,
         )
 
-    def age_memories(self, policy=None, now=None, dry_run: bool = False, max_actions: int | None = None):
+    def age_memories(
+        self, policy=None, now=None, dry_run: bool = False, max_actions: int | None = None
+    ):
         from app.services.lifecycle import MemoryLifecycleService
 
         return MemoryLifecycleService().age(
@@ -586,7 +588,9 @@ class MemoryStore:
 
     def _search_memories_hybrid(self, query: str, limit: int) -> list[Memory] | None:
         fts_results = self._search_memories_fts_scored(query, max(limit, 20))
-        semantic_results = self._search_memories_semantic(query, get_settings().max_semantic_candidates)
+        semantic_results = self._search_memories_semantic(
+            query, get_settings().max_semantic_candidates
+        )
         if semantic_results is None and fts_results is None:
             return None
         slot_hint = self._canonical_slot_hint(query)
@@ -596,9 +600,9 @@ class MemoryStore:
 
         for rank, (memory, fts_score) in enumerate(fts_results or [], start=1):
             memories[memory.id] = memory
-            scores[memory.id] = scores.get(memory.id, 0.0) + (
-                settings.hybrid_fts_weight * fts_score
-            ) + (1 / rank)
+            scores[memory.id] = (
+                scores.get(memory.id, 0.0) + (settings.hybrid_fts_weight * fts_score) + (1 / rank)
+            )
 
         for memory, similarity in semantic_results or []:
             memories[memory.id] = memory
@@ -634,7 +638,9 @@ class MemoryStore:
             return None
         return [memory for memory, _score in scored]
 
-    def _search_memories_fts_scored(self, query: str, limit: int) -> list[tuple[Memory, float]] | None:
+    def _search_memories_fts_scored(
+        self, query: str, limit: int
+    ) -> list[tuple[Memory, float]] | None:
         if not self._ensure_memory_fts():
             return None
         match_query = self._fts_match_query(query)
@@ -674,7 +680,9 @@ class MemoryStore:
             scored.append((memory, 1.0 / (1.0 + abs(float(bm25_score or 0.0)))))
         return scored
 
-    def _search_memories_semantic(self, query: str, limit: int) -> list[tuple[Memory, float]] | None:
+    def _search_memories_semantic(
+        self, query: str, limit: int
+    ) -> list[tuple[Memory, float]] | None:
         if self.embedding_service is None:
             return None
         try:
@@ -778,7 +786,9 @@ class MemoryStore:
             self.db.flush()
         return result.status
 
-    def list_embedding_backfill_targets(self, active_only: bool = True, limit: int | None = None) -> list[Memory]:
+    def list_embedding_backfill_targets(
+        self, active_only: bool = True, limit: int | None = None
+    ) -> list[Memory]:
         stmt = select(Memory).order_by(Memory.id)
         if active_only:
             stmt = stmt.where(Memory.is_active.is_(True), Memory.status == "active")
@@ -790,7 +800,9 @@ class MemoryStore:
         return [
             memory
             for memory in memories
-            if self.embedding_service.needs_embedding(memory, self.db.get(MemoryEmbedding, memory.id))
+            if self.embedding_service.needs_embedding(
+                memory, self.db.get(MemoryEmbedding, memory.id)
+            )
         ]
 
     def count_memory_embeddings(self) -> dict[str, int]:
@@ -815,18 +827,17 @@ class MemoryStore:
         }
 
     def _fts_match_query(self, query: str) -> str:
-        terms = [
-            term
-            for term in self._query_terms(query)
-            if re.match(r"^[a-z0-9]+$", term)
-        ]
+        terms = [term for term in self._query_terms(query) if re.match(r"^[a-z0-9]+$", term)]
         if not terms:
             return ""
         return " OR ".join(dict.fromkeys(terms))
 
     def _canonical_slot_hint(self, query: str) -> str | None:
         lowered = query.lower()
-        if re.search(r"\b(laptop|computer|machine|system|specs|gpu|graphics|ram|ssd|processor|cpu|llm|llms)\b", lowered):
+        if re.search(
+            r"\b(laptop|computer|machine|system|specs|gpu|graphics|ram|ssd|processor|cpu|llm|llms)\b",
+            lowered,
+        ):
             return "current_hardware"
         if re.search(r"\b(editor|ide|write code|code in|work in)\b", lowered):
             return "preference:editor"
@@ -834,14 +845,20 @@ class MemoryStore:
             return "preference:competitive_programming_language"
         if re.search(r"\b(project|building|assistant|focus on|improve)\b", lowered):
             return "project_related"
-        if re.search(r"\b(career|roadmap|skills|flutter|frontend|goal|target|prioritize)\b", lowered):
+        if re.search(
+            r"\b(career|roadmap|skills|flutter|frontend|goal|target|prioritize)\b", lowered
+        ):
             return "goal_related"
         return None
 
     def _memory_slot(self, memory: Memory) -> str:
         if memory.canonical_slot:
             return memory.canonical_slot
-        return memory.memory_type.value if hasattr(memory.memory_type, "value") else str(memory.memory_type)
+        return (
+            memory.memory_type.value
+            if hasattr(memory.memory_type, "value")
+            else str(memory.memory_type)
+        )
 
     def _strong_slot(self, slot: str) -> bool:
         return slot in {
@@ -885,7 +902,9 @@ class MemoryStore:
             select(Preference)
             .where(Preference.is_active.is_(True))
             .where(or_(*filters))
-            .order_by(relevance_score.desc(), Preference.importance.desc(), Preference.updated_at.desc())
+            .order_by(
+                relevance_score.desc(), Preference.importance.desc(), Preference.updated_at.desc()
+            )
             .limit(limit)
         )
         return list(self.db.scalars(stmt))

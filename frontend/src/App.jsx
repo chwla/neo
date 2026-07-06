@@ -5,6 +5,8 @@ import Notes from "./Notes.jsx";
 import Projects from "./Projects.jsx";
 import Research from "./Research.jsx";
 import Tasks from "./Tasks.jsx";
+import Files from "./Files.jsx";
+import Repos from "./Repos.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -234,6 +236,8 @@ function Sidebar({
   onOpenNotes,
   onOpenProjects,
   onOpenTasks,
+  onOpenFiles,
+  onOpenRepos,
 }) {
   const [projectName, setProjectName] = useState("");
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
@@ -258,6 +262,8 @@ function Sidebar({
         <button type="button" onClick={onOpenNotes}>Notes</button>
         <button type="button" onClick={onOpenProjects}>Projects</button>
         <button type="button" onClick={onOpenTasks}>Tasks</button>
+        <button type="button" onClick={onOpenFiles}>Files</button>
+        <button type="button" onClick={onOpenRepos}>Repos</button>
       </nav>
       <NeoButton className="w-full justify-start" onClick={() => onNewChat(selectedProjectId)}>
         + New Chat
@@ -1803,6 +1809,9 @@ export default function App() {
   const [showNotes, setShowNotes] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
+  const [showRepos, setShowRepos] = useState(false);
+  const [initialFileId, setInitialFileId] = useState(null);
   const [initialProjectId, setInitialProjectId] = useState(null);
   const [initialNoteId, setInitialNoteId] = useState(null);
   const [initialTaskId, setInitialTaskId] = useState(null);
@@ -2410,6 +2419,13 @@ export default function App() {
     setShowNotes(false);
     setShowProjects(false);
     setShowTasks(true);
+    setShowFiles(false);
+    setShowRepos(false);
+  }
+
+  function openWorkspaceFile(fileId) {
+    setInitialFileId(fileId);
+    setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowRepos(false); setShowFiles(true);
   }
 
   async function handleLlmChange(llmId) {
@@ -2452,20 +2468,26 @@ export default function App() {
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={() => {
-          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false);
+          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
         }}
         onOpenMemory={() => setShowMemory(true)}
         onOpenResearch={() => {
-          setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowResearch(true);
+          setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowResearch(true);
         }}
         onOpenNotes={() => {
-          setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowNotes(true);
+          setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowNotes(true);
         }}
         onOpenProjects={() => {
-          setInitialProjectId(null); setShowResearch(false); setShowNotes(false); setShowTasks(false); setShowProjects(true);
+          setInitialProjectId(null); setShowResearch(false); setShowNotes(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowProjects(true);
         }}
         onOpenTasks={() => {
-          setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(true);
+          setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
+        }}
+        onOpenFiles={() => {
+          setInitialFileId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowRepos(false); setShowFiles(true);
+        }}
+        onOpenRepos={() => {
+          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(true);
         }}
       />
 
@@ -2491,6 +2513,7 @@ export default function App() {
             setShowNotes(false);
             setShowTasks(true);
           }}
+          onOpenFile={openWorkspaceFile}
         />
       ) : showTasks ? (
         <Tasks
@@ -2501,6 +2524,7 @@ export default function App() {
           onOpenNote={(noteId) => {
             setInitialNoteId(noteId); setShowTasks(false); setShowProjects(false); setShowResearch(false); setShowNotes(true);
           }}
+          onOpenFile={openWorkspaceFile}
         />
       ) : showNotes ? (
         <Notes
@@ -2512,7 +2536,12 @@ export default function App() {
           onOpenTask={(taskId) => {
             setInitialTaskId(taskId); setInitialTaskProjectId(null); setShowNotes(false); setShowProjects(false); setShowResearch(false); setShowTasks(true);
           }}
+          onOpenFile={openWorkspaceFile}
         />
+      ) : showFiles ? (
+        <Files initialFileId={initialFileId} onBack={() => { setShowFiles(false); setInitialFileId(null); }} />
+      ) : showRepos ? (
+        <Repos onBack={() => setShowRepos(false)} onOpenFile={(fileId) => { setInitialFileId(fileId); setShowRepos(false); setShowFiles(true); }} />
       ) : showResearch ? (
         <Research
           onBack={() => setShowResearch(false)}

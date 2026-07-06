@@ -74,11 +74,15 @@ class RetrievalService:
         return RetrievalResult(
             goals=[
                 GoalRead.model_validate(goal)
-                for goal in self._goals_for_query(store, query, request.limit, personal_intent, advice_intent)
+                for goal in self._goals_for_query(
+                    store, query, request.limit, personal_intent, advice_intent
+                )
             ],
             projects=[
                 ProjectRead.model_validate(project)
-                for project in self._projects_for_query(store, query, request.limit, personal_intent, advice_intent)
+                for project in self._projects_for_query(
+                    store, query, request.limit, personal_intent, advice_intent
+                )
             ],
             profile=[
                 ProfileFactRead.model_validate(fact)
@@ -110,8 +114,7 @@ class RetrievalService:
                 ProjectRead.model_validate(item) for item in store.search_projects(query, limit)
             ],
             "events": [
-                EventRead.model_validate(item)
-                for item in store.search_events(query, limit)
+                EventRead.model_validate(item) for item in store.search_events(query, limit)
             ],
             "memories": [
                 MemoryRead.model_validate(item) for item in store.search_memories(query, limit)
@@ -150,7 +153,9 @@ class RetrievalService:
                 key_matches.extend(store.active_profile_by_key(key))
         if key_matches:
             return key_matches[:limit]
-        if re.search(r"\b(name|age|old|location|where|from|education|study|degree|birthday)\b", lowered):
+        if re.search(
+            r"\b(name|age|old|location|where|from|education|study|degree|birthday)\b", lowered
+        ):
             return store.search_profile(query, limit)
         return []
 
@@ -171,9 +176,7 @@ class RetrievalService:
         category_hint = self._preference_category_hint(lowered)
         if category_hint is not None:
             preferences = [
-                preference
-                for preference in preferences
-                if category_hint in preference.category
+                preference for preference in preferences if category_hint in preference.category
             ]
             if not preferences:
                 preferences = [
@@ -209,9 +212,13 @@ class RetrievalService:
         lowered = query.lower()
         if self._preference_category_hint(lowered) is not None or self._hardware_query(lowered):
             return []
-        if self._about_me_intent(lowered) or advice_intent or re.search(
-            r"\b(goal|career|roadmap|plan|should|long[- ]term|fit)\b",
-            lowered,
+        if (
+            self._about_me_intent(lowered)
+            or advice_intent
+            or re.search(
+                r"\b(goal|career|roadmap|plan|should|long[- ]term|fit)\b",
+                lowered,
+            )
         ):
             return store.list_goals(GoalStatus.ACTIVE)[:limit]
         if personal_intent:
@@ -286,7 +293,9 @@ class RetrievalService:
             )
         )
 
-    def _filter_memory_hits(self, store: MemoryStore, query: str, memories: list, advice_intent: bool):
+    def _filter_memory_hits(
+        self, store: MemoryStore, query: str, memories: list, advice_intent: bool
+    ):
         if not memories:
             return memories
         lowered = query.lower()
@@ -335,7 +344,10 @@ class RetrievalService:
             memory
             for memory in memories
             if self._memory_match_count(memory.memory_text, terms) >= minimum_matches
-            or (advice_intent and memory.memory_type in {MemoryType.GOAL_RELATED, MemoryType.PROJECT_RELATED})
+            or (
+                advice_intent
+                and memory.memory_type in {MemoryType.GOAL_RELATED, MemoryType.PROJECT_RELATED}
+            )
         ]
 
     def _memory_matches_preference_category(self, memory, category_hint: str) -> bool:

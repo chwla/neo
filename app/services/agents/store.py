@@ -63,10 +63,18 @@ def initialize_agent_tables() -> None:
                 FOREIGN KEY (run_id) REFERENCES workspace_agent_runs(id)
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_agent_runs_task ON workspace_agent_runs(task_id, created_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_agent_runs_status ON workspace_agent_runs(status, updated_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_agent_steps_run ON workspace_agent_steps(run_id, step_index)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_agent_artifacts_run ON workspace_agent_artifacts(run_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_agent_runs_task ON workspace_agent_runs(task_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_agent_runs_status ON workspace_agent_runs(status, updated_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_agent_steps_run ON workspace_agent_steps(run_id, step_index)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_agent_artifacts_run ON workspace_agent_artifacts(run_id)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -75,7 +83,8 @@ def initialize_agent_tables() -> None:
 def insert_run(run: dict) -> dict:
     conn = _connect()
     try:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO workspace_agent_runs (
                 id, task_id, project_id, title, objective, status, mode, plan_json,
                 final_output, error, created_at, updated_at, started_at, completed_at, cancelled_at
@@ -83,7 +92,9 @@ def insert_run(run: dict) -> dict:
                 :id, :task_id, :project_id, :title, :objective, :status, :mode, :plan_json,
                 :final_output, :error, :created_at, :updated_at, :started_at, :completed_at, :cancelled_at
             )
-        """, {**run, "plan_json": json.dumps(run.get("plan", []))})
+        """,
+            {**run, "plan_json": json.dumps(run.get("plan", []))},
+        )
         conn.commit()
         return get_run(run["id"]) or run
     finally:
@@ -99,8 +110,14 @@ def get_run(run_id: str) -> dict | None:
         conn.close()
 
 
-def list_runs(*, task_id: str | None = None, project_id: str | None = None,
-              status: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
+def list_runs(
+    *,
+    task_id: str | None = None,
+    project_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
     conn = _connect()
     try:
         where = ["1=1"]
@@ -110,7 +127,11 @@ def list_runs(*, task_id: str | None = None, project_id: str | None = None,
                 where.append(f"{key} = ?")
                 params.append(value)
         where_sql = " AND ".join(where)
-        total = int(conn.execute(f"SELECT COUNT(*) FROM workspace_agent_runs WHERE {where_sql}", params).fetchone()[0])
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM workspace_agent_runs WHERE {where_sql}", params
+            ).fetchone()[0]
+        )
         rows = conn.execute(
             f"SELECT * FROM workspace_agent_runs WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             [*params, limit, offset],
@@ -127,7 +148,8 @@ def update_run(run_id: str, updates: dict) -> dict | None:
 def insert_step(step: dict) -> dict:
     conn = _connect()
     try:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO workspace_agent_steps (
                 id, run_id, step_index, step_type, title, status, input_json,
                 output_text, error, requires_approval, approval_status,
@@ -137,8 +159,13 @@ def insert_step(step: dict) -> dict:
                 :output_text, :error, :requires_approval, :approval_status,
                 :created_at, :updated_at, :started_at, :completed_at
             )
-        """, {**step, "input_json": json.dumps(step.get("input", {})),
-                 "requires_approval": int(bool(step.get("requires_approval")))})
+        """,
+            {
+                **step,
+                "input_json": json.dumps(step.get("input", {})),
+                "requires_approval": int(bool(step.get("requires_approval"))),
+            },
+        )
         conn.commit()
         return get_step(step["id"]) or step
     finally:
@@ -148,7 +175,9 @@ def insert_step(step: dict) -> dict:
 def get_step(step_id: str) -> dict | None:
     conn = _connect()
     try:
-        row = conn.execute("SELECT * FROM workspace_agent_steps WHERE id = ?", (step_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM workspace_agent_steps WHERE id = ?", (step_id,)
+        ).fetchone()
         return _row_to_step(row) if row else None
     finally:
         conn.close()
@@ -157,7 +186,9 @@ def get_step(step_id: str) -> dict | None:
 def list_steps(run_id: str) -> list[dict]:
     conn = _connect()
     try:
-        rows = conn.execute("SELECT * FROM workspace_agent_steps WHERE run_id = ? ORDER BY step_index", (run_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM workspace_agent_steps WHERE run_id = ? ORDER BY step_index", (run_id,)
+        ).fetchall()
         return [_row_to_step(row) for row in rows]
     finally:
         conn.close()
@@ -170,7 +201,8 @@ def update_step(step_id: str, updates: dict) -> dict | None:
 def insert_artifact(artifact: dict) -> dict:
     conn = _connect()
     try:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO workspace_agent_artifacts (
                 id, run_id, artifact_type, title, content, note_id, task_id,
                 project_id, metadata_json, created_at
@@ -178,7 +210,9 @@ def insert_artifact(artifact: dict) -> dict:
                 :id, :run_id, :artifact_type, :title, :content, :note_id, :task_id,
                 :project_id, :metadata_json, :created_at
             )
-        """, {**artifact, "metadata_json": json.dumps(artifact.get("metadata", {}))})
+        """,
+            {**artifact, "metadata_json": json.dumps(artifact.get("metadata", {}))},
+        )
         conn.commit()
         return artifact
     finally:
@@ -188,7 +222,10 @@ def insert_artifact(artifact: dict) -> dict:
 def list_artifacts(run_id: str) -> list[dict]:
     conn = _connect()
     try:
-        rows = conn.execute("SELECT * FROM workspace_agent_artifacts WHERE run_id = ? ORDER BY created_at", (run_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM workspace_agent_artifacts WHERE run_id = ? ORDER BY created_at",
+            (run_id,),
+        ).fetchall()
         return [_row_to_artifact(row) for row in rows]
     finally:
         conn.close()
@@ -201,11 +238,17 @@ def cancel_run(run_id: str) -> dict | None:
     now = now_iso()
     conn = _connect()
     try:
-        conn.execute("UPDATE workspace_agent_runs SET status='cancelled', cancelled_at=?, updated_at=? WHERE id=?", (now, now, run_id))
-        conn.execute("""
+        conn.execute(
+            "UPDATE workspace_agent_runs SET status='cancelled', cancelled_at=?, updated_at=? WHERE id=?",
+            (now, now, run_id),
+        )
+        conn.execute(
+            """
             UPDATE workspace_agent_steps SET status='cancelled', updated_at=?, completed_at=?
             WHERE run_id=? AND status IN ('pending','running','waiting_approval')
-        """, (now, now, run_id))
+        """,
+            (now, now, run_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -216,15 +259,21 @@ def recover_interrupted_runs() -> int:
     now = now_iso()
     conn = _connect()
     try:
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             UPDATE workspace_agent_runs
             SET status='failed', error='Run interrupted by backend restart.', updated_at=?, completed_at=?
             WHERE status IN ('queued','planning','running')
-        """, (now, now))
-        conn.execute("""
+        """,
+            (now, now),
+        )
+        conn.execute(
+            """
             UPDATE workspace_agent_steps SET status='failed', error='Interrupted by backend restart.', updated_at=?, completed_at=?
             WHERE status='running'
-        """, (now, now))
+        """,
+            (now, now),
+        )
         conn.commit()
         return cursor.rowcount
     finally:
@@ -233,8 +282,24 @@ def recover_interrupted_runs() -> int:
 
 def _update(table: str, key: str, value: str, updates: dict, converter):
     allowed = {
-        "workspace_agent_runs": {"status", "plan", "final_output", "error", "started_at", "completed_at", "cancelled_at"},
-        "workspace_agent_steps": {"status", "input", "output_text", "error", "approval_status", "started_at", "completed_at"},
+        "workspace_agent_runs": {
+            "status",
+            "plan",
+            "final_output",
+            "error",
+            "started_at",
+            "completed_at",
+            "cancelled_at",
+        },
+        "workspace_agent_steps": {
+            "status",
+            "input",
+            "output_text",
+            "error",
+            "approval_status",
+            "started_at",
+            "completed_at",
+        },
     }[table]
     clean = {k: v for k, v in updates.items() if k in allowed}
     if not clean:

@@ -132,7 +132,9 @@ class MemoryLifecycleMaintenance:
             if include_aging
             else None
         )
-        candidates = self.discover_compression_candidates(store) if include_compression_candidates else []
+        candidates = (
+            self.discover_compression_candidates(store) if include_compression_candidates else []
+        )
         audit_before = self.check_audit_consistency(store) if include_audit_check else []
         repair_plan = self.plan_audit_repair(store, audit_before) if include_audit_repair else []
         planned_actions = self._planned_actions(aging, candidates, repair_plan, max_actions)
@@ -174,7 +176,9 @@ class MemoryLifecycleMaintenance:
                     self.apply_audit_repair(store, repair_plan, max_actions=remaining),
                 )
 
-        tombstones = self.review_tombstones(store) if include_tombstone_review else TombstoneReview()
+        tombstones = (
+            self.review_tombstones(store) if include_tombstone_review else TombstoneReview()
+        )
         audit = self.check_audit_consistency(store) if include_audit_check else []
         final_repair_plan = self.plan_audit_repair(store, audit) if include_audit_repair else []
         return MaintenanceReport(
@@ -240,7 +244,9 @@ class MemoryLifecycleMaintenance:
         for plan in repair_plan:
             if len(applied) >= max_actions:
                 break
-            if self._audit_exists(store, plan["memory_id"], plan["action"], plan.get("related_memory_id")):
+            if self._audit_exists(
+                store, plan["memory_id"], plan["action"], plan.get("related_memory_id")
+            ):
                 continue
             memory = store.get_memory(plan["memory_id"])
             if memory is None:
@@ -275,14 +281,18 @@ class MemoryLifecycleMaintenance:
             normalized = normalize_memory_text(memory.memory_text)
             exact_key = (memory.memory_type.value, memory.canonical_slot or "", normalized)
             exact_groups.setdefault(exact_key, []).append(memory)
-            identity = tombstone_identity(memory.memory_type, memory.memory_text, memory.canonical_slot)
+            identity = tombstone_identity(
+                memory.memory_type, memory.memory_text, memory.canonical_slot
+            )
             if identity:
                 identity_groups.setdefault(
                     (memory.memory_type.value, identity[0], identity[1]),
                     [],
                 ).append(memory)
             if memory.canonical_slot:
-                slot_groups.setdefault((memory.memory_type.value, memory.canonical_slot), []).append(memory)
+                slot_groups.setdefault(
+                    (memory.memory_type.value, memory.canonical_slot), []
+                ).append(memory)
 
         for key, group in exact_groups.items():
             if len(group) < 2:
@@ -343,7 +353,11 @@ class MemoryLifecycleMaintenance:
             if len(group) < 2:
                 continue
             replacement = store.get_memory(replacement_id)
-            if replacement is None or replacement.status != ACTIVE_STATUS or not replacement.is_active:
+            if (
+                replacement is None
+                or replacement.status != ACTIVE_STATUS
+                or not replacement.is_active
+            ):
                 continue
             candidates.append(
                 CompressionCandidate(
@@ -502,7 +516,10 @@ class MemoryLifecycleMaintenance:
         inactive_leaks = []
         for memory in memories:
             if memory.status in {DELETED_STATUS, SUPERSEDED_STATUS} and not memory.is_active:
-                if any(result.id == memory.id for result in store.search_memories(memory.memory_text, limit=20)):
+                if any(
+                    result.id == memory.id
+                    for result in store.search_memories(memory.memory_text, limit=20)
+                ):
                     inactive_leaks.append(memory.id)
         issues.append(
             AuditCheckIssue(
@@ -514,9 +531,7 @@ class MemoryLifecycleMaintenance:
         )
 
         malformed_tombstones = [
-            memory.id
-            for memory in memories
-            if memory.status == DELETED_STATUS and memory.is_active
+            memory.id for memory in memories if memory.status == DELETED_STATUS and memory.is_active
         ]
         issues.append(
             AuditCheckIssue(
@@ -528,7 +543,9 @@ class MemoryLifecycleMaintenance:
         )
 
         blocked_candidates = list(
-            store.db.scalars(select(MemoryCandidate).where(MemoryCandidate.status == CandidateStatus.REJECTED)),
+            store.db.scalars(
+                select(MemoryCandidate).where(MemoryCandidate.status == CandidateStatus.REJECTED)
+            ),
         )
         missing_blocked_audit = []
         for candidate in blocked_candidates:
@@ -536,7 +553,9 @@ class MemoryLifecycleMaintenance:
             if "resurrection" not in reasoning or "tombstone_memory_id" not in reasoning:
                 continue
             memory_id = self._reasoning_memory_id(reasoning)
-            if memory_id is None or "resurrection_blocked" not in actions_by_memory.get(memory_id, set()):
+            if memory_id is None or "resurrection_blocked" not in actions_by_memory.get(
+                memory_id, set()
+            ):
                 missing_blocked_audit.append(candidate.id)
         issues.append(
             AuditCheckIssue(
@@ -569,10 +588,15 @@ class MemoryLifecycleMaintenance:
         for memory in deleted:
             if memory.is_active:
                 malformed.append(memory.id)
-            identity = tombstone_identity(memory.memory_type, memory.memory_text, memory.canonical_slot)
+            identity = tombstone_identity(
+                memory.memory_type, memory.memory_text, memory.canonical_slot
+            )
             if identity:
                 duplicate_groups.setdefault(identity, []).append(memory.id)
-            elif memory.canonical_slot and len(normalize_memory_text(memory.memory_text).split()) <= 2:
+            elif (
+                memory.canonical_slot
+                and len(normalize_memory_text(memory.memory_text).split()) <= 2
+            ):
                 broad_tombstones.append(memory.id)
             else:
                 narrow_tombstones.append(memory.id)
@@ -650,12 +674,17 @@ class MemoryLifecycleMaintenance:
             skipped.append({"action": "aging", "reason": "include_aging=false"})
         if not include_compression_candidates:
             skipped.append(
-                {"action": "compression_candidates", "reason": "include_compression_candidates=false"},
+                {
+                    "action": "compression_candidates",
+                    "reason": "include_compression_candidates=false",
+                },
             )
         if not include_audit_check:
             skipped.append({"action": "audit_check", "reason": "include_audit_check=false"})
         if not include_tombstone_review:
-            skipped.append({"action": "tombstone_review", "reason": "include_tombstone_review=false"})
+            skipped.append(
+                {"action": "tombstone_review", "reason": "include_tombstone_review=false"}
+            )
         if not include_audit_repair:
             skipped.append({"action": "audit_repair", "reason": "include_audit_repair=false"})
         for candidate in candidates:
@@ -698,7 +727,9 @@ class MemoryLifecycleMaintenance:
             memory = store.get_memory(memory_id)
             if memory is None:
                 continue
-            related_memory_id = memory.superseded_by_id if action in {"compressed", "superseded"} else None
+            related_memory_id = (
+                memory.superseded_by_id if action in {"compressed", "superseded"} else None
+            )
             if self._audit_exists(store, memory.id, action, related_memory_id):
                 continue
             plans.append(
@@ -774,11 +805,14 @@ class MemoryLifecycleMaintenance:
         expected_action: str | tuple[str, ...],
         recommended_fix: str,
     ) -> AuditCheckIssue:
-        expected_actions = {expected_action} if isinstance(expected_action, str) else set(expected_action)
+        expected_actions = (
+            {expected_action} if isinstance(expected_action, str) else set(expected_action)
+        )
         missing = [
             memory.id
             for memory in memories
-            if memory.status == status and actions_by_memory.get(memory.id, set()).isdisjoint(expected_actions)
+            if memory.status == status
+            and actions_by_memory.get(memory.id, set()).isdisjoint(expected_actions)
         ]
         return AuditCheckIssue(
             check=check,

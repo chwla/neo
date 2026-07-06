@@ -63,7 +63,9 @@ def ensure_chat_message_metadata_columns() -> None:
     with engine.begin() as connection:
         for name, column_type in columns.items():
             if name not in existing:
-                connection.execute(text(f"ALTER TABLE chat_messages ADD COLUMN {name} {column_type}"))
+                connection.execute(
+                    text(f"ALTER TABLE chat_messages ADD COLUMN {name} {column_type}")
+                )
 
 
 def ensure_memory_metadata_columns() -> None:

@@ -1,17 +1,23 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes.memory import router as memory_router
-from app.api.routes.agents import router as agents_router, task_router as agent_task_router
+from app.api.routes.agents import router as agents_router
+from app.api.routes.agents import task_router as agent_task_router
+from app.api.routes.code_index import router as code_index_router
+from app.api.routes.files import router as files_router
 from app.api.routes.llms import router as llms_router
+from app.api.routes.memory import router as memory_router
 from app.api.routes.notes import router as notes_router
+from app.api.routes.patches import router as patches_router
 from app.api.routes.projects import router as projects_router
+from app.api.routes.repos import router as repos_router
 from app.api.routes.research import router as research_router
 from app.api.routes.search import router as search_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.web import router as web_router
-from app.services.notes.store import initialize_notes_tables
 from app.services.agents.store import initialize_agent_tables, recover_interrupted_runs
+from app.services.files.store import initialize_workspace_file_tables
+from app.services.notes.store import initialize_notes_tables
 from app.services.projects.store import initialize_project_tables
 from app.services.research.store import initialize_research_tables
 from app.services.tasks.store import initialize_task_tables
@@ -43,12 +49,17 @@ def create_app() -> FastAPI:
     app.include_router(research_router, prefix="/api")
     app.include_router(web_router)
     app.include_router(web_router, prefix="/api")
+    app.include_router(files_router, prefix="/api")
+    app.include_router(patches_router, prefix="/api")
+    app.include_router(repos_router, prefix="/api")
+    app.include_router(code_index_router, prefix="/api")
     initialize_notes_tables()
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_tables()
     recover_interrupted_runs()
     initialize_research_tables()
+    initialize_workspace_file_tables()
     return app
 
 

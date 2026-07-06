@@ -34,21 +34,28 @@ class TasksServiceTest(unittest.TestCase):
 
     def test_crud_search_filters_status_pin_archive_delete_and_persistence(self):
         project = self.projects.create_project(ProjectCreate(title="Neo", priority="high"))
-        task = self.tasks.create_task(TaskCreate(
-            title="Implement notes search",
-            description="Add title body and tag search",
-            priority="high",
-            due_at="2026-07-10T18:00:00",
-            project_id=project.id,
-            tags=["Neo", "backend", "neo"],
-        ))
+        task = self.tasks.create_task(
+            TaskCreate(
+                title="Implement notes search",
+                description="Add title body and tag search",
+                priority="high",
+                due_at="2026-07-10T18:00:00",
+                project_id=project.id,
+                tags=["Neo", "backend", "neo"],
+            )
+        )
         self.assertEqual(task.status, "todo")
         self.assertEqual(task.priority, "high")
         self.assertEqual(task.tags, ["backend", "neo"])
 
-        for filters in ({"q": "notes search"}, {"priority": "high"},
-                        {"project_id": project.id}, {"tag": "NEO"},
-                        {"due_before": "2026-07-11"}, {"status": "todo"}):
+        for filters in (
+            {"q": "notes search"},
+            {"priority": "high"},
+            {"project_id": project.id},
+            {"tag": "NEO"},
+            {"due_before": "2026-07-11"},
+            {"status": "todo"},
+        ):
             tasks, total = self.tasks.list_tasks(**filters)
             self.assertEqual(total, 1)
             self.assertEqual(tasks[0].id, task.id)
@@ -62,10 +69,15 @@ class TasksServiceTest(unittest.TestCase):
         reopened = self.tasks.set_status(task.id, "todo")
         self.assertIsNone(reopened.completed_at)
 
-        updated = self.tasks.update_task(task.id, TaskUpdate(
-            title="Implement task search", priority="critical", due_at=None,
-            tags=["workspace"],
-        ))
+        updated = self.tasks.update_task(
+            task.id,
+            TaskUpdate(
+                title="Implement task search",
+                priority="critical",
+                due_at=None,
+                tags=["workspace"],
+            ),
+        )
         self.assertEqual(updated.priority, "critical")
         self.assertIsNone(updated.due_at)
         self.assertEqual(updated.tags, ["workspace"])
@@ -101,10 +113,18 @@ class TasksServiceTest(unittest.TestCase):
 
     def test_validation_and_task_context_are_scoped(self):
         project = self.projects.create_project(ProjectCreate(title="Neo"))
-        blocked = self.tasks.create_task(TaskCreate(
-            title="Fix runtime ports", status="blocked", priority="critical", project_id=project.id
-        ))
-        self.assertEqual(TaskContextService().context_for_prompt("What is the weather?"), "No task context loaded.")
+        blocked = self.tasks.create_task(
+            TaskCreate(
+                title="Fix runtime ports",
+                status="blocked",
+                priority="critical",
+                project_id=project.id,
+            )
+        )
+        self.assertEqual(
+            TaskContextService().context_for_prompt("What is the weather?"),
+            "No task context loaded.",
+        )
         context = TaskContextService().context_for_prompt("What is blocked for Neo?")
         self.assertIn(blocked.title, context)
         self.assertIn("critical", context)
@@ -119,20 +139,37 @@ class TasksServiceTest(unittest.TestCase):
 
     def test_task_answers_cover_paraphrases_and_do_not_hijack_unrelated_chat(self):
         project = self.projects.create_project(ProjectCreate(title="Neo"))
-        doing = self.tasks.create_task(TaskCreate(
-            title="Implement Tasks v1", status="doing", priority="high", project_id=project.id
-        ))
-        done = self.tasks.create_task(TaskCreate(
-            title="Fix stale backend port", status="done", priority="high", project_id=project.id
-        ))
-        blocked = self.tasks.create_task(TaskCreate(
-            title="Improve research comparison tests", description="Waiting for fixtures",
-            status="blocked", priority="medium", project_id=project.id,
-        ))
-        critical = self.tasks.create_task(TaskCreate(
-            title="Add task filters", status="todo", priority="critical", project_id=project.id,
-            due_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
-        ))
+        doing = self.tasks.create_task(
+            TaskCreate(
+                title="Implement Tasks v1", status="doing", priority="high", project_id=project.id
+            )
+        )
+        done = self.tasks.create_task(
+            TaskCreate(
+                title="Fix stale backend port",
+                status="done",
+                priority="high",
+                project_id=project.id,
+            )
+        )
+        blocked = self.tasks.create_task(
+            TaskCreate(
+                title="Improve research comparison tests",
+                description="Waiting for fixtures",
+                status="blocked",
+                priority="medium",
+                project_id=project.id,
+            )
+        )
+        critical = self.tasks.create_task(
+            TaskCreate(
+                title="Add task filters",
+                status="todo",
+                priority="critical",
+                project_id=project.id,
+                due_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+            )
+        )
         older = self.tasks.create_task(TaskCreate(title="Older completed task", status="done"))
         self.tasks.update_task(older.id, TaskUpdate(completed_at="2026-01-01T00:00:00+00:00"))
         self.tasks.update_task(done.id, TaskUpdate(completed_at="2026-07-01T00:00:00+00:00"))
@@ -166,17 +203,30 @@ class TasksServiceTest(unittest.TestCase):
 
     def test_chat_prompt_includes_scoped_read_only_task_context(self):
         project = self.projects.create_project(ProjectCreate(title="Neo"))
-        self.tasks.create_task(TaskCreate(
-            title="Ship Tasks v1", status="doing", priority="critical", project_id=project.id
-        ))
-        task_context = TaskContextService().context_for_prompt("What should I work on next for Neo?")
+        self.tasks.create_task(
+            TaskCreate(
+                title="Ship Tasks v1", status="doing", priority="critical", project_id=project.id
+            )
+        )
+        task_context = TaskContextService().context_for_prompt(
+            "What should I work on next for Neo?"
+        )
         context = ContextPackage(
-            profile=[], preferences=[], goals=[], projects=[], relevant_memories=[], events=[], archive_results=[]
+            profile=[],
+            preferences=[],
+            goals=[],
+            projects=[],
+            relevant_memories=[],
+            events=[],
+            archive_results=[],
         )
         chat = object.__new__(NeoChatService)
         messages = chat.build_messages(
-            "What should I work on next for Neo?", [], context,
-            project_context="No project context loaded.", task_context=task_context,
+            "What should I work on next for Neo?",
+            [],
+            context,
+            project_context="No project context loaded.",
+            task_context=task_context,
         )
         self.assertIn("Ship Tasks v1", messages[0].content)
         self.assertIn("treat it as read-only", messages[0].content)

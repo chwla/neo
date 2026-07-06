@@ -54,9 +54,13 @@ def initialize_task_tables() -> None:
                 FOREIGN KEY (parent_task_id) REFERENCES workspace_tasks(id)
             )
         """)
-        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(workspace_tasks)").fetchall()}
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(workspace_tasks)").fetchall()
+        }
         if "parent_task_id" not in existing_columns:
-            conn.execute("ALTER TABLE workspace_tasks ADD COLUMN parent_task_id TEXT REFERENCES workspace_tasks(id)")
+            conn.execute(
+                "ALTER TABLE workspace_tasks ADD COLUMN parent_task_id TEXT REFERENCES workspace_tasks(id)"
+            )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS workspace_task_tags (
                 task_id TEXT NOT NULL,
@@ -88,13 +92,27 @@ def initialize_task_tables() -> None:
                 FOREIGN KEY (task_id) REFERENCES workspace_tasks(id)
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_visible ON workspace_tasks(deleted, archived, status, priority, updated_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_project ON workspace_tasks(project_id, deleted, archived, status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_due ON workspace_tasks(due_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_tasks_parent ON workspace_tasks(parent_task_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_task_tags_tag ON workspace_task_tags(tag)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_task_notes_task ON workspace_task_notes(task_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_task_notes_note ON workspace_task_notes(note_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_tasks_visible ON workspace_tasks(deleted, archived, status, priority, updated_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_tasks_project ON workspace_tasks(project_id, deleted, archived, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_tasks_due ON workspace_tasks(due_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_tasks_parent ON workspace_tasks(parent_task_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_task_tags_tag ON workspace_task_tags(tag)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_task_notes_task ON workspace_task_notes(task_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_task_notes_note ON workspace_task_notes(note_id)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -236,12 +254,23 @@ def list_tasks(
 def update_task(task_id: str, updates: dict) -> dict | None:
     conn = _connect()
     try:
-        existing = conn.execute("SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)).fetchone()
+        existing = conn.execute(
+            "SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)
+        ).fetchone()
         if existing is None:
             return None
         columns: list[str] = []
         params: list = []
-        for key in ("title", "description", "status", "priority", "due_at", "project_id", "parent_task_id", "completed_at"):
+        for key in (
+            "title",
+            "description",
+            "status",
+            "priority",
+            "due_at",
+            "project_id",
+            "parent_task_id",
+            "completed_at",
+        ):
             if key in updates:
                 columns.append(f"{key} = ?")
                 params.append(updates[key])
@@ -288,11 +317,16 @@ def list_subtasks(parent_task_id: str) -> list[dict] | None:
 def attach_note(task_id: str, note_id: str) -> bool:
     conn = _connect()
     try:
-        task = conn.execute("SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)).fetchone()
+        task = conn.execute(
+            "SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)
+        ).fetchone()
         if task is None or get_note(note_id) is None:
             return False
         now = now_iso()
-        conn.execute("INSERT OR IGNORE INTO workspace_task_notes(task_id, note_id, created_at) VALUES (?, ?, ?)", (task_id, note_id, now))
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_task_notes(task_id, note_id, created_at) VALUES (?, ?, ?)",
+            (task_id, note_id, now),
+        )
         conn.execute("UPDATE workspace_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
         conn.commit()
         return True
@@ -303,10 +337,14 @@ def attach_note(task_id: str, note_id: str) -> bool:
 def detach_note(task_id: str, note_id: str) -> bool:
     conn = _connect()
     try:
-        task = conn.execute("SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)).fetchone()
+        task = conn.execute(
+            "SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)
+        ).fetchone()
         if task is None:
             return False
-        conn.execute("DELETE FROM workspace_task_notes WHERE task_id = ? AND note_id = ?", (task_id, note_id))
+        conn.execute(
+            "DELETE FROM workspace_task_notes WHERE task_id = ? AND note_id = ?", (task_id, note_id)
+        )
         conn.execute("UPDATE workspace_tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
         conn.commit()
         return True
@@ -317,14 +355,19 @@ def detach_note(task_id: str, note_id: str) -> bool:
 def list_task_notes(task_id: str) -> list[dict] | None:
     conn = _connect()
     try:
-        task = conn.execute("SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)).fetchone()
+        task = conn.execute(
+            "SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)
+        ).fetchone()
         if task is None:
             return None
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT n.*, tn.created_at AS attached_at FROM workspace_task_notes tn
             JOIN notes n ON n.id = tn.note_id
             WHERE tn.task_id = ? AND n.deleted = 0 ORDER BY n.updated_at DESC
-        """, (task_id,)).fetchall()
+        """,
+            (task_id,),
+        ).fetchall()
         return [_row_to_note_with_tags(conn, row) for row in rows]
     finally:
         conn.close()
@@ -333,13 +376,16 @@ def list_task_notes(task_id: str) -> list[dict] | None:
 def list_note_tasks(note_id: str) -> list[dict]:
     conn = _connect()
     try:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT t.*, p.title AS project_title FROM workspace_task_notes tn
             JOIN workspace_tasks t ON t.id = tn.task_id
             LEFT JOIN workspace_projects p ON p.id = t.project_id
             WHERE tn.note_id = ? AND t.deleted = 0
             ORDER BY t.pinned DESC, t.updated_at DESC
-        """, (note_id,)).fetchall()
+        """,
+            (note_id,),
+        ).fetchall()
         return [_row_to_task(conn, row) for row in rows]
     finally:
         conn.close()
@@ -348,9 +394,17 @@ def list_note_tasks(note_id: str) -> list[dict]:
 def list_links(task_id: str) -> list[dict] | None:
     conn = _connect()
     try:
-        if conn.execute("SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)).fetchone() is None:
+        if (
+            conn.execute(
+                "SELECT id FROM workspace_tasks WHERE id = ? AND deleted = 0", (task_id,)
+            ).fetchone()
+            is None
+        ):
             return None
-        rows = conn.execute("SELECT * FROM workspace_task_links WHERE task_id = ? ORDER BY created_at DESC", (task_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM workspace_task_links WHERE task_id = ? ORDER BY created_at DESC",
+            (task_id,),
+        ).fetchall()
         return [_row_to_link(row) for row in rows]
     finally:
         conn.close()
@@ -368,25 +422,35 @@ def _task_params(task: dict) -> dict:
 
 def _replace_tags(conn: sqlite3.Connection, task_id: str, tags: list[str]) -> None:
     conn.execute("DELETE FROM workspace_task_tags WHERE task_id = ?", (task_id,))
-    conn.executemany("INSERT OR IGNORE INTO workspace_task_tags(task_id, tag) VALUES (?, ?)", [(task_id, tag) for tag in tags])
+    conn.executemany(
+        "INSERT OR IGNORE INTO workspace_task_tags(task_id, tag) VALUES (?, ?)",
+        [(task_id, tag) for tag in tags],
+    )
 
 
 def _row_to_task(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     data = dict(row)
     for key in ("pinned", "archived", "deleted"):
         data[key] = bool(data[key])
-    tags = conn.execute("SELECT tag FROM workspace_task_tags WHERE task_id = ? ORDER BY tag ASC", (data["id"],)).fetchall()
+    tags = conn.execute(
+        "SELECT tag FROM workspace_task_tags WHERE task_id = ? ORDER BY tag ASC", (data["id"],)
+    ).fetchall()
     data["tags"] = [item["tag"] for item in tags]
     data["linked_notes_count"] = int(data.get("linked_notes_count") or 0)
     if "subtask_count" not in data:
-        data["subtask_count"] = int(conn.execute(
-            "SELECT COUNT(*) FROM workspace_tasks WHERE parent_task_id = ? AND deleted = 0", (data["id"],)
-        ).fetchone()[0])
+        data["subtask_count"] = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM workspace_tasks WHERE parent_task_id = ? AND deleted = 0",
+                (data["id"],),
+            ).fetchone()[0]
+        )
     if "open_subtask_count" not in data:
-        data["open_subtask_count"] = int(conn.execute(
-            "SELECT COUNT(*) FROM workspace_tasks WHERE parent_task_id = ? AND deleted = 0 AND archived = 0 AND status != 'done'",
-            (data["id"],),
-        ).fetchone()[0])
+        data["open_subtask_count"] = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM workspace_tasks WHERE parent_task_id = ? AND deleted = 0 AND archived = 0 AND status != 'done'",
+                (data["id"],),
+            ).fetchone()[0]
+        )
     return data
 
 
@@ -396,7 +460,9 @@ def _row_to_note_with_tags(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     data["source_metadata"] = json.loads(raw_metadata) if raw_metadata else {}
     for key in ("pinned", "archived", "deleted"):
         data[key] = bool(data[key])
-    tags = conn.execute("SELECT tag FROM note_tags WHERE note_id = ? ORDER BY tag ASC", (data["id"],)).fetchall()
+    tags = conn.execute(
+        "SELECT tag FROM note_tags WHERE note_id = ? ORDER BY tag ASC", (data["id"],)
+    ).fetchall()
     data["tags"] = [item["tag"] for item in tags]
     return data
 

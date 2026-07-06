@@ -3,10 +3,23 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services.agents import AgentArtifact, AgentRun, AgentRunCreate, AgentStep, AgentsService, SaveRunToNoteRequest
+from app.services.agents import (
+    AgentArtifact,
+    AgentRun,
+    AgentRunCreate,
+    AgentStep,
+    AgentsService,
+    SaveRunToNoteRequest,
+)
 from app.services.agents.planner import AgentPlannerValidationError, AgentTaskPlanningService
 from app.services.agents.service import AgentsValidationError
-from app.services.agents.types import ApprovalRequest, AgentTaskPlan, PlanTasksRequest, PlanTasksResult, RunFromObjectiveRequest
+from app.services.agents.types import (
+    ApprovalRequest,
+    AgentTaskPlan,
+    PlanTasksRequest,
+    PlanTasksResult,
+    RunFromObjectiveRequest,
+)
 from app.services.notes.types import Note
 from app.services.tasks.types import Task
 from app.services.tasks.service import TasksValidationError
@@ -76,10 +89,17 @@ def start_run(payload: AgentRunCreate):
 
 
 @router.get("/runs", response_model=RunsResponse)
-def list_runs(task_id: str | None = None, project_id: str | None = None,
-              status: str | None = None, limit: int = 50, offset: int = 0):
+def list_runs(
+    task_id: str | None = None,
+    project_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
     try:
-        runs, total = _service().list_runs(task_id=task_id, project_id=project_id, status=status, limit=limit, offset=offset)
+        runs, total = _service().list_runs(
+            task_id=task_id, project_id=project_id, status=status, limit=limit, offset=offset
+        )
         return RunsResponse(runs=runs, total=total)
     except AgentsValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -113,7 +133,9 @@ def approve_step(run_id: str, step_id: str, payload: ApprovalRequest):
 @router.post("/runs/{run_id}/save-to-note", response_model=SaveNoteResponse)
 def save_to_note(run_id: str, payload: SaveRunToNoteRequest | None = None):
     try:
-        note, already_saved = _service().save_output_to_note(run_id, payload or SaveRunToNoteRequest())
+        note, already_saved = _service().save_output_to_note(
+            run_id, payload or SaveRunToNoteRequest()
+        )
         return SaveNoteResponse(note=note, already_saved=already_saved)
     except AgentsValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
