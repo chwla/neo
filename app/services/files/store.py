@@ -119,6 +119,38 @@ def initialize_workspace_file_tables() -> None:
                 FOREIGN KEY (repo_file_id) REFERENCES workspace_repo_files(id),
                 FOREIGN KEY (file_id) REFERENCES workspace_files(id)
             );
+            CREATE TABLE IF NOT EXISTS workspace_code_references (
+                id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, symbol_id TEXT,
+                referenced_name TEXT NOT NULL, reference_type TEXT NOT NULL,
+                source_repo_file_id TEXT NOT NULL, source_file_id TEXT NOT NULL,
+                source_relative_path TEXT NOT NULL, line_start INTEGER, line_end INTEGER,
+                column_start INTEGER, column_end INTEGER, context_text TEXT,
+                resolved INTEGER NOT NULL DEFAULT 0, confidence REAL NOT NULL DEFAULT 0.5,
+                metadata_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY (repo_id) REFERENCES workspace_repos(id),
+                FOREIGN KEY (symbol_id) REFERENCES workspace_code_symbols(id),
+                FOREIGN KEY (source_repo_file_id) REFERENCES workspace_repo_files(id),
+                FOREIGN KEY (source_file_id) REFERENCES workspace_files(id)
+            );
+            CREATE TABLE IF NOT EXISTS workspace_code_symbol_relationships (
+                id TEXT PRIMARY KEY, repo_id TEXT NOT NULL,
+                source_symbol_id TEXT NOT NULL, target_symbol_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.5,
+                metadata_json TEXT, created_at TEXT NOT NULL,
+                FOREIGN KEY (repo_id) REFERENCES workspace_repos(id),
+                FOREIGN KEY (source_symbol_id) REFERENCES workspace_code_symbols(id),
+                FOREIGN KEY (target_symbol_id) REFERENCES workspace_code_symbols(id)
+            );
+            CREATE TABLE IF NOT EXISTS workspace_code_related_files (
+                id TEXT PRIMARY KEY, repo_id TEXT NOT NULL,
+                source_repo_file_id TEXT NOT NULL, target_repo_file_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL, score REAL NOT NULL DEFAULT 0.0,
+                metadata_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY (repo_id) REFERENCES workspace_repos(id),
+                FOREIGN KEY (source_repo_file_id) REFERENCES workspace_repo_files(id),
+                FOREIGN KEY (target_repo_file_id) REFERENCES workspace_repo_files(id),
+                UNIQUE(repo_id, source_repo_file_id, target_repo_file_id, relationship_type)
+            );
             CREATE INDEX IF NOT EXISTS idx_workspace_files_visible
             ON workspace_files(deleted, updated_at);
             CREATE INDEX IF NOT EXISTS idx_workspace_files_sha ON workspace_files(sha256);
@@ -164,6 +196,22 @@ def initialize_workspace_file_tables() -> None:
             ON workspace_code_dependencies(repo_id, target_repo_file_id);
             CREATE INDEX IF NOT EXISTS idx_workspace_code_file_summaries_repo_path
             ON workspace_code_file_summaries(repo_id, relative_path);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_references_repo_name
+            ON workspace_code_references(repo_id, referenced_name);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_references_symbol
+            ON workspace_code_references(symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_references_file
+            ON workspace_code_references(source_repo_file_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_references_path
+            ON workspace_code_references(repo_id, source_relative_path);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_symbol_relationships_source
+            ON workspace_code_symbol_relationships(source_symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_symbol_relationships_target
+            ON workspace_code_symbol_relationships(target_symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_related_files_source
+            ON workspace_code_related_files(repo_id, source_repo_file_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_code_related_files_target
+            ON workspace_code_related_files(repo_id, target_repo_file_id);
         """)
         conn.commit()
     finally:

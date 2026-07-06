@@ -91,7 +91,7 @@ export default function Repos({ onBack, onOpenFile, projectId = null, compact = 
           <div className="repos-detail-header"><div><h3>{selected.name}</h3><p>{selected.indexed_file_count} indexed · {formatBytes(selected.total_bytes)} · {selected.metadata.ignored_files || 0} ignored files · {selected.metadata.ignored_dirs || 0} ignored folders · indexed {selected.indexed_at ? new Date(selected.indexed_at).toLocaleString() : "pending"}</p></div><button type="button" className="neo-button danger" onClick={remove}>Remove</button></div>
           <div className="repos-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search paths and content" /><select value={extension} onChange={(event) => setExtension(event.target.value)}><option value="">All extensions</option>{extensions.map((item) => <option key={item}>{item}</option>)}</select><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="">All languages</option>{languages.map((item) => <option key={item}>{item}</option>)}</select></div>
           <div className="repo-file-list">{files.map((item) => <button type="button" key={item.id} onClick={() => onOpenFile?.(item.file_id)}><strong>{item.relative_path}</strong><span>{item.language || "Text"} · {formatBytes(item.size_bytes)}</span></button>)}</div>
-          <CodebaseIndex repo={selected} onOpenFile={onOpenFile} compact={compact} />
+          <CodebaseIndex repo={selected} repoFiles={files} onOpenFile={onOpenFile} compact={compact} />
         </>}
       </div>
     </section>

@@ -3078,3 +3078,5 @@ textarea:disabled {
 .code-index-results { display: grid; gap: 6px; margin-top: 10px; max-height: 380px; overflow: auto; }
 .code-index-results button { display: grid; gap: 3px; border: 1px solid #dddcd7; border-radius: 8px; background: white; padding: 9px; text-align: left; }
 .code-index-results span, .code-index-results small { color: #6c6e68; font-size: 12px; }
+.symbol-awareness-panel { margin-top: 18px; border-top: 1px solid #dddcd7; padding-top: 16px; }
+.symbol-awareness-panel > input, .symbol-awareness-panel > select { width: min(100%, 520px); margin: 8px 8px 8px 0; }

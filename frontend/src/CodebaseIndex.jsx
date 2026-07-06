@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "./api.js";
+import SymbolAwareness from "./SymbolAwareness.jsx";
 
-export default function CodebaseIndex({ repo, onOpenFile, compact = false }) {
+export default function CodebaseIndex({ repo, repoFiles = [], onOpenFile, compact = false }) {
   const [index, setIndex] = useState(null);
   const [tab, setTab] = useState("symbols");
   const [query, setQuery] = useState("");
@@ -53,5 +54,6 @@ export default function CodebaseIndex({ repo, onOpenFile, compact = false }) {
         <small>{item.symbol_type || item.dependency_type || item.handler || item.summary}</small>
       </button>)}</div>
     </>}
+    <SymbolAwareness repo={repo} repoFiles={repoFiles} indexReady={Boolean(index)} onOpenFile={onOpenFile} compact={compact} />
   </section>;
 }

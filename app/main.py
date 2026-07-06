@@ -13,6 +13,7 @@ from app.api.routes.projects import router as projects_router
 from app.api.routes.repos import router as repos_router
 from app.api.routes.research import router as research_router
 from app.api.routes.search import router as search_router
+from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.web import router as web_router
 from app.services.agents.store import initialize_agent_tables, recover_interrupted_runs
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(patches_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
     app.include_router(code_index_router, prefix="/api")
+    app.include_router(symbols_router, prefix="/api")
     initialize_notes_tables()
     initialize_project_tables()
     initialize_task_tables()

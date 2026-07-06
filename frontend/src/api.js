@@ -109,6 +109,24 @@ export const api = {
   codeSearch: (repoId, q) => request(
     `/code-index/repos/${repoId}/search?${new URLSearchParams({ q, limit: "50" })}`,
   ),
+  symbolAwareness: (repoId) => request(`/symbols/repos/${repoId}`),
+  buildSymbolAwareness: (repoId, force = false) => request(
+    `/symbols/repos/${repoId}/build`, {
+      method: "POST", body: JSON.stringify({ force }),
+    },
+  ),
+  symbolDefinitions: (repoId, name) => request(
+    `/symbols/repos/${repoId}/definition?${new URLSearchParams({ name })}`,
+  ),
+  symbolReferencesByName: (repoId, name) => request(
+    `/symbols/repos/${repoId}/references?${new URLSearchParams({ name, limit: "100" })}`,
+  ),
+  documentSymbols: (repoId, repoFileId) => request(
+    `/symbols/repos/${repoId}/files/${repoFileId}/document-symbols`,
+  ),
+  relatedCodeFiles: (repoId, repoFileId) => request(
+    `/symbols/repos/${repoId}/files/${repoFileId}/related-files`,
+  ),
   reposList: (params = {}) => {
     const search = new URLSearchParams();
     if (params.projectId) search.set("project_id", params.projectId);

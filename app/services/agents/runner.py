@@ -11,6 +11,7 @@ from typing import Callable
 import app.services.agents.store as store
 from app.services.agents.safety import runner_system_prompt, validate_plan
 from app.services.code_index.service import CodeIndexService
+from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.llm import LLMMessage, get_llm_client
 from app.services.tasks import TasksService
 from app.services.web_search import WebSearchService
@@ -126,6 +127,15 @@ class AgentRunner:
                         f"{index_context[:2400]}\nTarget files considered:\n"
                         + "\n".join(f"- {path}" for path in index_files)
                     )
+                symbol_context, symbol_files = SymbolAwarenessService().context_for_project(
+                    run["project_id"], run["objective"]
+                )
+                if symbol_files:
+                    final_output = (
+                        f"{final_output.rstrip()}\n\nSymbol awareness used:\n"
+                        f"{symbol_context[:2400]}\nRelated files considered:\n"
+                        + "\n".join(f"- {path}" for path in symbol_files)
+                    )
             completed = store.now_iso()
             store.update_run(
                 run_id,
@@ -216,6 +226,17 @@ class AgentRunner:
             if index_files:
                 lines.extend(
                     ["Index target files considered:", *[f"- {item}" for item in index_files]]
+                )
+            symbol_context, symbol_files = SymbolAwarenessService().context_for_project(
+                project.id, index_query
+            )
+            lines.extend(["Symbol awareness used:", symbol_context])
+            if symbol_files:
+                lines.extend(
+                    [
+                        "Symbol-related files considered:",
+                        *[f"- {item}" for item in symbol_files],
+                    ]
                 )
         subtasks = tasks_service.list_subtasks(task.id)
         if subtasks:

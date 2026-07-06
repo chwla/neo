@@ -13,6 +13,7 @@ from app.repositories.memory_store import MemoryStore
 from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.agents.guidance import agent_run_guidance
 from app.services.code_index.service import CodeIndexService
+from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.direct_answer import DirectMemoryAnswerService
 from app.services.extraction import ConversationMessage, ExtractionRequest, MemoryExtractionService
 from app.services.explanation import MemoryExplanationService
@@ -67,6 +68,7 @@ class NeoChatService:
         self.task_context = TaskContextService()
         self.file_context = WorkspaceFilesService()
         self.code_index = CodeIndexService()
+        self.symbol_awareness = SymbolAwarenessService()
         self.citation_formatter = CitationFormatter()
         self.settings = get_settings()
         self.last_web_debug: dict[str, Any] = {}
@@ -166,6 +168,7 @@ class NeoChatService:
         task_context = self.task_context.context_for_prompt(prompt)
         task_context = f"{task_context}\n\n{self.file_context.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.code_index.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
         task_direct_reply = self.task_context.answer_for_prompt(prompt)
         if task_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
@@ -346,6 +349,7 @@ class NeoChatService:
         task_context = self.task_context.context_for_prompt(prompt)
         task_context = f"{task_context}\n\n{self.file_context.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.code_index.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
         task_direct_reply = self.task_context.answer_for_prompt(prompt)
         if task_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", task_direct_reply)

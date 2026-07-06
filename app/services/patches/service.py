@@ -107,10 +107,10 @@ class PatchProposalService:
     def _resolve_files(self, request: PatchProposalRequest) -> list[dict]:
         file_ids = list(dict.fromkeys(request.file_ids))
         if not file_ids and request.project_id:
-            from app.services.code_index.service import CodeIndexService
+            from app.services.symbol_awareness.service import SymbolAwarenessService
 
             file_ids.extend(
-                CodeIndexService().suggest_file_ids(request.project_id, request.objective)
+                SymbolAwarenessService().suggest_file_ids(request.project_id, request.objective)
             )
         if not file_ids:
             for link_type, target_id in (

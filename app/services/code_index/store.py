@@ -20,6 +20,11 @@ def _connect() -> sqlite3.Connection:
 def clear_repo_index(repo_id: str) -> None:
     conn = _connect()
     try:
+        conn.execute(
+            "DELETE FROM workspace_code_symbol_relationships WHERE repo_id = ?", (repo_id,)
+        )
+        conn.execute("DELETE FROM workspace_code_references WHERE repo_id = ?", (repo_id,))
+        conn.execute("DELETE FROM workspace_code_related_files WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM workspace_code_symbols WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM workspace_code_dependencies WHERE repo_id = ?", (repo_id,))
         conn.execute("DELETE FROM workspace_code_file_summaries WHERE repo_id = ?", (repo_id,))
