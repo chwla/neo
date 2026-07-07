@@ -18,9 +18,11 @@ Build and run Neo with one exposed port and one persistent data volume:
 ```bash
 docker build -t neo:local .
 docker run --rm \
+  --name neo \
   -p 8000:8000 \
   -v neo_data:/app/data \
   -e NEO_SEARCH_PROVIDER=disabled \
+  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
   neo:local
 ```
 
@@ -79,4 +81,52 @@ Chat/Research return clean limited-availability responses when current web evide
 | `NEO_SEARXNG_URL` | `http://127.0.0.1:8080` | Optional external SearXNG URL |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | External Ollama endpoint |
 
-No Docker Compose file or SearXNG sidecar is required for normal operation.
+SearXNG is optional and not required for the default Docker setup.
+Neo does not start a SearXNG sidecar.
+Ollama/model weights are not bundled.
+No Docker Compose file is required for normal operation.
+
+## Controlled Test Runner
+
+The Test Runner executes only saved, explicitly confirmed allowlisted commands inside a
+Neo-managed repository copy. Commands are stored as argv arrays and started without a shell;
+shell chaining, Git, destructive commands, network fetch tools, and dependency installation are
+rejected. Runs are foreground-only, have a 1–600 second timeout, use a minimal environment, and
+capture bounded stdout/stderr plus the exit code.
+
+In the default slim Docker image, Test Runner can only execute tools installed in the Neo
+container.
+
+Available:
+
+- Python
+- Python standard library
+
+Not guaranteed:
+
+- pytest
+- Node
+- npm
+- project-specific dependencies
+
+Neo does not install dependencies at runtime or run package managers. Node and npm build the
+frontend in an intermediate image but are not copied into the final Python slim image. For npm or
+pytest workflows, use local development mode or build a separate custom image with the required
+tools preinstalled.
+
+Test results may be attached to tasks, agent runs, and patch applications. Agent and Chat surfaces
+can read stored results but cannot start commands. Applying a patch never starts tests
+automatically.
+
+## Controlled Git checkpoints
+
+The standard Neo image includes the Git binary for local checkpointing inside Neo-managed
+repository copies. Git is installed at image build time only. Neo exposes fixed operations for
+initialization, status, diff, local checkpoint commits, history, and explicitly confirmed restore.
+There is no command box or general terminal.
+
+Remote operations are not supported: Neo has no clone, fetch, pull, push, remote, submodule, or
+credential endpoints. Host Git configuration and credentials are not mounted or passed into the
+container. Each managed repository uses a local `Neo <neo@local>` identity, a minimal environment,
+and a private local `.git` directory. Patch application, tests, Agent, and Chat never commit or
+restore automatically.

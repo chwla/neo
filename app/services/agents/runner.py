@@ -11,13 +11,15 @@ from typing import Callable
 import app.services.agents.store as store
 from app.services.agents.safety import runner_system_prompt, validate_plan
 from app.services.code_index.service import CodeIndexService
-from app.services.symbol_awareness.service import SymbolAwarenessService
-from app.services.llm import LLMMessage, get_llm_client
-from app.services.tasks import TasksService
-from app.services.web_search import WebSearchService
 from app.services.files.service import WorkspaceFilesService
 from app.services.files.types import ArtifactCreate
+from app.services.git.service import GitContextService
+from app.services.llm import LLMMessage, get_llm_client
 from app.services.patches import PatchProposalRequest, PatchProposalService
+from app.services.symbol_awareness.service import SymbolAwarenessService
+from app.services.tasks import TasksService
+from app.services.test_runner.service import TestRunnerContextService
+from app.services.web_search import WebSearchService
 
 
 class AgentRunner:
@@ -238,6 +240,16 @@ class AgentRunner:
                         *[f"- {item}" for item in symbol_files],
                     ]
                 )
+        test_context = TestRunnerContextService().context_for_task(
+            task.id, project.id if project else None
+        )
+        if test_context:
+            lines.extend(["Controlled test runner context:", test_context])
+        git_context = GitContextService().context_for_task(
+            task.id, project.id if project else None
+        )
+        if git_context:
+            lines.extend(["Controlled Git context (read-only):", git_context])
         subtasks = tasks_service.list_subtasks(task.id)
         if subtasks:
             lines.append("Created task plan:")

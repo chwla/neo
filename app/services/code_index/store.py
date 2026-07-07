@@ -82,6 +82,34 @@ def get_index(repo_id: str) -> dict | None:
         conn.close()
 
 
+def mark_stale(repo_id: str, reason: str, updated_at: str) -> None:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM workspace_code_indexes WHERE repo_id = ?", (repo_id,)
+        ).fetchone()
+        if not row:
+            return
+        metadata = _json(row[0], {})
+        metadata["stale_reason"] = reason
+        awareness = metadata.get("symbol_awareness")
+        if isinstance(awareness, dict):
+            metadata["symbol_awareness"] = {
+                **awareness,
+                "status": "stale",
+                "updated_at": updated_at,
+                "stale_reason": reason,
+            }
+        conn.execute(
+            "UPDATE workspace_code_indexes SET status = 'stale', metadata_json = ?, "
+            "updated_at = ? WHERE repo_id = ?",
+            (json.dumps(metadata), updated_at, repo_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def insert_symbol(item: dict) -> dict:
     conn = _connect()
     try:

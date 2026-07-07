@@ -10,20 +10,22 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.repositories.memory_store import MemoryStore
-from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.agents.guidance import agent_run_guidance
 from app.services.code_index.service import CodeIndexService
-from app.services.symbol_awareness.service import SymbolAwarenessService
+from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.direct_answer import DirectMemoryAnswerService
-from app.services.extraction import ConversationMessage, ExtractionRequest, MemoryExtractionService
 from app.services.explanation import MemoryExplanationService
+from app.services.extraction import ConversationMessage, ExtractionRequest, MemoryExtractionService
+from app.services.files.service import WorkspaceFilesService
+from app.services.git.service import GitContextService
 from app.services.llm import ChatTurn, LLMClient, LLMMessage
 from app.services.projects import ProjectContextService
-from app.services.files.service import WorkspaceFilesService
-from app.services.tasks import TaskContextService
 from app.services.retrieval import RetrievalRequest
-from app.services.source_citations import CitationFormatter
 from app.services.search.content import FactResult, run_extractors
+from app.services.source_citations import CitationFormatter
+from app.services.symbol_awareness.service import SymbolAwarenessService
+from app.services.tasks import TaskContextService
+from app.services.test_runner.service import TestRunnerContextService
 from app.services.web_search import (
     EXTRACTION_FAILURE_MESSAGE,
     GROUNDING_FAILURE_MESSAGE,
@@ -69,6 +71,8 @@ class NeoChatService:
         self.file_context = WorkspaceFilesService()
         self.code_index = CodeIndexService()
         self.symbol_awareness = SymbolAwarenessService()
+        self.test_runner = TestRunnerContextService()
+        self.git_context = GitContextService()
         self.citation_formatter = CitationFormatter()
         self.settings = get_settings()
         self.last_web_debug: dict[str, Any] = {}
@@ -169,6 +173,20 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.file_context.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.code_index.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
+        git_direct_reply = self.git_context.answer_for_prompt(prompt)
+        if git_direct_reply is not None:
+            self.store.add_chat_message(chat_id, "assistant", git_direct_reply)
+            self.db.commit()
+            self.last_web_debug = {"git_context_loaded": True, "web_search_needed": False}
+            return git_direct_reply
+        test_direct_reply = self.test_runner.answer_for_prompt(prompt)
+        if test_direct_reply is not None:
+            self.store.add_chat_message(chat_id, "assistant", test_direct_reply)
+            self.db.commit()
+            self.last_web_debug = {"test_context_loaded": True, "web_search_needed": False}
+            return test_direct_reply
         task_direct_reply = self.task_context.answer_for_prompt(prompt)
         if task_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
@@ -350,6 +368,46 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.file_context.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.code_index.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
+        git_direct_reply = self.git_context.answer_for_prompt(prompt)
+        if git_direct_reply is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", git_direct_reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {"git_context_loaded": True, "web_search_needed": False}
+            yield {"type": "chunk", "content": git_direct_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": git_direct_reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
+        test_direct_reply = self.test_runner.answer_for_prompt(prompt)
+        if test_direct_reply is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", test_direct_reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {"test_context_loaded": True, "web_search_needed": False}
+            yield {"type": "chunk", "content": test_direct_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": test_direct_reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
         task_direct_reply = self.task_context.answer_for_prompt(prompt)
         if task_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", task_direct_reply)

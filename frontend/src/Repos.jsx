@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api } from "./api.js";
 import CodebaseIndex from "./CodebaseIndex.jsx";
+import GitCheckpoints from "./GitCheckpoints.jsx";
+import TestRunner from "./TestRunner.jsx";
 
 function formatBytes(value) {
   if (value < 1024) return `${value} B`;
@@ -92,6 +94,8 @@ export default function Repos({ onBack, onOpenFile, projectId = null, compact = 
           <div className="repos-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search paths and content" /><select value={extension} onChange={(event) => setExtension(event.target.value)}><option value="">All extensions</option>{extensions.map((item) => <option key={item}>{item}</option>)}</select><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="">All languages</option>{languages.map((item) => <option key={item}>{item}</option>)}</select></div>
           <div className="repo-file-list">{files.map((item) => <button type="button" key={item.id} onClick={() => onOpenFile?.(item.file_id)}><strong>{item.relative_path}</strong><span>{item.language || "Text"} · {formatBytes(item.size_bytes)}</span></button>)}</div>
           <CodebaseIndex repo={selected} repoFiles={files} onOpenFile={onOpenFile} compact={compact} />
+          <TestRunner repo={selected} compact={compact} />
+          <GitCheckpoints repo={selected} compact={compact} />
         </>}
       </div>
     </section>

@@ -110,7 +110,7 @@ export default function Files({ onBack, initialFileId = null }) {
           <ArtifactsPanel taskId={patchTaskId || null} projectId={patchProjectId || null} refreshKey={artifactRefresh} showAll onApplied={async () => {
             await open(selected.id); await load(); setApplicationRefresh((value) => value + 1);
           }} />
-          <PatchApplications fileId={selected.id} refreshKey={applicationRefresh} />
+          <PatchApplications fileId={selected.id} repoId={selected.metadata?.repo_id || null} refreshKey={applicationRefresh} />
           <section className="file-preview"><h3>Preview</h3>{selected.extracted_text ? <pre>{selected.extracted_text}</pre> : <p>Preview not supported.</p>}</section>
         </>}
         {error ? <div className="task-error">{error}</div> : null}

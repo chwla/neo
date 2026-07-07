@@ -104,8 +104,7 @@ def update_search_config(request: SearchConfigUpdateRequest) -> dict[str, object
     return search_config()
 
 
-@router.post("/test")
-def test_search_provider(request: SearchTestRequest) -> dict[str, object]:
+def _test_search_provider(request: SearchTestRequest) -> dict[str, object]:
     settings = get_settings()
     provider = ProviderRegistry().provider(settings.web_search_provider)
     started = perf_counter()
@@ -122,6 +121,22 @@ def test_search_provider(request: SearchTestRequest) -> dict[str, object]:
         "error": response.error,
         "message": response.error or "Configured web search provider is available.",
     }
+
+
+@router.get("/test")
+def test_search_provider_get(
+    query: str = "latest OpenAI news",
+    count: int = 5,
+    time_filter: str | None = None,
+) -> dict[str, object]:
+    return _test_search_provider(
+        SearchTestRequest(query=query, count=count, time_filter=time_filter)
+    )
+
+
+@router.post("/test")
+def test_search_provider(request: SearchTestRequest) -> dict[str, object]:
+    return _test_search_provider(request)
 
 
 @router.get("/providers")

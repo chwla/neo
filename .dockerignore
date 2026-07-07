@@ -1,6 +1,7 @@
 .git
 .gitignore
 .venv
+venv
 __pycache__
 *.py[cod]
 .pytest_cache
@@ -11,7 +12,10 @@ __pycache__
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
 data
+node_modules
 frontend/node_modules
 frontend/dist
 tests/__pycache__

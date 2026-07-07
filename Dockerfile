@@ -20,6 +20,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OLLAMA_BASE_URL=http://host.docker.internal:11434
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY app/ ./app/
 RUN pip install --no-cache-dir . \
@@ -31,5 +34,8 @@ COPY --from=frontend-build /src/frontend/dist/ /app/app/static/
 VOLUME ["/app/data"]
 EXPOSE 8000
 USER neo
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
 
 CMD ["python", "-m", "app.runtime"]

@@ -3067,6 +3067,49 @@ textarea:disabled {
 .project-repos { margin-top: 20px; background: #fafaf8; }
 .project-repos .repos-browser { grid-template-columns: minmax(190px, 30%) 1fr; }
 @media (max-width: 760px) { .repos-browser, .project-repos .repos-browser { grid-template-columns: 1fr; } .repos-filters { grid-template-columns: 1fr; } }
+.test-runner { margin-top: 16px; border-top: 1px solid #dddcd7; padding-top: 16px; }
+.test-runner-title, .test-run-detail > div:first-child { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.test-runner-title h3, .test-runner-title p { margin: 0 0 5px; }
+.test-runner-title p, .test-command small { color: #6c6e68; font-size: 12px; }
+.test-command-form { display: grid; grid-template-columns: minmax(150px, .7fr) minmax(260px, 1.5fr) minmax(110px, .5fr) 90px auto; gap: 7px; margin: 14px 0; }
+.test-suggestions { margin: 12px 0; padding: 10px; border-radius: 8px; background: #f4f5f1; }
+.test-suggestions > div, .test-command { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 7px; }
+.test-suggestions span, .test-command span { display: grid; gap: 3px; min-width: 0; }
+.test-suggestions code, .test-command code { overflow-wrap: anywhere; }
+.test-runner-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
+.test-command, .test-run-row { border: 1px solid #dddcd7; background: #fafaf8; border-radius: 8px; padding: 9px; margin-bottom: 7px; }
+.test-run-row { width: 100%; display: grid; grid-template-columns: 1fr auto; text-align: left; gap: 3px 8px; }
+.test-run-row small { grid-column: 1 / -1; color: #6c6e68; }
+.test-status { font-weight: 700; text-transform: capitalize; }
+.test-status.passed { color: #23733c; }
+.test-status.failed, .test-status.timed_out, .test-status.error { color: #a52b2b; }
+.test-status.running, .test-status.queued { color: #936b12; }
+.test-run-detail { margin-top: 14px; padding: 12px; border: 1px solid #c9cbc4; border-radius: 8px; }
+.test-run-detail label { display: block; margin-top: 10px; font-weight: 700; }
+.test-run-detail pre { max-height: 260px; overflow: auto; white-space: pre-wrap; font-weight: 400; background: #20211f; color: #f5f5f2; padding: 10px; border-radius: 6px; }
+.patch-test-runner { margin: 12px 0; padding: 10px; border: 1px solid #dddcd7; border-radius: 8px; }
+.patch-test-runner > div { display: flex; gap: 8px; }
+.patch-test-runner p { margin: 5px 0; }
+@media (max-width: 900px) { .test-command-form, .test-runner-grid { grid-template-columns: 1fr; } }
+.git-checkpoints { margin-top: 16px; border-top: 1px solid #dddcd7; padding-top: 16px; }
+.git-title, .git-status, .git-diff > div, .git-checkpoint-detail > div:first-child { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.git-title h3, .git-title p { margin: 0 0 5px; }
+.git-title p, .git-status small, .git-history small { color: #6c6e68; font-size: 12px; }
+.git-status { margin: 12px 0; padding: 10px; border-radius: 8px; background: #f4f5f1; }
+.git-status span { display: grid; gap: 3px; }
+.git-changed-files, .git-history { display: grid; gap: 7px; margin: 10px 0; }
+.git-changed-files button, .git-history > button { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; text-align: left; padding: 9px; border: 1px solid #dddcd7; border-radius: 8px; background: #fafaf8; }
+.git-changed-files small, .git-history small { grid-column: 1 / -1; }
+.git-checkpoint-form { display: grid; grid-template-columns: minmax(150px, .7fr) minmax(240px, 1.5fr) auto; gap: 8px; margin: 12px 0; align-items: start; }
+.git-diff, .git-checkpoint-detail { margin: 12px 0; padding: 12px; border: 1px solid #c9cbc4; border-radius: 8px; }
+.git-diff pre, .git-checkpoint-detail pre { max-height: 340px; overflow: auto; white-space: pre-wrap; background: #20211f; color: #f5f5f2; padding: 10px; border-radius: 6px; }
+.git-checkpoint-status { text-transform: capitalize; font-weight: 700; }
+.git-checkpoint-status.created { color: #23733c; }
+.git-checkpoint-status.restored { color: #5b55a6; }
+.git-checkpoint-status.failed { color: #a52b2b; }
+.patch-git-checkpoint { margin: 12px 0; padding: 10px; border: 1px solid #dddcd7; border-radius: 8px; }
+.patch-git-checkpoint p { margin: 5px 0 8px; }
+@media (max-width: 900px) { .git-checkpoint-form { grid-template-columns: 1fr; } }
 .code-index-panel { margin-top: 18px; border-top: 1px solid #dddcd7; padding-top: 16px; }
 .code-index-header, .code-index-stats, .code-index-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .code-index-header { justify-content: space-between; }

@@ -147,6 +147,53 @@ export const api = {
   },
   repoFile: (repoId, repoFileId) => request(`/repos/${repoId}/files/${repoFileId}`),
   deleteRepo: (repoId) => request(`/repos/${repoId}`, { method: "DELETE" }),
+  testCommands: (repoId) => request(`/test-runner/repos/${repoId}/commands`),
+  detectTestCommands: (repoId) => request(`/test-runner/repos/${repoId}/detect`, { method: "POST" }),
+  createTestCommand: (repoId, payload) => request(`/test-runner/repos/${repoId}/commands`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateTestCommand: (commandId, payload) => request(`/test-runner/commands/${commandId}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  disableTestCommand: (commandId) => request(`/test-runner/commands/${commandId}`, { method: "DELETE" }),
+  runTestCommand: (commandId, payload) => request(`/test-runner/commands/${commandId}/run`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  testRuns: (params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      repo_id: params.repoId, project_id: params.projectId, task_id: params.taskId,
+      agent_run_id: params.agentRunId, patch_application_id: params.patchApplicationId,
+      status: params.status,
+    })) if (value) search.set(key, value);
+    search.set("limit", String(params.limit ?? 50));
+    return request(`/test-runner/runs?${search.toString()}`);
+  },
+  testRun: (runId) => request(`/test-runner/runs/${runId}`),
+  gitStatus: (repoId) => request(`/git/repos/${repoId}/status`),
+  initGit: (repoId) => request(`/git/repos/${repoId}/init`, {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  }),
+  gitDiff: (repoId, path = "") => {
+    const search = new URLSearchParams();
+    if (path) search.set("path", path);
+    return request(`/git/repos/${repoId}/diff?${search.toString()}`);
+  },
+  gitCheckpoints: (repoId, params = {}) => {
+    const search = new URLSearchParams();
+    if (params.taskId) search.set("task_id", params.taskId);
+    if (params.patchApplicationId) search.set("patch_application_id", params.patchApplicationId);
+    search.set("limit", String(params.limit ?? 50));
+    return request(`/git/repos/${repoId}/checkpoints?${search.toString()}`);
+  },
+  createGitCheckpoint: (repoId, payload) => request(`/git/repos/${repoId}/checkpoints`, {
+    method: "POST", body: JSON.stringify({ ...payload, confirm: true }),
+  }),
+  gitCheckpoint: (checkpointId) => request(`/git/checkpoints/${checkpointId}`),
+  restoreGitCheckpoint: (checkpointId) => request(`/git/checkpoints/${checkpointId}/restore`, {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  }),
+  gitOperations: (repoId) => request(`/git/repos/${repoId}/operations`),
   filesList: (params = {}) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries({

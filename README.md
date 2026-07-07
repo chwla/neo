@@ -56,3 +56,22 @@ npm run dev
 The Vite dev server proxies `/api` requests to `http://127.0.0.1:8000`.
 
 For the single-container deployment, see [docs/deployment.md](docs/deployment.md).
+
+SearXNG is optional and not required for the default Docker setup. Neo does not start a
+SearXNG sidecar, and Ollama/model weights are not bundled.
+
+## Controlled Test Runner
+
+Registered repositories expose a Test Runner for saved, explicitly confirmed test commands. It
+runs strict argv allowlists only in Neo's managed repository copy, without a shell, Git, package
+installation, background jobs, or automatic execution after patch apply. Output, exit code,
+duration, and associations are stored for later read-only Agent/Chat context. See
+[docs/deployment.md](docs/deployment.md#controlled-test-runner) for runtime tool limitations.
+
+## Controlled Git checkpoints
+
+Neo can initialize local Git tracking inside a registered managed repository copy, show status and
+diffs, create explicitly confirmed checkpoints, and restore managed files from a checkpoint. The
+original repository is never modified. Remote Git operations, arbitrary Git commands, automatic
+commits, and automatic restores are not available. See
+[docs/deployment.md](docs/deployment.md#controlled-git-checkpoints).
