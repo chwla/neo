@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes.agents import router as agents_router
 from app.api.routes.agents import task_router as agent_task_router
 from app.api.routes.code_index import router as code_index_router
+from app.api.routes.coding_agent import router as coding_agent_router
 from app.api.routes.files import router as files_router
 from app.api.routes.git import router as git_router
 from app.api.routes.health import router as health_router
@@ -25,6 +26,7 @@ from app.api.routes.test_runner import router as test_runner_router
 from app.api.routes.web import router as web_router
 from app.core.config import get_settings
 from app.services.agents.store import initialize_agent_tables, recover_interrupted_runs
+from app.services.coding_agent.store import initialize_coding_agent_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
 from app.services.notes.store import initialize_notes_tables
@@ -65,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(patches_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
     app.include_router(code_index_router, prefix="/api")
+    app.include_router(coding_agent_router, prefix="/api")
     app.include_router(symbols_router, prefix="/api")
     app.include_router(test_runner_router, prefix="/api")
     app.include_router(git_router, prefix="/api")
@@ -72,6 +75,7 @@ def create_app() -> FastAPI:
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_tables()
+    initialize_coding_agent_tables()
     recover_interrupted_runs()
     initialize_research_tables()
     initialize_workspace_file_tables()
@@ -89,6 +93,7 @@ def create_app() -> FastAPI:
             if full_path == "api" or full_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="Not Found")
             return FileResponse(index_file)
+
     return app
 
 

@@ -89,6 +89,37 @@ async function streamRequest(path, payload, onEvent) {
 }
 
 export const api = {
+  startCodingRun: (payload) => request("/coding-agent/runs", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  codingRuns: (params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      task_id: params.taskId, project_id: params.projectId, repo_id: params.repoId,
+      status: params.status,
+    })) if (value) search.set(key, value);
+    search.set("limit", String(params.limit ?? 50));
+    return request(`/coding-agent/runs?${search.toString()}`);
+  },
+  codingRun: (runId) => request(`/coding-agent/runs/${runId}`),
+  approveCodingAction: (actionId, options = {}) => request(
+    `/coding-agent/actions/${actionId}/approve`, {
+      method: "POST", body: JSON.stringify({ confirm: true, options }),
+    },
+  ),
+  rejectCodingAction: (actionId, reason = null) => request(
+    `/coding-agent/actions/${actionId}/reject`, {
+      method: "POST", body: JSON.stringify({ reason }),
+    },
+  ),
+  reviseCodingPatch: (runId, instructions) => request(
+    `/coding-agent/runs/${runId}/revise-patch`, {
+      method: "POST", body: JSON.stringify({ instructions }),
+    },
+  ),
+  cancelCodingRun: (runId) => request(`/coding-agent/runs/${runId}/cancel`, {
+    method: "POST",
+  }),
   codeIndex: (repoId) => request(`/code-index/repos/${repoId}`),
   buildCodeIndex: (repoId, force = false) => request(`/code-index/repos/${repoId}/build`, {
     method: "POST", body: JSON.stringify({ force, summarize: true }),

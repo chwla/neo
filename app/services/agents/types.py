@@ -24,6 +24,13 @@ StepType = Literal[
     "task_update_request",
     "final",
     "patch_proposal",
+    "select_context",
+    "waiting_approval",
+    "apply_patch",
+    "select_tests",
+    "run_tests",
+    "analyze_tests",
+    "checkpoint",
 ]
 
 

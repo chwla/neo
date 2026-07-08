@@ -7,6 +7,7 @@ import Research from "./Research.jsx";
 import Tasks from "./Tasks.jsx";
 import Files from "./Files.jsx";
 import Repos from "./Repos.jsx";
+import CodingAgent from "./CodingAgent.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -748,6 +749,7 @@ function ChatComposer({
             ) : null}
           </div>
         ) : null}
+        {mode === "agent" ? <CodingAgent initialTaskId={selectedTaskId} initialProjectId={selectedProjectId} compact /> : null}
       </div>
       <div className="chat-input-disclaimer">
         {mode === "agent"

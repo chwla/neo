@@ -75,3 +75,11 @@ diffs, create explicitly confirmed checkpoints, and restore managed files from a
 original repository is never modified. Remote Git operations, arbitrary Git commands, automatic
 commits, and automatic restores are not available. See
 [docs/deployment.md](docs/deployment.md#controlled-git-checkpoints).
+
+## Multi-Step Coding Agent Loop
+
+Agent Mode and Task detail can orchestrate an objective through bounded Codebase Index and Symbol
+Awareness context, a review-only patch proposal, Controlled Patch Apply, a saved Controlled Test
+Runner command, and a local Git checkpoint. Patch application, test execution, and checkpoint
+creation are separate persisted approval requests. Neo never auto-approves them, never edits the
+original repository, and never writes coding-run state to Memory automatically.

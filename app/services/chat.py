@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.repositories.memory_store import MemoryStore
 from app.services.agents.guidance import agent_run_guidance
 from app.services.code_index.service import CodeIndexService
+from app.services.coding_agent.service import CodingAgentService
 from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.direct_answer import DirectMemoryAnswerService
 from app.services.explanation import MemoryExplanationService
@@ -70,6 +71,7 @@ class NeoChatService:
         self.task_context = TaskContextService()
         self.file_context = WorkspaceFilesService()
         self.code_index = CodeIndexService()
+        self.coding_agent = CodingAgentService()
         self.symbol_awareness = SymbolAwarenessService()
         self.test_runner = TestRunnerContextService()
         self.git_context = GitContextService()
@@ -175,6 +177,13 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.coding_agent.context_for_prompt(prompt)}"
+        coding_direct_reply = self.coding_agent.answer_for_prompt(prompt)
+        if coding_direct_reply is not None:
+            self.store.add_chat_message(chat_id, "assistant", coding_direct_reply)
+            self.db.commit()
+            self.last_web_debug = {"coding_context_loaded": True, "web_search_needed": False}
+            return coding_direct_reply
         git_direct_reply = self.git_context.answer_for_prompt(prompt)
         if git_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", git_direct_reply)
@@ -370,6 +379,26 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
+        task_context = f"{task_context}\n\n{self.coding_agent.context_for_prompt(prompt)}"
+        coding_direct_reply = self.coding_agent.answer_for_prompt(prompt)
+        if coding_direct_reply is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", coding_direct_reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {"coding_context_loaded": True, "web_search_needed": False}
+            yield {"type": "chunk", "content": coding_direct_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": coding_direct_reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
         git_direct_reply = self.git_context.answer_for_prompt(prompt)
         if git_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", git_direct_reply)

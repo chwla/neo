@@ -130,3 +130,14 @@ credential endpoints. Host Git configuration and credentials are not mounted or 
 container. Each managed repository uses a local `Neo <neo@local>` identity, a minimal environment,
 and a private local `.git` directory. Patch application, tests, Agent, and Chat never commit or
 restore automatically.
+
+## Multi-Step Coding Agent Loop
+
+Coding runs and their pending action requests are stored in `/app/data/neo.db`; managed file and
+Git state remain under `/app/data/workspace_repos`. A backend or container restart therefore
+preserves the objective, selected files, patch/test/checkpoint links, action decisions, and logs.
+
+The loop uses only tools already available in the runtime. It does not install project
+dependencies. Patch application, a saved test command, and a local checkpoint each require an
+explicit confirmation in the Coding Run panel. Failed tests may generate a new proposal up to the
+configured iteration limit, but the follow-up patch is still not applied automatically.

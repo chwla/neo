@@ -4,6 +4,7 @@ import { api } from "./api.js";
 import FileAttachments from "./FileAttachments.jsx";
 import ArtifactsPanel from "./ArtifactsPanel.jsx";
 import PatchApplications from "./PatchApplications.jsx";
+import CodingAgent from "./CodingAgent.jsx";
 
 const STATUSES = ["todo", "doing", "blocked", "done"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -435,6 +436,11 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
                   <ArtifactsPanel agentRunId={selectedRun.run.id} refreshKey={artifactRefresh} onApplied={() => setArtifactRefresh((value) => value + 1)} />
                 </div>
               ) : null}
+            </section>
+            <section className="agent-runs-section">
+              <div className="task-section-title">Coding Runs</div>
+              <p className="task-help">Multi-step coding workflow with explicit patch, test, and checkpoint approvals.</p>
+              <CodingAgent initialTaskId={selectedTask.id} initialProjectId={selectedTask.project_id || ""} compact />
             </section>
           </form>
         )}
