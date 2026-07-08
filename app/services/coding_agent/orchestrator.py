@@ -290,14 +290,16 @@ class CodingAgentOrchestrator:
         if kind == "apply_patch":
             self._status(run["id"], "applying_patch")
             target_files = action["payload"].get("target_files", [])
-            file_id = options.get("file_id")
-            if not file_id and len(target_files) == 1:
-                file_id = target_files[0].get("file_id")
-            if not file_id:
-                raise ValueError("Select one proposed target file before applying this patch.")
-            if file_id not in {item.get("file_id") for item in target_files}:
-                raise ValueError("Selected file is not a target of this patch proposal.")
-            application, _ = self.patch_apply.apply(
+            atomic = action["payload"].get("atomic") is True
+            file_id = None if atomic else options.get("file_id")
+            if not atomic:
+                if not file_id and len(target_files) == 1:
+                    file_id = target_files[0].get("file_id")
+                if not file_id:
+                    raise ValueError("Select one proposed target file before applying this patch.")
+                if file_id not in {item.get("file_id") for item in target_files}:
+                    raise ValueError("Selected file is not a target of this patch proposal.")
+            application, _updated_files = self.patch_apply.apply(
                 action["payload"]["artifact_id"],
                 PatchApplyRequest(file_id=file_id, confirm=True),
             )
@@ -309,7 +311,9 @@ class CodingAgentOrchestrator:
                 run["agent_run_id"],
                 "apply_patch",
                 "Apply approved patch",
-                f"Applied to managed workspace only. Application: {application['id']}",
+                "Applied atomically to managed workspace only: "
+                + ", ".join(item["relative_path"] for item in application.get("files", []))
+                + f". Application: {application['id']}",
             )
             commands = test_store.list_commands(run["repo_id"], include_disabled=False)
             self._status(run["id"], "waiting_test_approval")
@@ -474,10 +478,23 @@ class CodingAgentOrchestrator:
             "This patch has not been applied.",
         )
         if artifact["artifact_type"] != "patch_proposal":
-            raise ValueError(
-                "A reliable unified diff could not be generated; narrow the scope "
-                "and revise the run."
+            self._status(run_id, "waiting_patch_approval")
+            self._step(
+                run["agent_run_id"],
+                "patch_proposal",
+                "Patch proposal needs revision",
+                "A reliable unified diff was not generated. The analysis artifact was "
+                "preserved and no patch was applied.",
+                status="failed",
             )
+            self._action(
+                self._run(run_id),
+                "revise_patch",
+                "Revise analysis-only proposal",
+                "Provide narrower instructions to generate a new review-only proposal.",
+                {"analysis_artifact_id": artifact["id"]},
+            )
+            return
         self._status(run_id, "waiting_patch_approval")
         self._step(
             run["agent_run_id"],
@@ -495,6 +512,7 @@ class CodingAgentOrchestrator:
             {
                 "artifact_id": artifact["id"],
                 "target_files": artifact.get("metadata", {}).get("target_files", []),
+                "atomic": artifact.get("metadata", {}).get("schema_version") == 2,
             },
         )
 
@@ -534,7 +552,12 @@ class CodingAgentOrchestrator:
         detail = self.detail(run["id"])
         test = detail.get("test_run")
         patch = detail.get("patch_application")
-        files = ", ".join(item["relative_path"] for item in run["selected_files"])
+        applied_files = (
+            [item for item in patch.get("files", []) if item.get("status") == "applied"]
+            if patch and patch.get("status") == "applied"
+            else []
+        )
+        files = ", ".join(item["relative_path"] for item in applied_files)
         test_status = (
             test.get("status") if test else run.get("metadata", {}).get("test_status", "not run")
         )

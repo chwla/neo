@@ -79,7 +79,11 @@ def get_application(application_id: str) -> dict | None:
         row = conn.execute(
             "SELECT * FROM workspace_patch_applications WHERE id = ?", (application_id,)
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        item = dict(row)
+        item["files"] = list_application_files(application_id, conn=conn)
+        return item
     finally:
         conn.close()
 
@@ -95,7 +99,6 @@ def list_applications(
     where, params = ["1 = 1"], []
     for column, value in (
         ("artifact_id", artifact_id),
-        ("file_id", file_id),
         ("task_id", task_id),
         ("project_id", project_id),
         ("agent_run_id", agent_run_id),
@@ -103,6 +106,13 @@ def list_applications(
         if value:
             where.append(f"{column} = ?")
             params.append(value)
+    if file_id:
+        where.append(
+            "(file_id = ? OR EXISTS (SELECT 1 FROM workspace_patch_application_files paf "
+            "WHERE paf.patch_application_id = workspace_patch_applications.id "
+            "AND paf.workspace_file_id = ?))"
+        )
+        params.extend([file_id, file_id])
     conn = _connect()
     try:
         rows = conn.execute(
@@ -110,6 +120,92 @@ def list_applications(
             "ORDER BY created_at DESC",
             params,
         ).fetchall()
-        return [dict(row) for row in rows]
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["files"] = list_application_files(item["id"], conn=conn)
+            items.append(item)
+        return items
     finally:
         conn.close()
+
+
+def insert_application_file(item: dict) -> dict:
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO workspace_patch_application_files (
+                id, patch_application_id, repo_id, workspace_file_id, repo_file_id,
+                relative_path, change_type, status, original_sha256, new_sha256,
+                original_size_bytes, new_size_bytes, original_content, new_content,
+                error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["id"], item["patch_application_id"], item.get("repo_id"),
+                item.get("workspace_file_id"), item.get("repo_file_id"), item["relative_path"],
+                item["change_type"], item["status"], item.get("original_sha256"),
+                item.get("new_sha256"), item.get("original_size_bytes"),
+                item.get("new_size_bytes"), item.get("original_content"),
+                item.get("new_content"), item.get("error"), item["created_at"],
+                item["updated_at"],
+            ),
+        )
+        conn.commit()
+        return get_application_file(item["id"]) or item
+    finally:
+        conn.close()
+
+
+def update_application_file(file_audit_id: str, updates: dict) -> dict | None:
+    allowed = {
+        "workspace_file_id", "repo_file_id", "status", "new_sha256", "new_size_bytes",
+        "new_content", "error", "updated_at",
+    }
+    columns, params = [], []
+    for key, value in updates.items():
+        if key in allowed:
+            columns.append(f"{key} = ?")
+            params.append(value)
+    if not columns:
+        return get_application_file(file_audit_id)
+    conn = _connect()
+    try:
+        params.append(file_audit_id)
+        conn.execute(
+            f"UPDATE workspace_patch_application_files SET {', '.join(columns)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        return get_application_file(file_audit_id)
+    finally:
+        conn.close()
+
+
+def get_application_file(file_audit_id: str) -> dict | None:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM workspace_patch_application_files WHERE id = ?", (file_audit_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_application_files(
+    application_id: str, *, conn: sqlite3.Connection | None = None
+) -> list[dict]:
+    owned = conn is None
+    connection = conn or _connect()
+    try:
+        rows = connection.execute(
+            "SELECT * FROM workspace_patch_application_files "
+            "WHERE patch_application_id = ? ORDER BY relative_path",
+            (application_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        if owned:
+            connection.close()

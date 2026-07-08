@@ -279,8 +279,8 @@ export const api = {
     return request(`/patches/applications?${search.toString()}`);
   },
   patchApplication: (applicationId) => request(`/patches/applications/${applicationId}`),
-  patchApplicationDownloadUrl: (applicationId, version) =>
-    `${API_BASE}/patches/applications/${applicationId}/download?version=${version}`,
+  patchApplicationDownloadUrl: (applicationId, version = null) =>
+    `${API_BASE}/patches/applications/${applicationId}/download${version ? `?version=${version}` : ""}`,
   sidebar: () => request("/sidebar"),
   createChat: (projectId = null) =>
     request("/chats", {

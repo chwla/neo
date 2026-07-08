@@ -191,6 +191,18 @@ def get_repo_file_by_file_id(file_id: str) -> dict | None:
         conn.close()
 
 
+def get_repo_file_by_path(repo_id: str, relative_path: str) -> dict | None:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM workspace_repo_files WHERE repo_id = ? AND relative_path = ?",
+            (repo_id, relative_path),
+        ).fetchone()
+        return _repo_file_row(row) if row else None
+    finally:
+        conn.close()
+
+
 def list_repo_files(
     repo_id: str,
     *,

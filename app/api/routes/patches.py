@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
@@ -53,21 +55,35 @@ def read_patch_application(application_id: str) -> dict:
 
 
 @router.get("/applications/{application_id}/download")
-def download_patch_application_snapshot(application_id: str, version: str = "original") -> Response:
-    if version not in {"original", "current"}:
-        raise HTTPException(status_code=400, detail="Version must be original or current.")
+def download_patch_application_snapshot(application_id: str, version: str = "bundle") -> Response:
+    if version not in {"bundle", "original", "current"}:
+        raise HTTPException(status_code=400, detail="Version must be bundle, original, or current.")
     try:
         item = ControlledPatchApplyService.get_application(application_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    content = item["original_content"] if version == "original" else item["new_content"]
+    if version == "bundle":
+        content = json.dumps(
+            {
+                "application": {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"original_content", "new_content", "files"}
+                },
+                "files": item.get("files", []),
+                "patch_text": item["patch_text"],
+            },
+            indent=2,
+        )
+    else:
+        content = item["original_content"] if version == "original" else item["new_content"]
     if content is None:
         raise HTTPException(status_code=404, detail=f"{version.title()} snapshot is unavailable.")
     return Response(
         content,
         media_type="text/plain; charset=utf-8",
         headers={
-            "Content-Disposition": (f'attachment; filename="neo-{application_id}-{version}.txt"')
+            "Content-Disposition": f'attachment; filename="neo-{application_id}-{version}.txt"'
         },
     )
 
@@ -82,14 +98,16 @@ def validate_patch_apply(
 @router.post("/{artifact_id}/apply")
 def apply_patch(artifact_id: str, request: PatchApplyRequest) -> dict:
     try:
-        application, updated_file = ControlledPatchApplyService().apply(artifact_id, request)
+        application, updated = ControlledPatchApplyService().apply(artifact_id, request)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    updated_files = updated if isinstance(updated, list) else [updated]
     return {
         "application": application_payload(application),
-        "file": file_payload(updated_file),
+        "files": [file_payload(item) for item in updated_files],
+        "file": file_payload(updated_files[0]),
     }

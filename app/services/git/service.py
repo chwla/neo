@@ -200,10 +200,13 @@ class GitService:
         if not changed:
             raise ValueError("Managed repository is clean; there is nothing to checkpoint.")
         untracked = [item["path"] for item in changed if item["status"] == "untracked"]
-        if untracked:
+        registered, _ = repo_store.list_repo_files(repo["id"], limit=10000)
+        registered_paths = {item["relative_path"] for item in registered}
+        unknown_untracked = [path for path in untracked if path not in registered_paths]
+        if unknown_untracked:
             raise ValueError(
-                "Checkpoint refused because untracked files exist. Neo checkpoints only files "
-                "already registered in the managed repository workspace."
+                "Checkpoint refused because untracked files exist that are not registered. "
+                "Neo checkpoints only files registered in the managed repository workspace."
             )
         synced = self._sync_metadata(repo)
         index_store.mark_stale(

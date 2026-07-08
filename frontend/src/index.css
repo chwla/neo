@@ -3034,6 +3034,12 @@ textarea:disabled {
 .patch-apply-controls { margin-top: 14px; padding: 14px; border: 1px solid #c99b35; border-radius: 10px; background: #fff8e7; color: #29251d; }
 .patch-apply-controls > div:last-of-type { display: flex; gap: 8px; margin-top: 10px; }
 .patch-hash-review { display: grid !important; gap: 4px !important; padding: 10px; background: white; border-radius: 7px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.patch-file-list { display: grid !important; gap: 8px !important; margin: 10px 0; }
+.patch-file-list > div { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--border-color, #d7dbe2); border-radius: 8px; }
+.patch-file-list span { text-transform: capitalize; }
+.patch-file-diffs { display: grid !important; gap: 10px !important; margin: 10px 0; }
+.patch-file-diffs > div { min-width: 0; }
+.patch-file-diffs pre { max-height: 280px; overflow: auto; white-space: pre; background: #20211f; color: #f2f4ef; border-radius: 7px; padding: 10px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .patch-applications { margin-top: 16px; padding: 14px; border: 1px solid #dddcd7; border-radius: 10px; background: #fafaf8; color: #20211f; }
 .patch-application-list { display: grid; gap: 7px; }
 .patch-application-list button { text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; padding: 10px; background: white; border: 1px solid #dddcd7; border-radius: 8px; }

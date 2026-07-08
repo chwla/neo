@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from app.services.patch_apply.parser import ParsedPatch
+from app.services.patch_apply.parser import ParsedFilePatch
 
 
-def apply_exact_patch(original: str, patch: ParsedPatch) -> str:
+def apply_exact_patch(original: str, patch: ParsedFilePatch) -> str:
     source = original.splitlines()
     result: list[str] = []
     source_index = 0
     for hunk in patch.hunks:
-        target_index = hunk.old_start - 1
+        target_index = 0 if hunk.old_start == 0 and hunk.old_count == 0 else hunk.old_start - 1
         if target_index < source_index or target_index > len(source):
             raise ValueError("Patch hunk position is invalid for the current file.")
         result.extend(source[source_index:target_index])
@@ -31,6 +31,6 @@ def apply_exact_patch(original: str, patch: ParsedPatch) -> str:
             raise ValueError("Patch hunk line counts do not match the unified diff header.")
     result.extend(source[source_index:])
     updated = "\n".join(result)
-    if original.endswith(("\n", "\r")):
+    if original.endswith(("\n", "\r")) or patch.change_type == "create":
         updated += "\n"
     return updated

@@ -60,6 +60,29 @@ def initialize_workspace_file_tables() -> None:
                 FOREIGN KEY (artifact_id) REFERENCES workspace_artifacts(id),
                 FOREIGN KEY (file_id) REFERENCES workspace_files(id)
             );
+            CREATE TABLE IF NOT EXISTS workspace_patch_application_files (
+                id TEXT PRIMARY KEY,
+                patch_application_id TEXT NOT NULL,
+                repo_id TEXT,
+                workspace_file_id TEXT,
+                repo_file_id TEXT,
+                relative_path TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                original_sha256 TEXT,
+                new_sha256 TEXT,
+                original_size_bytes INTEGER,
+                new_size_bytes INTEGER,
+                original_content TEXT,
+                new_content TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (patch_application_id) REFERENCES workspace_patch_applications(id),
+                FOREIGN KEY (repo_id) REFERENCES workspace_repos(id),
+                FOREIGN KEY (workspace_file_id) REFERENCES workspace_files(id),
+                FOREIGN KEY (repo_file_id) REFERENCES workspace_repo_files(id)
+            );
             CREATE TABLE IF NOT EXISTS workspace_repos (
                 id TEXT PRIMARY KEY, project_id TEXT, name TEXT NOT NULL,
                 original_path TEXT NOT NULL, workspace_path TEXT NOT NULL,
@@ -170,6 +193,14 @@ def initialize_workspace_file_tables() -> None:
             ON workspace_patch_applications(file_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_workspace_patch_applications_task
             ON workspace_patch_applications(task_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_workspace_patch_application_files_application
+            ON workspace_patch_application_files(patch_application_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_patch_application_files_repo
+            ON workspace_patch_application_files(repo_id, relative_path);
+            CREATE INDEX IF NOT EXISTS idx_workspace_patch_application_files_workspace_file
+            ON workspace_patch_application_files(workspace_file_id);
+            CREATE INDEX IF NOT EXISTS idx_workspace_patch_application_files_repo_file
+            ON workspace_patch_application_files(repo_file_id);
             CREATE INDEX IF NOT EXISTS idx_workspace_repos_project
             ON workspace_repos(project_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_workspace_repos_visible

@@ -11,9 +11,11 @@ def proposal_prompt(objective: str, files: list[dict]) -> str:
             f"{item['context_text']}\n</workspace-file>"
         )
     names = "\n".join(f"- {item['patch_path']}" for item in files)
-    return f"""Create a conservative, proposal-only patch based exclusively on the supplied
-workspace file text. Do not invent unseen files or omitted content. Return the exact Markdown
-structure below and include a valid unified diff with diff --git, ---, +++, and @@ lines.
+    return f"""Create a conservative, proposal-only patch based on the supplied workspace file
+text. Existing files may only be modified from supplied content. A new repository-relative
+text/code file may be proposed when the objective requires it. Return the exact Markdown
+structure below and include a valid unified diff containing one or more file sections with
+diff --git, ---, +++, and @@ lines. Use new file mode 100644 with --- /dev/null for new files.
 
 # Patch Proposal
 
@@ -43,7 +45,9 @@ structure below and include a valid unified diff with diff --git, ---, +++, and 
 ## Notes
 This patch has not been applied.
 
-Never claim the patch was applied, files were edited, commands were run, or tests passed.
+Never propose deletes, renames, binary files, symlinks, permission changes, hidden files,
+dependency/build/cache paths, or .git paths. Never claim the patch was applied, files were
+edited, commands were run, or tests passed.
 If the supplied context is insufficient for a truthful line-level diff, explain why instead of
 inventing code.
 

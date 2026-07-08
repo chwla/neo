@@ -78,7 +78,17 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
 
   async function approve(options = {}) {
     if (!action) return;
-    await perform(() => api.approveCodingAction(action.id, options), `${label(action.action_type)} completed.`);
+    const decidedAction = action;
+    setBusy(true); setMessage("");
+    try {
+      const next = await api.approveCodingAction(decidedAction.id, options);
+      setDetail(next);
+      const result = next.action_requests.find((item) => item.id === decidedAction.id);
+      setMessage(result?.status === "failed"
+        ? `${decidedAction.title} failed safely: ${result.error}`
+        : `${label(decidedAction.action_type)} completed.`);
+    } catch (error) { setMessage(error.message); }
+    finally { setBusy(false); }
   }
 
   async function reject(reason) {
@@ -122,11 +132,11 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
       <div className="coding-agent-status"><strong>{detail.coding_run.objective}</strong><span className={`agent-status ${detail.coding_run.status}`}>{label(detail.coding_run.status)}</span><small>Iteration {detail.coding_run.current_iteration}/{detail.coding_run.max_iterations}</small></div>
       <div><strong>Files considered</strong><ul>{detail.coding_run.selected_files.map((item) => <li key={item.file_id}><code>{item.relative_path}</code> — {item.reason} <small>{label(item.source)}</small></li>)}</ul></div>
       {detail.patch_artifact ? <div className="coding-agent-patch"><strong>Patch proposal</strong><pre>{detail.patch_artifact.content}</pre></div> : null}
-      {detail.patch_application ? <p><strong>Patch application:</strong> {label(detail.patch_application.status)} · managed copy only</p> : null}
+      {detail.patch_application ? <div><p><strong>Patch application:</strong> {label(detail.patch_application.status)} · managed copy only</p>{detail.patch_application.files?.length ? <ul>{detail.patch_application.files.map((file) => <li key={file.id}><code>{file.relative_path}</code> — {label(file.change_type)} / {label(file.status)}</li>)}</ul> : null}</div> : null}
       {detail.test_run ? <div><strong>Test result: {label(detail.test_run.status)}</strong><pre>{detail.test_run.combined_output || detail.test_run.error || "No output."}</pre></div> : null}
       {detail.checkpoint ? <p><strong>Checkpoint:</strong> <code>{detail.checkpoint.commit_sha}</code></p> : null}
       {action ? <div className="coding-agent-action"><strong>Waiting for: {action.title}</strong><p>{action.description}</p>
-        {action.action_type === "apply_patch" ? <><label>Target file<select value={targetFileId} onChange={(event) => setTargetFileId(event.target.value)}><option value="">Select one target</option>{(action.payload.target_files || []).map((item) => <option key={item.file_id} value={item.file_id}>{item.relative_path || item.filename}</option>)}</select></label><div className="coding-agent-buttons"><button type="button" disabled={busy || !targetFileId} onClick={() => window.confirm("This applies only to Neo’s managed workspace copy. The original repository is not modified. Continue?") && approve({ file_id: targetFileId })}>Approve and Apply</button><button type="button" disabled={busy} onClick={() => reject("Patch rejected by user.")}>Reject Patch</button></div><textarea value={revision} onChange={(event) => setRevision(event.target.value)} placeholder="Revision instructions" rows={2} /><button type="button" disabled={busy || !revision.trim()} onClick={revise}>Ask Agent to Revise</button></> : null}
+        {action.action_type === "apply_patch" ? <>{action.payload.atomic ? <div><strong>Atomic multi-file apply</strong><p>All listed files change together or all are rolled back.</p><ul>{(action.payload.target_files || []).map((item) => <li key={item.relative_path}><code>{item.relative_path}</code> — {label(item.change_type)}</li>)}</ul></div> : <label>Target file<select value={targetFileId} onChange={(event) => setTargetFileId(event.target.value)}><option value="">Select one target</option>{(action.payload.target_files || []).map((item) => <option key={item.file_id} value={item.file_id}>{item.relative_path || item.filename}</option>)}</select></label>}<div className="coding-agent-buttons"><button type="button" disabled={busy || (!action.payload.atomic && !targetFileId)} onClick={() => window.confirm("Atomically apply this reviewed patch only to Neo’s managed workspace copy? The original repository is not modified, and no tests or checkpoints run automatically.") && approve(action.payload.atomic ? {} : { file_id: targetFileId })}>Approve and Apply</button><button type="button" disabled={busy} onClick={() => reject("Patch rejected by user.")}>Reject Patch</button></div><textarea value={revision} onChange={(event) => setRevision(event.target.value)} placeholder="Revision instructions" rows={2} /><button type="button" disabled={busy || !revision.trim()} onClick={revise}>Ask Agent to Revise</button></> : null}
         {action.action_type === "revise_patch" ? <><textarea value={revision} onChange={(event) => setRevision(event.target.value)} placeholder="How should the patch change?" rows={2} /><button type="button" disabled={busy || !revision.trim()} onClick={revise}>Create Revised Proposal</button></> : null}
         {action.action_type === "run_tests" ? <><label>Saved test command<select value={testCommandId} onChange={(event) => setTestCommandId(event.target.value)}><option value="">Select command</option>{(action.payload.test_commands || []).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.command.join(" ")}</option>)}</select></label><div className="coding-agent-buttons"><button type="button" disabled={busy || !testCommandId} onClick={() => window.confirm("This runs the selected saved command only inside Neo’s managed workspace copy. Continue?") && approve({ test_command_id: testCommandId })}>Run selected test</button><button type="button" disabled={busy} onClick={() => skip("Tests skipped by user.")}>Skip Tests</button></div></> : null}
         {action.action_type === "skip_tests" ? <button type="button" disabled={busy} onClick={() => approve({})}>Confirm Skip Tests</button> : null}

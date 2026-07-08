@@ -68,6 +68,15 @@ installation, background jobs, or automatic execution after patch apply. Output,
 duration, and associations are stored for later read-only Agent/Chat context. See
 [docs/deployment.md](docs/deployment.md#controlled-test-runner) for runtime tool limitations.
 
+## Controlled multi-file patches
+
+Patch proposals can modify multiple registered text/code files and create new safe text/code files
+inside one managed repository. Neo validates every path, hash, hunk, and metadata entry before an
+explicit approval, then applies the whole patch atomically. A failure restores modified files and
+removes created files. Delete, rename, binary, symlink, permission, hidden/secret, dependency,
+build/cache, and `.git` patches remain unsupported. Applying a patch never runs tests or creates a
+checkpoint automatically, and the original repository is never written.
+
 ## Controlled Git checkpoints
 
 Neo can initialize local Git tracking inside a registered managed repository copy, show status and
