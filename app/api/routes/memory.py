@@ -33,14 +33,16 @@ from app.services.llm import LLMClient, LLMRegistry, get_llm_client
 from app.services.reflection import ReflectionRunRequest, ReflectionRunResult, ReflectionService
 from app.services.retrieval import RetrievalRequest
 from app.services.review import MemoryReviewRequest, MemoryReviewResult, MemoryReviewService
+from app.services.rules.resolver import RuleResolver
+from app.services.rules.types import RuleResolveRequest
 
 router = APIRouter()
 StoreDependency = Annotated[MemoryStore, Depends(get_store)]
 
 
-def _llm_client(config_id: str | None = None) -> LLMClient:
+def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMClient:
     try:
-        return get_llm_client(config_id)
+        return get_llm_client(config_id, route_name=route_name)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -387,10 +389,19 @@ def send_chat_message(
     request: ChatSendRequest,
     store: StoreDependency,
 ) -> ChatSendResponse:
-    _get_required_chat(store, chat_id)
+    chat = _get_required_chat(store, chat_id)
+    rule_result = RuleResolver().resolve(
+        RuleResolveRequest(
+            context_type="chat",
+            context_id=str(chat_id),
+            project_id=str(chat.project_id) if chat.project_id is not None else None,
+        )
+    )
+    route_name = RuleResolver.route_name(rule_result, "chat", "chat")
     service = NeoChatService(
         store.db,
-        ollama=_llm_client(request.llm_id),
+        ollama=_llm_client(request.llm_id, route_name),
+        rule_result=rule_result,
     )
     try:
         reply = service.send_message(chat_id, request.prompt)
@@ -420,10 +431,19 @@ def stream_chat_message(
     background_tasks: BackgroundTasks,
     store: StoreDependency,
 ) -> StreamingResponse:
-    _get_required_chat(store, chat_id)
+    chat = _get_required_chat(store, chat_id)
+    rule_result = RuleResolver().resolve(
+        RuleResolveRequest(
+            context_type="chat",
+            context_id=str(chat_id),
+            project_id=str(chat.project_id) if chat.project_id is not None else None,
+        )
+    )
+    route_name = RuleResolver.route_name(rule_result, "chat", "chat")
     service = NeoChatService(
         store.db,
-        ollama=_llm_client(request.llm_id),
+        ollama=_llm_client(request.llm_id, route_name),
+        rule_result=rule_result,
     )
 
     def events():

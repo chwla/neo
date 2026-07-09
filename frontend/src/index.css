@@ -1206,6 +1206,58 @@ textarea:disabled {
   font-size: 12px;
 }
 
+.llm-model-row {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid rgba(21,244,238,.18);
+  border-radius: 6px;
+  background: rgba(0,20,18,.45);
+  color: #bff;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.llm-registry-secondary {
+  grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.2fr);
+  border-top: 1px solid rgba(57,255,20,.16);
+  padding-top: 18px;
+}
+
+.llm-route-row {
+  display: grid;
+  grid-template-columns: 120px minmax(140px, 1fr) minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.llm-route-row select {
+  min-width: 0;
+}
+
+.llm-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--neo-muted);
+  font-size: 12px;
+}
+
+.llm-usage-section {
+  margin-top: 18px;
+  border-top: 1px solid rgba(57,255,20,.16);
+  padding-top: 14px;
+}
+
+.llm-usage-list {
+  max-height: 180px;
+  overflow: auto;
+  color: var(--neo-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 .llm-number-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1223,6 +1275,10 @@ textarea:disabled {
 
 @media (max-width: 780px) {
   .llm-settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .llm-route-row {
     grid-template-columns: 1fr;
   }
 
@@ -3142,3 +3198,11 @@ textarea:disabled {
 .coding-agent-status small { margin-left: auto; }
 .coding-agent-runs { display: grid; gap: .4rem; margin: .75rem 0; }
 .coding-agent-runs button { display: flex; justify-content: space-between; gap: .75rem; text-align: left; }
+.recovery-panel { margin-top: 14px; padding: 12px; border: 1px solid #c9cbc4; border-radius: 10px; background: #f8f9f5; display: grid; gap: 10px; }
+.recovery-title { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.recovery-title p, .recovery-summary p, .recovery-panel .task-help { margin: 4px 0; color: #6c6e68; font-size: 12px; }
+.recovery-summary { display: grid; gap: 4px; }
+.recovery-summary > span { width: fit-content; margin-right: 6px; }
+.recovery-events ul { margin: 8px 0 0; padding-left: 18px; }
+.recovery-events li { margin: 4px 0; color: #4d504b; }
+.recovery-panel input { width: 100%; }

@@ -21,7 +21,9 @@ from app.services.files.service import WorkspaceFilesService
 from app.services.git.service import GitContextService
 from app.services.llm import ChatTurn, LLMClient, LLMMessage
 from app.services.projects import ProjectContextService
+from app.services.recovery.service import RecoveryService
 from app.services.retrieval import RetrievalRequest
+from app.services.rules.resolver import RuleResolver
 from app.services.search.content import FactResult, run_extractors
 from app.services.source_citations import CitationFormatter
 from app.services.symbol_awareness.service import SymbolAwarenessService
@@ -54,20 +56,27 @@ class NeoChatService:
         db: Session,
         ollama: LLMClient | None = None,
         extractor: MemoryExtractionService | None = None,
+        rule_result: dict[str, Any] | None = None,
     ) -> None:
         self.db = db
         self.store = MemoryStore(db)
         if ollama is None:
             from app.services.llm import get_llm_client
 
-            ollama = get_llm_client()
+            ollama = get_llm_client(route_name="chat")
         self.ollama = ollama
         self.extractor = extractor or MemoryExtractionService()
+        self.rule_result = rule_result or {
+            "resolved_rules": {},
+            "applied_profiles": [],
+            "warnings": [],
+        }
         self.context_assembler = ContextAssemblyService()
         self.explainer = MemoryExplanationService()
         self.direct_answers = DirectMemoryAnswerService()
         self.web_search = WebSearchService()
         self.project_context = ProjectContextService()
+        self.recovery = RecoveryService()
         self.task_context = TaskContextService()
         self.file_context = WorkspaceFilesService()
         self.code_index = CodeIndexService()
@@ -97,6 +106,12 @@ class NeoChatService:
         web_section = self._compact_web_context(web_context)
         project_section = project_context or "No project context loaded."
         task_section = task_context or "No task context loaded."
+        rule_result = getattr(
+            self,
+            "rule_result",
+            {"resolved_rules": {}, "applied_profiles": [], "warnings": []},
+        )
+        rule_section = RuleResolver.prompt_context(rule_result) or "No configured rules."
         system_prompt = (
             "You are Neo, a local personal AI assistant. Use the provided memory context "
             "when it is relevant. Do not claim memories that are not present. If memory "
@@ -140,6 +155,7 @@ class NeoChatService:
             f"Memory context:\n{self._compact_context(context)}\n\n"
             f"Project context:\n{project_section}\n\n"
             f"Task context:\n{task_section}\n\n"
+            f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
             f"Web context:\n{web_section}"
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
@@ -155,6 +171,17 @@ class NeoChatService:
         self.store.add_chat_message(chat_id, "user", prompt)
         self.store.rename_chat_from_prompt(chat_id, prompt)
         self.db.commit()
+
+        active_rules_reply = self._active_rules_reply(prompt)
+        if active_rules_reply is not None:
+            self.store.add_chat_message(chat_id, "assistant", active_rules_reply)
+            self.db.commit()
+            self.last_web_debug = {
+                "rules_loaded": True,
+                "rule_warnings": self.rule_result.get("warnings", []),
+                "web_search_needed": False,
+            }
+            return active_rules_reply
 
         agent_guidance = agent_run_guidance(prompt)
         if agent_guidance is not None:
@@ -184,6 +211,12 @@ class NeoChatService:
             self.db.commit()
             self.last_web_debug = {"coding_context_loaded": True, "web_search_needed": False}
             return coding_direct_reply
+        recovery_direct_reply = self.recovery.answer_for_prompt(prompt)
+        if recovery_direct_reply is not None:
+            self.store.add_chat_message(chat_id, "assistant", recovery_direct_reply)
+            self.db.commit()
+            self.last_web_debug = {"recovery_context_loaded": True, "web_search_needed": False}
+            return recovery_direct_reply
         git_direct_reply = self.git_context.answer_for_prompt(prompt)
         if git_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", git_direct_reply)
@@ -345,6 +378,25 @@ class NeoChatService:
         self.store.rename_chat_from_prompt(chat_id, prompt)
         self.db.commit()
 
+        active_rules_reply = self._active_rules_reply(prompt)
+        if active_rules_reply is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", active_rules_reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {
+                "rules_loaded": True,
+                "rule_warnings": self.rule_result.get("warnings", []),
+                "web_search_needed": False,
+            }
+            yield {"type": "chunk", "content": active_rules_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": active_rules_reply,
+                "web_debug": self.last_web_debug,
+            }
+            return
+
         agent_guidance = agent_run_guidance(prompt)
         if agent_guidance is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", agent_guidance)
@@ -391,6 +443,25 @@ class NeoChatService:
                 "type": "done",
                 "message_id": assistant.id,
                 "reply": coding_direct_reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
+        recovery_direct_reply = self.recovery.answer_for_prompt(prompt)
+        if recovery_direct_reply is not None:
+            assistant = self.store.add_chat_message(chat_id, "assistant", recovery_direct_reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {"recovery_context_loaded": True, "web_search_needed": False}
+            yield {"type": "chunk", "content": recovery_direct_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": recovery_direct_reply,
                 "thinking": None,
                 "prompt_tokens": None,
                 "completion_tokens": None,
@@ -674,6 +745,32 @@ class NeoChatService:
         candidates = self.extractor.persist_and_accept(self.store, extraction)
         self.db.commit()
         return [candidate.id for candidate in candidates]
+
+    def _active_rules_reply(self, prompt: str) -> str | None:
+        if not re.search(
+            r"\b(which|what|show|list).{0,30}\b(active |applied )?rules\b", prompt, re.I
+        ):
+            return None
+        profiles = self.rule_result.get("applied_profiles", [])
+        rules = self.rule_result.get("resolved_rules", {})
+        lines = ["Active rules for this chat:"]
+        if profiles:
+            lines.extend(f"- {item['name']} ({item['scope_type']})" for item in profiles)
+        else:
+            lines.append("- Built-in safety rules only")
+        guidance = [*rules.get("instructions", []), *rules.get("coding_style", [])]
+        if guidance:
+            lines.append("Guidance:")
+            lines.extend(f"- {item}" for item in guidance)
+        forbidden = rules.get("forbidden_paths", [])
+        if forbidden:
+            lines.append("Forbidden paths: " + ", ".join(forbidden))
+        warnings = self.rule_result.get("warnings", [])
+        if warnings:
+            lines.append("Warnings:")
+            lines.extend(f"- {item}" for item in warnings)
+        lines.append("Rules are guidance only and cannot grant permissions or disable safety.")
+        return "\n".join(lines)
 
     def _direct_reply(self, prompt: str) -> str | None:
         short = _short_input_clarification(prompt)

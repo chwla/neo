@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -9,3 +11,5 @@ class PatchProposalRequest(BaseModel):
     project_id: str | None = None
     agent_run_id: str | None = None
     file_ids: list[str] = Field(default_factory=list, max_length=10)
+    repo_id: str | None = None
+    resolved_rules: dict[str, Any] | None = None

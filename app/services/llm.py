@@ -29,6 +29,10 @@ class LLMChatResult(BaseModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     duration_ms: int | None = None
+    route_name: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+    fallback_used: bool = False
 
 
 class ChatTurn(BaseModel):
@@ -404,6 +408,17 @@ class LLMRegistry:
 
 
 def get_llm_client(
-    config_id: str | None = None, *, num_predict: int | None = None, timeout: int | None = None
+    config_id: str | None = None,
+    *,
+    num_predict: int | None = None,
+    timeout: int | None = None,
+    route_name: str = "chat",
 ) -> LLMClient:
-    return LLMRegistry().client(config_id, num_predict=num_predict, timeout=timeout)
+    from app.services.llm_registry.router import get_routed_client
+
+    return get_routed_client(
+        route_name,
+        config_id=config_id,
+        num_predict=num_predict,
+        timeout=timeout,
+    )

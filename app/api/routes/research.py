@@ -73,6 +73,9 @@ def start_research(req: StartResearchRequest):
         depth=req.depth,
         max_sources=max_sources,
         max_rounds=max_rounds,
+        project_id=req.project_id,
+        task_id=req.task_id,
+        repo_id=req.repo_id,
     )
     started = start_job(job.id)
     if not started:

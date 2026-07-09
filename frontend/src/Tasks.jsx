@@ -5,6 +5,7 @@ import FileAttachments from "./FileAttachments.jsx";
 import ArtifactsPanel from "./ArtifactsPanel.jsx";
 import PatchApplications from "./PatchApplications.jsx";
 import CodingAgent from "./CodingAgent.jsx";
+import RecoveryPanel from "./RecoveryPanel.jsx";
 
 const STATUSES = ["todo", "doing", "blocked", "done"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -433,6 +434,11 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
                   </div>
                   {selectedRun.run.final_output ? <div className="agent-final-output"><strong>Final output</strong><pre>{selectedRun.run.final_output}</pre></div> : null}
                   {selectedRun.artifacts.length ? <div className="agent-artifacts"><strong>Artifacts</strong>{selectedRun.artifacts.map((artifact) => <div key={artifact.id}><span>{artifact.title}</span>{artifact.note_id ? <button type="button" onClick={() => onOpenNote?.(artifact.note_id)}>Open Note</button> : null}</div>)}</div> : null}
+                  <RecoveryPanel
+                    runType="agent"
+                    runId={selectedRun.run.id}
+                    onUpdated={() => refreshAgentRuns(selectedTask.id, selectedRun.run.id)}
+                  />
                   <ArtifactsPanel agentRunId={selectedRun.run.id} refreshKey={artifactRefresh} onApplied={() => setArtifactRefresh((value) => value + 1)} />
                 </div>
               ) : null}

@@ -80,6 +80,15 @@ Chat/Research return clean limited-availability responses when current web evide
 | `NEO_SEARCH_PROVIDER` | `disabled` | `disabled` or `external_searxng` |
 | `NEO_SEARXNG_URL` | `http://127.0.0.1:8080` | Optional external SearXNG URL |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | External Ollama endpoint |
+| `NEO_LLM_PROVIDER` | `ollama` | Initial registry provider: `ollama` or `openai_compatible` |
+| `NEO_DEFAULT_MODEL` | `llama3.2:3b` | Initial chat/model route target |
+| `NEO_OPENAI_COMPAT_BASE_URL` | empty | Optional OpenAI-compatible `/v1` endpoint |
+| `NEO_OPENAI_COMPAT_API_KEY_REF` | `OPENAI_API_KEY` | Environment variable name containing the key |
+| `NEO_OPENAI_COMPAT_MODEL` | empty | Initial OpenAI-compatible model name |
+
+Provider/model/route configuration and usage logs persist in `/app/data/neo.db`. API key values
+are not stored in the database; pass the referenced environment variable to the container. Ollama
+and model weights remain external. Fallbacks must be configured explicitly and are recorded.
 
 SearXNG is optional and not required for the default Docker setup.
 Neo does not start a SearXNG sidecar.

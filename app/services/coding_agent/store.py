@@ -83,9 +83,22 @@ def initialize_coding_agent_tables() -> None:
             CREATE INDEX IF NOT EXISTS idx_workspace_agent_action_requests_status
             ON workspace_agent_action_requests(status, updated_at);
         """)
+        _ensure_column(conn, "workspace_coding_agent_runs", "forked_from_run_id", "TEXT")
+        _ensure_column(conn, "workspace_coding_agent_runs", "recovery_state", "TEXT")
+        _ensure_column(conn, "workspace_coding_agent_runs", "last_recoverable_at", "TEXT")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workspace_coding_agent_runs_fork
+            ON workspace_coding_agent_runs(forked_from_run_id)
+        """)
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, spec: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
 
 
 RUN_JSON = {"selected_files": "selected_files_json", "metadata": "metadata_json"}
@@ -116,6 +129,12 @@ def insert_run(item: dict) -> dict:
         """,
             values,
         )
+        for column in ("forked_from_run_id", "recovery_state", "last_recoverable_at"):
+            if item.get(column) is not None:
+                conn.execute(
+                    f"UPDATE workspace_coding_agent_runs SET {column}=? WHERE id=?",
+                    (item.get(column), item["id"]),
+                )
         conn.commit()
         return get_run(item["id"]) or item
     finally:

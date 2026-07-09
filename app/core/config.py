@@ -22,6 +22,14 @@ class Settings(BaseSettings):
         ),
     )
     chat_model: str = Field(default="llama3.2:3b")
+    llm_provider: str = Field(default="ollama")
+    default_model: str = Field(
+        default="llama3.2:3b",
+        validation_alias=AliasChoices("NEO_DEFAULT_MODEL", "NEO_CHAT_MODEL"),
+    )
+    openai_compat_base_url: str = Field(default="")
+    openai_compat_api_key_ref: str = Field(default="OPENAI_API_KEY")
+    openai_compat_model: str = Field(default="")
     chat_timeout_seconds: int = Field(default=240)
     chat_num_predict: int = Field(default=160)
     llm_config_path: str = Field(default="neo_llms.json")
@@ -163,6 +171,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def apply_data_directory(self) -> "Settings":
         fields_set = self.model_fields_set
+        if "default_model" not in fields_set:
+            self.default_model = self.chat_model
         if "web_search_enabled" not in fields_set:
             self.web_search_enabled = self.web_search_provider != "disabled"
         if not self.data_dir:

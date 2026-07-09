@@ -1,32 +1,29 @@
 Neo 
 ==========
 
-LLM providers
--------------
+LLM provider and model registry
+-------------------------------
 
-Neo can use any number of configured models. Native Ollama and OpenAI-compatible APIs are
-supported; the latter includes hosted APIs and local servers such as LM Studio, vLLM, and
-LocalAI. The active model can be changed from the chat composer.
+Neo stores providers, models, role routes, fallbacks, and usage history in the workspace database.
+Native Ollama and OpenAI-compatible chat-completions APIs are supported. Chat, Research, Agent,
+Coding Agent, Patch Proposal, and embedding entry points resolve through named routes. A retryable
+primary failure uses only an explicitly configured fallback, and both the failure and fallback are
+visible in `/api/llm/usage` and Settings → LLM Providers.
 
-On first start, Neo exposes the existing `NEO_CHAT_MODEL` / `NEO_OLLAMA_URL` settings as
-`ollama-default`. Add providers with `PUT /api/llms/{id}`. Configurations are stored locally in
-`neo_llms.json` (override with `NEO_LLM_CONFIG_PATH`). API keys are never returned by the API;
-prefer `api_key_env` so only the environment variable name is stored.
+API keys are never accepted or returned as provider data. Store only an environment-variable name
+such as `OPENAI_API_KEY` in `api_key_ref`; Neo resolves the value at call time and redacts it from
+stored errors. Existing `neo_llms.json` entries migrate without copying plaintext keys and remain
+available through the compatibility API.
 
-Example OpenAI-compatible configuration:
+Useful environment defaults:
 
-```json
-{
-  "id": "my-api-model",
-  "name": "My API model",
-  "provider": "openai_compatible",
-  "model": "provider-model-name",
-  "base_url": "https://provider.example/v1",
-  "api_key_env": "MY_PROVIDER_API_KEY",
-  "enabled": true,
-  "timeout_seconds": 240,
-  "num_predict": 512
-}
+```env
+NEO_LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+NEO_DEFAULT_MODEL=llama3.2:3b
+NEO_OPENAI_COMPAT_BASE_URL=
+NEO_OPENAI_COMPAT_API_KEY_REF=OPENAI_API_KEY
+NEO_OPENAI_COMPAT_MODEL=
 ```
 
 Run everything:

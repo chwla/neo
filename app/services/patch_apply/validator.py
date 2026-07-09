@@ -12,6 +12,7 @@ from app.services.patch_apply.parser import ParsedFilePatch, ParsedPatch, parse_
 from app.services.patch_apply.types import PatchTargetStatus, PatchValidationResult
 from app.services.repos import store as repo_store
 from app.services.repos.safety import ensure_inside
+from app.services.rules.safety import path_matches
 
 
 @dataclass(frozen=True)
@@ -223,7 +224,12 @@ def _prepare_file(repo: dict | None, target: dict, patch: ParsedFilePatch) -> Pr
         repo_file,
         target,
         patch,
-        path, original_bytes, decoded, updated, new_bytes, status,
+        path,
+        original_bytes,
+        decoded,
+        updated,
+        new_bytes,
+        status,
     )
 
 
@@ -251,6 +257,7 @@ def _prepare_components(
 
 def prepare_apply(artifact_id: str, file_id: str | None = None) -> PreparedApply:
     artifact, parsed, targets, legacy, repo = _prepare_components(artifact_id, file_id)
+    _enforce_rule_constraints(artifact, targets)
     files = [
         _prepare_file(
             repo,
@@ -262,9 +269,31 @@ def prepare_apply(artifact_id: str, file_id: str | None = None) -> PreparedApply
     return PreparedApply(artifact, repo, parsed, files, legacy)
 
 
+def _enforce_rule_constraints(artifact: dict, targets: list[dict]) -> None:
+    constraints = artifact.get("metadata", {}).get("rule_constraints", {})
+    if not constraints:
+        return
+    max_files = int(constraints.get("max_files", 8))
+    if len(targets) > max_files:
+        raise ValueError(f"Patch exceeds resolved rule max_files ({max_files}).")
+    forbidden = constraints.get("forbidden_paths", [])
+    blocked = [
+        item["relative_path"]
+        for item in targets
+        if path_matches(item.get("relative_path", ""), forbidden)
+    ]
+    if blocked:
+        raise ValueError("Patch targets forbidden path(s): " + ", ".join(blocked))
+    if not constraints.get("allow_new_files", True) and any(
+        item.get("change_type") == "create" for item in targets
+    ):
+        raise ValueError("Resolved rules do not allow new files.")
+
+
 def validation_result(artifact_id: str, file_id: str | None = None) -> PatchValidationResult:
     try:
         _artifact, parsed, targets, _legacy, repo = _prepare_components(artifact_id, file_id)
+        _enforce_rule_constraints(_artifact, targets)
     except (LookupError, ValueError) as exc:
         return PatchValidationResult(valid=False, target_files=[], warnings=[], errors=[str(exc)])
     statuses, errors = [], []

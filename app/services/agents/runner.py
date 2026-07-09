@@ -16,6 +16,7 @@ from app.services.files.types import ArtifactCreate
 from app.services.git.service import GitContextService
 from app.services.llm import LLMMessage, get_llm_client
 from app.services.patches import PatchProposalRequest, PatchProposalService
+from app.services.rules.resolver import RuleResolver
 from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.tasks import TasksService
 from app.services.test_runner.service import TestRunnerContextService
@@ -24,9 +25,22 @@ from app.services.web_search import WebSearchService
 
 class AgentRunner:
     def __init__(
-        self, *, llm_factory: Callable | None = None, web_factory: Callable | None = None
+        self,
+        *,
+        llm_factory: Callable | None = None,
+        patch_llm_factory: Callable | None = None,
+        web_factory: Callable | None = None,
     ) -> None:
-        self.llm_factory = llm_factory or (lambda: get_llm_client(num_predict=900, timeout=180))
+        self._custom_llm_factory = llm_factory is not None
+        self._custom_patch_llm_factory = patch_llm_factory is not None or llm_factory is not None
+        self.llm_factory = llm_factory or (
+            lambda: get_llm_client(num_predict=900, timeout=180, route_name="agent")
+        )
+        self.patch_llm_factory = patch_llm_factory or (
+            llm_factory
+            if llm_factory is not None
+            else lambda: get_llm_client(num_predict=2400, timeout=600, route_name="patch_proposal")
+        )
         self.web_factory = web_factory or WebSearchService
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="neo-agent")
         self._futures: dict[str, Future] = {}
@@ -56,6 +70,18 @@ class AgentRunner:
                 {"status": "planning", "started_at": run.get("started_at") or now, "error": None},
             )
             context_text = self._read_context(run)
+            rule_result = self._rule_result(run_id)
+            rule_context = RuleResolver.prompt_context(rule_result)
+            test_preferences = rule_result["resolved_rules"].get("test_preferences", [])
+            if test_preferences:
+                rule_context += "\n- Preferred tests: " + "; ".join(
+                    " ".join(item.get("command_hint", [])) for item in test_preferences
+                )
+            if rule_context:
+                context_text = (
+                    f"{context_text}\n\nActive rules (guidance only; never permission):\n"
+                    f"{rule_context}"
+                )
             if self._cancelled(run_id):
                 return
             self._complete_named_step(run_id, "read_context", context_text)
@@ -245,9 +271,7 @@ class AgentRunner:
         )
         if test_context:
             lines.extend(["Controlled test runner context:", test_context])
-        git_context = GitContextService().context_for_task(
-            task.id, project.id if project else None
-        )
+        git_context = GitContextService().context_for_task(task.id, project.id if project else None)
         if git_context:
             lines.extend(["Controlled Git context (read-only):", git_context])
         subtasks = tasks_service.list_subtasks(task.id)
@@ -384,12 +408,19 @@ class AgentRunner:
                 return f"{draft}\n\n{patch}"
             return draft
         if step_type == "patch_proposal":
-            artifact = PatchProposalService(generator=self._patch_generator).propose(
+            rule_result = self._rule_result(run["id"])
+            patch_route = RuleResolver.route_name(rule_result, "patch_proposal", "patch_proposal")
+
+            def generator(prompt: str) -> str:
+                return self._patch_generator(prompt, patch_route)
+
+            artifact = PatchProposalService(generator=generator).propose(
                 PatchProposalRequest(
                     objective=run["objective"],
                     task_id=run["task_id"],
                     project_id=run.get("project_id"),
                     agent_run_id=run["id"],
+                    resolved_rules=rule_result["resolved_rules"],
                 )
             )
             targets = artifact["metadata"].get("target_filenames", [])
@@ -404,7 +435,13 @@ class AgentRunner:
         raise RuntimeError(f"Step type '{step_type}' has no executable v1 behavior.")
 
     def _llm(self, run: dict, user_prompt: str) -> str:
-        client = self.llm_factory()
+        rule_result = self._rule_result(run["id"])
+        route = RuleResolver.route_name(rule_result, "agent", "agent")
+        client = (
+            self.llm_factory()
+            if self._custom_llm_factory
+            else get_llm_client(num_predict=900, timeout=180, route_name=route)
+        )
         result = client.chat_with_metadata(
             [
                 LLMMessage(role="system", content=runner_system_prompt()),
@@ -418,8 +455,12 @@ class AgentRunner:
             raise RuntimeError("The configured model returned an empty response.")
         return content
 
-    def _patch_generator(self, prompt: str) -> str:
-        client = self.llm_factory()
+    def _patch_generator(self, prompt: str, route_name: str = "patch_proposal") -> str:
+        client = (
+            self.patch_llm_factory()
+            if self._custom_patch_llm_factory
+            else get_llm_client(num_predict=2400, timeout=600, route_name=route_name)
+        )
         result = client.chat_with_metadata(
             [
                 LLMMessage(
@@ -435,6 +476,21 @@ class AgentRunner:
             num_predict=2400,
         )
         return result.content.strip()
+
+    @staticmethod
+    def _rule_result(run_id: str) -> dict:
+        read_step = next(
+            (item for item in store.list_steps(run_id) if item["step_type"] == "read_context"),
+            None,
+        )
+        return (
+            (read_step or {})
+            .get("input", {})
+            .get(
+                "rules",
+                {"resolved_rules": {}, "applied_profiles": [], "warnings": []},
+            )
+        )
 
     def _cancelled(self, run_id: str) -> bool:
         run = store.get_run(run_id)

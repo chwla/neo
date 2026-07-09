@@ -20,6 +20,8 @@ CodingRunStatus = Literal[
     "completed",
     "failed",
     "cancelled",
+    "interrupted",
+    "needs_review",
 ]
 ActionType = Literal[
     "apply_patch",
@@ -42,6 +44,7 @@ class CodingRunCreate(BaseModel):
     project_id: str | None = None
     repo_id: str | None = None
     max_iterations: int = Field(default=3, ge=1, le=10)
+    override_rules: dict[str, Any] | None = None
 
 
 class ActionDecisionRequest(BaseModel):
@@ -78,6 +81,9 @@ class CodingAgentRun(BaseModel):
     updated_at: str
     completed_at: str | None = None
     cancelled_at: str | None = None
+    forked_from_run_id: str | None = None
+    recovery_state: str | None = None
+    last_recoverable_at: str | None = None
 
 
 class AgentActionRequest(BaseModel):

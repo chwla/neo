@@ -206,7 +206,9 @@ def synthesize_report(
             plan=plan,
         )
 
-    client = ollama or get_llm_client(num_predict=800, timeout=300)
+    client = ollama or get_llm_client(
+        num_predict=800, timeout=300, route_name="research"
+    )
     top_evidence = sorted(
         evidence, key=lambda e: e.relevance_score + e.quality_score, reverse=True
     )[:15]

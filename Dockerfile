@@ -16,6 +16,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEO_DATA_DIR=/app/data \
     NEO_FRONTEND_DIR=/app/app/static \
     NEO_SEARCH_PROVIDER=disabled \
+    NEO_LLM_PROVIDER=ollama \
+    NEO_DEFAULT_MODEL=llama3.2:3b \
     NEO_SEARXNG_URL=http://127.0.0.1:8080 \
     OLLAMA_BASE_URL=http://host.docker.internal:11434
 

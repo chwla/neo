@@ -6,6 +6,8 @@ import uuid
 from app.services.agents import store as agent_store
 from app.services.patch_apply import store as patch_store
 from app.services.repos import store as repo_store
+from app.services.rules.resolver import RuleResolver
+from app.services.rules.types import RuleResolveRequest
 from app.services.tasks import store as task_store
 from app.services.test_runner import store
 from app.services.test_runner.detectors import detect_commands
@@ -32,7 +34,27 @@ class TestRunnerService:
     def detect(self, repo_id: str) -> list[dict]:
         repo = self._repo(repo_id)
         root = resolve_working_directory(repo["workspace_path"], ".")
-        return [item.model_dump() for item in detect_commands(root)]
+        detected = [item.model_dump() for item in detect_commands(root)]
+        result = RuleResolver().resolve(
+            RuleResolveRequest(
+                context_type="test", repo_id=repo_id, project_id=repo.get("project_id")
+            )
+        )
+        for preference in result["resolved_rules"].get("test_preferences", []):
+            command = preference.get("command_hint", [])
+            try:
+                validate_command(command)
+            except ValueError:
+                continue
+            candidate = {
+                "name": preference.get("name", "Preferred test"),
+                "command": command,
+                "working_directory": ".",
+                "timeout_seconds": 120,
+            }
+            if candidate["command"] not in [item["command"] for item in detected]:
+                detected.append(candidate)
+        return detected
 
     def create_command(self, repo_id: str, request: TestCommandCreate) -> dict:
         repo = self._repo(repo_id)

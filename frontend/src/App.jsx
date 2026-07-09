@@ -8,6 +8,8 @@ import Tasks from "./Tasks.jsx";
 import Files from "./Files.jsx";
 import Repos from "./Repos.jsx";
 import CodingAgent from "./CodingAgent.jsx";
+import RulesProfiles from "./RulesProfiles.jsx";
+import RecoveryPanel from "./RecoveryPanel.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -592,6 +594,7 @@ function ChatComposer({
   onToggleAgentDetails,
   onOpenAgentTask,
   onSaveAgentRun,
+  onRefreshAgentRun,
 }) {
   const textareaRef = useRef(null);
 
@@ -745,6 +748,11 @@ function ChatComposer({
                 ))}
                 {agentRun.run.error ? <div className="chat-agent-error">{agentRun.run.error}</div> : null}
                 {agentRun.run.final_output ? <pre>{agentRun.run.final_output}</pre> : null}
+                <RecoveryPanel
+                  runType="agent"
+                  runId={agentRun.run.id}
+                  onUpdated={onRefreshAgentRun}
+                />
               </div>
             ) : null}
           </div>
@@ -898,23 +906,38 @@ function WebSearchSettingsDialog({ onClose }) {
   );
 }
 
-const EMPTY_LLM_FORM = {
+const EMPTY_PROVIDER_FORM = {
   id: "",
   name: "",
-  provider: "ollama",
-  model: "",
+  provider_type: "ollama",
   base_url: "http://127.0.0.1:11434",
-  api_key: "",
-  api_key_env: "",
+  api_key_ref: "",
+  default_model: "",
   enabled: true,
-  timeout_seconds: 240,
-  num_predict: 512,
+  priority: 100,
+  timeout_seconds: 60,
+};
+
+const EMPTY_MODEL_FORM = {
+  id: "",
+  provider_id: "",
+  model_name: "",
+  display_name: "",
+  context_window: "",
+  max_output_tokens: 512,
+  supports_tools: false,
+  supports_json: false,
+  supports_vision: false,
+  supports_embeddings: false,
+  enabled: true,
 };
 
 function LLMSettingsDialog({ onClose, onChanged }) {
-  const [config, setConfig] = useState({ active_id: "", llms: [] });
-  const [form, setForm] = useState(EMPTY_LLM_FORM);
-  const [editingId, setEditingId] = useState(null);
+  const [registry, setRegistry] = useState({ providers: [], models: [], routes: [], calls: [] });
+  const [providerForm, setProviderForm] = useState(EMPTY_PROVIDER_FORM);
+  const [modelForm, setModelForm] = useState(EMPTY_MODEL_FORM);
+  const [editingProviderId, setEditingProviderId] = useState(null);
+  const [editingModelId, setEditingModelId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState(null);
@@ -922,9 +945,15 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   const [status, setStatus] = useState("");
 
   const load = useCallback(async () => {
-    const next = await api.llms();
-    setConfig(next);
-    onChanged(next);
+    const [providers, models, routes, usage, legacy] = await Promise.all([
+      api.llmProviders(), api.llmModels(), api.llmRoutes(), api.llmUsage(), api.llms(),
+    ]);
+    const next = {
+      providers: providers.providers || [], models: models.models || [],
+      routes: routes.routes || [], calls: usage.calls || [],
+    };
+    setRegistry(next);
+    onChanged(legacy);
     return next;
   }, [onChanged]);
 
@@ -942,55 +971,53 @@ function LLMSettingsDialog({ onClose, onChanged }) {
     };
   }, [load]);
 
-  function updateField(key, value) {
-    setForm((current) => {
+  function updateProviderField(key, value) {
+    setProviderForm((current) => {
       const next = { ...current, [key]: value };
-      if (key === "provider" && !editingId) {
+      if (key === "provider_type" && !editingProviderId) {
         next.base_url = value === "ollama" ? "http://127.0.0.1:11434" : "";
       }
       return next;
     });
   }
 
-  function resetForm() {
-    setEditingId(null);
-    setForm(EMPTY_LLM_FORM);
+  function resetProviderForm() {
+    setEditingProviderId(null);
+    setProviderForm(EMPTY_PROVIDER_FORM);
   }
 
-  function editLlm(llm) {
-    setEditingId(llm.id);
-    setForm({
-      ...EMPTY_LLM_FORM,
-      ...llm,
-      api_key: "",
-      api_key_env: llm.api_key_env || "",
-    });
+  function editProvider(provider) {
+    setEditingProviderId(provider.id);
+    setProviderForm({ ...EMPTY_PROVIDER_FORM, ...provider, api_key_ref: provider.api_key_ref || "" });
     setStatus("");
     setError("");
   }
 
-  async function saveLlm(event) {
+  async function saveProvider(event) {
     event.preventDefault();
     setSaving(true);
     setError("");
     setStatus("");
     try {
       const payload = {
-        ...form,
-        id: form.id.trim(),
-        name: form.name.trim(),
-        model: form.model.trim(),
-        base_url: form.base_url.trim(),
-        api_key_env: form.api_key_env.trim() || null,
-        timeout_seconds: Number(form.timeout_seconds),
-        num_predict: Number(form.num_predict),
+        ...providerForm,
+        id: providerForm.id.trim() || null,
+        name: providerForm.name.trim(),
+        base_url: providerForm.base_url.trim() || null,
+        api_key_ref: providerForm.api_key_ref.trim() || null,
+        default_model: providerForm.default_model.trim() || null,
+        priority: Number(providerForm.priority),
+        timeout_seconds: Number(providerForm.timeout_seconds),
       };
-      if (!form.api_key) delete payload.api_key;
-      const next = await api.saveLlm(payload);
-      setConfig(next);
-      onChanged(next);
-      setStatus(editingId ? "LLM updated." : "LLM added.");
-      resetForm();
+      if (editingProviderId) {
+        delete payload.id;
+        await api.updateLlmProvider(editingProviderId, payload);
+      } else {
+        await api.createLlmProvider(payload);
+      }
+      await load();
+      setStatus(editingProviderId ? "Provider updated." : "Provider added.");
+      resetProviderForm();
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
@@ -998,32 +1025,50 @@ function LLMSettingsDialog({ onClose, onChanged }) {
     }
   }
 
-  async function selectLlm(id) {
-    setError("");
-    setStatus("");
+  function editModel(model) {
+    setEditingModelId(model.id);
+    setModelForm({
+      ...EMPTY_MODEL_FORM, ...model,
+      context_window: model.context_window || "",
+      max_output_tokens: model.max_output_tokens || 512,
+    });
+  }
+
+  async function saveModel(event) {
+    event.preventDefault();
+    setSaving(true); setError(""); setStatus("");
     try {
-      const next = await api.selectLlm(id);
-      setConfig(next);
-      onChanged(next);
-      setStatus("Active LLM changed.");
+      const payload = {
+        ...modelForm,
+        id: modelForm.id.trim() || null,
+        model_name: modelForm.model_name.trim(),
+        display_name: modelForm.display_name.trim() || null,
+        context_window: modelForm.context_window ? Number(modelForm.context_window) : null,
+        max_output_tokens: Number(modelForm.max_output_tokens),
+      };
+      if (editingModelId) {
+        delete payload.id; delete payload.provider_id;
+        await api.updateLlmModel(editingModelId, payload);
+      } else {
+        await api.createLlmModel(payload);
+      }
+      await load();
+      setStatus(editingModelId ? "Model updated." : "Model added.");
+      setEditingModelId(null); setModelForm(EMPTY_MODEL_FORM);
     } catch (nextError) {
       setError(errorMessage(nextError));
+    } finally {
+      setSaving(false);
     }
   }
 
-  async function testLlm(id) {
-    setTestingId(id);
-    setError("");
-    setStatus("");
+  async function testProvider(provider) {
+    const model = registry.models.find((item) => item.provider_id === provider.id && item.enabled);
+    if (!model) { setError("Add an enabled model before testing this provider."); return; }
+    setTestingId(provider.id); setError(""); setStatus("");
     try {
-      const result = await api.testLlm(id);
-      setStatus(
-        result.available && result.model_available
-          ? "Connection and LLM check passed."
-          : result.available
-            ? "Server is reachable, but the configured LLM was not found."
-            : "Server could not be reached.",
-      );
+      const result = await api.testLlmProvider(provider.id, model.id);
+      setStatus(result.available ? `Health passed in ${result.latency_ms} ms.` : result.error);
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
@@ -1031,113 +1076,155 @@ function LLMSettingsDialog({ onClose, onChanged }) {
     }
   }
 
-  async function deleteLlm(id) {
-    setError("");
-    setStatus("");
+  async function updateRoute(route, modelId, fallback = false) {
+    const model = registry.models.find((item) => item.id === modelId);
     try {
-      await api.deleteLlm(id);
-      const next = await load();
-      setConfig(next);
-      if (editingId === id) resetForm();
-      setStatus("LLM removed.");
+      const payload = fallback
+        ? { fallback_provider_id: model?.provider_id || null, fallback_model_id: model?.id || null }
+        : { provider_id: model?.provider_id || null, model_id: model?.id || null };
+      await api.updateLlmRoute(route.route_name, payload);
+      await load(); setStatus(`${route.route_name} route updated.`);
     } catch (nextError) {
       setError(errorMessage(nextError));
     }
   }
 
+  async function toggleProvider(provider) {
+    setError("");
+    try {
+      await api.updateLlmProvider(provider.id, { enabled: !provider.enabled });
+      await load();
+      setStatus(`${provider.name} ${provider.enabled ? "disabled" : "enabled"}.`);
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    }
+  }
+
+  async function testRoute(routeName) {
+    setTestingId(routeName); setError("");
+    try {
+      const result = await api.testLlmRoute(routeName);
+      setStatus(result.available ? `${routeName} is available.` : result.error);
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setTestingId(null);
+    }
+  }
+
   return (
-    <Modal title="LLMs" onClose={onClose} wide className="llm-settings-dialog">
+    <Modal title="LLM Providers" onClose={onClose} wide className="llm-settings-dialog">
+      <p className="dialog-caption">API keys are read from environment variables only. Fallbacks and failures are recorded in usage history.</p>
       <div className="llm-settings-layout">
         <section className="llm-config-list">
-          <div className="llm-section-heading">Configured LLMs</div>
+          <div className="llm-section-heading">Providers and models</div>
           {loading ? (
             <p className="dialog-caption">Loading...</p>
-          ) : config.llms.length === 0 ? (
-            <p className="dialog-caption">No LLMs configured.</p>
+          ) : registry.providers.length === 0 ? (
+            <p className="dialog-caption">No providers configured.</p>
           ) : (
-            config.llms.map((llm) => (
-              <article className={`llm-config-card ${config.active_id === llm.id ? "active" : ""}`} key={llm.id}>
+            registry.providers.map((provider) => (
+              <article className="llm-config-card" key={provider.id}>
                 <div className="llm-config-title">
-                  <strong>{llm.name}</strong>
-                  {config.active_id === llm.id && <span>Active</span>}
+                  <strong>{provider.name}</strong><span>{provider.enabled ? "Enabled" : "Disabled"}</span>
                 </div>
-                <div className="llm-config-meta">{llm.model}</div>
-                <div className="llm-config-meta">{llm.provider === "ollama" ? "Local / Ollama" : "OpenAI-compatible / API or local"}</div>
+                <div className="llm-config-meta">{provider.provider_type} · {provider.base_url || "No endpoint"}</div>
+                <div className="llm-config-meta">Key: {provider.api_key_ref || "not required"} {provider.api_key_configured ? "(available)" : ""}</div>
+                {registry.models.filter((model) => model.provider_id === provider.id).map((model) => (
+                  <button type="button" className="llm-model-row" key={model.id} onClick={() => editModel(model)}>
+                    {model.display_name || model.model_name} · {model.enabled ? "enabled" : "disabled"}
+                  </button>
+                ))}
                 <div className="llm-card-actions">
-                  {config.active_id !== llm.id && <NeoButton onClick={() => selectLlm(llm.id)}>Use</NeoButton>}
-                  <NeoButton onClick={() => testLlm(llm.id)} disabled={testingId === llm.id}>
-                    {testingId === llm.id ? "Testing..." : "Test"}
+                  <NeoButton onClick={() => testProvider(provider)} disabled={testingId === provider.id}>
+                    {testingId === provider.id ? "Testing..." : "Health"}
                   </NeoButton>
-                  <NeoButton onClick={() => editLlm(llm)}>Edit</NeoButton>
-                  <NeoButton className="danger" onClick={() => deleteLlm(llm.id)}>Delete</NeoButton>
+                  <NeoButton onClick={() => editProvider(provider)}>Edit</NeoButton>
+                  <NeoButton onClick={() => toggleProvider(provider)}>
+                    {provider.enabled ? "Disable" : "Enable"}
+                  </NeoButton>
                 </div>
               </article>
             ))
           )}
         </section>
 
-        <form className="llm-config-form" onSubmit={saveLlm}>
-          <div className="llm-section-heading">{editingId ? "Edit LLM" : "Add LLM"}</div>
+        <form className="llm-config-form" onSubmit={saveProvider}>
+          <div className="llm-section-heading">{editingProviderId ? "Edit provider" : "Add provider"}</div>
           <Field label="Connection type">
-            <select value={form.provider} onChange={(event) => updateField("provider", event.target.value)}>
+            <select value={providerForm.provider_type} onChange={(event) => updateProviderField("provider_type", event.target.value)}>
               <option value="ollama">Local / Ollama</option>
               <option value="openai_compatible">OpenAI-compatible / API or local</option>
+              <option value="disabled">Disabled</option>
             </select>
           </Field>
-          <Field label="Configuration ID">
-            <input value={form.id} onChange={(event) => updateField("id", event.target.value)} placeholder="my-llm" disabled={Boolean(editingId)} required />
+          <Field label="Provider ID">
+            <input value={providerForm.id} onChange={(event) => updateProviderField("id", event.target.value)} placeholder="my-provider" disabled={Boolean(editingProviderId)} />
           </Field>
           <Field label="Display name">
-            <input value={form.name} onChange={(event) => updateField("name", event.target.value)} placeholder="My local LLM" required />
-          </Field>
-          <Field label="LLM identifier">
-            <input value={form.model} onChange={(event) => updateField("model", event.target.value)} placeholder={form.provider === "ollama" ? "llama3.2:3b" : "provider-llm-name"} required />
+            <input value={providerForm.name} onChange={(event) => updateProviderField("name", event.target.value)} required />
           </Field>
           <Field label="Endpoint">
-            <input value={form.base_url} onChange={(event) => updateField("base_url", event.target.value)} placeholder={form.provider === "ollama" ? "http://127.0.0.1:11434" : "https://provider.example/v1"} required />
+            <input value={providerForm.base_url} onChange={(event) => updateProviderField("base_url", event.target.value)} placeholder="https://provider.example/v1" />
           </Field>
-          {form.provider === "openai_compatible" && (
-            <>
-              <Field label="API key">
-                <input type="password" autoComplete="off" value={form.api_key} onChange={(event) => updateField("api_key", event.target.value)} placeholder={editingId && config.llms.find((llm) => llm.id === editingId)?.has_api_key ? "Configured — leave blank to keep" : "Optional for local APIs"} />
-              </Field>
-              <Field label="API key environment variable">
-                <input value={form.api_key_env} onChange={(event) => updateField("api_key_env", event.target.value)} placeholder="MY_LLM_API_KEY" />
-              </Field>
-            </>
-          )}
+          <Field label="API key environment variable">
+            <input value={providerForm.api_key_ref} onChange={(event) => updateProviderField("api_key_ref", event.target.value)} placeholder="OPENAI_API_KEY" />
+          </Field>
+          <Field label="Default model name">
+            <input value={providerForm.default_model} onChange={(event) => updateProviderField("default_model", event.target.value)} />
+          </Field>
           <div className="llm-number-fields">
             <Field label="Timeout (seconds)">
-              <input type="number" min="1" max="3600" value={form.timeout_seconds} onChange={(event) => updateField("timeout_seconds", event.target.value)} />
+              <input type="number" min="1" max="3600" value={providerForm.timeout_seconds} onChange={(event) => updateProviderField("timeout_seconds", event.target.value)} />
             </Field>
-            <Field label="Output token limit">
-              <input type="number" min="1" max="32768" value={form.num_predict} onChange={(event) => updateField("num_predict", event.target.value)} />
+            <Field label="Priority">
+              <input type="number" min="0" value={providerForm.priority} onChange={(event) => updateProviderField("priority", event.target.value)} />
             </Field>
           </div>
           <label className="llm-enabled-toggle">
-            <input type="checkbox" checked={form.enabled} onChange={(event) => updateField("enabled", event.target.checked)} />
+            <input type="checkbox" checked={providerForm.enabled} onChange={(event) => updateProviderField("enabled", event.target.checked)} />
             Enabled
           </label>
           <div className="settings-actions">
-            <NeoButton type="submit" disabled={saving}>{saving ? "Saving..." : editingId ? "Save changes" : "Add LLM"}</NeoButton>
-            {editingId && <NeoButton type="button" onClick={resetForm}>Cancel</NeoButton>}
+            <NeoButton type="submit" disabled={saving}>{saving ? "Saving..." : editingProviderId ? "Save provider" : "Add provider"}</NeoButton>
+            {editingProviderId && <NeoButton type="button" onClick={resetProviderForm}>Cancel</NeoButton>}
           </div>
         </form>
       </div>
+
+      <div className="llm-settings-layout llm-registry-secondary">
+        <form className="llm-config-form" onSubmit={saveModel}>
+          <div className="llm-section-heading">{editingModelId ? "Edit model" : "Add model"}</div>
+          <Field label="Provider"><select value={modelForm.provider_id} disabled={Boolean(editingModelId)} onChange={(event) => setModelForm({ ...modelForm, provider_id: event.target.value })}><option value="">Select provider</option>{registry.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></Field>
+          <Field label="Model ID"><input value={modelForm.id} disabled={Boolean(editingModelId)} onChange={(event) => setModelForm({ ...modelForm, id: event.target.value })} placeholder="optional-stable-id" /></Field>
+          <Field label="Model name"><input value={modelForm.model_name} onChange={(event) => setModelForm({ ...modelForm, model_name: event.target.value })} required /></Field>
+          <Field label="Display name"><input value={modelForm.display_name} onChange={(event) => setModelForm({ ...modelForm, display_name: event.target.value })} /></Field>
+          <Field label="Max output tokens"><input type="number" min="1" value={modelForm.max_output_tokens} onChange={(event) => setModelForm({ ...modelForm, max_output_tokens: event.target.value })} /></Field>
+          <div className="llm-capabilities"><label><input type="checkbox" checked={modelForm.supports_tools} onChange={(event) => setModelForm({ ...modelForm, supports_tools: event.target.checked })} /> Tools</label><label><input type="checkbox" checked={modelForm.supports_json} onChange={(event) => setModelForm({ ...modelForm, supports_json: event.target.checked })} /> JSON</label><label><input type="checkbox" checked={modelForm.supports_vision} onChange={(event) => setModelForm({ ...modelForm, supports_vision: event.target.checked })} /> Vision</label><label><input type="checkbox" checked={modelForm.supports_embeddings} onChange={(event) => setModelForm({ ...modelForm, supports_embeddings: event.target.checked })} /> Embeddings</label></div>
+          <label className="llm-enabled-toggle"><input type="checkbox" checked={modelForm.enabled} onChange={(event) => setModelForm({ ...modelForm, enabled: event.target.checked })} /> Enabled</label>
+          <div className="settings-actions"><NeoButton type="submit" disabled={saving || !modelForm.provider_id}>{editingModelId ? "Save model" : "Add model"}</NeoButton>{editingModelId && <NeoButton type="button" onClick={() => { setEditingModelId(null); setModelForm(EMPTY_MODEL_FORM); }}>Cancel</NeoButton>}</div>
+        </form>
+        <section className="llm-config-list">
+          <div className="llm-section-heading">Role routes and fallbacks</div>
+          {registry.routes.map((route) => <div className="llm-route-row" key={route.id}><strong>{route.route_name}</strong><select aria-label={`${route.route_name} primary model`} value={route.model_id || ""} onChange={(event) => updateRoute(route, event.target.value)}>{registry.models.filter((model) => model.enabled).map((model) => <option key={model.id} value={model.id}>{model.display_name || model.model_name}</option>)}</select><select aria-label={`${route.route_name} fallback model`} value={route.fallback_model_id || ""} onChange={(event) => updateRoute(route, event.target.value, true)}><option value="">No fallback</option>{registry.models.filter((model) => model.enabled && model.id !== route.model_id).map((model) => <option key={model.id} value={model.id}>{model.display_name || model.model_name}</option>)}</select><NeoButton onClick={() => testRoute(route.route_name)}>{testingId === route.route_name ? "Testing..." : "Test"}</NeoButton></div>)}
+        </section>
+      </div>
+      <section className="llm-usage-section"><div className="llm-section-heading">Usage history</div>{registry.calls.length === 0 ? <p className="dialog-caption">No routed calls recorded yet.</p> : <div className="llm-usage-list">{registry.calls.slice(0, 20).map((call) => <div key={call.id}><strong>{call.route_name}</strong> · {call.status} · {call.total_tokens ?? "—"} tokens · {call.latency_ms ?? "—"} ms{call.fallback_used ? " · fallback" : ""}{call.error ? ` · ${call.error}` : ""}</div>)}</div>}</section>
       {error && <div className="neo-error">{error}</div>}
       {status && <div className="settings-status">{status}</div>}
     </Modal>
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
       <div className="settings-menu">
         <NeoButton className="w-full" onClick={onOpenLLMs}>
-          LLMs
+          LLM Providers
         </NeoButton>
+        <NeoButton className="w-full" onClick={onOpenRules}>Rules &amp; Profiles</NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -1792,6 +1879,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
+  const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -2632,12 +2720,16 @@ export default function App() {
           onToggleAgentDetails={() => setChatAgentDetailsOpen((open) => !open)}
           onOpenAgentTask={openAgentTask}
           onSaveAgentRun={handleSaveChatAgentRun}
+          onRefreshAgentRun={async () => {
+            if (chatAgentRun?.run?.id) setChatAgentRun(await api.agentRun(chatAgentRun.run.id));
+          }}
         />
       </main>
       )}
 
       {showSettings && (
         <SettingsDialog
+          onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenLLMs={() => {
             setShowSettings(false);
             setShowLlmSettings(true);
@@ -2693,6 +2785,7 @@ export default function App() {
           onChanged={handleLlmConfigChanged}
         />
       )}
+      {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />

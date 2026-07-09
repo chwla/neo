@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import app.services.coding_agent.store as store
+import app.services.recovery.store as recovery_store
 from app.services.agents import store as agent_store
 from app.services.coding_agent.context import CodingContextSelector
 from app.services.coding_agent.planner import CodingTaskPlanner
@@ -18,6 +19,9 @@ from app.services.patch_apply.types import PatchApplyRequest
 from app.services.patches.service import PatchProposalService
 from app.services.patches.types import PatchProposalRequest
 from app.services.repos import store as repo_store
+from app.services.rules.resolver import RuleResolver
+from app.services.rules.safety import path_matches
+from app.services.rules.types import RuleResolveRequest
 from app.services.test_runner import store as test_store
 from app.services.test_runner.service import TestRunnerService
 from app.services.test_runner.types import TestRunRequest
@@ -47,6 +51,16 @@ class CodingAgentOrchestrator:
             objective, request.task_id, request.project_id
         )
         repo = self._resolve_repo(request.repo_id, project_id)
+        rule_result = RuleResolver().resolve(
+            RuleResolveRequest(
+                context_type="coding_agent",
+                project_id=project_id,
+                task_id=task.id,
+                repo_id=repo["id"],
+                override_rules=request.override_rules,
+            )
+        )
+        rules = rule_result["resolved_rules"]
         now = store.now_iso()
         agent_run = agent_store.insert_run(
             {
@@ -87,11 +101,18 @@ class CodingAgentOrchestrator:
                 "metadata": {
                     "created_subtask_ids": [item.id for item in subtasks],
                     "test_status": "not_run",
+                    "resolved_rules": rules,
+                    "applied_profile_ids": [item["id"] for item in rule_result["applied_profiles"]],
+                    "applied_profiles": rule_result["applied_profiles"],
+                    "rule_warnings": rule_result["warnings"],
                 },
                 "created_at": now,
                 "updated_at": now,
                 "completed_at": None,
                 "cancelled_at": None,
+                "forked_from_run_id": None,
+                "recovery_state": "active",
+                "last_recoverable_at": now,
             }
         )
         try:
@@ -104,6 +125,16 @@ class CodingAgentOrchestrator:
             )
             self._status(coding_run["id"], "selecting_context")
             files = self.context_selector.select(repo, objective, task.id, project_id)
+            forbidden = rules.get("forbidden_paths", [])
+            files = [
+                item for item in files if not path_matches(item.get("relative_path", ""), forbidden)
+            ]
+            max_files = rules.get("patch_constraints", {}).get("max_files", 8)
+            files = files[:max_files]
+            if not files:
+                raise ValueError(
+                    "Rule constraints excluded every candidate file from coding context."
+                )
             store.update_run(
                 coding_run["id"], {"selected_files": files, "updated_at": store.now_iso()}
             )
@@ -258,6 +289,10 @@ class CodingAgentOrchestrator:
 
     def detail(self, run_id: str) -> dict:
         run = self._run(run_id)
+        recovery_events, _ = recovery_store.list_events(
+            run_type="coding_agent", run_id=run_id, limit=50
+        )
+        forks, _ = store.list_runs(limit=200)
         return {
             "coding_run": run,
             "agent_run": agent_store.get_run(run["agent_run_id"]),
@@ -283,6 +318,12 @@ class CodingAgentOrchestrator:
                 ),
                 None,
             ),
+            "recovery_events": recovery_events,
+            "forks": [
+                {"id": item["id"], "objective": item["objective"], "status": item["status"]}
+                for item in forks
+                if item.get("forked_from_run_id") == run_id
+            ],
         }
 
     def _execute(self, action: dict, run: dict, options: dict) -> dict:
@@ -316,6 +357,9 @@ class CodingAgentOrchestrator:
                 + f". Application: {application['id']}",
             )
             commands = test_store.list_commands(run["repo_id"], include_disabled=False)
+            preferences = (
+                run.get("metadata", {}).get("resolved_rules", {}).get("test_preferences", [])
+            )
             self._status(run["id"], "waiting_test_approval")
             if commands:
                 self._step(
@@ -333,7 +377,8 @@ class CodingAgentOrchestrator:
                         "test_commands": [
                             {"id": item["id"], "name": item["name"], "command": item["command"]}
                             for item in commands
-                        ]
+                        ],
+                        "test_preferences": preferences,
                     },
                 )
             else:
@@ -418,11 +463,31 @@ class CodingAgentOrchestrator:
             return {"test_status": "skipped"}
         if kind == "create_checkpoint":
             self._status(run["id"], "creating_checkpoint")
+            rules = run.get("metadata", {}).get("resolved_rules", {})
+            template = rules.get("checkpoint_template")
+            changed_files = (
+                ", ".join(
+                    item.get("relative_path", "")
+                    for item in (self.detail(run["id"]).get("patch_application") or {}).get(
+                        "files", []
+                    )
+                )
+                or "none"
+            )
+            values = {
+                "task_title": run["objective"][:120],
+                "changed_files": changed_files,
+                "test_status": run.get("metadata", {}).get("test_status", "not_run"),
+            }
+            try:
+                message = (template or "Approved coding-agent checkpoint.").format_map(values)
+            except (KeyError, ValueError):
+                message = "Approved coding-agent checkpoint."
             checkpoint = self.git_service.create_checkpoint(
                 run["repo_id"],
                 CheckpointCreateRequest(
                     title=f"Coding agent: {run['objective'][:120]}",
-                    message="Approved coding-agent checkpoint.",
+                    message=message,
                     task_id=run["task_id"],
                     agent_run_id=run["agent_run_id"],
                     patch_application_id=run.get("patch_application_id"),
@@ -460,11 +525,13 @@ class CodingAgentOrchestrator:
         self._status(run_id, "proposing_patch")
         artifact = self.patch_service.propose(
             PatchProposalRequest(
-                objective=objective,
+                objective=self._objective_with_rules(objective, run),
                 task_id=run["task_id"],
                 project_id=run.get("project_id"),
                 agent_run_id=run["agent_run_id"],
                 file_ids=[item["file_id"] for item in run["selected_files"]],
+                repo_id=run.get("repo_id"),
+                resolved_rules=run.get("metadata", {}).get("resolved_rules", {}),
             )
         )
         store.update_run(
@@ -561,12 +628,19 @@ class CodingAgentOrchestrator:
         test_status = (
             test.get("status") if test else run.get("metadata", {}).get("test_status", "not run")
         )
+        profile_names = ", ".join(
+            item.get("name", item.get("id", ""))
+            for item in run.get("metadata", {}).get("applied_profiles", [])
+        )
+        rule_warnings = "; ".join(run.get("metadata", {}).get("rule_warnings", []))
         summary = (
             f"Patch applied: {'yes' if patch and patch.get('status') == 'applied' else 'no'}\n"
             f"Tests run: {'yes' if test else 'no'}\n"
             f"Test status: {test_status}\n"
             f"Checkpoint created: {'yes' if checkpoint_created else 'no'}\n"
             f"Files changed: {files or 'none recorded'}\n"
+            f"Applied rule profiles: {profile_names or 'built-in safety only'}\n"
+            f"Rule warnings: {rule_warnings or 'none'}\n"
             "Remaining risks: review the managed diff and validation output.\n"
             "Next recommended action: inspect the final workspace state."
         )
@@ -719,4 +793,14 @@ class CodingAgentOrchestrator:
         return "Files considered:\n" + "\n".join(
             f"- {item['relative_path']} — {item['reason']} Source: {item['source']}."
             for item in files
+        )
+
+    @staticmethod
+    def _objective_with_rules(objective: str, run: dict) -> str:
+        result = {"resolved_rules": run.get("metadata", {}).get("resolved_rules", {})}
+        context = RuleResolver.prompt_context(result)
+        return objective + (
+            f"\n\nResolved project rules (guidance; never permission):\n{context}"
+            if context
+            else ""
         )

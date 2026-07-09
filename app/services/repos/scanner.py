@@ -82,13 +82,21 @@ def scan_repo(
         kept_dirs = []
         for name in directories:
             path = current_path / name
-            if name in IGNORED_DIRS or name.startswith(".") or path.is_symlink():
+            if (
+                name in IGNORED_DIRS
+                or (name.startswith(".") and name != ".neo")
+                or path.is_symlink()
+            ):
                 ignored_dirs += 1
             else:
                 kept_dirs.append(name)
         directories[:] = kept_dirs
         for name in filenames:
             source = current_path / name
+            relative_parent = current_path.relative_to(root).as_posix()
+            if relative_parent == ".neo" and name != "rules.json":
+                ignored_files += 1
+                continue
             if (
                 name in IGNORED_NAMES
                 or name.startswith(".")

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
+import RecoveryPanel from "./RecoveryPanel.jsx";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
@@ -131,6 +132,7 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
     </form> : <div className="coding-agent-detail">
       <div className="coding-agent-status"><strong>{detail.coding_run.objective}</strong><span className={`agent-status ${detail.coding_run.status}`}>{label(detail.coding_run.status)}</span><small>Iteration {detail.coding_run.current_iteration}/{detail.coding_run.max_iterations}</small></div>
       <div><strong>Files considered</strong><ul>{detail.coding_run.selected_files.map((item) => <li key={item.file_id}><code>{item.relative_path}</code> — {item.reason} <small>{label(item.source)}</small></li>)}</ul></div>
+      {detail.coding_run.metadata?.resolved_rules ? <details><summary><strong>Applied rules</strong></summary><p>{(detail.coding_run.metadata.applied_profiles || []).map(item => item.name).join(", ") || "Built-in safety rules only"}</p>{(detail.coding_run.metadata.rule_warnings || []).map((warning,index)=><div className="task-error" key={index}>{warning}</div>)}<p><strong>Forbidden paths:</strong> {(detail.coding_run.metadata.resolved_rules.forbidden_paths || []).join(", ")}</p><p><strong>Test preferences:</strong> {(detail.coding_run.metadata.resolved_rules.test_preferences || []).map(item=>item.command_hint.join(" ")).join(", ") || "None"}</p></details> : null}
       {detail.patch_artifact ? <div className="coding-agent-patch"><strong>Patch proposal</strong><pre>{detail.patch_artifact.content}</pre></div> : null}
       {detail.patch_application ? <div><p><strong>Patch application:</strong> {label(detail.patch_application.status)} · managed copy only</p>{detail.patch_application.files?.length ? <ul>{detail.patch_application.files.map((file) => <li key={file.id}><code>{file.relative_path}</code> — {label(file.change_type)} / {label(file.status)}</li>)}</ul> : null}</div> : null}
       {detail.test_run ? <div><strong>Test result: {label(detail.test_run.status)}</strong><pre>{detail.test_run.combined_output || detail.test_run.error || "No output."}</pre></div> : null}
@@ -145,6 +147,12 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
       </div> : null}
       {detail.agent_run.final_output ? <div className="coding-agent-summary"><strong>Final summary</strong><pre>{detail.agent_run.final_output}</pre></div> : null}
       {detail.coding_run.error ? <div className="task-error">{detail.coding_run.error}</div> : null}
+      <RecoveryPanel
+        runType="coding_agent"
+        runId={detail.coding_run.id}
+        embeddedEvents={detail.recovery_events || []}
+        onUpdated={() => api.codingRun(detail.coding_run.id).then(setDetail).catch(() => null)}
+      />
       {TERMINAL.has(detail.coding_run.status) ? <button type="button" onClick={() => { setDetail(null); setMessage(""); }}>Start another coding run</button> : null}
     </div>}
     {message ? <div className={message.toLowerCase().includes("error") ? "task-error" : "agent-message"}>{message}</div> : null}

@@ -1121,7 +1121,7 @@ class WebAnswerService:
         citation_formatter: CitationFormatter | None = None,
     ) -> None:
         self.search = search or WebSearchService()
-        self.ollama = ollama or get_llm_client()
+        self.ollama = ollama or get_llm_client(route_name="chat")
         self.citation_formatter = citation_formatter or CitationFormatter()
 
     def answer(self, query: str) -> CitedAnswer:

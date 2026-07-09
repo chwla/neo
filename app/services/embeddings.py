@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -11,6 +12,8 @@ import requests
 
 from app.core.config import get_settings
 from app.models import Memory, MemoryEmbedding
+from app.services.llm_registry.service import LLMRegistryService
+from app.services.llm_registry.usage import record_call, safe_error
 
 
 class EmbeddingProvider(Protocol):
@@ -30,21 +33,53 @@ class OllamaEmbeddingProvider:
         timeout: int | None = None,
     ) -> None:
         settings = get_settings()
+        self._use_registry = model_name is None and base_url is None and timeout is None
         self.model_name = model_name or settings.embedding_model
         self.base_url = (base_url or settings.ollama_url).rstrip("/")
         self.timeout = timeout or settings.embedding_timeout_seconds
 
     def embed(self, text: str) -> list[float]:
-        response = requests.post(
-            f"{self.base_url}/api/embeddings",
-            json={"model": self.model_name, "prompt": text},
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        embedding = response.json().get("embedding")
-        if not isinstance(embedding, list) or not embedding:
-            raise RuntimeError("Ollama embedding response did not include a vector.")
-        return [float(value) for value in embedding]
+        provider = model = None
+        if self._use_registry:
+            service = LLMRegistryService()
+            route = service.resolve("embedding")
+            provider, model = (
+                service.get_provider(route["provider_id"]),
+                service.get_model(route["model_id"]),
+            )
+            if not provider or not model or provider["provider_type"] != "ollama":
+                raise RuntimeError("Embedding route requires an enabled Ollama provider/model.")
+            if not provider["enabled"] or not model["enabled"]:
+                raise RuntimeError("Embedding route provider/model is disabled.")
+            self.provider_name = provider["provider_type"]
+            self.model_name = model["model_name"]
+            self.base_url = provider["base_url"].rstrip("/")
+            self.timeout = provider["timeout_seconds"]
+        started = time.perf_counter()
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/embeddings",
+                json={"model": self.model_name, "prompt": text},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            embedding = response.json().get("embedding")
+            if not isinstance(embedding, list) or not embedding:
+                raise RuntimeError("Ollama embedding response did not include a vector.")
+            if provider and model:
+                record_call(
+                    route_name="embedding", provider_id=provider["id"], model_id=model["id"],
+                    status="success", latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+            return [float(value) for value in embedding]
+        except Exception as exc:
+            if provider and model:
+                record_call(
+                    route_name="embedding", provider_id=provider["id"], model_id=model["id"],
+                    status="failed", latency_ms=int((time.perf_counter() - started) * 1000),
+                    error=safe_error(exc, provider),
+                )
+            raise
 
 
 @dataclass(frozen=True)

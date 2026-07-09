@@ -89,6 +89,40 @@ async function streamRequest(path, payload, onEvent) {
 }
 
 export const api = {
+  ruleProfiles: () => request("/rules/profiles"),
+  createRuleProfile: (payload) => request("/rules/profiles", { method: "POST", body: JSON.stringify(payload) }),
+  updateRuleProfile: (id, payload) => request(`/rules/profiles/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  disableRuleProfile: (id) => request(`/rules/profiles/${id}`, { method: "DELETE" }),
+  resolveRules: (payload) => request("/rules/resolve", { method: "POST", body: JSON.stringify(payload) }),
+  importRepoRules: (repoId) => request(`/rules/repos/${repoId}/import`, { method: "POST" }),
+  ruleLogs: () => request("/rules/resolution-logs?limit=50"),
+  recoveryRuns: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.runType) search.set("run_type", params.runType);
+    if (params.scan) search.set("scan", "true");
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/recovery/runs?${search.toString()}`);
+  },
+  recoveryRun: (runType, runId) => request(`/recovery/runs/${runType}/${runId}`),
+  resumeRecoveryRun: (runType, runId) => request(`/recovery/runs/${runType}/${runId}/resume`, {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  }),
+  retryRecoveryRun: (runType, runId, payload = {}) => request(`/recovery/runs/${runType}/${runId}/retry`, {
+    method: "POST", body: JSON.stringify({ confirm: true, ...payload }),
+  }),
+  forkRecoveryRun: (runType, runId, payload = {}) => request(`/recovery/runs/${runType}/${runId}/fork`, {
+    method: "POST", body: JSON.stringify({ confirm: true, ...payload }),
+  }),
+  repairRecoveryRun: (runType, runId, targetStatus) => request(`/recovery/runs/${runType}/${runId}/repair-state`, {
+    method: "POST", body: JSON.stringify({ confirm: true, target_status: targetStatus }),
+  }),
+  recoveryEvents: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.runType) search.set("run_type", params.runType);
+    if (params.runId) search.set("run_id", params.runId);
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/recovery/events?${search.toString()}`);
+  },
   startCodingRun: (payload) => request("/coding-agent/runs", {
     method: "POST", body: JSON.stringify(payload),
   }),
@@ -305,6 +339,39 @@ export const api = {
     }),
   deleteLlm: (id) => request(`/llms/${encodeURIComponent(id)}`, { method: "DELETE" }),
   testLlm: (id) => request(`/llms/${encodeURIComponent(id)}/test`, { method: "POST" }),
+  llmProviders: () => request("/llm/providers"),
+  createLlmProvider: (payload) => request("/llm/providers", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateLlmProvider: (id, payload) => request(`/llm/providers/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  deleteLlmProvider: (id) => request(`/llm/providers/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }),
+  llmModels: (providerId = "") => request(
+    `/llm/models${providerId ? `?provider_id=${encodeURIComponent(providerId)}` : ""}`,
+  ),
+  createLlmModel: (payload) => request("/llm/models", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateLlmModel: (id, payload) => request(`/llm/models/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  deleteLlmModel: (id) => request(`/llm/models/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }),
+  llmRoutes: () => request("/llm/routes"),
+  updateLlmRoute: (name, payload) => request(`/llm/routes/${encodeURIComponent(name)}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  testLlmRoute: (routeName) => request("/llm/health", {
+    method: "POST", body: JSON.stringify({ route_name: routeName }),
+  }),
+  testLlmProvider: (providerId, modelId) => request("/llm/health", {
+    method: "POST", body: JSON.stringify({ provider_id: providerId, model_id: modelId }),
+  }),
+  llmUsage: () => request("/llm/usage?limit=50"),
   updateChatMessage: (chatId, messageId, content) =>
     request(`/chats/${chatId}/messages/${messageId}`, {
       method: "PATCH",

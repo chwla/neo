@@ -7,10 +7,26 @@ from pydantic import BaseModel, Field
 from app.services.tasks.types import Task, TaskPriority, TaskStatus
 
 RunStatus = Literal[
-    "queued", "planning", "running", "waiting_approval", "completed", "failed", "cancelled"
+    "queued",
+    "planning",
+    "running",
+    "waiting_approval",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "needs_review",
 ]
 StepStatus = Literal[
-    "pending", "running", "waiting_approval", "completed", "failed", "skipped", "cancelled"
+    "pending",
+    "running",
+    "waiting_approval",
+    "completed",
+    "failed",
+    "skipped",
+    "cancelled",
+    "interrupted",
+    "needs_review",
 ]
 StepType = Literal[
     "plan",
@@ -50,6 +66,7 @@ class AgentRun(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     cancelled_at: str | None = None
+    forked_from_run_id: str | None = None
 
 
 class AgentStep(BaseModel):

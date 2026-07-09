@@ -75,9 +75,16 @@ def initialize_agent_tables() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_workspace_agent_artifacts_run ON workspace_agent_artifacts(run_id)"
         )
+        _ensure_column(conn, "workspace_agent_runs", "forked_from_run_id", "TEXT")
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, spec: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
 
 
 def insert_run(run: dict) -> dict:
@@ -95,6 +102,11 @@ def insert_run(run: dict) -> dict:
         """,
             {**run, "plan_json": json.dumps(run.get("plan", []))},
         )
+        if run.get("forked_from_run_id"):
+            conn.execute(
+                "UPDATE workspace_agent_runs SET forked_from_run_id=? WHERE id=?",
+                (run["forked_from_run_id"], run["id"]),
+            )
         conn.commit()
         return get_run(run["id"]) or run
     finally:
@@ -262,14 +274,14 @@ def recover_interrupted_runs() -> int:
         cursor = conn.execute(
             """
             UPDATE workspace_agent_runs
-            SET status='failed', error='Run interrupted by backend restart.', updated_at=?, completed_at=?
+            SET status='interrupted', error='Run interrupted by backend restart.', updated_at=?
             WHERE status IN ('queued','planning','running')
         """,
-            (now, now),
+            (now,),
         )
         conn.execute(
             """
-            UPDATE workspace_agent_steps SET status='failed', error='Interrupted by backend restart.', updated_at=?, completed_at=?
+            UPDATE workspace_agent_steps SET status='interrupted', error='Interrupted by backend restart.', updated_at=?, completed_at=?
             WHERE status='running'
         """,
             (now, now),
@@ -290,6 +302,7 @@ def _update(table: str, key: str, value: str, updates: dict, converter):
             "started_at",
             "completed_at",
             "cancelled_at",
+            "forked_from_run_id",
         },
         "workspace_agent_steps": {
             "status",

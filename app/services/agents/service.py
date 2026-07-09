@@ -13,6 +13,8 @@ from app.services.agents.types import (
 )
 from app.services.notes import NoteCreate, NotesService
 from app.services.projects import ProjectsService
+from app.services.rules.resolver import RuleResolver
+from app.services.rules.types import RuleResolveRequest
 from app.services.tasks import TasksService
 
 ALLOWED_RUN_STATUSES = {
@@ -21,8 +23,10 @@ ALLOWED_RUN_STATUSES = {
     "running",
     "waiting_approval",
     "completed",
-    "failed",
-    "cancelled",
+        "failed",
+        "cancelled",
+        "interrupted",
+        "needs_review",
 }
 
 
@@ -44,6 +48,14 @@ class AgentsService:
         if not objective:
             raise AgentsValidationError("Run objective is required.")
         now = store.now_iso()
+        rule_result = RuleResolver().resolve(
+            RuleResolveRequest(
+                context_type="agent",
+                context_id=None,
+                project_id=task.project_id,
+                task_id=task.id,
+            )
+        )
         run = store.insert_run(
             {
                 "id": str(uuid.uuid4()),
@@ -61,9 +73,17 @@ class AgentsService:
                 "started_at": None,
                 "completed_at": None,
                 "cancelled_at": None,
+                "forked_from_run_id": None,
             }
         )
-        self._create_initial_step(run["id"], 0, "read_context", "Read task context")
+        rule_snapshot = {
+            "resolved_rules": rule_result["resolved_rules"],
+            "applied_profiles": rule_result["applied_profiles"],
+            "warnings": rule_result["warnings"],
+        }
+        self._create_initial_step(
+            run["id"], 0, "read_context", "Read task context", input_data={"rules": rule_snapshot}
+        )
         self._create_initial_step(run["id"], 1, "plan", "Create a safe plan")
         self.runner.start(run["id"])
         return AgentRun(**run)
@@ -163,7 +183,14 @@ class AgentsService:
             )
         return note, already_saved
 
-    def _create_initial_step(self, run_id: str, index: int, step_type: str, title: str) -> None:
+    def _create_initial_step(
+        self,
+        run_id: str,
+        index: int,
+        step_type: str,
+        title: str,
+        input_data: dict | None = None,
+    ) -> None:
         now = store.now_iso()
         store.insert_step(
             {
@@ -173,7 +200,7 @@ class AgentsService:
                 "step_type": step_type,
                 "title": title,
                 "status": "pending",
-                "input": {},
+                "input": input_data or {},
                 "output_text": None,
                 "error": None,
                 "requires_approval": False,

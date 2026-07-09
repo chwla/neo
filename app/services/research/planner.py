@@ -77,7 +77,7 @@ def generate_plan(
     if comparison:
         return _generic_comparison_plan(user_query, config, comparison, orig)
 
-    client = ollama or get_llm_client(num_predict=512)
+    client = ollama or get_llm_client(num_predict=512, route_name="research")
     entity_hint = _extract_entity_hint(user_query)
 
     user_content = f"Research question: {user_query}"
@@ -291,7 +291,7 @@ def generate_followup_queries(
             return filter_offtopic_ai_coding_queries(list(dict.fromkeys(followups)))[:4]
 
     entity_hint = _extract_entity_hint(user_query)
-    client = ollama or get_llm_client(num_predict=256)
+    client = ollama or get_llm_client(num_predict=256, route_name="research")
     prompt = f"Original research question: {user_query}\nResearch objective: {plan.objective}\n"
     if entity_hint:
         prompt += f"Main entity: {entity_hint}\n"

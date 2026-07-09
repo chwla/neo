@@ -135,3 +135,6 @@ class StartResearchRequest(BaseModel):
     depth: DepthMode = DepthMode.STANDARD
     max_sources: int | None = None
     max_rounds: int | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    repo_id: str | None = None

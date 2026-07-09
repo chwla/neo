@@ -21,6 +21,7 @@ from app.services.patches.safety import (
     remove_execution_claims,
 )
 from app.services.patches.types import PatchProposalRequest
+from app.services.rules.safety import path_matches
 
 Generator = Callable[[str], str]
 
@@ -29,10 +30,23 @@ class PatchProposalService:
     def __init__(self, generator: Generator | None = None) -> None:
         self.files = WorkspaceFilesService()
         self.generator = generator or self._generate_with_llm
+        self._route_name = "patch_proposal"
 
     def propose(self, request: PatchProposalRequest) -> dict:
         objective = clean_objective(request.objective)
         files = self._resolve_files(request)
+        rules = request.resolved_rules or {}
+        self._route_name = rules.get("model_routes", {}).get("patch_proposal", "patch_proposal")
+        constraints = rules.get("patch_constraints", {})
+        max_files = int(constraints.get("max_files", MAX_FILES))
+        if len(files) > max_files:
+            raise ValueError(f"Patch rules allow at most {max_files} files.")
+        forbidden = rules.get("forbidden_paths", [])
+        blocked = [
+            item["patch_path"] for item in files if path_matches(item["patch_path"], forbidden)
+        ]
+        if blocked:
+            raise ValueError("Patch proposal targets forbidden path(s): " + ", ".join(blocked))
         prompt = proposal_prompt(objective, files)
         generation_error: str | None = None
         try:
@@ -48,6 +62,19 @@ class PatchProposalService:
         if reliable:
             try:
                 parsed = parse_unified_diff(generated)
+                if len(parsed.files) > max_files:
+                    raise ValueError(f"Generated patch exceeds rule max_files ({max_files}).")
+                blocked_generated = [
+                    item.filename for item in parsed.files if path_matches(item.filename, forbidden)
+                ]
+                if blocked_generated:
+                    raise ValueError(
+                        "Generated patch targets forbidden path(s): " + ", ".join(blocked_generated)
+                    )
+                if not constraints.get("allow_new_files", True) and any(
+                    item.change_type == "create" for item in parsed.files
+                ):
+                    raise ValueError("Rule constraints do not allow new files.")
                 context_paths = set(filenames)
                 if any(
                     item.change_type == "modify" and item.filename not in context_paths
@@ -103,9 +130,16 @@ class PatchProposalService:
             },
             "unified_diff": reliable,
             "proposal_only": True,
+            "rule_constraints": {
+                "forbidden_paths": forbidden,
+                "max_files": max_files,
+                "allow_new_files": constraints.get("allow_new_files", True),
+            },
         }
-        if reliable and parsed and (
-            len(parsed.files) > 1 or parsed.files[0].change_type == "create"
+        if (
+            reliable
+            and parsed
+            and (len(parsed.files) > 1 or parsed.files[0].change_type == "create")
         ):
             metadata = self._multi_file_metadata(metadata, files, parsed)
         short = objective[:80].rstrip()
@@ -235,9 +269,8 @@ class PatchProposalService:
             total += len(excerpt)
         return resolved
 
-    @staticmethod
-    def _generate_with_llm(prompt: str) -> str:
-        client = get_llm_client(num_predict=2400, timeout=600)
+    def _generate_with_llm(self, prompt: str) -> str:
+        client = get_llm_client(num_predict=2400, timeout=600, route_name=self._route_name)
         result = client.chat_with_metadata(
             [
                 LLMMessage(

@@ -14,13 +14,13 @@ from app.services.research.evidence import (
     filter_irrelevant_sources,
     identify_gaps,
 )
-from app.services.research.topic_intent import TOPIC_AI_CODING_TOOLS, classify_topic_intent
-from app.services.research.product_intent import TOPIC_PRODUCT_COMPARISON, normalize_user_query
 from app.services.research.memory_scope import retrieve_scoped_memory
 from app.services.research.planner import generate_followup_queries, generate_plan
+from app.services.research.product_intent import TOPIC_PRODUCT_COMPARISON, normalize_user_query
 from app.services.research.searcher import ResearchSearcher
 from app.services.research.store import load_job, save_job, update_job_status
 from app.services.research.synthesizer import synthesize_report
+from app.services.research.topic_intent import TOPIC_AI_CODING_TOOLS, classify_topic_intent
 from app.services.research.types import (
     DEPTH_CONFIG,
     DepthMode,
@@ -28,6 +28,8 @@ from app.services.research.types import (
     ProgressEvent,
     ResearchJob,
 )
+from app.services.rules.resolver import RuleResolver
+from app.services.rules.types import RuleResolveRequest
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +42,20 @@ def create_job(
     depth: DepthMode = DepthMode.STANDARD,
     max_sources: int | None = None,
     max_rounds: int | None = None,
+    project_id: str | None = None,
+    task_id: str | None = None,
+    repo_id: str | None = None,
 ) -> ResearchJob:
     config = DEPTH_CONFIG[depth]
     now = datetime.now(timezone.utc).isoformat()
+    rule_result = RuleResolver().resolve(
+        RuleResolveRequest(
+            context_type="research",
+            project_id=project_id,
+            task_id=task_id,
+            repo_id=repo_id,
+        )
+    )
     job = ResearchJob(
         id=uuid.uuid4().hex[:12],
         user_query=user_query,
@@ -53,6 +66,14 @@ def create_job(
         created_at=now,
         updated_at=now,
         current_step="Queued",
+        metadata={
+            "project_id": project_id,
+            "task_id": task_id,
+            "repo_id": repo_id,
+            "resolved_rules": rule_result["resolved_rules"],
+            "applied_profiles": rule_result["applied_profiles"],
+            "rule_warnings": rule_result["warnings"],
+        },
     )
     save_job(job.model_dump())
     return job
@@ -137,7 +158,18 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
                 f"Loaded memory context: {', '.join(memory_keys)}",
             )
 
-        ollama = get_llm_client(num_predict=512)
+        rule_result = {
+            "resolved_rules": job_data.get("metadata", {}).get("resolved_rules", {}),
+            "applied_profiles": job_data.get("metadata", {}).get("applied_profiles", []),
+            "warnings": job_data.get("metadata", {}).get("rule_warnings", []),
+        }
+        route_name = RuleResolver.route_name(rule_result, "research", "research")
+        rule_context = RuleResolver.research_context(rule_result)
+        if rule_context:
+            memory_context = (
+                f"{memory_context}\n\nResearch rules (guidance only):\n{rule_context}"
+            ).strip()
+        ollama = get_llm_client(num_predict=512, route_name=route_name)
 
         intent = classify_topic_intent(effective_query, original_query=user_query)
         plan = generate_plan(
@@ -319,7 +351,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             evidence,
             sources,
             gaps,
-            ollama=get_llm_client(num_predict=800, timeout=300),
+            ollama=get_llm_client(num_predict=800, timeout=300, route_name=route_name),
             depth=depth,
         )
 

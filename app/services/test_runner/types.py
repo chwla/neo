@@ -4,7 +4,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-TestRunStatus = Literal["queued", "running", "passed", "failed", "timed_out", "cancelled", "error"]
+TestRunStatus = Literal[
+    "queued",
+    "running",
+    "passed",
+    "failed",
+    "timed_out",
+    "cancelled",
+    "error",
+    "interrupted",
+]
 
 
 class TestCommandCreate(BaseModel):
