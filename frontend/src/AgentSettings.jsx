@@ -217,7 +217,7 @@ export default function AgentSettings({ onClose }) {
             </fieldset>
             <fieldset className="agent-permissions"><legend>Allowed tools</legend>
               <p className="task-help">Empty means read-only built-ins only. Mutating tools still require approval.</p>
-              {tools.map((tool) => <label key={tool.id}><input type="checkbox" checked={(form.tools || []).includes(tool.id)} onChange={(event) => setForm({ ...form, tools: event.target.checked ? [...(form.tools || []), tool.id] : (form.tools || []).filter((id) => id !== tool.id) })} />{tool.display_name || tool.name} · {label(tool.category)}{!tool.enabled ? " (disabled)" : ""}</label>)}
+              {tools.map((tool) => <label key={tool.id}><input type="checkbox" disabled={!tool.enabled} checked={(form.tools || []).includes(tool.id)} onChange={(event) => setForm({ ...form, tools: event.target.checked ? [...(form.tools || []), tool.id] : (form.tools || []).filter((id) => id !== tool.id) })} />{tool.display_name || tool.name} · {label(tool.category)}{!tool.enabled ? " (disabled)" : ""}</label>)}
             </fieldset>
             <fieldset className="agent-permissions"><legend>Allowed skills</legend>
               {skills.map((skill) => <label key={skill.id}><input type="checkbox" checked={(form.skills || []).includes(skill.id)} onChange={(event) => setForm({ ...form, skills: event.target.checked ? [...(form.skills || []), skill.id] : (form.skills || []).filter((id) => id !== skill.id) })} />{skill.display_name || skill.name}{!skill.enabled ? " (disabled)" : ""}</label>)}
