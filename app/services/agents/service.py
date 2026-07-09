@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 
 import app.services.agents.store as store
+from app.services.agent_framework import AgentDefinitionService
+from app.services.agent_framework.prompts import prompt_for
 from app.services.agents.runner import get_agent_runner
 from app.services.agents.types import (
     AgentArtifact,
@@ -48,12 +50,14 @@ class AgentsService:
         if not objective:
             raise AgentsValidationError("Run objective is required.")
         now = store.now_iso()
+        definition = AgentDefinitionService().resolve_for_run(payload.agent_definition_id)
         rule_result = RuleResolver().resolve(
             RuleResolveRequest(
                 context_type="agent",
                 context_id=None,
                 project_id=task.project_id,
                 task_id=task.id,
+                profile_ids=definition.rules_profile_ids,
             )
         )
         run = store.insert_run(
@@ -74,12 +78,16 @@ class AgentsService:
                 "completed_at": None,
                 "cancelled_at": None,
                 "forked_from_run_id": None,
+                "agent_definition_id": definition.id,
+                "agent_definition_snapshot": definition.model_dump(),
             }
         )
         rule_snapshot = {
             "resolved_rules": rule_result["resolved_rules"],
             "applied_profiles": rule_result["applied_profiles"],
             "warnings": rule_result["warnings"],
+            "agent_definition": definition.model_dump(),
+            "agent_prompt": prompt_for(definition.model_dump()),
         }
         self._create_initial_step(
             run["id"], 0, "read_context", "Read task context", input_data={"rules": rule_snapshot}

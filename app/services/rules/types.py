@@ -36,3 +36,4 @@ class RuleResolveRequest(BaseModel):
     repo_id: str | None = None
     coding_run_id: str | None = None
     override_rules: dict[str, Any] | None = None
+    profile_ids: list[str] = Field(default_factory=list)

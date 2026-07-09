@@ -18,6 +18,8 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
   const [projects, setProjects] = useState([]);
   const [repos, setRepos] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [agentDefinitions, setAgentDefinitions] = useState([]);
+  const [agentDefinitionId, setAgentDefinitionId] = useState("general");
   const [runs, setRuns] = useState([]);
   const [detail, setDetail] = useState(null);
   const [targetFileId, setTargetFileId] = useState("");
@@ -29,11 +31,17 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
   useEffect(() => { setTaskId(initialTaskId || ""); }, [initialTaskId]);
   useEffect(() => { setProjectId(initialProjectId || ""); }, [initialProjectId]);
   useEffect(() => {
-    Promise.all([api.projectsList({ limit: 100 }), api.tasksList({ limit: 100 }), api.reposList({ limit: 100 })])
-      .then(([projectData, taskData, repoData]) => {
+    Promise.all([
+      api.projectsList({ limit: 100 }),
+      api.tasksList({ limit: 100 }),
+      api.reposList({ limit: 100 }),
+      api.agentDefinitions(false),
+    ])
+      .then(([projectData, taskData, repoData, agentData]) => {
         setProjects(projectData.projects || []);
         setTasks(taskData.tasks || []);
         setRepos(repoData.repos || []);
+        setAgentDefinitions(agentData.definitions || []);
       })
       .catch((error) => setMessage(error.message));
   }, []);
@@ -74,6 +82,7 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
     await perform(() => api.startCodingRun({
       objective: objective.trim(), task_id: taskId || null, project_id: projectId || null,
       repo_id: repoId || null, max_iterations: Number(maxIterations),
+      agent_definition_id: agentDefinitionId || null,
     }), "Patch proposal ready for review. Nothing was applied automatically.");
   }
 
@@ -125,12 +134,16 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
         <label>Project<select value={projectId} onChange={(event) => { setProjectId(event.target.value); setRepoId(""); }}><option value="">Optional project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
         <label>Repository<select value={repoId} onChange={(event) => setRepoId(event.target.value)}><option value="">Select or infer sole repo</option>{availableRepos.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>Task<select value={taskId} onChange={(event) => setTaskId(event.target.value)}><option value="">Create planned task</option>{availableTasks.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+        <label>Agent<select value={agentDefinitionId} onChange={(event) => setAgentDefinitionId(event.target.value)}><option value="general">General</option>{agentDefinitions.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name} · {label(agent.agent_type)}</option>)}</select></label>
         <label>Max iterations<input type="number" min="1" max="10" value={maxIterations} onChange={(event) => setMaxIterations(event.target.value)} /></label>
       </div>
       <button className="neo-button" type="submit" disabled={busy}>Run Coding Agent</button>
       <p className="task-help">Starting creates a plan and proposal only. Apply, tests, and checkpoints each require approval.</p>
     </form> : <div className="coding-agent-detail">
       <div className="coding-agent-status"><strong>{detail.coding_run.objective}</strong><span className={`agent-status ${detail.coding_run.status}`}>{label(detail.coding_run.status)}</span><small>Iteration {detail.coding_run.current_iteration}/{detail.coding_run.max_iterations}</small></div>
+      {detail.agent_definition ? <details open className="agent-run-card"><summary><strong>Active agent: {detail.agent_definition.display_name || detail.agent_definition.name}</strong></summary><p>{detail.agent_definition.description || "No description."}</p><p><strong>Permissions:</strong> {Object.entries(detail.agent_definition.permissions || {}).filter(([, value]) => value === true).map(([key]) => label(key)).join(", ") || "Read-only/default"}</p><p className="task-help">Agents cannot bypass approvals; patch apply, tests, and checkpoints remain explicit user actions.</p></details> : null}
+      {detail.role_agents ? <details className="agent-run-card"><summary><strong>Subagents used</strong></summary><ul>{Object.entries(detail.role_agents).map(([role, agent]) => <li key={role}><strong>{label(role)}:</strong> {agent.display_name || agent.name}</li>)}</ul></details> : null}
+      {detail.delegations?.length ? <details className="agent-run-card"><summary><strong>Delegation timeline</strong></summary><ol>{detail.delegations.map((item) => <li key={item.id}><strong>{label(item.status)}</strong> · {item.objective}</li>)}</ol></details> : null}
       <div><strong>Files considered</strong><ul>{detail.coding_run.selected_files.map((item) => <li key={item.file_id}><code>{item.relative_path}</code> — {item.reason} <small>{label(item.source)}</small></li>)}</ul></div>
       {detail.coding_run.metadata?.resolved_rules ? <details><summary><strong>Applied rules</strong></summary><p>{(detail.coding_run.metadata.applied_profiles || []).map(item => item.name).join(", ") || "Built-in safety rules only"}</p>{(detail.coding_run.metadata.rule_warnings || []).map((warning,index)=><div className="task-error" key={index}>{warning}</div>)}<p><strong>Forbidden paths:</strong> {(detail.coding_run.metadata.resolved_rules.forbidden_paths || []).join(", ")}</p><p><strong>Test preferences:</strong> {(detail.coding_run.metadata.resolved_rules.test_preferences || []).map(item=>item.command_hint.join(" ")).join(", ") || "None"}</p></details> : null}
       {detail.patch_artifact ? <div className="coding-agent-patch"><strong>Patch proposal</strong><pre>{detail.patch_artifact.content}</pre></div> : null}

@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.agents import router as agents_router
 from app.api.routes.agents import task_router as agent_task_router
+from app.api.routes.agent_framework import router as agent_framework_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.coding_agent import router as coding_agent_router
 from app.api.routes.files import router as files_router
@@ -29,6 +30,7 @@ from app.api.routes.test_runner import router as test_runner_router
 from app.api.routes.web import router as web_router
 from app.core.config import get_settings
 from app.services.agents.store import initialize_agent_tables
+from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.coding_agent.store import initialize_coding_agent_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
@@ -60,6 +62,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(projects_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
+    app.include_router(agent_framework_router, prefix="/api")
     app.include_router(agent_task_router, prefix="/api")
     app.include_router(llms_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
@@ -86,6 +89,8 @@ def create_app() -> FastAPI:
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_tables()
+    initialize_agent_framework_tables()
+    AgentDefinitionService().seed_builtins()
     initialize_coding_agent_tables()
     initialize_research_tables()
     initialize_workspace_file_tables()

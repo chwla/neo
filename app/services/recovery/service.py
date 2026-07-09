@@ -326,6 +326,8 @@ class RecoveryService:
                     "completed_at": None,
                     "cancelled_at": None,
                     "forked_from_run_id": run_id,
+                    "agent_definition_id": run.get("agent_definition_id"),
+                    "agent_definition_snapshot": run.get("agent_definition_snapshot"),
                 }
             )
             self._seed_agent_fork_steps(fork["id"])
@@ -348,6 +350,7 @@ class RecoveryService:
                 project_id=run.get("project_id"),
                 repo_id=run.get("repo_id"),
                 max_iterations=run.get("max_iterations", 3),
+                agent_definition_id=run.get("agent_definition_id"),
             )
         )
         fork_id = detail["coding_run"]["id"]

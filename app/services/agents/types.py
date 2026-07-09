@@ -67,6 +67,8 @@ class AgentRun(BaseModel):
     completed_at: str | None = None
     cancelled_at: str | None = None
     forked_from_run_id: str | None = None
+    agent_definition_id: str | None = None
+    agent_definition_snapshot: dict[str, Any] | None = None
 
 
 class AgentStep(BaseModel):
@@ -104,6 +106,7 @@ class AgentRunCreate(BaseModel):
     task_id: str
     objective: str | None = None
     mode: str = "assist"
+    agent_definition_id: str | None = None
 
 
 class SaveRunToNoteRequest(BaseModel):
@@ -152,3 +155,4 @@ class RunFromObjectiveRequest(BaseModel):
     project_id: str | None = None
     mode: str = "assist"
     auto_create_tasks: bool = True
+    agent_definition_id: str | None = None

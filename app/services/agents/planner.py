@@ -9,9 +9,9 @@ from app.services.agents.service import AgentsService, AgentsValidationError
 from app.services.agents.types import (
     AgentRunCreate,
     AgentTaskPlan,
+    PlannedTask,
     PlanTasksRequest,
     PlanTasksResult,
-    PlannedTask,
     RunFromObjectiveRequest,
 )
 from app.services.llm import LLMMessage, get_llm_client
@@ -128,6 +128,7 @@ class AgentTaskPlanningService:
                     task_id=parent.id,
                     objective=plan.objective,
                     mode=payload.mode,
+                    agent_definition_id=payload.agent_definition_id,
                 )
             )
         except AgentsValidationError as exc:

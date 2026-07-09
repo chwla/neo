@@ -28,6 +28,16 @@ class RuleResolver:
                 ids.get(scope) and profile.get("scope_id") == ids[scope]
             ):
                 matches.append(profile)
+        explicit_ids = set(request.profile_ids or [])
+        if explicit_ids:
+            existing_ids = {item["id"] for item in matches}
+            for profile_id in explicit_ids:
+                profile = store.get_profile(profile_id)
+                if profile and profile.get("enabled") and profile["id"] not in existing_ids:
+                    matches.append(profile)
+                    existing_ids.add(profile["id"])
+                elif not profile or not profile.get("enabled"):
+                    warnings.append(f"Agent-bound rule profile '{profile_id}' is unavailable.")
         matches.sort(
             key=lambda p: (
                 SCOPE_RANK.get(p["scope_type"], -1),

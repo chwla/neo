@@ -45,6 +45,7 @@ class CodingRunCreate(BaseModel):
     repo_id: str | None = None
     max_iterations: int = Field(default=3, ge=1, le=10)
     override_rules: dict[str, Any] | None = None
+    agent_definition_id: str | None = None
 
 
 class ActionDecisionRequest(BaseModel):
@@ -84,6 +85,7 @@ class CodingAgentRun(BaseModel):
     forked_from_run_id: str | None = None
     recovery_state: str | None = None
     last_recoverable_at: str | None = None
+    agent_definition_id: str | None = None
 
 
 class AgentActionRequest(BaseModel):

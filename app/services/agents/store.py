@@ -76,6 +76,8 @@ def initialize_agent_tables() -> None:
             "CREATE INDEX IF NOT EXISTS idx_workspace_agent_artifacts_run ON workspace_agent_artifacts(run_id)"
         )
         _ensure_column(conn, "workspace_agent_runs", "forked_from_run_id", "TEXT")
+        _ensure_column(conn, "workspace_agent_runs", "agent_definition_id", "TEXT")
+        _ensure_column(conn, "workspace_agent_runs", "agent_definition_snapshot_json", "TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -106,6 +108,21 @@ def insert_run(run: dict) -> dict:
             conn.execute(
                 "UPDATE workspace_agent_runs SET forked_from_run_id=? WHERE id=?",
                 (run["forked_from_run_id"], run["id"]),
+            )
+        if run.get("agent_definition_id") is not None:
+            conn.execute(
+                "UPDATE workspace_agent_runs SET agent_definition_id=? WHERE id=?",
+                (run["agent_definition_id"], run["id"]),
+            )
+        if run.get("agent_definition_snapshot") is not None:
+            conn.execute(
+                "UPDATE workspace_agent_runs SET agent_definition_snapshot_json=? WHERE id=?",
+                (json.dumps(run["agent_definition_snapshot"]), run["id"]),
+            )
+        if run.get("agent_definition_snapshot_json") is not None:
+            conn.execute(
+                "UPDATE workspace_agent_runs SET agent_definition_snapshot_json=? WHERE id=?",
+                (run["agent_definition_snapshot_json"], run["id"]),
             )
         conn.commit()
         return get_run(run["id"]) or run
@@ -303,6 +320,8 @@ def _update(table: str, key: str, value: str, updates: dict, converter):
             "completed_at",
             "cancelled_at",
             "forked_from_run_id",
+            "agent_definition_id",
+            "agent_definition_snapshot",
         },
         "workspace_agent_steps": {
             "status",
@@ -321,6 +340,8 @@ def _update(table: str, key: str, value: str, updates: dict, converter):
         clean["plan_json"] = json.dumps(clean.pop("plan"))
     if "input" in clean:
         clean["input_json"] = json.dumps(clean.pop("input"))
+    if "agent_definition_snapshot" in clean:
+        clean["agent_definition_snapshot_json"] = json.dumps(clean.pop("agent_definition_snapshot"))
     clean["updated_at"] = now_iso()
     columns = ", ".join(f"{name} = ?" for name in clean)
     conn = _connect()
@@ -337,6 +358,8 @@ def _row_to_run(row: sqlite3.Row) -> dict:
     data = dict(row)
     raw = data.pop("plan_json", None)
     data["plan"] = json.loads(raw) if raw else []
+    snapshot = data.pop("agent_definition_snapshot_json", None)
+    data["agent_definition_snapshot"] = json.loads(snapshot) if snapshot else None
     return data
 
 

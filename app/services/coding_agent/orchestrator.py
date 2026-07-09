@@ -4,6 +4,9 @@ import uuid
 
 import app.services.coding_agent.store as store
 import app.services.recovery.store as recovery_store
+from app.services.agent_framework import AgentDefinitionService
+from app.services.agent_framework import store as framework_store
+from app.services.agent_framework.prompts import prompt_for
 from app.services.agents import store as agent_store
 from app.services.coding_agent.context import CodingContextSelector
 from app.services.coding_agent.planner import CodingTaskPlanner
@@ -44,6 +47,7 @@ class CodingAgentOrchestrator:
         self.patch_apply = patch_apply or ControlledPatchApplyService()
         self.test_runner = test_runner or TestRunnerService()
         self.git_service = git_service or GitService()
+        self.agent_definitions = AgentDefinitionService()
 
     def start(self, request: CodingRunCreate) -> dict:
         objective = clean_objective(request.objective)
@@ -51,6 +55,15 @@ class CodingAgentOrchestrator:
             objective, request.task_id, request.project_id
         )
         repo = self._resolve_repo(request.repo_id, project_id)
+        primary_agent = self.agent_definitions.resolve_for_run(
+            request.agent_definition_id, fallback="general"
+        )
+        role_agents = self._role_agents()
+        profile_ids = list(primary_agent.rules_profile_ids)
+        for role_agent in role_agents.values():
+            for profile_id in role_agent.rules_profile_ids:
+                if profile_id not in profile_ids:
+                    profile_ids.append(profile_id)
         rule_result = RuleResolver().resolve(
             RuleResolveRequest(
                 context_type="coding_agent",
@@ -58,9 +71,11 @@ class CodingAgentOrchestrator:
                 task_id=task.id,
                 repo_id=repo["id"],
                 override_rules=request.override_rules,
+                profile_ids=profile_ids,
             )
         )
         rules = rule_result["resolved_rules"]
+        self._apply_agent_routes(rules, primary_agent, role_agents)
         now = store.now_iso()
         agent_run = agent_store.insert_run(
             {
@@ -79,6 +94,8 @@ class CodingAgentOrchestrator:
                 "started_at": now,
                 "completed_at": None,
                 "cancelled_at": None,
+                "agent_definition_id": primary_agent.id,
+                "agent_definition_snapshot": primary_agent.model_dump(),
             }
         )
         coding_run = store.insert_run(
@@ -105,6 +122,18 @@ class CodingAgentOrchestrator:
                     "applied_profile_ids": [item["id"] for item in rule_result["applied_profiles"]],
                     "applied_profiles": rule_result["applied_profiles"],
                     "rule_warnings": rule_result["warnings"],
+                    "agent_definition_id": primary_agent.id,
+                    "agent_definition": primary_agent.model_dump(),
+                    "role_agents": {
+                        role: agent.model_dump() for role, agent in role_agents.items()
+                    },
+                    "agent_prompts": {
+                        role: prompt_for(agent.model_dump()) for role, agent in role_agents.items()
+                    },
+                    "agent_safety": (
+                        "Agents can request approval-gated actions only; no role can apply "
+                        "patches, run tests, or create checkpoints directly."
+                    ),
                 },
                 "created_at": now,
                 "updated_at": now,
@@ -113,6 +142,7 @@ class CodingAgentOrchestrator:
                 "forked_from_run_id": None,
                 "recovery_state": "active",
                 "last_recoverable_at": now,
+                "agent_definition_id": primary_agent.id,
             }
         )
         try:
@@ -120,7 +150,7 @@ class CodingAgentOrchestrator:
             self._step(
                 agent_run["id"],
                 "plan",
-                "Plan coding workflow",
+                f"{role_agents['planner'].display_name or 'Planner'}: plan coding workflow",
                 f"Objective: {objective}\nMaximum iterations: {request.max_iterations}",
             )
             self._status(coding_run["id"], "selecting_context")
@@ -141,7 +171,7 @@ class CodingAgentOrchestrator:
             self._step(
                 agent_run["id"],
                 "select_context",
-                "Select bounded code context",
+                f"{role_agents['explorer'].display_name or 'Explorer'}: select bounded code context",
                 self._files_text(files),
             )
             self._propose(coding_run["id"], objective)
@@ -324,6 +354,11 @@ class CodingAgentOrchestrator:
                 for item in forks
                 if item.get("forked_from_run_id") == run_id
             ],
+            "agent_definition": run.get("metadata", {}).get("agent_definition"),
+            "role_agents": run.get("metadata", {}).get("role_agents", {}),
+            "delegations": framework_store.list_delegations(
+                parent_run_id=run["agent_run_id"], limit=100
+            ),
         }
 
     def _execute(self, action: dict, run: dict, options: dict) -> dict:
@@ -365,7 +400,7 @@ class CodingAgentOrchestrator:
                 self._step(
                     run["agent_run_id"],
                     "select_tests",
-                    "Select saved test commands",
+                    "Tester: select saved test commands",
                     "Available: " + ", ".join(item["name"] for item in commands),
                 )
                 self._action(
@@ -385,7 +420,7 @@ class CodingAgentOrchestrator:
                 self._step(
                     run["agent_run_id"],
                     "select_tests",
-                    "No saved test commands",
+                    "Tester: no saved test commands",
                     "Configure a safe command in Test Runner or explicitly skip tests.",
                 )
                 self._action(
@@ -426,7 +461,7 @@ class CodingAgentOrchestrator:
             self._step(
                 run["agent_run_id"],
                 "run_tests",
-                "Run approved tests",
+                "Tester: run approved tests",
                 f"{test_run['name']}: {test_run['status']} (exit {test_run.get('exit_code')})",
             )
             if test_run["status"] == "passed":
@@ -440,7 +475,9 @@ class CodingAgentOrchestrator:
                 failure = (
                     test_run.get("combined_output") or test_run.get("error") or "Tests failed."
                 )[-4000:]
-                self._step(run["agent_run_id"], "analyze_tests", "Analyze failed tests", failure)
+                self._step(
+                    run["agent_run_id"], "analyze_tests", "Reviewer: analyze failed tests", failure
+                )
                 self._propose(run["id"], f"{run['objective']}\n\nFix this test failure:\n{failure}")
             else:
                 self._fail(
@@ -540,7 +577,7 @@ class CodingAgentOrchestrator:
         self._step(
             run["agent_run_id"],
             "patch_proposal",
-            "Create patch proposal",
+            "Coder: create patch proposal",
             f"Artifact {artifact['id']} ({artifact['artifact_type']}). "
             "This patch has not been applied.",
         )
@@ -549,7 +586,7 @@ class CodingAgentOrchestrator:
             self._step(
                 run["agent_run_id"],
                 "patch_proposal",
-                "Patch proposal needs revision",
+                "Reviewer: patch proposal needs revision",
                 "A reliable unified diff was not generated. The analysis artifact was "
                 "preserved and no patch was applied.",
                 status="failed",
@@ -596,7 +633,7 @@ class CodingAgentOrchestrator:
         self._step(
             run["agent_run_id"],
             "analyze_tests",
-            "Analyze validation result",
+            "Reviewer: analyze validation result",
             f"Validation status: {test_status}.",
         )
         self._action(
@@ -655,7 +692,7 @@ class CodingAgentOrchestrator:
                 "updated_at": now,
             },
         )
-        self._step(run["agent_run_id"], "final", "Final coding summary", summary)
+        self._step(run["agent_run_id"], "final", "Summarizer: final coding summary", summary)
 
     def _resolve_repo(self, repo_id: str | None, project_id: str | None) -> dict:
         if repo_id:
@@ -700,6 +737,24 @@ class CodingAgentOrchestrator:
             agent_store.update_run(
                 run["agent_run_id"], {"status": "waiting_approval", "updated_at": store.now_iso()}
             )
+
+    def _role_agents(self) -> dict[str, object]:
+        roles = {}
+        for role in ("planner", "coder", "tester", "reviewer", "summarizer", "explorer"):
+            roles[role] = self.agent_definitions.resolve_for_run(role, fallback=role)
+        return roles
+
+    @staticmethod
+    def _apply_agent_routes(rules: dict, primary_agent, role_agents: dict) -> None:
+        model_routes = rules.setdefault("model_routes", {})
+        route_map = {
+            "coding_agent": primary_agent.default_route_name,
+            "patch_proposal": role_agents["coder"].default_route_name,
+            "summarization": role_agents["summarizer"].default_route_name,
+        }
+        for consumer, route_name in route_map.items():
+            if route_name and consumer not in model_routes:
+                model_routes[consumer] = route_name
 
     def _action(
         self, run: dict, action_type: str, title: str, description: str, payload: dict

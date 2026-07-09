@@ -86,6 +86,7 @@ def initialize_coding_agent_tables() -> None:
         _ensure_column(conn, "workspace_coding_agent_runs", "forked_from_run_id", "TEXT")
         _ensure_column(conn, "workspace_coding_agent_runs", "recovery_state", "TEXT")
         _ensure_column(conn, "workspace_coding_agent_runs", "last_recoverable_at", "TEXT")
+        _ensure_column(conn, "workspace_coding_agent_runs", "agent_definition_id", "TEXT")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_workspace_coding_agent_runs_fork
             ON workspace_coding_agent_runs(forked_from_run_id)
@@ -129,7 +130,7 @@ def insert_run(item: dict) -> dict:
         """,
             values,
         )
-        for column in ("forked_from_run_id", "recovery_state", "last_recoverable_at"):
+        for column in ("forked_from_run_id", "recovery_state", "last_recoverable_at", "agent_definition_id"):
             if item.get(column) is not None:
                 conn.execute(
                     f"UPDATE workspace_coding_agent_runs SET {column}=? WHERE id=?",

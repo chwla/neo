@@ -10,6 +10,7 @@ import Repos from "./Repos.jsx";
 import CodingAgent from "./CodingAgent.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
 import RecoveryPanel from "./RecoveryPanel.jsx";
+import AgentSettings from "./AgentSettings.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -581,6 +582,9 @@ function ChatComposer({
   projects,
   selectedProjectId,
   onProjectChange,
+  agentDefinitions,
+  selectedAgentDefinitionId,
+  onAgentDefinitionChange,
   onPlanAgentTasks,
   planningTasks,
   proposedPlan,
@@ -667,6 +671,14 @@ function ChatComposer({
                   {tasks.map((task) => <option key={task.id} value={task.id}>{task.title} · {task.status}</option>)}
                 </select>
               </label>
+              <label className="agent-task-picker">
+                <span>Agent</span>
+                <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
+                  disabled={disabled || tasksLoading} aria-label="Select agent definition">
+                  <option value="general">General</option>
+                  {agentDefinitions.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
+                </select>
+              </label>
             </div>
           )}
         </div>
@@ -743,6 +755,7 @@ function ChatComposer({
             </div>
             {agentDetailsOpen ? (
               <div className="chat-agent-details">
+                {agentRun.run.agent_definition_snapshot ? <div className="agent-run-card"><strong>Active agent: {agentRun.run.agent_definition_snapshot.display_name || agentRun.run.agent_definition_snapshot.name}</strong><p className="task-help">Agents cannot bypass approvals; any protected actions still require explicit approval.</p></div> : null}
                 {agentRun.steps.map((step) => (
                   <div key={step.id}><span>{step.title}</span><span>{formatAgentStatus(step.status)}</span></div>
                 ))}
@@ -1216,7 +1229,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
@@ -1225,6 +1238,7 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenMemory, onOpenNotes, on
           LLM Providers
         </NeoButton>
         <NeoButton className="w-full" onClick={onOpenRules}>Rules &amp; Profiles</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenAgents}>Agents</NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -1880,6 +1894,7 @@ export default function App() {
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
+  const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -1909,6 +1924,8 @@ export default function App() {
   const [chatMode, setChatMode] = useState("chatbot");
   const [agentTasks, setAgentTasks] = useState([]);
   const [agentProjects, setAgentProjects] = useState([]);
+  const [agentDefinitions, setAgentDefinitions] = useState([]);
+  const [selectedAgentDefinitionId, setSelectedAgentDefinitionId] = useState("general");
   const [agentTasksLoading, setAgentTasksLoading] = useState(false);
   const [selectedAgentTaskId, setSelectedAgentTaskId] = useState("");
   const [selectedAgentProjectId, setSelectedAgentProjectId] = useState("");
@@ -1931,12 +1948,14 @@ export default function App() {
   const loadAgentContext = useCallback(async () => {
     setAgentTasksLoading(true);
     try {
-      const [taskData, projectData] = await Promise.all([
+      const [taskData, projectData, agentData] = await Promise.all([
         api.tasksList({ includeArchived: false, pinnedFirst: true, limit: 100 }),
         api.projectsList({ includeArchived: false, pinnedFirst: true, limit: 100 }),
+        api.agentDefinitions(false),
       ]);
       setAgentTasks(taskData.tasks || []);
       setAgentProjects(projectData.projects || []);
+      setAgentDefinitions(agentData.definitions || []);
     } catch (error) {
       setStatusError(`Could not load Agent mode context: ${errorMessage(error)}`);
     } finally {
@@ -2386,6 +2405,7 @@ export default function App() {
           task_id: selectedAgentTaskId,
           objective: objective || null,
           mode: "assist",
+          agent_definition_id: selectedAgentDefinitionId || null,
         });
       } else {
         const result = await api.startAgentRunFromObjective({
@@ -2393,6 +2413,7 @@ export default function App() {
           project_id: selectedAgentProjectId || null,
           mode: "assist",
           auto_create_tasks: true,
+          agent_definition_id: selectedAgentDefinitionId || null,
         });
         created = { run: result.run };
         setSelectedAgentTaskId(result.parent_task.id);
@@ -2467,6 +2488,7 @@ export default function App() {
         project_id: selectedAgentProjectId || null,
         mode: "assist",
         auto_create_tasks: true,
+        agent_definition_id: selectedAgentDefinitionId || null,
       });
       setAgentCreatedTasks([result.parent_task, ...result.subtasks]);
       setSelectedAgentTaskId(result.parent_task.id);
@@ -2707,6 +2729,9 @@ export default function App() {
           projects={agentProjects}
           selectedProjectId={selectedAgentProjectId}
           onProjectChange={(projectId) => { setSelectedAgentProjectId(projectId); setAgentTaskPlan(null); }}
+          agentDefinitions={agentDefinitions}
+          selectedAgentDefinitionId={selectedAgentDefinitionId}
+          onAgentDefinitionChange={setSelectedAgentDefinitionId}
           onPlanAgentTasks={handlePlanAgentTasks}
           planningTasks={agentPlanning}
           proposedPlan={agentTaskPlan}
@@ -2730,6 +2755,7 @@ export default function App() {
       {showSettings && (
         <SettingsDialog
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
+          onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenLLMs={() => {
             setShowSettings(false);
             setShowLlmSettings(true);
@@ -2786,6 +2812,7 @@ export default function App() {
         />
       )}
       {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
+      {showAgentSettings && <AgentSettings onClose={() => setShowAgentSettings(false)} />}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />

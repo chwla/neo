@@ -90,6 +90,24 @@ async function streamRequest(path, payload, onEvent) {
 
 export const api = {
   ruleProfiles: () => request("/rules/profiles"),
+  agentDefinitions: (includeDisabled = true) =>
+    request(`/agents/definitions?include_disabled=${includeDisabled ? "true" : "false"}`),
+  createAgentDefinition: (payload) => request("/agents/definitions", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateAgentDefinition: (id, payload) => request(`/agents/definitions/${id}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  disableAgentDefinition: (id) => request(`/agents/definitions/${id}`, { method: "DELETE" }),
+  resetBuiltinAgents: () => request("/agents/definitions/reset-builtins", { method: "POST" }),
+  agentDelegations: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.parentRunId) search.set("parent_run_id", params.parentRunId);
+    if (params.childRunId) search.set("child_run_id", params.childRunId);
+    if (params.status) search.set("status", params.status);
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/agents/delegations?${search.toString()}`);
+  },
   createRuleProfile: (payload) => request("/rules/profiles", { method: "POST", body: JSON.stringify(payload) }),
   updateRuleProfile: (id, payload) => request(`/rules/profiles/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   disableRuleProfile: (id) => request(`/rules/profiles/${id}`, { method: "DELETE" }),
