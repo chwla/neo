@@ -15,6 +15,18 @@ SAFE_TOOL_NAMES = {
     "research",
     "summarize",
     "delegate",
+    "builtin.repo_metadata",
+    "builtin.summarize_text",
+    "builtin.create_note",
+}
+DANGEROUS_TOOL_NAMES = {
+    "shell",
+    "terminal",
+    "git",
+    "git_remote",
+    "package_install",
+    "npm_install",
+    "pip_install",
 }
 
 ROLE_LIMITS: dict[str, dict[str, bool | int]] = {
@@ -96,7 +108,12 @@ def clamp_permissions(
 def clamp_tools(tools: list[str] | None) -> tuple[list[str], list[str]]:
     clean, warnings = [], []
     for tool in tools or []:
-        if tool in SAFE_TOOL_NAMES and tool not in clean:
+        normalized = str(tool).strip()
+        if normalized in DANGEROUS_TOOL_NAMES:
+            warnings.append(f"Tool '{tool}' is dangerous and was ignored.")
+        elif (normalized in SAFE_TOOL_NAMES or "." in normalized) and normalized not in clean:
+            clean.append(normalized)
+        elif normalized and normalized not in clean:
             clean.append(tool)
         else:
             warnings.append(f"Tool '{tool}' is not available to agents and was ignored.")

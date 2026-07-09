@@ -7,22 +7,24 @@ from app.services.agents import (
     AgentArtifact,
     AgentRun,
     AgentRunCreate,
-    AgentStep,
     AgentsService,
+    AgentStep,
     SaveRunToNoteRequest,
 )
 from app.services.agents.planner import AgentPlannerValidationError, AgentTaskPlanningService
 from app.services.agents.service import AgentsValidationError
 from app.services.agents.types import (
-    ApprovalRequest,
     AgentTaskPlan,
+    ApprovalRequest,
     PlanTasksRequest,
     PlanTasksResult,
     RunFromObjectiveRequest,
 )
 from app.services.notes.types import Note
-from app.services.tasks.types import Task
 from app.services.tasks.service import TasksValidationError
+from app.services.tasks.types import Task
+from app.services.tools.audit import calls_for_run
+from app.services.tools.types import ToolCall
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 task_router = APIRouter(prefix="/tasks", tags=["agents"])
@@ -41,6 +43,7 @@ class RunReadResponse(BaseModel):
     run: AgentRun
     steps: list[AgentStep]
     artifacts: list[AgentArtifact]
+    tool_calls: list[ToolCall] = []
 
 
 class StepResponse(BaseModel):
@@ -111,7 +114,12 @@ def read_run(run_id: str):
     if result is None:
         raise HTTPException(404, "Agent run not found.")
     run, steps, artifacts = result
-    return RunReadResponse(run=run, steps=steps, artifacts=artifacts)
+    return RunReadResponse(
+        run=run,
+        steps=steps,
+        artifacts=artifacts,
+        tool_calls=[ToolCall(**item) for item in calls_for_run(run_id=run_id)],
+    )
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunResponse)

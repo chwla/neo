@@ -25,6 +25,7 @@ const EMPTY = {
     forbidden_file_patterns: [],
   },
   tools: [],
+  skills: [],
   enabled: true,
   priority: 100,
   metadata: {},
@@ -80,6 +81,8 @@ export default function AgentSettings({ onClose }) {
   const [agents, setAgents] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [routes, setRoutes] = useState([]);
+  const [tools, setTools] = useState([]);
+  const [skills, setSkills] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [message, setMessage] = useState("");
@@ -88,14 +91,18 @@ export default function AgentSettings({ onClose }) {
   const customAgents = useMemo(() => agents.filter((agent) => !agent.built_in), [agents]);
 
   async function load() {
-    const [agentData, profileData, routeData] = await Promise.all([
+    const [agentData, profileData, routeData, toolData, skillData] = await Promise.all([
       api.agentDefinitions(true),
       api.ruleProfiles(),
       api.llmRoutes(),
+      api.toolDefinitions(true),
+      api.toolSkills(true),
     ]);
     setAgents(agentData.definitions || []);
     setProfiles(profileData.profiles || []);
     setRoutes(routeData.routes || []);
+    setTools(toolData.definitions || []);
+    setSkills(skillData.skills || []);
   }
 
   useEffect(() => { load().catch((error) => setMessage(error.message)); }, []);
@@ -207,6 +214,13 @@ export default function AgentSettings({ onClose }) {
               <label>Max delegations<input type="number" min="0" max="5" value={form.permissions.max_delegations || 0} onChange={(event) => setForm({ ...form, permissions: { ...form.permissions, max_delegations: event.target.value } })} disabled={editing?.built_in} /></label>
               <label>Allowed file patterns<textarea rows={2} value={form.permissions.allowed_file_patterns_text || ""} onChange={(event) => setForm({ ...form, permissions: { ...form.permissions, allowed_file_patterns_text: event.target.value } })} disabled={editing?.built_in} /></label>
               <label>Forbidden file patterns<textarea rows={2} value={form.permissions.forbidden_file_patterns_text || ""} onChange={(event) => setForm({ ...form, permissions: { ...form.permissions, forbidden_file_patterns_text: event.target.value } })} disabled={editing?.built_in} /></label>
+            </fieldset>
+            <fieldset className="agent-permissions"><legend>Allowed tools</legend>
+              <p className="task-help">Empty means read-only built-ins only. Mutating tools still require approval.</p>
+              {tools.map((tool) => <label key={tool.id}><input type="checkbox" checked={(form.tools || []).includes(tool.id)} onChange={(event) => setForm({ ...form, tools: event.target.checked ? [...(form.tools || []), tool.id] : (form.tools || []).filter((id) => id !== tool.id) })} />{tool.display_name || tool.name} · {label(tool.category)}{!tool.enabled ? " (disabled)" : ""}</label>)}
+            </fieldset>
+            <fieldset className="agent-permissions"><legend>Allowed skills</legend>
+              {skills.map((skill) => <label key={skill.id}><input type="checkbox" checked={(form.skills || []).includes(skill.id)} onChange={(event) => setForm({ ...form, skills: event.target.checked ? [...(form.skills || []), skill.id] : (form.skills || []).filter((id) => id !== skill.id) })} />{skill.display_name || skill.name}{!skill.enabled ? " (disabled)" : ""}</label>)}
             </fieldset>
             <label><input type="checkbox" checked={Boolean(form.enabled)} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /> Enabled</label>
             {editing?.safety_warnings?.length ? <div className="task-error">{editing.safety_warnings.join(" ")}</div> : null}

@@ -9,6 +9,7 @@ def built_in_definitions() -> list[dict]:
         "default_route_name": None,
         "rules_profile_ids": [],
         "tools": [],
+        "skills": [],
         "enabled": True,
         "built_in": True,
         "metadata": {"source": "built-in"},

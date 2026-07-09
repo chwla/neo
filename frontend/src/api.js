@@ -100,6 +100,50 @@ export const api = {
   }),
   disableAgentDefinition: (id) => request(`/agents/definitions/${id}`, { method: "DELETE" }),
   resetBuiltinAgents: () => request("/agents/definitions/reset-builtins", { method: "POST" }),
+  toolServers: (includeDisabled = true) =>
+    request(`/tools/servers?include_disabled=${includeDisabled ? "true" : "false"}`),
+  createToolServer: (payload) => request("/tools/servers", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateToolServer: (id, payload) => request(`/tools/servers/${id}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  disableToolServer: (id) => request(`/tools/servers/${id}`, { method: "DELETE" }),
+  toolServerHealth: (id) => request(`/tools/servers/${id}/health`, { method: "POST" }),
+  discoverToolServer: (id) => request(`/tools/servers/${id}/discover`, { method: "POST" }),
+  toolDefinitions: (includeDisabled = true) =>
+    request(`/tools/definitions?include_disabled=${includeDisabled ? "true" : "false"}`),
+  createToolDefinition: (payload) => request("/tools/definitions", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateToolDefinition: (id, payload) => request(`/tools/definitions/${id}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  disableToolDefinition: (id) => request(`/tools/definitions/${id}`, { method: "DELETE" }),
+  toolSkills: (includeDisabled = true) =>
+    request(`/tools/skills?include_disabled=${includeDisabled ? "true" : "false"}`),
+  createToolSkill: (payload) => request("/tools/skills", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  updateToolSkill: (id, payload) => request(`/tools/skills/${id}`, {
+    method: "PATCH", body: JSON.stringify(payload),
+  }),
+  disableToolSkill: (id) => request(`/tools/skills/${id}`, { method: "DELETE" }),
+  toolCalls: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.runId) search.set("run_id", params.runId);
+    if (params.codingRunId) search.set("coding_run_id", params.codingRunId);
+    if (params.status) search.set("status", params.status);
+    search.set("limit", String(params.limit ?? 100));
+    return request(`/tools/calls?${search.toString()}`);
+  },
+  createToolCall: (payload) => request("/tools/calls", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  approveToolCall: (id) => request(`/tools/calls/${id}/approve`, { method: "POST" }),
+  rejectToolCall: (id, reason = null) => request(`/tools/calls/${id}/reject`, {
+    method: "POST", body: JSON.stringify({ reason }),
+  }),
   agentDelegations: (params = {}) => {
     const search = new URLSearchParams();
     if (params.parentRunId) search.set("parent_run_id", params.parentRunId);

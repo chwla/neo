@@ -13,6 +13,7 @@ from app.services.agent_framework.types import (
 )
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.rules import store as rules_store
+from app.services.tools import store as tools_store
 
 
 class AgentFrameworkValidationError(ValueError):
@@ -69,7 +70,14 @@ class AgentDefinitionService:
             raise AgentFrameworkValidationError("Agent definition not found.")
         updates = payload.model_dump(exclude_unset=True)
         if current["built_in"]:
-            allowed = {"enabled", "default_route_name", "rules_profile_ids", "metadata"}
+            allowed = {
+                "enabled",
+                "default_route_name",
+                "rules_profile_ids",
+                "tools",
+                "skills",
+                "metadata",
+            }
             updates = {key: value for key, value in updates.items() if key in allowed}
         merged = {**current, **updates}
         normalized = self._normalize(merged)
@@ -83,6 +91,7 @@ class AgentDefinitionService:
                 "rules_profile_ids",
                 "permissions",
                 "tools",
+                "skills",
                 "enabled",
                 "priority",
                 "metadata",
@@ -131,12 +140,19 @@ class AgentDefinitionService:
             else:
                 warnings.append(f"Rules profile '{profile_id}' is unavailable and was ignored.")
         metadata = {**(data.get("metadata") or {}), "safety_warnings": warnings}
+        skill_ids = []
+        for skill_id in data.get("skills", []):
+            if tools_store.get_skill(skill_id):
+                skill_ids.append(skill_id)
+            else:
+                warnings.append(f"Skill '{skill_id}' is unavailable and was ignored.")
         return {
             **data,
             "default_route_name": route,
             "rules_profile_ids": profile_ids,
             "permissions": permissions.model_dump(),
             "tools": tools,
+            "skills": skill_ids,
             "metadata": metadata,
         }
 

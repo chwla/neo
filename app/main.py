@@ -27,6 +27,7 @@ from app.api.routes.search import router as search_router
 from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.test_runner import router as test_runner_router
+from app.api.routes.tools import router as tools_router
 from app.api.routes.web import router as web_router
 from app.core.config import get_settings
 from app.services.agents.store import initialize_agent_tables
@@ -44,6 +45,8 @@ from app.services.research.store import initialize_research_tables
 from app.services.rules.store import initialize_rule_tables
 from app.services.tasks.store import initialize_task_tables
 from app.services.test_runner.store import initialize_test_runner_tables
+from app.services.tools import initialize_tool_tables
+from app.services.tools.executor import ToolsService
 
 
 def create_app() -> FastAPI:
@@ -85,10 +88,13 @@ def create_app() -> FastAPI:
     app.include_router(test_runner_router, prefix="/api")
     app.include_router(git_router, prefix="/api")
     app.include_router(rules_router, prefix="/api")
+    app.include_router(tools_router, prefix="/api")
     initialize_notes_tables()
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_tables()
+    initialize_tool_tables()
+    ToolsService().seed_builtins()
     initialize_agent_framework_tables()
     AgentDefinitionService().seed_builtins()
     initialize_coding_agent_tables()

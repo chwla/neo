@@ -1130,10 +1130,20 @@ textarea:disabled {
   overflow-y: auto;
 }
 
+.tools-settings-dialog {
+  width: min(1320px, calc(100vw - 48px));
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+}
+
 .agent-settings-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
   gap: 16px;
+}
+
+.tools-settings-grid {
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
 }
 
 .agent-definition-list {

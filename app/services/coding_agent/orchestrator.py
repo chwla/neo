@@ -28,6 +28,7 @@ from app.services.rules.types import RuleResolveRequest
 from app.services.test_runner import store as test_store
 from app.services.test_runner.service import TestRunnerService
 from app.services.test_runner.types import TestRunRequest
+from app.services.tools.audit import calls_for_run
 
 
 class CodingAgentOrchestrator:
@@ -171,7 +172,10 @@ class CodingAgentOrchestrator:
             self._step(
                 agent_run["id"],
                 "select_context",
-                f"{role_agents['explorer'].display_name or 'Explorer'}: select bounded code context",
+                (
+                    f"{role_agents['explorer'].display_name or 'Explorer'}: "
+                    "select bounded code context"
+                ),
                 self._files_text(files),
             )
             self._propose(coding_run["id"], objective)
@@ -358,6 +362,9 @@ class CodingAgentOrchestrator:
             "role_agents": run.get("metadata", {}).get("role_agents", {}),
             "delegations": framework_store.list_delegations(
                 parent_run_id=run["agent_run_id"], limit=100
+            ),
+            "tool_calls": calls_for_run(
+                run_id=run["agent_run_id"], coding_run_id=run["id"]
             ),
         }
 

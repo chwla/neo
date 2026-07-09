@@ -44,6 +44,7 @@ class AgentDefinitionBase(BaseModel):
     rules_profile_ids: list[str] = Field(default_factory=list)
     permissions: AgentPermissions = Field(default_factory=AgentPermissions)
     tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
     enabled: bool = True
     priority: int = Field(default=100, ge=-10000, le=10000)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -61,6 +62,7 @@ class AgentDefinitionUpdate(BaseModel):
     rules_profile_ids: list[str] | None = None
     permissions: AgentPermissions | None = None
     tools: list[str] | None = None
+    skills: list[str] | None = None
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=-10000, le=10000)
     metadata: dict[str, Any] | None = None

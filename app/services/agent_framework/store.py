@@ -10,6 +10,7 @@ JSON_FIELDS = {
     "rules_profile_ids": "rules_profile_ids_json",
     "permissions": "permissions_json",
     "tools": "tools_json",
+    "skills": "skill_ids_json",
     "metadata": "metadata_json",
 }
 DELEGATION_JSON_FIELDS = {"input": "input_json", "output": "output_json"}
@@ -48,6 +49,7 @@ def initialize_agent_framework_tables() -> None:
                 rules_profile_ids_json TEXT,
                 permissions_json TEXT NOT NULL,
                 tools_json TEXT,
+                skill_ids_json TEXT,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 built_in INTEGER NOT NULL DEFAULT 0,
                 priority INTEGER NOT NULL DEFAULT 100,
@@ -78,9 +80,19 @@ def initialize_agent_framework_tables() -> None:
             CREATE INDEX IF NOT EXISTS idx_workspace_agent_delegations_child
             ON workspace_agent_delegations(child_run_id);
         """)
+        _ensure_column(conn, "workspace_agent_definitions", "skill_ids_json", "TEXT")
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, spec: str) -> None:
+    try:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
 
 
 def upsert_definition(item: dict) -> dict:
@@ -91,11 +103,13 @@ def upsert_definition(item: dict) -> dict:
             """
             INSERT INTO workspace_agent_definitions (
                 id, name, display_name, description, agent_type, system_prompt,
-                default_route_name, rules_profile_ids_json, permissions_json, tools_json,
+                default_route_name, rules_profile_ids_json, permissions_json,
+                tools_json, skill_ids_json,
                 enabled, built_in, priority, metadata_json, created_at, updated_at
             ) VALUES (
                 :id, :name, :display_name, :description, :agent_type, :system_prompt,
-                :default_route_name, :rules_profile_ids_json, :permissions_json, :tools_json,
+                :default_route_name, :rules_profile_ids_json, :permissions_json,
+                :tools_json, :skill_ids_json,
                 :enabled, :built_in, :priority, :metadata_json, :created_at, :updated_at
             )
             ON CONFLICT(id) DO UPDATE SET
@@ -107,6 +121,7 @@ def upsert_definition(item: dict) -> dict:
                 rules_profile_ids_json=excluded.rules_profile_ids_json,
                 permissions_json=excluded.permissions_json,
                 tools_json=excluded.tools_json,
+                skill_ids_json=excluded.skill_ids_json,
                 enabled=excluded.enabled,
                 built_in=excluded.built_in,
                 priority=excluded.priority,
@@ -128,11 +143,13 @@ def insert_definition(item: dict) -> dict:
             """
             INSERT INTO workspace_agent_definitions (
                 id, name, display_name, description, agent_type, system_prompt,
-                default_route_name, rules_profile_ids_json, permissions_json, tools_json,
+                default_route_name, rules_profile_ids_json, permissions_json,
+                tools_json, skill_ids_json,
                 enabled, built_in, priority, metadata_json, created_at, updated_at
             ) VALUES (
                 :id, :name, :display_name, :description, :agent_type, :system_prompt,
-                :default_route_name, :rules_profile_ids_json, :permissions_json, :tools_json,
+                :default_route_name, :rules_profile_ids_json, :permissions_json,
+                :tools_json, :skill_ids_json,
                 :enabled, :built_in, :priority, :metadata_json, :created_at, :updated_at
             )
             """,
@@ -178,6 +195,7 @@ def update_definition(agent_id: str, updates: dict) -> dict | None:
         "rules_profile_ids",
         "permissions",
         "tools",
+        "skills",
         "enabled",
         "priority",
         "metadata",
@@ -303,6 +321,7 @@ def _definition_values(item: dict) -> dict:
         "rules_profile_ids_json": json.dumps(item.get("rules_profile_ids", [])),
         "permissions_json": json.dumps(item.get("permissions", {})),
         "tools_json": json.dumps(item.get("tools", [])),
+        "skill_ids_json": json.dumps(item.get("skills", [])),
         "metadata_json": json.dumps(item.get("metadata", {})),
         "enabled": int(bool(item.get("enabled", True))),
         "built_in": int(bool(item.get("built_in", False))),
@@ -316,7 +335,9 @@ def _definition(row: sqlite3.Row) -> dict:
     for key, column in JSON_FIELDS.items():
         raw = data.pop(column, None)
         data[key] = (
-            json.loads(raw) if raw else ([] if key in {"rules_profile_ids", "tools"} else {})
+            json.loads(raw)
+            if raw
+            else ([] if key in {"rules_profile_ids", "tools", "skills"} else {})
         )
     data["enabled"] = bool(data["enabled"])
     data["built_in"] = bool(data["built_in"])

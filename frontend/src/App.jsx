@@ -11,6 +11,7 @@ import CodingAgent from "./CodingAgent.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
 import RecoveryPanel from "./RecoveryPanel.jsx";
 import AgentSettings from "./AgentSettings.jsx";
+import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -759,6 +760,7 @@ function ChatComposer({
                 {agentRun.steps.map((step) => (
                   <div key={step.id}><span>{step.title}</span><span>{formatAgentStatus(step.status)}</span></div>
                 ))}
+                {agentRun.tool_calls?.length ? <details className="agent-run-card"><summary><strong>Tool calls</strong></summary><ol>{agentRun.tool_calls.map((call) => <li key={call.id}><strong>{call.tool_id}</strong> · {formatAgentStatus(call.status)} · approval {call.approval_status}{call.error ? ` · ${call.error}` : ""}</li>)}</ol></details> : null}
                 {agentRun.run.error ? <div className="chat-agent-error">{agentRun.run.error}</div> : null}
                 {agentRun.run.final_output ? <pre>{agentRun.run.final_output}</pre> : null}
                 <RecoveryPanel
@@ -1229,7 +1231,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
@@ -1239,6 +1241,7 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenMemory, o
         </NeoButton>
         <NeoButton className="w-full" onClick={onOpenRules}>Rules &amp; Profiles</NeoButton>
         <NeoButton className="w-full" onClick={onOpenAgents}>Agents</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenTools}>Tools &amp; Skills</NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -1895,6 +1898,7 @@ export default function App() {
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
+  const [showToolsSettings, setShowToolsSettings] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -2756,6 +2760,7 @@ export default function App() {
         <SettingsDialog
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
+          onOpenTools={() => { setShowSettings(false); setShowToolsSettings(true); }}
           onOpenLLMs={() => {
             setShowSettings(false);
             setShowLlmSettings(true);
@@ -2813,6 +2818,7 @@ export default function App() {
       )}
       {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
       {showAgentSettings && <AgentSettings onClose={() => setShowAgentSettings(false)} />}
+      {showToolsSettings && <ToolsSkillsSettings onClose={() => setShowToolsSettings(false)} />}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />
