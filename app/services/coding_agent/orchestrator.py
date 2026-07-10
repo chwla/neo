@@ -12,6 +12,7 @@ from app.services.coding_agent.context import CodingContextSelector
 from app.services.coding_agent.planner import CodingTaskPlanner
 from app.services.coding_agent.safety import clean_objective, require_confirmation, require_pending
 from app.services.coding_agent.types import CodingRunCreate
+from app.services.context_memory import ContextMemoryService
 from app.services.files import store as file_store
 from app.services.git import store as git_store
 from app.services.git.service import GitService
@@ -78,6 +79,7 @@ class CodingAgentOrchestrator:
         rules = rule_result["resolved_rules"]
         self._apply_agent_routes(rules, primary_agent, role_agents)
         now = store.now_iso()
+        context_memory = self._context_memory(task.id, project_id)
         agent_run = agent_store.insert_run(
             {
                 "id": str(uuid.uuid4()),
@@ -135,6 +137,7 @@ class CodingAgentOrchestrator:
                         "Agents can request approval-gated actions only; no role can apply "
                         "patches, run tests, or create checkpoints directly."
                     ),
+                    "context_memory": context_memory,
                 },
                 "created_at": now,
                 "updated_at": now,
@@ -183,6 +186,14 @@ class CodingAgentOrchestrator:
             self._fail(coding_run["id"], agent_run["id"], str(exc))
             raise
         return self.detail(coding_run["id"])
+
+    @staticmethod
+    def _context_memory(task_id: str, project_id: str | None) -> dict:
+        memory = ContextMemoryService()
+        task_summary = memory.scope("task", task_id)
+        if task_summary["used"] or not project_id:
+            return task_summary
+        return memory.scope("project", project_id)
 
     def approve(self, action_id: str, *, confirm: bool, options: dict) -> dict:
         require_confirmation(confirm)
@@ -363,9 +374,7 @@ class CodingAgentOrchestrator:
             "delegations": framework_store.list_delegations(
                 parent_run_id=run["agent_run_id"], limit=100
             ),
-            "tool_calls": calls_for_run(
-                run_id=run["agent_run_id"], coding_run_id=run["id"]
-            ),
+            "tool_calls": calls_for_run(run_id=run["agent_run_id"], coding_run_id=run["id"]),
         }
 
     def _execute(self, action: dict, run: dict, options: dict) -> dict:

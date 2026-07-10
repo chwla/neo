@@ -14,6 +14,7 @@ import AgentSettings from "./AgentSettings.jsx";
 import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
 import Bundles from "./Bundles.jsx";
 import GitHub from "./GitHub.jsx";
+import ContextMemory from "./ContextMemory.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -1233,7 +1234,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
@@ -1246,6 +1247,7 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, on
         <NeoButton className="w-full" onClick={onOpenTools}>Tools &amp; Skills</NeoButton>
         <NeoButton className="w-full" onClick={onOpenBundles}>Bundles</NeoButton>
         <NeoButton className="w-full" onClick={onOpenGitHub}>GitHub</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenContextMemory}>Context Memory</NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -1905,6 +1907,7 @@ export default function App() {
   const [showToolsSettings, setShowToolsSettings] = useState(false);
   const [showBundles, setShowBundles] = useState(false);
   const [showGitHub, setShowGitHub] = useState(false);
+  const [showContextMemory, setShowContextMemory] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -2769,6 +2772,7 @@ export default function App() {
           onOpenTools={() => { setShowSettings(false); setShowToolsSettings(true); }}
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
           onOpenGitHub={() => { setShowSettings(false); setShowGitHub(true); }}
+          onOpenContextMemory={() => { setShowSettings(false); setShowContextMemory(true); }}
           onOpenLLMs={() => {
             setShowSettings(false);
             setShowLlmSettings(true);
@@ -2829,6 +2833,7 @@ export default function App() {
       {showToolsSettings && <ToolsSkillsSettings onClose={() => setShowToolsSettings(false)} />}
       {showBundles && <Modal title="Bundles" onClose={() => setShowBundles(false)} wide><Bundles /></Modal>}
       {showGitHub && <Modal title="GitHub" onClose={() => setShowGitHub(false)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
+      {showContextMemory && <Modal title="Context Memory" onClose={() => setShowContextMemory(false)} wide><ContextMemory /></Modal>}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />

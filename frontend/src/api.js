@@ -89,6 +89,17 @@ async function streamRequest(path, payload, onEvent) {
 }
 
 export const api = {
+  contextSummaries: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.scopeType) search.set("scope_type", params.scopeType);
+    if (params.scopeId) search.set("scope_id", params.scopeId);
+    return request(`/context-memory/summaries?${search.toString()}`);
+  },
+  contextSummary: (id) => request(`/context-memory/summaries/${id}`),
+  contextPreview: (payload) => request("/context-memory/preview", { method: "POST", body: JSON.stringify(payload) }),
+  compactContext: (payload) => request("/context-memory/compact", { method: "POST", body: JSON.stringify(payload) }),
+  contextEvents: (scopeType, scopeId) => request(`/context-memory/scopes/${scopeType}/${scopeId}/events`),
+  createContextEvent: (scopeType, scopeId, payload) => request(`/context-memory/scopes/${scopeType}/${scopeId}/events`, { method: "POST", body: JSON.stringify(payload) }),
   ruleProfiles: () => request("/rules/profiles"),
   agentDefinitions: (includeDisabled = true) =>
     request(`/agents/definitions?include_disabled=${includeDisabled ? "true" : "false"}`),

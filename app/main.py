@@ -5,18 +5,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes.agents import router as agents_router
-from app.api.routes.bundles import router as bundles_router
-from app.api.routes.agents import task_router as agent_task_router
 from app.api.routes.agent_framework import router as agent_framework_router
+from app.api.routes.agents import router as agents_router
+from app.api.routes.agents import task_router as agent_task_router
+from app.api.routes.bundles import router as bundles_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.coding_agent import router as coding_agent_router
+from app.api.routes.context_memory import router as context_memory_router
 from app.api.routes.files import router as files_router
 from app.api.routes.git import router as git_router
 from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
 from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
+from app.api.routes.lsp import router as lsp_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.notes import router as notes_router
 from app.api.routes.patches import router as patches_router
@@ -32,15 +34,17 @@ from app.api.routes.test_runner import router as test_runner_router
 from app.api.routes.tools import router as tools_router
 from app.api.routes.web import router as web_router
 from app.core.config import get_settings
+from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.agents.store import initialize_agent_tables
 from app.services.bundles import initialize_bundle_tables
-from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.coding_agent.store import initialize_coding_agent_tables
+from app.services.context_memory import initialize_context_memory_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
+from app.services.lsp import initialize_lsp_tables
 from app.services.notes.store import initialize_notes_tables
 from app.services.projects.store import initialize_project_tables
 from app.services.recovery import initialize_recovery_tables
@@ -73,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_framework_router, prefix="/api")
     app.include_router(agent_task_router, prefix="/api")
     app.include_router(llms_router, prefix="/api")
+    app.include_router(lsp_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(memory_router)
     app.include_router(memory_router, prefix="/api")
@@ -88,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(patches_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
     app.include_router(code_index_router, prefix="/api")
+    app.include_router(context_memory_router, prefix="/api")
     app.include_router(coding_agent_router, prefix="/api")
     app.include_router(symbols_router, prefix="/api")
     app.include_router(test_runner_router, prefix="/api")
@@ -105,12 +111,14 @@ def create_app() -> FastAPI:
     initialize_agent_framework_tables()
     AgentDefinitionService().seed_builtins()
     initialize_coding_agent_tables()
+    initialize_context_memory_tables()
     initialize_research_tables()
     initialize_workspace_file_tables()
     initialize_test_runner_tables()
     initialize_git_tables()
     initialize_github_tables()
     initialize_llm_registry_tables()
+    initialize_lsp_tables()
     LLMRegistryService().ensure_defaults()
     initialize_rule_tables()
     initialize_recovery_tables()

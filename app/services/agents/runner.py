@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable
 
 import app.services.agents.store as store
 from app.services.agents.safety import runner_system_prompt, validate_plan
 from app.services.code_index.service import CodeIndexService
+from app.services.context_memory import ContextMemoryService
 from app.services.files.service import WorkspaceFilesService
 from app.services.files.types import ArtifactCreate
 from app.services.git.service import GitContextService
@@ -225,6 +226,17 @@ class AgentRunner:
             f"Priority: {task.priority}",
             f"Due: {task.due_at or '(none)'}",
         ]
+        memory = ContextMemoryService().scope("task", task.id)
+        if not memory["used"] and project:
+            memory = ContextMemoryService().scope("project", project.id)
+        if memory["used"]:
+            lines.extend(
+                [
+                    "Context memory (supplementary; source data and user instructions "
+                    "remain authoritative):",
+                    memory["summary_text"],
+                ]
+            )
         if project:
             lines.extend(
                 [

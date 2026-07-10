@@ -187,6 +187,18 @@ def build_parser() -> argparse.ArgumentParser:
     import_file = bundle_import_sub.add_parser("archive")
     import_file.add_argument("file")
     import_file.add_argument("--yes", action="store_true")
+    context = sub.add_parser("context")
+    context_sub = context.add_subparsers(dest="context_command", required=True)
+    context_sub.add_parser("summaries")
+    context_show = context_sub.add_parser("show")
+    context_show.add_argument("summary_id")
+    for command in ("preview", "compact"):
+        item = context_sub.add_parser(command)
+        item.add_argument("scope_type")
+        item.add_argument("scope_id")
+        item.add_argument("--max-summary-tokens", type=int, default=1200)
+        if command == "compact":
+            item.add_argument("--yes", action="store_true")
     return parser
 
 
@@ -253,6 +265,8 @@ def handle(args, client: NeoApiClient) -> Any:
         return handle_bundles(args, client)
     if args.command == "github":
         return handle_github(args, client)
+    if args.command == "context":
+        return handle_context(args, client)
     raise ValueError("Unknown command.")
 
 
@@ -419,6 +433,31 @@ def handle_github(args, client: NeoApiClient) -> Any:
         args, "Create a Neo task from this imported issue? This does not modify GitHub."
     )
     return client.post(f"/api/github/items/{args.item_id}/create-task")
+
+
+def handle_context(args, client: NeoApiClient) -> Any:
+    if args.context_command == "summaries":
+        return client.get("/api/context-memory/summaries")
+    if args.context_command == "show":
+        return client.get(f"/api/context-memory/summaries/{args.summary_id}")
+    payload = {
+        "scope_type": args.scope_type,
+        "scope_id": args.scope_id,
+        "mode": "safe",
+        "max_summary_tokens": args.max_summary_tokens,
+        "include_events": True,
+        "include_files": True,
+        "include_tests": True,
+        "include_checkpoints": True,
+    }
+    if args.context_command == "preview":
+        return client.post("/api/context-memory/preview", payload)
+    require_confirm(
+        args,
+        "Save a redacted deterministic context summary? It never executes actions "
+        "or changes source data.",
+    )
+    return client.post("/api/context-memory/compact", payload)
 
 
 def main(argv: list[str] | None = None, client: NeoApiClient | None = None) -> int:
