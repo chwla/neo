@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 
 from app.core.config import get_settings
 from app.services.notes.store import get_note
-from app.services.projects.store import get_project
 
 
 def _db_path() -> str:
@@ -28,7 +28,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def initialize_task_tables() -> None:
@@ -406,6 +406,35 @@ def list_links(task_id: str) -> list[dict] | None:
             (task_id,),
         ).fetchall()
         return [_row_to_link(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def insert_link(link: dict) -> dict:
+    conn = _connect()
+    try:
+        item = {
+            "id": link.get("id") or str(uuid.uuid4()),
+            "created_at": link.get("created_at") or now_iso(),
+            **link,
+        }
+        conn.execute(
+            "INSERT INTO workspace_task_links (id,task_id,link_type,target_id,target_url,title,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?)",  # noqa: E501
+            (
+                item["id"],
+                item["task_id"],
+                item["link_type"],
+                item.get("target_id"),
+                item.get("target_url"),
+                item.get("title"),
+                json.dumps(item.get("metadata", {})),
+                item["created_at"],
+            ),
+        )
+        conn.commit()
+        return _row_to_link(
+            conn.execute("SELECT * FROM workspace_task_links WHERE id=?", (item["id"],)).fetchone()
+        )
     finally:
         conn.close()
 

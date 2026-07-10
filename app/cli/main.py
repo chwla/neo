@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from typing import Any
+
+from app.cli.client import ApiError, ApiUnavailableError, NeoApiClient
+from app.cli.config import from_args
+from app.cli.formatters import emit
+
+EXIT_INPUT = 1
+EXIT_UNAVAILABLE = 2
+EXIT_API = 3
+EXIT_DENIED = 4
+GLOBAL_FLAGS_WITH_VALUE = {"--api-url", "--timeout"}
+GLOBAL_FLAGS_BOOL = {"--json", "--no-color"}
+
+
+def normalize_global_args(argv: list[str]) -> list[str]:
+    """Allow global flags either before or after the command path.
+
+    argparse only recognizes top-level options before the selected subcommand.
+    The CLI examples intentionally use natural command ordering such as
+    `neo status --api-url http://127.0.0.1:8000`, so we move only known global
+    flags to the front before parsing. Command-specific flags stay in place.
+    """
+
+    prefix: list[str] = []
+    rest: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in GLOBAL_FLAGS_BOOL:
+            prefix.append(token)
+            index += 1
+        elif token in GLOBAL_FLAGS_WITH_VALUE:
+            if index + 1 >= len(argv):
+                rest.append(token)
+                index += 1
+            else:
+                prefix.extend([token, argv[index + 1]])
+                index += 2
+        elif any(token.startswith(f"{flag}=") for flag in GLOBAL_FLAGS_WITH_VALUE):
+            prefix.append(token)
+            index += 1
+        else:
+            rest.append(token)
+            index += 1
+    # Preserve the concise documented spelling: `neo bundles import file.zip`.
+    if (
+        len(rest) >= 3
+        and rest[:2] == ["bundles", "import"]
+        and rest[2] not in {"validate", "archive", "-h", "--help"}
+    ):
+        rest.insert(2, "archive")
+    return prefix + rest
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="neo")
+    parser.add_argument("--api-url")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--timeout", type=float, default=10.0)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("status")
+    sub.add_parser("health")
+
+    agents = sub.add_parser("agents")
+    agents_sub = agents.add_subparsers(dest="agents_command", required=True)
+    agents_sub.add_parser("list")
+    show_agent = agents_sub.add_parser("show")
+    show_agent.add_argument("agent_id")
+
+    coding = sub.add_parser("coding")
+    coding_sub = coding.add_subparsers(dest="coding_command", required=True)
+    start = coding_sub.add_parser("start")
+    start.add_argument("objective")
+    start.add_argument("--project", dest="project_id")
+    start.add_argument("--repo", dest="repo_id")
+    start.add_argument("--task", dest="task_id")
+    start.add_argument("--agent", dest="agent_definition_id")
+    start.add_argument("--max-iterations", type=int, default=3)
+    coding_sub.add_parser("list")
+    show = coding_sub.add_parser("show")
+    show.add_argument("run_id")
+    actions = coding_sub.add_parser("actions")
+    actions.add_argument("run_id")
+    cancel = coding_sub.add_parser("cancel")
+    cancel.add_argument("run_id")
+    approve = coding_sub.add_parser("approve")
+    approve.add_argument("action_id")
+    approve.add_argument("--yes", action="store_true")
+    reject = coding_sub.add_parser("reject")
+    reject.add_argument("action_id")
+    reject.add_argument("--reason")
+    revise = coding_sub.add_parser("revise")
+    revise.add_argument("run_id")
+    revise.add_argument("--instructions", required=True)
+
+    recovery = sub.add_parser("recovery")
+    recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
+    recovery_sub.add_parser("list")
+    rec_show = recovery_sub.add_parser("show")
+    rec_show.add_argument("run_type")
+    rec_show.add_argument("run_id")
+    for command in ("resume", "retry"):
+        item = recovery_sub.add_parser(command)
+        item.add_argument("run_type")
+        item.add_argument("run_id")
+        item.add_argument("--yes", action="store_true")
+    rec_fork = recovery_sub.add_parser("fork")
+    rec_fork.add_argument("run_type")
+    rec_fork.add_argument("run_id")
+    rec_fork.add_argument("--objective")
+    rec_fork.add_argument("--yes", action="store_true")
+
+    rules = sub.add_parser("rules")
+    rules_sub = rules.add_subparsers(dest="rules_command", required=True)
+    rules_sub.add_parser("list")
+    resolve = rules_sub.add_parser("resolve")
+    resolve.add_argument("--project", dest="project_id")
+    resolve.add_argument("--repo", dest="repo_id")
+    resolve.add_argument("--task", dest="task_id")
+    resolve.add_argument("--context", dest="context_type", default="coding_agent")
+
+    tools = sub.add_parser("tools")
+    tools_sub = tools.add_subparsers(dest="tools_command", required=True)
+    tools_sub.add_parser("list")
+    tools_sub.add_parser("calls")
+    skills = sub.add_parser("skills")
+    skills_sub = skills.add_subparsers(dest="skills_command", required=True)
+    skills_sub.add_parser("list")
+
+    tests = sub.add_parser("tests")
+    tests_sub = tests.add_subparsers(dest="tests_command", required=True)
+    tests_list = tests_sub.add_parser("list")
+    tests_list.add_argument("--repo", dest="repo_id", required=True)
+    tests_runs = tests_sub.add_parser("runs")
+    tests_runs.add_argument("--repo", dest="repo_id")
+    tests_run = tests_sub.add_parser("run")
+    tests_run.add_argument("command_id")
+    tests_run.add_argument("--yes", action="store_true")
+
+    git = sub.add_parser("git")
+    git_sub = git.add_subparsers(dest="git_command", required=True)
+    git_status = git_sub.add_parser("status")
+    git_status.add_argument("repo_id")
+    git_checkpoints = git_sub.add_parser("checkpoints")
+    git_checkpoints.add_argument("repo_id")
+    git_checkpoint = git_sub.add_parser("checkpoint")
+    git_checkpoint.add_argument("repo_id")
+    git_checkpoint.add_argument("--title", required=True)
+    git_checkpoint.add_argument("--message")
+    git_checkpoint.add_argument("--yes", action="store_true")
+
+    export = sub.add_parser("export")
+    export_sub = export.add_subparsers(dest="export_command", required=True)
+    exp_run = export_sub.add_parser("run")
+    exp_run.add_argument("run_id")
+    exp_run.add_argument("--type", choices=["coding_agent", "agent"], default="coding_agent")
+    exp_run.add_argument("--out", required=True)
+    exp_task = export_sub.add_parser("task")
+    exp_task.add_argument("task_id")
+    exp_task.add_argument("--out", required=True)
+    github = sub.add_parser("github")
+    github_sub = github.add_subparsers(dest="github_command", required=True)
+    github_sub.add_parser("connections")
+    github_health = github_sub.add_parser("health")
+    github_health.add_argument("connection_id")
+    for command in ("import-issue", "import-pr"):
+        item = github_sub.add_parser(command)
+        item.add_argument("connection_id")
+        item.add_argument("number", type=int)
+    github_task = github_sub.add_parser("create-task")
+    github_task.add_argument("item_id")
+    github_task.add_argument("--yes", action="store_true")
+    github_sub.add_parser("ops")
+    bundles = sub.add_parser("bundles")
+    bundles_sub = bundles.add_subparsers(dest="bundles_command", required=True)
+    bundles_sub.add_parser("list")
+    bundle_import = bundles_sub.add_parser("import")
+    bundle_import_sub = bundle_import.add_subparsers(dest="bundle_import_command", required=True)
+    validate = bundle_import_sub.add_parser("validate")
+    validate.add_argument("file")
+    import_file = bundle_import_sub.add_parser("archive")
+    import_file.add_argument("file")
+    import_file.add_argument("--yes", action="store_true")
+    return parser
+
+
+def confirm(args, message: str) -> bool:
+    if getattr(args, "yes", False):
+        return True
+    print(message)
+    answer = input("Continue? [y/N] ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def require_confirm(args, message: str) -> None:
+    if not confirm(args, message):
+        raise SafetyDenied("Confirmation denied.")
+
+
+class SafetyDenied(RuntimeError):
+    pass
+
+
+def command_status(client: NeoApiClient) -> dict[str, Any]:
+    health = client.get("/api/health")
+    providers = client.get("/api/llm/providers")
+    routes = client.get("/api/llm/routes")
+    return {"health": health, "llm_providers": providers, "llm_routes": routes}
+
+
+def handle(args, client: NeoApiClient) -> Any:
+    if args.command in {"status", "health"}:
+        return command_status(client)
+    if args.command == "agents":
+        if args.agents_command == "list":
+            return client.get("/api/agents/definitions")
+        return client.get(f"/api/agents/definitions/{args.agent_id}")
+    if args.command == "coding":
+        return handle_coding(args, client)
+    if args.command == "recovery":
+        return handle_recovery(args, client)
+    if args.command == "rules":
+        if args.rules_command == "list":
+            return client.get("/api/rules/profiles")
+        return client.post(
+            "/api/rules/resolve",
+            {
+                "context_type": args.context_type,
+                "project_id": args.project_id,
+                "repo_id": args.repo_id,
+                "task_id": args.task_id,
+                "profile_ids": [],
+            },
+        )
+    if args.command == "tools":
+        path = "/api/tools/definitions" if args.tools_command == "list" else "/api/tools/calls"
+        return client.get(path)
+    if args.command == "skills":
+        return client.get("/api/tools/skills")
+    if args.command == "tests":
+        return handle_tests(args, client)
+    if args.command == "git":
+        return handle_git(args, client)
+    if args.command == "export":
+        return handle_export(args, client)
+    if args.command == "bundles":
+        return handle_bundles(args, client)
+    if args.command == "github":
+        return handle_github(args, client)
+    raise ValueError("Unknown command.")
+
+
+def handle_coding(args, client: NeoApiClient) -> Any:
+    if args.coding_command == "start":
+        return client.post(
+            "/api/coding-agent/runs",
+            {
+                "objective": args.objective,
+                "project_id": args.project_id,
+                "repo_id": args.repo_id,
+                "task_id": args.task_id,
+                "agent_definition_id": args.agent_definition_id,
+                "max_iterations": args.max_iterations,
+            },
+        )
+    if args.coding_command == "list":
+        return client.get("/api/coding-agent/runs")
+    if args.coding_command == "show":
+        return client.get(f"/api/coding-agent/runs/{args.run_id}")
+    if args.coding_command == "actions":
+        detail = client.get(f"/api/coding-agent/runs/{args.run_id}")
+        return {"action_requests": detail.get("action_requests", [])}
+    if args.coding_command == "cancel":
+        return client.post(f"/api/coding-agent/runs/{args.run_id}/cancel")
+    if args.coding_command == "approve":
+        require_confirm(args, APPROVAL_WARNING)
+        return client.post(
+            f"/api/coding-agent/actions/{args.action_id}/approve",
+            {"confirm": True, "options": {}},
+        )
+    if args.coding_command == "reject":
+        return client.post(
+            f"/api/coding-agent/actions/{args.action_id}/reject",
+            {"reason": args.reason},
+        )
+    if args.coding_command == "revise":
+        return client.post(
+            f"/api/coding-agent/runs/{args.run_id}/revise-patch",
+            {"instructions": args.instructions},
+        )
+    raise ValueError("Unknown coding command.")
+
+
+APPROVAL_WARNING = (
+    "This action affects only Neo's managed workspace copy.\n"
+    "It will not modify the original repository."
+)
+
+
+def handle_recovery(args, client: NeoApiClient) -> Any:
+    if args.recovery_command == "list":
+        return client.get("/api/recovery/runs")
+    if args.recovery_command == "show":
+        return client.get(f"/api/recovery/runs/{args.run_type}/{args.run_id}")
+    if args.recovery_command == "resume":
+        require_confirm(args, "Resume this run? Approval gates remain intact.")
+        return client.post(
+            f"/api/recovery/runs/{args.run_type}/{args.run_id}/resume",
+            {"confirm": True},
+        )
+    if args.recovery_command == "retry":
+        require_confirm(args, "Retry this run? Approval gates remain intact.")
+        return client.post(
+            f"/api/recovery/runs/{args.run_type}/{args.run_id}/retry",
+            {"confirm": True},
+        )
+    if args.recovery_command == "fork":
+        require_confirm(args, "Fork this run? No actions execute automatically.")
+        return client.post(
+            f"/api/recovery/runs/{args.run_type}/{args.run_id}/fork",
+            {"confirm": True, "objective_override": args.objective},
+        )
+    raise ValueError("Unknown recovery command.")
+
+
+def handle_tests(args, client: NeoApiClient) -> Any:
+    if args.tests_command == "list":
+        return client.get(f"/api/test-runner/repos/{args.repo_id}/commands")
+    if args.tests_command == "runs":
+        return client.get("/api/test-runner/runs", query={"repo_id": args.repo_id})
+    if args.tests_command == "run":
+        require_confirm(args, "Run this saved test command in Neo's managed workspace copy?")
+        return client.post(
+            f"/api/test-runner/commands/{args.command_id}/run",
+            {"confirm": True},
+        )
+    raise ValueError("Unknown tests command.")
+
+
+def handle_git(args, client: NeoApiClient) -> Any:
+    if args.git_command == "status":
+        return client.get(f"/api/git/repos/{args.repo_id}/status")
+    if args.git_command == "checkpoints":
+        return client.get(f"/api/git/repos/{args.repo_id}/checkpoints")
+    if args.git_command == "checkpoint":
+        require_confirm(args, "Create a local checkpoint in Neo's managed workspace copy?")
+        return client.post(
+            f"/api/git/repos/{args.repo_id}/checkpoints",
+            {"title": args.title, "message": args.message, "confirm": True},
+        )
+    raise ValueError("Unknown git command.")
+
+
+def handle_export(args, client: NeoApiClient) -> dict[str, str]:
+    kind, entity_id = (
+        (("coding_run" if args.type == "coding_agent" else "agent_run"), args.run_id)
+        if args.export_command == "run"
+        else ("task", args.task_id)
+    )
+    created = client.post(
+        "/api/bundles/export",
+        {
+            "bundle_type": kind,
+            "entity_id": entity_id,
+            "include_files": True,
+            "include_patch_text": True,
+            "include_test_output": True,
+            "redact_secrets": True,
+        },
+    )
+    bundle = created["bundle"]
+    from pathlib import Path
+
+    Path(args.out).write_bytes(client.download(f"/api/bundles/exports/{bundle['id']}/download"))
+    return {"exported": args.out, "bundle_id": bundle["id"], "type": kind, "id": entity_id}
+
+
+def handle_bundles(args, client: NeoApiClient) -> Any:
+    if args.bundles_command == "list":
+        return {
+            "exports": client.get("/api/bundles/exports"),
+            "imports": client.get("/api/bundles/imports"),
+        }
+    from pathlib import Path
+
+    path = Path(args.file)
+    data = path.read_bytes()
+    if args.bundle_import_command == "validate":
+        return client.upload("/api/bundles/import/validate", path.name, data)
+    require_confirm(
+        args,
+        "Archive this bundle as inert data? It will not execute, apply patches, "
+        "run tests, or create checkpoints.",
+    )
+    return client.upload(
+        "/api/bundles/import", path.name, data, {"confirm": "true", "mode": "archive_only"}
+    )
+
+
+def handle_github(args, client: NeoApiClient) -> Any:
+    if args.github_command == "connections":
+        return client.get("/api/github/connections")
+    if args.github_command == "ops":
+        return client.get("/api/github/operations")
+    if args.github_command == "health":
+        return client.post(f"/api/github/connections/{args.connection_id}/health")
+    if args.github_command in {"import-issue", "import-pr"}:
+        path = "issues" if args.github_command == "import-issue" else "pulls"
+        return client.post(
+            f"/api/github/connections/{args.connection_id}/{path}/{args.number}/import"
+        )
+    require_confirm(
+        args, "Create a Neo task from this imported issue? This does not modify GitHub."
+    )
+    return client.post(f"/api/github/items/{args.item_id}/create-task")
+
+
+def main(argv: list[str] | None = None, client: NeoApiClient | None = None) -> int:
+    parser = build_parser()
+    try:
+        parse_argv = normalize_global_args(sys.argv[1:] if argv is None else argv)
+        args = parser.parse_args(parse_argv)
+        config = from_args(args)
+        api = client or NeoApiClient(config.api_url, timeout=config.timeout)
+        result = handle(args, api)
+        emit(result, json_output=args.json)
+        return 0
+    except SafetyDenied as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_DENIED
+    except ApiUnavailableError as exc:
+        print(f"Neo API unavailable: {exc}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    except ApiError as exc:
+        print(f"Neo API error ({exc.status}): {exc.detail}", file=sys.stderr)
+        return EXIT_API
+    except (ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_INPUT
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

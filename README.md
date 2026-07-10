@@ -57,6 +57,75 @@ For the single-container deployment, see [docs/deployment.md](docs/deployment.md
 SearXNG is optional and not required for the default Docker setup. Neo does not start a
 SearXNG sidecar, and Ollama/model weights are not bundled.
 
+## Validation guardrail
+
+Before marking a change ready, run the repo/test integrity guard and then the normal regression
+suite:
+
+```bash
+.venv/bin/python scripts/check_repo_integrity.py
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall app tests scripts
+cd frontend && npm run build
+cd ..
+git diff --check
+git diff --cached --check
+```
+
+The guard fails loudly if the real `tests/` suite disappears, pytest collects suspiciously few
+tests, test sources are deleted or unexpectedly untracked, cache/bytecode is staged or tracked,
+placeholder-like tests replace real coverage, or critical source directories are missing.
+
+## CLI / headless runner
+
+Neo includes a small headless CLI for scripted checks and operator workflows against a running Neo
+API:
+
+```bash
+python -m app.cli status --api-url http://127.0.0.1:8000
+python -m app.cli agents list
+python -m app.cli coding start "Investigate failing tests" --repo repo-id --agent coder
+python -m app.cli coding actions run-id
+python -m app.cli recovery list
+python -m app.cli rules resolve --repo repo-id --context coding_agent
+python -m app.cli tools list
+python -m app.cli skills list
+python -m app.cli tests list --repo repo-id
+python -m app.cli git status repo-id
+python -m app.cli export run run-id --out run.neo.zip
+python -m app.cli bundles list
+python -m app.cli bundles import validate run.neo.zip
+python -m app.cli bundles import run.neo.zip --yes
+```
+
+Configuration is intentionally boring: set `NEO_API_URL` for the default server URL and
+`NEO_CLI_OUTPUT=json` or pass `--json` for machine-readable output. `--timeout` adjusts API request
+timeouts, and `--no-color` is accepted for non-interactive environments.
+
+Commands that approve agent actions, run saved tests, resume/retry/fork recovery runs, or create
+checkpoints ask for confirmation unless `--yes` is passed. `--yes` only skips the local prompt; the
+CLI still sends the existing backend `confirm=true` field and does not bypass Neo's approval gates.
+
+Exit codes are:
+
+- `0`: success.
+- `1`: invalid input, failed confirmation setup, or local export write failure.
+- `2`: Neo API unavailable.
+- `3`: Neo API returned an error response.
+- `4`: operator confirmation denied.
+
+## Session bundles
+
+Neo can package a coding run, agent run, task, or project into a portable `.neo.zip` evidence
+bundle. Each archive contains `neo_bundle.json`, optional patch/test-report artifacts, and a
+`checksums.json` manifest. Credential values, environment values, provider credentials, and
+original absolute host paths are replaced with `[REDACTED]` before an archive is written.
+
+Bundles can be exported from a Coding Run detail or Settings → Bundles, downloaded, validated,
+and imported elsewhere. Import currently supports `archive_only` exclusively: it preserves the
+archive and its read-only metadata for inspection without merging active runs, applying patches,
+running tests, creating checkpoints, or writing any original repository.
+
 ## Controlled Test Runner
 
 Registered repositories expose a Test Runner for saved, explicitly confirmed test commands. It

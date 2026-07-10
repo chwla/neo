@@ -12,6 +12,8 @@ import RulesProfiles from "./RulesProfiles.jsx";
 import RecoveryPanel from "./RecoveryPanel.jsx";
 import AgentSettings from "./AgentSettings.jsx";
 import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
+import Bundles from "./Bundles.jsx";
+import GitHub from "./GitHub.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -1231,7 +1233,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
@@ -1242,6 +1244,8 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, on
         <NeoButton className="w-full" onClick={onOpenRules}>Rules &amp; Profiles</NeoButton>
         <NeoButton className="w-full" onClick={onOpenAgents}>Agents</NeoButton>
         <NeoButton className="w-full" onClick={onOpenTools}>Tools &amp; Skills</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenBundles}>Bundles</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenGitHub}>GitHub</NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -1899,6 +1903,8 @@ export default function App() {
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showToolsSettings, setShowToolsSettings] = useState(false);
+  const [showBundles, setShowBundles] = useState(false);
+  const [showGitHub, setShowGitHub] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -2761,6 +2767,8 @@ export default function App() {
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenTools={() => { setShowSettings(false); setShowToolsSettings(true); }}
+          onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
+          onOpenGitHub={() => { setShowSettings(false); setShowGitHub(true); }}
           onOpenLLMs={() => {
             setShowSettings(false);
             setShowLlmSettings(true);
@@ -2819,6 +2827,8 @@ export default function App() {
       {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
       {showAgentSettings && <AgentSettings onClose={() => setShowAgentSettings(false)} />}
       {showToolsSettings && <ToolsSkillsSettings onClose={() => setShowToolsSettings(false)} />}
+      {showBundles && <Modal title="Bundles" onClose={() => setShowBundles(false)} wide><Bundles /></Modal>}
+      {showGitHub && <Modal title="GitHub" onClose={() => setShowGitHub(false)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />

@@ -19,6 +19,9 @@ dependencies = [
     "uvicorn[standard]>=0.30",
 ]
 
+[project.scripts]
+neo = "app.cli.main:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",

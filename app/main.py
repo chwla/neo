@@ -6,12 +6,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.agents import router as agents_router
+from app.api.routes.bundles import router as bundles_router
 from app.api.routes.agents import task_router as agent_task_router
 from app.api.routes.agent_framework import router as agent_framework_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.coding_agent import router as coding_agent_router
 from app.api.routes.files import router as files_router
 from app.api.routes.git import router as git_router
+from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
 from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
@@ -31,10 +33,12 @@ from app.api.routes.tools import router as tools_router
 from app.api.routes.web import router as web_router
 from app.core.config import get_settings
 from app.services.agents.store import initialize_agent_tables
+from app.services.bundles import initialize_bundle_tables
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.coding_agent.store import initialize_coding_agent_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
+from app.services.github import initialize_github_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
 from app.services.notes.store import initialize_notes_tables
@@ -65,6 +69,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(projects_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
+    app.include_router(bundles_router, prefix="/api")
     app.include_router(agent_framework_router, prefix="/api")
     app.include_router(agent_task_router, prefix="/api")
     app.include_router(llms_router, prefix="/api")
@@ -87,12 +92,14 @@ def create_app() -> FastAPI:
     app.include_router(symbols_router, prefix="/api")
     app.include_router(test_runner_router, prefix="/api")
     app.include_router(git_router, prefix="/api")
+    app.include_router(github_router, prefix="/api")
     app.include_router(rules_router, prefix="/api")
     app.include_router(tools_router, prefix="/api")
     initialize_notes_tables()
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_tables()
+    initialize_bundle_tables()
     initialize_tool_tables()
     ToolsService().seed_builtins()
     initialize_agent_framework_tables()
@@ -102,6 +109,7 @@ def create_app() -> FastAPI:
     initialize_workspace_file_tables()
     initialize_test_runner_tables()
     initialize_git_tables()
+    initialize_github_tables()
     initialize_llm_registry_tables()
     LLMRegistryService().ensure_defaults()
     initialize_rule_tables()

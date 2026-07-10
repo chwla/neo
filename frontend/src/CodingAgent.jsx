@@ -28,6 +28,16 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
+  async function exportBundle() {
+    if (!detail?.coding_run?.id) return;
+    setBusy(true);
+    try {
+      const result = await api.exportBundle({ bundle_type: "coding_run", entity_id: detail.coding_run.id, include_files: true, include_patch_text: true, include_test_output: true, redact_secrets: true });
+      window.location.assign(`/api/bundles/exports/${result.bundle.id}/download`);
+      setMessage("Sanitized bundle created. It contains no executable import actions.");
+    } catch (error) { setMessage(`Export error: ${error.message}`); } finally { setBusy(false); }
+  }
+
   useEffect(() => { setTaskId(initialTaskId || ""); }, [initialTaskId]);
   useEffect(() => { setProjectId(initialProjectId || ""); }, [initialProjectId]);
   useEffect(() => {
@@ -141,6 +151,7 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
       <p className="task-help">Starting creates a plan and proposal only. Apply, tests, and checkpoints each require approval.</p>
     </form> : <div className="coding-agent-detail">
       <div className="coding-agent-status"><strong>{detail.coding_run.objective}</strong><span className={`agent-status ${detail.coding_run.status}`}>{label(detail.coding_run.status)}</span><small>Iteration {detail.coding_run.current_iteration}/{detail.coding_run.max_iterations}</small></div>
+      <button type="button" disabled={busy} onClick={exportBundle}>Export bundle</button>
       {detail.agent_definition ? <details open className="agent-run-card"><summary><strong>Active agent: {detail.agent_definition.display_name || detail.agent_definition.name}</strong></summary><p>{detail.agent_definition.description || "No description."}</p><p><strong>Permissions:</strong> {Object.entries(detail.agent_definition.permissions || {}).filter(([, value]) => value === true).map(([key]) => label(key)).join(", ") || "Read-only/default"}</p><p className="task-help">Agents cannot bypass approvals; patch apply, tests, and checkpoints remain explicit user actions.</p></details> : null}
       {detail.role_agents ? <details className="agent-run-card"><summary><strong>Subagents used</strong></summary><ul>{Object.entries(detail.role_agents).map(([role, agent]) => <li key={role}><strong>{label(role)}:</strong> {agent.display_name || agent.name}</li>)}</ul></details> : null}
       {detail.delegations?.length ? <details className="agent-run-card"><summary><strong>Delegation timeline</strong></summary><ol>{detail.delegations.map((item) => <li key={item.id}><strong>{label(item.status)}</strong> · {item.objective}</li>)}</ol></details> : null}
