@@ -1219,39 +1219,74 @@ function LLMSettingsDialog({ onClose, onChanged }) {
 }
 
 function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+  const groups = [
+    {
+      title: "Intelligence",
+      description: "Models, behavior, and agent configuration.",
+      items: [
+        ["LLM Providers", "Models, routes, fallbacks, and usage", onOpenLLMs],
+        ["Rules & Profiles", "Scoped guidance and resolution priority", onOpenRules],
+        ["Agents", "Roles, permissions, tools, and skills", onOpenAgents],
+      ],
+    },
+    {
+      title: "Capabilities",
+      description: "Connected tools and runtime services.",
+      items: [
+        ["Tools & Skills", "Tool servers, definitions, and approvals", onOpenTools],
+        ["Web Search", "Search provider and availability", onOpenWebSearch],
+        ["Language Server", "Workspace language intelligence", onOpenLsp],
+        ["Command Sandbox", "Controlled command policy and history", onOpenCommandSandbox],
+      ],
+    },
+    {
+      title: "Knowledge",
+      description: "Stored context and research materials.",
+      items: [
+        ["Memory", "Durable personal context", onOpenMemory],
+        ["Context Memory", "Long-run summaries and compaction", onOpenContextMemory],
+        ["Research", "Sources and research sessions", onOpenResearch],
+        ["Notes", "Saved working notes", onOpenNotes],
+      ],
+    },
+    {
+      title: "Workspace",
+      description: "Projects, work tracking, and portability.",
+      items: [
+        ["Projects", "Organize related chats and work", onOpenProjects],
+        ["Tasks", "Plan and track execution", onOpenTasks],
+        ["Bundles", "Export and import sanitized archives", onOpenBundles],
+        ["GitHub", "Issue and pull request workflow", onOpenGitHub],
+      ],
+    },
+  ];
+
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
-      <p className="dialog-caption">App controls</p>
-      <div className="settings-menu">
-        <NeoButton className="w-full" onClick={onOpenLLMs}>
-          LLM Providers
-        </NeoButton>
-        <NeoButton className="w-full" onClick={onOpenRules}>Rules &amp; Profiles</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenAgents}>Agents</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenTools}>Tools &amp; Skills</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenBundles}>Bundles</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenGitHub}>GitHub</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenContextMemory}>Context Memory</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenCommandSandbox}>Command Sandbox</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenLsp}>Language Server Protocol</NeoButton>
-        <NeoButton className="w-full" onClick={onOpenResearch}>
-          Research
-        </NeoButton>
-        <NeoButton className="w-full" onClick={onOpenWebSearch}>
-          Web Search
-        </NeoButton>
-        <NeoButton className="w-full" onClick={onOpenMemory}>
-          Memory
-        </NeoButton>
-        <NeoButton className="w-full" onClick={onOpenNotes}>
-          Notes
-        </NeoButton>
-        <NeoButton className="w-full" onClick={onOpenProjects}>
-          Projects
-        </NeoButton>
-        <NeoButton className="w-full" onClick={onOpenTasks}>
-          Tasks
-        </NeoButton>
+      <div className="settings-intro">
+        <p className="settings-kicker">Control center</p>
+        <p>Configure Neo without leaving your workspace.</p>
+      </div>
+      <div className="settings-menu" aria-label="Settings categories">
+        {groups.map((group) => (
+          <section className="settings-menu-group" key={group.title}>
+            <header>
+              <h3>{group.title}</h3>
+              <p>{group.description}</p>
+            </header>
+            <div className="settings-menu-links">
+              {group.items.map(([title, description, onClick]) => (
+                <button className="settings-link" type="button" onClick={onClick} key={title}>
+                  <span>
+                    <strong>{title}</strong>
+                    <small>{description}</small>
+                  </span>
+                  <span className="settings-link-arrow" aria-hidden="true">→</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
       </div>
     </Modal>
   );

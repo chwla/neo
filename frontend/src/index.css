@@ -4,11 +4,11 @@
 
 :root {
   --neo-green: #39ff14;
-  --neo-black: #030603;
-  --neo-panel: #071007;
-  --neo-panel-2: #0b180b;
-  --neo-text: #eaffea;
-  --neo-muted: #89ad89;
+  --neo-black: #000;
+  --neo-panel: #000;
+  --neo-panel-2: #000;
+  --neo-text: #fff;
+  --neo-muted: rgba(255, 255, 255, .66);
   --neo-line: rgba(57, 255, 20, .32);
 }
 
@@ -1113,12 +1113,136 @@ textarea:disabled {
 }
 
 .settings-dialog {
-  width: min(500px, calc(100% - 48px));
+  width: min(900px, calc(100% - 48px));
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
 }
 
 .settings-menu {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.settings-intro {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin: -2px 0 20px;
+  border-bottom: 1px solid rgba(57, 255, 20, .22);
+  padding-bottom: 16px;
+}
+
+.settings-intro p {
+  margin: 0;
+}
+
+.settings-intro .settings-kicker {
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.settings-intro > p:last-child {
+  color: rgba(255, 255, 255, .66);
+  font-size: 14px;
+}
+
+.settings-menu-group {
+  min-width: 0;
+  border: 1px solid rgba(57, 255, 20, .22);
+  border-radius: 12px;
+  background: #000;
+  padding: 16px;
+}
+
+.settings-menu-group header {
+  margin-bottom: 13px;
+  padding: 0 2px;
+}
+
+.settings-menu-group h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 15px;
+  letter-spacing: .02em;
+}
+
+.settings-menu-group header p {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, .62);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-menu-links {
+  display: grid;
+  gap: 7px;
+}
+
+.settings-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  border: 1px solid rgba(57, 255, 20, .16);
+  border-radius: 8px;
+  background: rgba(57, 255, 20, .025);
+  color: #fff;
+  cursor: pointer;
+  padding: 11px 12px;
+  text-align: left;
+  transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+
+.settings-link > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-link strong,
+.settings-link small {
+  color: #fff;
+}
+
+.settings-link strong {
+  font-size: 13px;
+}
+
+.settings-link small {
+  overflow: hidden;
+  opacity: .62;
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-link-arrow {
+  flex: 0 0 auto;
+  color: var(--neo-green);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform .15s ease;
+}
+
+.settings-link:hover,
+.settings-link:focus-visible {
+  border-color: var(--neo-green);
+  background: rgba(57, 255, 20, .08);
+  box-shadow: 0 0 18px rgba(57, 255, 20, .08);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.settings-link:hover .settings-link-arrow,
+.settings-link:focus-visible .settings-link-arrow {
+  transform: translateX(2px);
 }
 
 .settings-section {
@@ -3457,4 +3581,217 @@ textarea:disabled {
   border: 1px solid rgba(57, 255, 20, .18);
   background: #020702;
   color: var(--neo-text);
+}
+
+/*
+ * Strict Neo palette.
+ * Text is always white. UI surfaces use only black and translucent neon green.
+ * This final layer also neutralizes legacy semantic colors in older feature panels.
+ */
+html,
+body,
+#root,
+.neo-app,
+.neo-main {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+#root *,
+#root *::before,
+#root *::after {
+  border-color: rgba(57, 255, 20, .26) !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: #fff !important;
+  text-shadow: none !important;
+}
+
+#root :is(
+  .neo-sidebar,
+  .neo-dialog,
+  .settings-dialog,
+  .settings-menu-group,
+  .settings-section,
+  .sidebar-form,
+  .memory-card,
+  .task-card,
+  .agent-run-card,
+  .bundle-detail,
+  .coding-agent,
+  .recovery-panel,
+  .files-list-pane,
+  .files-detail-pane,
+  .repos-layout,
+  .notes-layout,
+  .research-layout,
+  .projects-layout,
+  .tasks-layout,
+  [class*="-panel"],
+  [class*="-dialog"],
+  [class*="-detail"]
+) {
+  background-color: #000 !important;
+}
+
+#root :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select,
+  option,
+  pre,
+  code
+) {
+  border: 1px solid rgba(57, 255, 20, .3) !important;
+  background: #000 !important;
+  color: #fff !important;
+  caret-color: #fff !important;
+  color-scheme: dark;
+}
+
+#root select {
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%2339ff14' stroke-width='1.5'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 11px center !important;
+  padding-right: 34px !important;
+}
+
+#root :is(input, textarea)::placeholder {
+  color: rgba(255, 255, 255, .52) !important;
+  opacity: 1;
+}
+
+#root :is(input, textarea, select):focus {
+  border-color: #39ff14 !important;
+  background: #000 !important;
+  box-shadow: 0 0 0 2px rgba(57, 255, 20, .14), 0 0 18px rgba(57, 255, 20, .1) !important;
+  outline: none !important;
+}
+
+#root input:-webkit-autofill,
+#root input:-webkit-autofill:hover,
+#root input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #fff !important;
+  box-shadow: 0 0 0 1000px #000 inset !important;
+  caret-color: #fff !important;
+}
+
+#root :is(button, .neo-button, [role="button"]) {
+  border-color: rgba(57, 255, 20, .3) !important;
+  background-color: rgba(57, 255, 20, .035) !important;
+  color: #fff !important;
+}
+
+#root :is(button, .neo-button, [role="button"]):hover:not(:disabled),
+#root :is(button, .neo-button, [role="button"]):focus-visible {
+  border-color: #39ff14 !important;
+  background-color: rgba(57, 255, 20, .11) !important;
+  box-shadow: 0 0 18px rgba(57, 255, 20, .1) !important;
+  color: #fff !important;
+  outline: none !important;
+}
+
+#root :is(button, .neo-button, [role="button"]):disabled,
+#root :is(input, textarea, select):disabled {
+  border-color: rgba(57, 255, 20, .14) !important;
+  background-color: #000 !important;
+  color: rgba(255, 255, 255, .42) !important;
+  opacity: 1;
+}
+
+#root :is(
+  .is-active,
+  .active,
+  .selected,
+  [aria-current="page"],
+  [aria-selected="true"],
+  [data-state="active"]
+) {
+  border-color: #39ff14 !important;
+  background-color: rgba(57, 255, 20, .1) !important;
+  color: #fff !important;
+}
+
+#root :is(
+  .settings-status,
+  .settings-error,
+  .neo-error,
+  .task-error,
+  .error-banner,
+  .warning,
+  .danger,
+  [class*="-warning"],
+  [class*="-error"],
+  [class*="-status"],
+  [class*="-badge"]
+) {
+  border-color: rgba(57, 255, 20, .46) !important;
+  background-color: rgba(57, 255, 20, .07) !important;
+  color: #fff !important;
+}
+
+#root :is(.settings-link, .agent-definition-list button, .llm-route-row, [class*="-row"], [class*="-card"]) {
+  background-color: rgba(57, 255, 20, .025) !important;
+}
+
+#root :is(a, a:visited) {
+  color: #fff !important;
+  text-decoration-color: #39ff14 !important;
+}
+
+#root :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: #39ff14 !important;
+}
+
+#root .settings-link-arrow,
+#root .sidebar-toggle span,
+#root .neo-spinner,
+#root [aria-hidden="true"].status-dot {
+  color: #39ff14 !important;
+}
+
+#root svg,
+#root svg * {
+  fill: currentColor !important;
+  stroke: currentColor !important;
+}
+
+#root .modal-backdrop {
+  background: rgba(0, 0, 0, .88) !important;
+}
+
+* {
+  scrollbar-color: #39ff14 #000;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-button {
+  background-color: #000 !important;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-color: #000 !important;
+  background: #39ff14 !important;
+}
+
+::selection {
+  background: rgba(57, 255, 20, .28);
+  color: #fff;
+}
+
+@media (max-width: 760px) {
+  .settings-dialog {
+    width: min(100%, calc(100% - 24px));
+  }
+
+  .settings-menu {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-intro {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
 }
