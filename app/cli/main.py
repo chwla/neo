@@ -12,7 +12,7 @@ EXIT_INPUT = 1
 EXIT_UNAVAILABLE = 2
 EXIT_API = 3
 EXIT_DENIED = 4
-GLOBAL_FLAGS_WITH_VALUE = {"--api-url", "--timeout"}
+GLOBAL_FLAGS_WITH_VALUE = {"--api", "--api-url", "--timeout"}
 GLOBAL_FLAGS_BOOL = {"--json", "--no-color"}
 
 
@@ -53,12 +53,15 @@ def normalize_global_args(argv: list[str]) -> list[str]:
         and rest[2] not in {"validate", "archive", "-h", "--help"}
     ):
         rest.insert(2, "archive")
+    if len(rest) >= 3 and rest[:2] == ["commands", "run"] and "--yes" in rest[2:]:
+        rest.remove("--yes")
+        rest.insert(2, "--yes")
     return prefix + rest
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="neo")
-    parser.add_argument("--api-url")
+    parser.add_argument("--api", "--api-url", dest="api_url")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
@@ -98,6 +101,23 @@ def build_parser() -> argparse.ArgumentParser:
     revise = coding_sub.add_parser("revise")
     revise.add_argument("run_id")
     revise.add_argument("--instructions", required=True)
+
+    lsp = sub.add_parser("lsp")
+    lsp_sub = lsp.add_subparsers(dest="lsp_command", required=True)
+    lsp_sub.add_parser("status")
+    lsp_sub.add_parser("servers")
+    for command in ("start", "stop", "diagnostics"):
+        item = lsp_sub.add_parser(command)
+        item.add_argument("workspace_id")
+    symbols = lsp_sub.add_parser("symbols")
+    symbols.add_argument("workspace_id")
+    symbols.add_argument("--query", default="")
+    for command in ("hover", "definition", "references", "rename-preview"):
+        item = lsp_sub.add_parser(command)
+        item.add_argument("workspace_id")
+        item.add_argument("--file", dest="file_path", required=True)
+        item.add_argument("--line", type=int, default=0)
+        item.add_argument("--character", type=int, default=0)
 
     recovery = sub.add_parser("recovery")
     recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
@@ -199,6 +219,27 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--max-summary-tokens", type=int, default=1200)
         if command == "compact":
             item.add_argument("--yes", action="store_true")
+    commands = sub.add_parser("commands")
+    commands_sub = commands.add_subparsers(dest="commands_command", required=True)
+    commands_sub.add_parser("list")
+    commands_show = commands_sub.add_parser("show")
+    commands_show.add_argument("run_id")
+    for command in ("validate", "propose", "run"):
+        item = commands_sub.add_parser(command)
+        item.add_argument("workspace_id")
+        item.add_argument("--category", choices=["read_only", "test", "build"], default="test")
+        item.add_argument("argv", nargs=argparse.REMAINDER)
+        if command == "run":
+            item.add_argument("--yes", action="store_true")
+    tui = sub.add_parser("tui")
+    tui.add_argument("--api", dest="tui_api")
+    tui.add_argument("--refresh", type=float, default=2.0)
+    tui.add_argument("--snapshot", action="store_true")
+    tui.add_argument(
+        "--view",
+        choices=["dashboard", "tasks", "coding-runs", "agents", "commands", "context", "settings"],
+        default="dashboard",
+    )
     return parser
 
 
@@ -235,6 +276,8 @@ def handle(args, client: NeoApiClient) -> Any:
         return client.get(f"/api/agents/definitions/{args.agent_id}")
     if args.command == "coding":
         return handle_coding(args, client)
+    if args.command == "lsp":
+        return handle_lsp(args, client)
     if args.command == "recovery":
         return handle_recovery(args, client)
     if args.command == "rules":
@@ -267,6 +310,12 @@ def handle(args, client: NeoApiClient) -> Any:
         return handle_github(args, client)
     if args.command == "context":
         return handle_context(args, client)
+    if args.command == "commands":
+        return handle_commands(args, client)
+    if args.command == "tui":
+        from app.cli.tui import run_tui
+
+        return run_tui(client, snapshot_mode=args.snapshot, view=args.view)
     raise ValueError("Unknown command.")
 
 
@@ -309,6 +358,29 @@ def handle_coding(args, client: NeoApiClient) -> Any:
             {"instructions": args.instructions},
         )
     raise ValueError("Unknown coding command.")
+
+
+def handle_lsp(args, client: NeoApiClient) -> Any:
+    if args.lsp_command == "status":
+        return client.get("/api/lsp/status")
+    if args.lsp_command == "servers":
+        return client.get("/api/lsp/servers")
+    if args.lsp_command == "diagnostics":
+        return client.get(f"/api/lsp/workspaces/{args.workspace_id}/diagnostics")
+    if args.lsp_command in {"start", "stop"}:
+        path = f"/api/lsp/workspaces/{args.workspace_id}/{args.lsp_command}"
+        return client.post(path, {"language": "python"})
+    action = "workspace-symbols" if args.lsp_command == "symbols" else args.lsp_command
+    return client.post(
+        f"/api/lsp/workspaces/{args.workspace_id}/{action}",
+        {
+            "file_path": getattr(args, "file_path", ""),
+            "line": getattr(args, "line", 0),
+            "character": getattr(args, "character", 0),
+            "query": getattr(args, "query", ""),
+            "language": "python",
+        },
+    )
 
 
 APPROVAL_WARNING = (
@@ -460,14 +532,43 @@ def handle_context(args, client: NeoApiClient) -> Any:
     return client.post("/api/context-memory/compact", payload)
 
 
+def handle_commands(args, client: NeoApiClient) -> Any:
+    if args.commands_command == "list":
+        return client.get("/api/command-sandbox/runs")
+    if args.commands_command == "show":
+        return client.get(f"/api/command-sandbox/runs/{args.run_id}")
+    command = list(args.argv)
+    if command and command[0] == "--":
+        command = command[1:]
+    payload = {
+        "workspace_id": args.workspace_id,
+        "command": command,
+        "cwd": ".",
+        "category": args.category,
+        "created_by": "cli",
+    }
+    if args.commands_command == "validate":
+        return client.post("/api/command-sandbox/validate", payload)
+    proposed = client.post("/api/command-sandbox/propose", payload)
+    if args.commands_command == "propose":
+        return proposed
+    require_confirm(args, "Approve this allowlisted command in Neo's managed workspace?")
+    client.post(f"/api/command-sandbox/runs/{proposed['id']}/approve", {"confirm": True})
+    return client.post(f"/api/command-sandbox/runs/{proposed['id']}/execute")
+
+
 def main(argv: list[str] | None = None, client: NeoApiClient | None = None) -> int:
     parser = build_parser()
     try:
         parse_argv = normalize_global_args(sys.argv[1:] if argv is None else argv)
         args = parser.parse_args(parse_argv)
         config = from_args(args)
-        api = client or NeoApiClient(config.api_url, timeout=config.timeout)
+        api_url = getattr(args, "tui_api", None) or config.api_url
+        api = client or NeoApiClient(api_url, timeout=config.timeout)
         result = handle(args, api)
+        if args.command == "tui" and args.snapshot:
+            print(result)
+            return 0
         emit(result, json_output=args.json)
         return 0
     except SafetyDenied as exc:
@@ -479,6 +580,9 @@ def main(argv: list[str] | None = None, client: NeoApiClient | None = None) -> i
     except ApiError as exc:
         print(f"Neo API error ({exc.status}): {exc.detail}", file=sys.stderr)
         return EXIT_API
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_UNAVAILABLE
     except (ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_INPUT

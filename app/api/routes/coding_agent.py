@@ -7,6 +7,7 @@ from app.services.coding_agent.types import (
     ActionDecisionRequest,
     ActionRejectRequest,
     CodingRunCreate,
+    CommandProposalRequest,
     PatchRevisionRequest,
 )
 
@@ -87,4 +88,14 @@ def cancel_run(coding_run_id: str) -> dict:
     try:
         return _service().cancel(coding_run_id)
     except LookupError as exc:
+        _raise(exc)
+
+
+@router.post("/runs/{coding_run_id}/commands/propose", status_code=201)
+def propose_command(coding_run_id: str, request: CommandProposalRequest) -> dict:
+    try:
+        return _service().propose_command(
+            coding_run_id, request.command, request.category, request.reason
+        )
+    except (LookupError, ValueError) as exc:
         _raise(exc)

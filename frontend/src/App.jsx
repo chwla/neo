@@ -15,6 +15,8 @@ import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
 import Bundles from "./Bundles.jsx";
 import GitHub from "./GitHub.jsx";
 import ContextMemory from "./ContextMemory.jsx";
+import CommandSandbox from "./CommandSandbox.jsx";
+import LspPanel from "./LspPanel.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -238,14 +240,6 @@ function Sidebar({
   onDeleteChat,
   onDeleteProject,
   onOpenSettings,
-  onOpenChatHome,
-  onOpenMemory,
-  onOpenResearch,
-  onOpenNotes,
-  onOpenProjects,
-  onOpenTasks,
-  onOpenFiles,
-  onOpenRepos,
 }) {
   const [projectName, setProjectName] = useState("");
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
@@ -263,16 +257,6 @@ function Sidebar({
   return (
     <aside className="neo-sidebar">
       <div className="sidebar-title">Neo</div>
-      <nav className="sidebar-workspace-nav" aria-label="Workspace">
-        <button type="button" onClick={onOpenChatHome}>Chat</button>
-        <button type="button" onClick={onOpenMemory}>Memory</button>
-        <button type="button" onClick={onOpenResearch}>Research</button>
-        <button type="button" onClick={onOpenNotes}>Notes</button>
-        <button type="button" onClick={onOpenProjects}>Projects</button>
-        <button type="button" onClick={onOpenTasks}>Tasks</button>
-        <button type="button" onClick={onOpenFiles}>Files</button>
-        <button type="button" onClick={onOpenRepos}>Repos</button>
-      </nav>
       <NeoButton className="w-full justify-start" onClick={() => onNewChat(selectedProjectId)}>
         + New Chat
       </NeoButton>
@@ -1234,7 +1218,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
       <p className="dialog-caption">App controls</p>
@@ -1248,6 +1232,8 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, on
         <NeoButton className="w-full" onClick={onOpenBundles}>Bundles</NeoButton>
         <NeoButton className="w-full" onClick={onOpenGitHub}>GitHub</NeoButton>
         <NeoButton className="w-full" onClick={onOpenContextMemory}>Context Memory</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenCommandSandbox}>Command Sandbox</NeoButton>
+        <NeoButton className="w-full" onClick={onOpenLsp}>Language Server Protocol</NeoButton>
         <NeoButton className="w-full" onClick={onOpenResearch}>
           Research
         </NeoButton>
@@ -1908,6 +1894,8 @@ export default function App() {
   const [showBundles, setShowBundles] = useState(false);
   const [showGitHub, setShowGitHub] = useState(false);
   const [showContextMemory, setShowContextMemory] = useState(false);
+  const [showCommandSandbox, setShowCommandSandbox] = useState(false);
+  const [showLsp, setShowLsp] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -2773,6 +2761,8 @@ export default function App() {
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
           onOpenGitHub={() => { setShowSettings(false); setShowGitHub(true); }}
           onOpenContextMemory={() => { setShowSettings(false); setShowContextMemory(true); }}
+          onOpenCommandSandbox={() => { setShowSettings(false); setShowCommandSandbox(true); }}
+          onOpenLsp={() => { setShowSettings(false); setShowLsp(true); }}
           onOpenLLMs={() => {
             setShowSettings(false);
             setShowLlmSettings(true);
@@ -2834,6 +2824,8 @@ export default function App() {
       {showBundles && <Modal title="Bundles" onClose={() => setShowBundles(false)} wide><Bundles /></Modal>}
       {showGitHub && <Modal title="GitHub" onClose={() => setShowGitHub(false)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
       {showContextMemory && <Modal title="Context Memory" onClose={() => setShowContextMemory(false)} wide><ContextMemory /></Modal>}
+      {showCommandSandbox && <Modal title="Command Sandbox" onClose={() => setShowCommandSandbox(false)} wide><CommandSandbox /></Modal>}
+      {showLsp && <Modal title="Language Server Protocol" onClose={() => setShowLsp(false)} wide><LspPanel /></Modal>}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />

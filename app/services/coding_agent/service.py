@@ -5,6 +5,8 @@ import re
 import app.services.coding_agent.store as store
 from app.services.coding_agent.orchestrator import CodingAgentOrchestrator
 from app.services.coding_agent.types import CodingRunCreate
+from app.services.command_sandbox import CommandSandboxService
+from app.services.command_sandbox.types import CommandRequest
 
 CODING_INTENT = re.compile(
     r"\b(coding run|coding agent|patch applied|selected files|checkpoint created|"
@@ -37,6 +39,22 @@ class CodingAgentService:
 
     def cancel(self, run_id: str) -> dict:
         return self.orchestrator.cancel(run_id)
+
+    def propose_command(self, run_id: str, command: list[str], category: str, reason: str) -> dict:
+        run = store.get_run(run_id)
+        if not run:
+            raise LookupError("Coding-agent run not found.")
+        proposal = CommandSandboxService().propose(
+            CommandRequest(
+                workspace_id=run["repo_id"],
+                command=command,
+                cwd=".",
+                category=category,
+                created_by=f"coding_agent:{run_id}",
+            )
+        )
+        proposal["agent_reason"] = reason
+        return proposal
 
     def context_for_prompt(self, prompt: str) -> str:
         if not CODING_INTENT.search(prompt):

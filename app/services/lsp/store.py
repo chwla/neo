@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 # ruff: noqa: E501
 import sqlite3
 import uuid
@@ -63,3 +65,45 @@ def save_session(workspace_id, language, command, status, error=None):
     c.commit()
     c.close()
     return id
+
+def replace_diagnostics(workspace_id, file_path, language, diagnostics, redact):
+    c = _c()
+    try:
+        c.execute(
+            "DELETE FROM workspace_lsp_diagnostics WHERE workspace_id=? AND file_path=?",
+            (workspace_id, file_path),
+        )
+        for item in diagnostics:
+            if not isinstance(item, dict):
+                continue
+            c.execute(
+                "INSERT INTO workspace_lsp_diagnostics VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()),
+                    workspace_id,
+                    file_path,
+                    language,
+                    str(item.get("severity", "information")),
+                    redact(item.get("message", "")),
+                    redact(item.get("source", "")) or None,
+                    json.dumps(item.get("range", {})),
+                    json.dumps({"code": item.get("code"), "codeDescription": item.get("codeDescription")}),
+                    now(),
+                ),
+            )
+        c.commit()
+    finally:
+        c.close()
+
+def diagnostics(workspace_id):
+    c = _c()
+    try:
+        return [
+            dict(x)
+            for x in c.execute(
+                "SELECT * FROM workspace_lsp_diagnostics WHERE workspace_id=? ORDER BY created_at DESC",
+                (workspace_id,),
+            )
+        ]
+    finally:
+        c.close()

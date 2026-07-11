@@ -89,6 +89,13 @@ async function streamRequest(path, payload, onEvent) {
 }
 
 export const api = {
+  commandRuns: (workspaceId = "") => request(`/command-sandbox/runs${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ""}`),
+  commandRun: (id) => request(`/command-sandbox/runs/${id}`),
+  validateCommand: (payload) => request("/command-sandbox/validate", { method: "POST", body: JSON.stringify(payload) }),
+  proposeCommand: (payload) => request("/command-sandbox/propose", { method: "POST", body: JSON.stringify(payload) }),
+  approveCommand: (id) => request(`/command-sandbox/runs/${id}/approve`, { method: "POST", body: JSON.stringify({ confirm: true }) }),
+  executeCommand: (id) => request(`/command-sandbox/runs/${id}/execute`, { method: "POST" }),
+  cancelCommand: (id) => request(`/command-sandbox/runs/${id}/cancel`, { method: "POST" }),
   contextSummaries: (params = {}) => {
     const search = new URLSearchParams();
     if (params.scopeType) search.set("scope_type", params.scopeType);
@@ -226,6 +233,18 @@ export const api = {
   ),
   cancelCodingRun: (runId) => request(`/coding-agent/runs/${runId}/cancel`, {
     method: "POST",
+  }),
+  lspStatus: () => request("/lsp/status"),
+  lspServers: () => request("/lsp/servers"),
+  lspStart: (workspaceId, language = "python") => request(`/lsp/workspaces/${workspaceId}/start`, {
+    method: "POST", body: JSON.stringify({ language }),
+  }),
+  lspStop: (workspaceId) => request(`/lsp/workspaces/${workspaceId}/stop`, {
+    method: "POST", body: JSON.stringify({}),
+  }),
+  lspDiagnostics: (workspaceId) => request(`/lsp/workspaces/${workspaceId}/diagnostics`),
+  lspQuery: (workspaceId, action, payload = {}) => request(`/lsp/workspaces/${workspaceId}/${action}`, {
+    method: "POST", body: JSON.stringify(payload),
   }),
   exportBundle: (payload) => request("/bundles/export", { method: "POST", body: JSON.stringify(payload) }),
   bundleExports: () => request("/bundles/exports"),

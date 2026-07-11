@@ -17,6 +17,7 @@ from app.services.files import store as file_store
 from app.services.git import store as git_store
 from app.services.git.service import GitService
 from app.services.git.types import CheckpointCreateRequest
+from app.services.lsp import LSPService
 from app.services.patch_apply import store as patch_store
 from app.services.patch_apply.service import ControlledPatchApplyService
 from app.services.patch_apply.types import PatchApplyRequest
@@ -172,6 +173,12 @@ class CodingAgentOrchestrator:
             store.update_run(
                 coding_run["id"], {"selected_files": files, "updated_at": store.now_iso()}
             )
+            lsp_context = self._lsp_context(repo["id"], files[0]["relative_path"])
+            metadata = self._run(coding_run["id"]).get("metadata", {})
+            metadata.update(lsp_context)
+            store.update_run(
+                coding_run["id"], {"metadata": metadata, "updated_at": store.now_iso()}
+            )
             self._step(
                 agent_run["id"],
                 "select_context",
@@ -180,6 +187,12 @@ class CodingAgentOrchestrator:
                     "select bounded code context"
                 ),
                 self._files_text(files),
+            )
+            self._step(
+                agent_run["id"],
+                "lsp_context",
+                "Read-only LSP grounding",
+                self._lsp_context_text(lsp_context),
             )
             self._propose(coding_run["id"], objective)
         except Exception as exc:
@@ -194,6 +207,33 @@ class CodingAgentOrchestrator:
         if task_summary["used"] or not project_id:
             return task_summary
         return memory.scope("project", project_id)
+
+    @staticmethod
+    def _lsp_context(repo_id: str, relative_path: str) -> dict:
+        try:
+            return LSPService().get_lsp_symbol_context(repo_id, relative_path, 0, 0)
+        except (LookupError, RuntimeError, ValueError):
+            return {
+                "lsp_context_used": False,
+                "lsp_session_id": None,
+                "lsp_degraded_reason": (
+                    "LSP context was unavailable; static context remains active."
+                ),
+                "context": {"static_symbols": [], "diagnostics": []},
+            }
+
+    @staticmethod
+    def _lsp_context_text(context: dict) -> str:
+        details = context.get("context", {})
+        symbols = len(details.get("static_symbols", []))
+        diagnostics = len(details.get("diagnostics", []))
+        if context.get("lsp_context_used"):
+            return f"LSP context used: yes. Static symbols: {symbols}; diagnostics: {diagnostics}."
+        return (
+            "LSP context used: no. "
+            f"Reason: {context.get('lsp_degraded_reason')}. "
+            f"Static symbols: {symbols}; diagnostics: {diagnostics}."
+        )
 
     def approve(self, action_id: str, *, confirm: bool, options: dict) -> dict:
         require_confirmation(confirm)

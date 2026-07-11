@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from app.services.lsp import LSPService
 
 router = APIRouter(prefix="/lsp", tags=["lsp"])
+service = LSPService()
 
 
 class Request(BaseModel):
@@ -11,11 +12,12 @@ class Request(BaseModel):
     line: int = 0
     character: int = 0
     query: str = ""
+    text: str = ""
     language: str = "python"
 
 
 def s():
-    return LSPService()
+    return service
 
 
 @router.get("/status")
@@ -43,7 +45,13 @@ def stop(workspace_id: str):
 
 @router.get("/workspaces/{workspace_id}/diagnostics")
 def diagnostics(workspace_id: str):
-    return {"diagnostics": [], "status": "unavailable"}
+    from app.services.lsp import store
+
+    sessions = store.sessions(workspace_id)
+    return {
+        "diagnostics": store.diagnostics(workspace_id),
+        "status": sessions[0]["status"] if sessions else "unavailable",
+    }
 
 
 @router.post("/workspaces/{workspace_id}/{action}")
@@ -56,6 +64,8 @@ def query(workspace_id: str, action: str, body: Request):
             line=body.line,
             character=body.character,
             query=body.query,
+            text=body.text,
+            language=body.language,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e

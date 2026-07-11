@@ -61,6 +61,12 @@ class PatchRevisionRequest(BaseModel):
     instructions: str = Field(min_length=1, max_length=4000)
 
 
+class CommandProposalRequest(BaseModel):
+    command: list[str] = Field(min_length=1, max_length=32)
+    category: Literal["read_only", "test", "build"] = "test"
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class CodingAgentRun(BaseModel):
     id: str
     agent_run_id: str

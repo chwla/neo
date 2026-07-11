@@ -88,8 +88,54 @@ select {
   font: inherit;
 }
 
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea,
+select {
+  border: 1px solid rgba(57, 255, 20, .28);
+  border-radius: 7px;
+  background: #041004;
+  color: var(--neo-text);
+  caret-color: var(--neo-green);
+  color-scheme: dark;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(137, 173, 137, .78);
+  opacity: 1;
+}
+
+select option {
+  background: #041004;
+  color: var(--neo-text);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+textarea:focus,
+select:focus {
+  border-color: var(--neo-green);
+  background: #061406;
+  box-shadow: 0 0 0 2px rgba(57, 255, 20, .12), 0 0 18px rgba(57, 255, 20, .1);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--neo-green);
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--neo-text);
+  box-shadow: 0 0 0 1000px #041004 inset;
+  caret-color: var(--neo-green);
+}
+
 button {
   cursor: pointer;
+  color: inherit;
 }
 
 button:disabled,
@@ -258,29 +304,6 @@ textarea:disabled {
   padding-top: 0;
 }
 
-.sidebar-workspace-nav {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.sidebar-workspace-nav button {
-  border: 1px solid var(--neo-line);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--neo-muted);
-  padding: 7px 8px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.sidebar-workspace-nav button:hover,
-.sidebar-workspace-nav button:focus-visible {
-  border-color: var(--neo-green);
-  color: var(--neo-text);
-}
-
 .sidebar-section {
   color: var(--neo-muted);
   font-size: 14px;
@@ -367,19 +390,25 @@ textarea:disabled {
 
 .sidebar-form input {
   margin-bottom: 14px;
-  border-color: rgba(255, 255, 255, .03);
-  background: #121621;
-  color: #dfe4ee;
-  box-shadow: none;
+  border-color: rgba(57, 255, 20, .24);
+  background: #041004;
+  color: var(--neo-text);
+  box-shadow: inset 0 1px 0 rgba(57, 255, 20, .03);
 }
 
 .sidebar-form-submit {
   min-width: 70px;
-  border-color: rgba(255, 255, 255, .06);
-  background: #383b48;
-  color: #f5f7fb;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  border-color: rgba(57, 255, 20, .36);
+  background: rgba(57, 255, 20, .1);
+  color: var(--neo-green);
+  box-shadow: inset 0 1px 0 rgba(57, 255, 20, .08);
   padding: 8px 16px;
+}
+
+.sidebar-form-submit:hover:not(:disabled) {
+  border-color: var(--neo-green);
+  background: rgba(57, 255, 20, .17);
+  box-shadow: 0 0 16px rgba(57, 255, 20, .1);
 }
 
 .memory-field {
@@ -3276,3 +3305,156 @@ textarea:disabled {
 .recovery-events ul { margin: 8px 0 0; padding-left: 18px; }
 .recovery-events li { margin: 4px 0; color: #4d504b; }
 .recovery-panel input { width: 100%; }
+
+/* Unified neon workspace theme for legacy file, repo, and agent surfaces. */
+.files-layout,
+.repos-layout {
+  background: var(--neo-black);
+  color: var(--neo-text);
+}
+
+.files-list-pane,
+.repos-layout section,
+.project-repos,
+.files-detail-pane section,
+.file-attachments,
+.artifacts-panel,
+.patch-applications,
+.test-suggestions,
+.test-command,
+.test-run-row,
+.git-status,
+.git-changed-files button,
+.git-history > button,
+.code-index-results button,
+.coding-agent,
+.recovery-panel {
+  border-color: rgba(57, 255, 20, .2);
+  background: var(--neo-panel);
+  color: var(--neo-text);
+  box-shadow: none;
+}
+
+.files-list-pane {
+  border-right-color: var(--neo-line);
+}
+
+.files-list > button,
+.file-attachment-list button,
+.artifact-list > button,
+.patch-application-list button,
+.repos-list > button,
+.repo-file-list > button {
+  border-color: rgba(57, 255, 20, .18);
+  background: #061006;
+  color: var(--neo-text);
+  transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+}
+
+.files-list > button:hover,
+.files-list > button.selected,
+.file-attachment-list button:hover,
+.artifact-list > button:hover,
+.patch-application-list button:hover,
+.repos-list > button:hover,
+.repos-list > button.selected,
+.repo-file-list > button:hover,
+.git-changed-files button:hover,
+.git-history > button:hover,
+.code-index-results button:hover {
+  border-color: var(--neo-green);
+  background: #0a1a0a;
+  box-shadow: 0 0 16px rgba(57, 255, 20, .08);
+}
+
+.files-list span,
+.files-list small,
+.file-attachment-list span,
+.artifact-list span,
+.artifact-viewer-header span,
+.patch-application-list small,
+.repos-register label,
+.repos-list span,
+.repos-list small,
+.repo-file-list span,
+.repos-detail-header p,
+.test-runner-title p,
+.test-command small,
+.test-run-row small,
+.git-title p,
+.git-status small,
+.git-history small,
+.code-index-stats,
+.code-index-results span,
+.code-index-results small,
+.coding-agent-title p,
+.coding-agent-action p,
+.recovery-title p,
+.recovery-summary p,
+.recovery-panel .task-help,
+.recovery-events li {
+  color: var(--neo-muted);
+}
+
+.file-link-badge,
+.code-index-tabs button.selected {
+  border: 1px solid rgba(57, 255, 20, .22);
+  background: rgba(57, 255, 20, .08);
+  color: var(--neo-green);
+}
+
+.patch-apply-controls,
+.coding-agent-action {
+  border-color: rgba(255, 204, 68, .45);
+  background: #171504;
+  color: var(--neo-text);
+}
+
+.patch-hash-review {
+  background: #031003;
+  color: var(--neo-text);
+}
+
+.test-runner,
+.git-checkpoints,
+.code-index-panel,
+.symbol-awareness-panel,
+.patch-test-runner,
+.patch-git-checkpoint,
+.artifact-viewer,
+.test-run-detail,
+.git-diff,
+.git-checkpoint-detail {
+  border-color: var(--neo-line);
+}
+
+.coding-agent {
+  --border-color: rgba(57, 255, 20, .22);
+  --panel-bg: var(--neo-panel);
+  --text-muted: var(--neo-muted);
+}
+
+.coding-agent-runs button {
+  border: 1px solid rgba(57, 255, 20, .18);
+  border-radius: 7px;
+  background: #061006;
+  color: var(--neo-text);
+  padding: 9px 10px;
+}
+
+.coding-agent-runs button:hover {
+  border-color: var(--neo-green);
+  background: #0a1a0a;
+}
+
+.coding-agent pre,
+.artifact-viewer pre,
+.patch-file-diffs pre,
+.patch-snapshot-grid pre,
+.test-run-detail pre,
+.git-diff pre,
+.git-checkpoint-detail pre {
+  border: 1px solid rgba(57, 255, 20, .18);
+  background: #020702;
+  color: var(--neo-text);
+}

@@ -52,8 +52,11 @@ class PatchProposalService:
         try:
             generated = remove_execution_claims(self.generator(prompt).strip())
             generated = self._normalize_single_target_diff(generated, files)
-        except Exception as exc:
-            generation_error = str(exc)
+        except Exception:
+            # Provider exceptions can contain endpoint URLs, local paths, or
+            # transport details. Patch proposals are user-visible artifacts, so
+            # preserve only a safe, actionable summary.
+            generation_error = "Model generation is unavailable."
             generated = ""
 
         filenames = [item["patch_path"] for item in files]

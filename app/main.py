@@ -11,6 +11,7 @@ from app.api.routes.agents import task_router as agent_task_router
 from app.api.routes.bundles import router as bundles_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.coding_agent import router as coding_agent_router
+from app.api.routes.command_sandbox import router as command_sandbox_router
 from app.api.routes.context_memory import router as context_memory_router
 from app.api.routes.files import router as files_router
 from app.api.routes.git import router as git_router
@@ -38,6 +39,7 @@ from app.services.agent_framework import AgentDefinitionService, initialize_agen
 from app.services.agents.store import initialize_agent_tables
 from app.services.bundles import initialize_bundle_tables
 from app.services.coding_agent.store import initialize_coding_agent_tables
+from app.services.command_sandbox import initialize_command_sandbox_tables
 from app.services.context_memory import initialize_context_memory_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
@@ -93,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(patches_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
     app.include_router(code_index_router, prefix="/api")
+    app.include_router(command_sandbox_router, prefix="/api")
     app.include_router(context_memory_router, prefix="/api")
     app.include_router(coding_agent_router, prefix="/api")
     app.include_router(symbols_router, prefix="/api")
@@ -111,6 +114,7 @@ def create_app() -> FastAPI:
     initialize_agent_framework_tables()
     AgentDefinitionService().seed_builtins()
     initialize_coding_agent_tables()
+    initialize_command_sandbox_tables()
     initialize_context_memory_tables()
     initialize_research_tables()
     initialize_workspace_file_tables()
