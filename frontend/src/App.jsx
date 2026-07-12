@@ -20,6 +20,10 @@ import LspPanel from "./LspPanel.jsx";
 import AgenticRuns from "./AgenticRuns.jsx";
 import WebSearch from "./WebSearch.jsx";
 import MemoryRetrieval from "./MemoryRetrieval.jsx";
+import ProviderRuntime from "./ProviderRuntime.jsx";
+import EvaluationHarness from "./EvaluationHarness.jsx";
+import WorkspaceOrchestration from "./WorkspaceOrchestration.jsx";
+import Continuity from "./Continuity.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -1221,7 +1225,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -1229,6 +1233,10 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenRules, onOpenAgents, 
       items: [
         ["Agentic Runs", "Plan, execute, verify, and reflect", onOpenAgentic],
         ["LLM Providers", "Models, routes, fallbacks, and usage", onOpenLLMs],
+        ["Provider Runtime", "Health, rate limits, streaming, and request audit", onOpenProviderRuntime],
+        ["Evaluation Harness", "Offline scoring, reports, baselines, and safety regression", onOpenEvaluationHarness],
+        ["Workspace Orchestration", "Plans, evidence, readiness, risks, and project delivery", onOpenWorkspaceOrchestration],
+        ["Continuity", "Redacted exports, import validation, and resumable state", onOpenContinuity],
         ["Rules & Profiles", "Scoped guidance and resolution priority", onOpenRules],
         ["Agents", "Roles, permissions, tools, and skills", onOpenAgents],
       ],
@@ -1928,6 +1936,10 @@ export default function App() {
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
+  const [showProviderRuntime, setShowProviderRuntime] = useState(false);
+  const [showEvaluationHarness, setShowEvaluationHarness] = useState(false);
+  const [showWorkspaceOrchestration, setShowWorkspaceOrchestration] = useState(false);
+  const [showContinuity, setShowContinuity] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
@@ -2813,6 +2825,10 @@ export default function App() {
             setShowSettings(false);
             setShowLlmSettings(true);
           }}
+          onOpenProviderRuntime={() => { setShowSettings(false); setShowProviderRuntime(true); }}
+          onOpenEvaluationHarness={() => { setShowSettings(false); setShowEvaluationHarness(true); }}
+          onOpenWorkspaceOrchestration={() => { setShowSettings(false); setShowWorkspaceOrchestration(true); }}
+          onOpenContinuity={() => { setShowSettings(false); setShowContinuity(true); }}
           onOpenWebSearch={() => {
             setShowSettings(false);
             setShowWebSearchSettings(true);
@@ -2865,6 +2881,10 @@ export default function App() {
           onChanged={handleLlmConfigChanged}
         />
       )}
+      {showProviderRuntime && <Modal title="Provider Runtime" onClose={() => setShowProviderRuntime(false)} wide><ProviderRuntime /></Modal>}
+      {showEvaluationHarness && <Modal title="Evaluation Harness" onClose={() => setShowEvaluationHarness(false)} wide><EvaluationHarness /></Modal>}
+      {showWorkspaceOrchestration && <Modal title="Workspace Orchestration" onClose={() => setShowWorkspaceOrchestration(false)} wide><WorkspaceOrchestration /></Modal>}
+      {showContinuity && <Modal title="Continuity" onClose={() => setShowContinuity(false)} wide><Continuity /></Modal>}
       {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
       {showAgentSettings && <AgentSettings onClose={() => setShowAgentSettings(false)} />}
       {showToolsSettings && <ToolsSkillsSettings onClose={() => setShowToolsSettings(false)} />}

@@ -26,6 +26,8 @@ from app.api.routes.memory_retrieval import router as memory_retrieval_router
 from app.api.routes.notes import router as notes_router
 from app.api.routes.patches import router as patches_router
 from app.api.routes.projects import router as projects_router
+from app.api.routes.provider_runtime import router as provider_runtime_router
+from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.recovery import router as recovery_router
 from app.api.routes.repos import router as repos_router
 from app.api.routes.research import router as research_router
@@ -37,6 +39,9 @@ from app.api.routes.test_runner import router as test_runner_router
 from app.api.routes.tools import router as tools_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
+from app.api.routes.workspaces import router as workspaces_router
+from app.api.routes.continuity import router as continuity_router
+from app.api.routes.integration import router as integration_router
 from app.core.config import get_settings
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.agentic_core import initialize_agentic_core_tables
@@ -45,15 +50,17 @@ from app.services.bundles import initialize_bundle_tables
 from app.services.coding_agent.store import initialize_coding_agent_tables
 from app.services.command_sandbox import initialize_command_sandbox_tables
 from app.services.context_memory import initialize_context_memory_tables
-from app.services.memory_retrieval import initialize_memory_retrieval_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
 from app.services.lsp import initialize_lsp_tables
+from app.services.memory_retrieval import initialize_memory_retrieval_tables
 from app.services.notes.store import initialize_notes_tables
 from app.services.projects.store import initialize_project_tables
+from app.services.provider_runtime import initialize_provider_runtime_tables
+from app.services.evaluation import EvaluationService, initialize_evaluation_tables
 from app.services.recovery import initialize_recovery_tables
 from app.services.recovery.scanner import RecoveryScanner
 from app.services.research.store import initialize_research_tables
@@ -64,6 +71,8 @@ from app.services.test_runner.store import initialize_test_runner_tables
 from app.services.tools import initialize_tool_tables
 from app.services.tools.executor import ToolsService
 from app.services.web_search import initialize_web_search_tables
+from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
+from app.services.continuity import initialize_continuity_tables
 
 
 def create_app() -> FastAPI:
@@ -89,6 +98,8 @@ def create_app() -> FastAPI:
     app.include_router(llms_router, prefix="/api")
     app.include_router(lsp_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
+    app.include_router(provider_runtime_router, prefix="/api")
+    app.include_router(evaluation_router, prefix="/api")
     app.include_router(memory_router)
     app.include_router(memory_router, prefix="/api")
     app.include_router(memory_retrieval_router, prefix="/api")
@@ -100,6 +111,9 @@ def create_app() -> FastAPI:
     app.include_router(web_router)
     app.include_router(web_router, prefix="/api")
     app.include_router(web_search_router, prefix="/api")
+    app.include_router(workspaces_router, prefix="/api")
+    app.include_router(continuity_router, prefix="/api")
+    app.include_router(integration_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
     app.include_router(health_router, prefix="/api")
     app.include_router(patches_router, prefix="/api")
@@ -135,11 +149,16 @@ def create_app() -> FastAPI:
     initialize_git_tables()
     initialize_github_tables()
     initialize_llm_registry_tables()
+    initialize_provider_runtime_tables()
+    initialize_evaluation_tables()
+    EvaluationService().seed_builtins()
     initialize_lsp_tables()
     LLMRegistryService().ensure_defaults()
     initialize_rule_tables()
     initialize_recovery_tables()
     initialize_web_search_tables()
+    initialize_workspace_orchestration_tables()
+    initialize_continuity_tables()
     RecoveryScanner().scan()
     frontend_dir = Path(get_settings().frontend_dir).resolve()
     index_file = frontend_dir / "index.html"

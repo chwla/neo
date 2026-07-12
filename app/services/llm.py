@@ -4,9 +4,9 @@ import json
 import os
 import re
 import time
-from threading import RLock
 from collections.abc import Iterator
 from pathlib import Path
+from threading import RLock
 from typing import Any, Literal, Protocol
 
 import requests
@@ -33,6 +33,7 @@ class LLMChatResult(BaseModel):
     provider_id: str | None = None
     model_id: str | None = None
     fallback_used: bool = False
+    provider_request_id: str | None = None
 
 
 class ChatTurn(BaseModel):
@@ -75,7 +76,7 @@ class LLMConfig(BaseModel):
     num_predict: int = Field(default=160, ge=1, le=32768)
 
     @model_validator(mode="after")
-    def normalize_url(self) -> "LLMConfig":
+    def normalize_url(self) -> LLMConfig:
         self.base_url = self.base_url.rstrip("/")
         return self
 
@@ -414,11 +415,8 @@ def get_llm_client(
     timeout: int | None = None,
     route_name: str = "chat",
 ) -> LLMClient:
-    from app.services.llm_registry.router import get_routed_client
+    # Provider Runtime retains the registry's routes while adding bounded
+    # retries, rate limits, redacted audit records, and fallback metadata.
+    from app.services.provider_runtime.client import ProviderRuntimeClient
 
-    return get_routed_client(
-        route_name,
-        config_id=config_id,
-        num_predict=num_predict,
-        timeout=timeout,
-    )
+    return ProviderRuntimeClient(route_name, num_predict=num_predict, timeout=timeout)

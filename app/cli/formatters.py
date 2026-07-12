@@ -4,14 +4,24 @@ import json
 from pathlib import Path
 from typing import Any
 
-SECRET_KEY_PARTS = ("api_key", "secret", "token")
+SECRET_KEYS = {
+    "api_key",
+    "apikey",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "cookie",
+    "password",
+}
 
 
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         clean = {}
         for key, item in value.items():
-            if any(part in str(key).lower() for part in SECRET_KEY_PARTS):
+            if str(key).lower() in SECRET_KEYS:
                 clean[key] = "[redacted]"
             else:
                 clean[key] = redact(item)

@@ -578,6 +578,22 @@ export const api = {
   researchModeContinue: (runId) => request(`/research/runs/${runId}/continue`, { method: "POST" }),
   researchModeRefresh: (runId) => request(`/research/runs/${runId}/refresh`, { method: "POST" }),
   researchModeValidate: (runId) => request(`/research/runs/${runId}/validate-citations`, { method: "POST" }),
+  providerRuntimeStatus: () => request("/providers/runtime/status"),
+  providerRuntimeHealth: () => request("/providers/runtime/health"),
+  providerRuntimeRequests: () => request("/providers/runtime/requests"),
+  providerRuntimeUsage: () => request("/providers/runtime/usage"),
+  providerRuntimeRateLimits: () => request("/providers/runtime/rate-limits"),
+  evalSuites: () => request("/evals/suites"),
+  evalRuns: () => request("/evals/runs"),
+  runEval: (suiteId, payload = {}) => request(`/evals/suites/${encodeURIComponent(suiteId)}/run`, { method: "POST", body: JSON.stringify({ fixture_mode: true, ...payload }) }),
+  evalReport: (runId) => request(`/evals/runs/${encodeURIComponent(runId)}/report`),
+  setEvalBaseline: (runId, name = "stable") => request(`/evals/runs/${encodeURIComponent(runId)}/set-baseline`, { method: "POST", body: JSON.stringify({ name }) }),
+  workspaces: () => request("/workspaces"),
+  createWorkspace: (payload) => request("/workspaces", {method:"POST",body:JSON.stringify(payload)}),
+  workspaceReport: (id) => request(`/workspaces/${encodeURIComponent(id)}/report`),
+  continuityBundles: () => request("/continuity/bundles"),
+  continuityExport: (payload) => request("/continuity/export", {method:"POST",body:JSON.stringify(payload)}),
+  continuityReport: (id) => request(`/continuity/bundles/${encodeURIComponent(id)}/report`),
 
   notesList: (params = {}) => {
     const search = new URLSearchParams();
