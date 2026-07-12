@@ -6,6 +6,7 @@ import ArtifactsPanel from "./ArtifactsPanel.jsx";
 import PatchApplications from "./PatchApplications.jsx";
 import CodingAgent from "./CodingAgent.jsx";
 import RecoveryPanel from "./RecoveryPanel.jsx";
+import RelatedMemories from "./RelatedMemories.jsx";
 
 const STATUSES = ["todo", "doing", "blocked", "done"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -368,6 +369,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
             ) : null}
 
             <FileAttachments linkType="task" targetId={selectedTask.id} onOpenFile={onOpenFile} />
+            <RelatedMemories scopeType="task" scopeId={selectedTask.id} />
             <div className="task-patch-action">
               <button className="neo-button" type="button" onClick={createPatchProposal} disabled={agentBusy}>Create Patch Proposal</button>
               <p className="task-help">Uses attached task files and creates a review-only artifact. No files are changed.</p>

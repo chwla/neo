@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api.js";
 import FileAttachments from "./FileAttachments.jsx";
 import Repos from "./Repos.jsx";
+import RelatedMemories from "./RelatedMemories.jsx";
 
 const STATUSES = ["active", "paused", "completed", "archived"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -452,7 +453,10 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
             )}
 
             {!isNew && (
-              <FileAttachments linkType="project" targetId={selectedProject.id} onOpenFile={onOpenFile} />
+              <>
+                <FileAttachments linkType="project" targetId={selectedProject.id} onOpenFile={onOpenFile} />
+                <RelatedMemories scopeType="project" scopeId={selectedProject.id} />
+              </>
             )}
 
             {!isNew && (

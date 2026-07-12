@@ -17,6 +17,9 @@ import GitHub from "./GitHub.jsx";
 import ContextMemory from "./ContextMemory.jsx";
 import CommandSandbox from "./CommandSandbox.jsx";
 import LspPanel from "./LspPanel.jsx";
+import AgenticRuns from "./AgenticRuns.jsx";
+import WebSearch from "./WebSearch.jsx";
+import MemoryRetrieval from "./MemoryRetrieval.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -1218,12 +1221,13 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   const groups = [
     {
       title: "Intelligence",
       description: "Models, behavior, and agent configuration.",
       items: [
+        ["Agentic Runs", "Plan, execute, verify, and reflect", onOpenAgentic],
         ["LLM Providers", "Models, routes, fallbacks, and usage", onOpenLLMs],
         ["Rules & Profiles", "Scoped guidance and resolution priority", onOpenRules],
         ["Agents", "Roles, permissions, tools, and skills", onOpenAgents],
@@ -1235,6 +1239,7 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, on
       items: [
         ["Tools & Skills", "Tool servers, definitions, and approvals", onOpenTools],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
+        ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch],
         ["Language Server", "Workspace language intelligence", onOpenLsp],
         ["Command Sandbox", "Controlled command policy and history", onOpenCommandSandbox],
       ],
@@ -1245,6 +1250,7 @@ function SettingsDialog({ onOpenLLMs, onOpenRules, onOpenAgents, onOpenTools, on
       items: [
         ["Memory", "Durable personal context", onOpenMemory],
         ["Context Memory", "Long-run summaries and compaction", onOpenContextMemory],
+        ["Memory Retrieval", "Searchable history, scoring, and audit", onOpenMemoryRetrieval],
         ["Research", "Sources and research sessions", onOpenResearch],
         ["Notes", "Saved working notes", onOpenNotes],
       ],
@@ -1929,8 +1935,11 @@ export default function App() {
   const [showBundles, setShowBundles] = useState(false);
   const [showGitHub, setShowGitHub] = useState(false);
   const [showContextMemory, setShowContextMemory] = useState(false);
+  const [showMemoryRetrieval, setShowMemoryRetrieval] = useState(false);
   const [showCommandSandbox, setShowCommandSandbox] = useState(false);
   const [showLsp, setShowLsp] = useState(false);
+  const [showAgentic, setShowAgentic] = useState(false);
+  const [showReliableWebSearch, setShowReliableWebSearch] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
@@ -2790,12 +2799,14 @@ export default function App() {
 
       {showSettings && (
         <SettingsDialog
+          onOpenAgentic={() => { setShowSettings(false); setShowAgentic(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenTools={() => { setShowSettings(false); setShowToolsSettings(true); }}
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
           onOpenGitHub={() => { setShowSettings(false); setShowGitHub(true); }}
           onOpenContextMemory={() => { setShowSettings(false); setShowContextMemory(true); }}
+          onOpenMemoryRetrieval={() => { setShowSettings(false); setShowMemoryRetrieval(true); }}
           onOpenCommandSandbox={() => { setShowSettings(false); setShowCommandSandbox(true); }}
           onOpenLsp={() => { setShowSettings(false); setShowLsp(true); }}
           onOpenLLMs={() => {
@@ -2806,6 +2817,7 @@ export default function App() {
             setShowSettings(false);
             setShowWebSearchSettings(true);
           }}
+          onOpenReliableWebSearch={() => { setShowSettings(false); setShowReliableWebSearch(true); }}
           onOpenMemory={() => {
             setShowSettings(false);
             setShowMemory(true);
@@ -2859,8 +2871,11 @@ export default function App() {
       {showBundles && <Modal title="Bundles" onClose={() => setShowBundles(false)} wide><Bundles /></Modal>}
       {showGitHub && <Modal title="GitHub" onClose={() => setShowGitHub(false)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
       {showContextMemory && <Modal title="Context Memory" onClose={() => setShowContextMemory(false)} wide><ContextMemory /></Modal>}
+      {showMemoryRetrieval && <Modal title="Memory Retrieval" onClose={() => setShowMemoryRetrieval(false)} wide><MemoryRetrieval /></Modal>}
       {showCommandSandbox && <Modal title="Command Sandbox" onClose={() => setShowCommandSandbox(false)} wide><CommandSandbox /></Modal>}
       {showLsp && <Modal title="Language Server Protocol" onClose={() => setShowLsp(false)} wide><LspPanel /></Modal>}
+      {showAgentic && <Modal title="Agentic Core" onClose={() => setShowAgentic(false)} wide><AgenticRuns /></Modal>}
+      {showReliableWebSearch && <Modal title="Reliable Web Search" onClose={() => setShowReliableWebSearch(false)} wide><WebSearch /></Modal>}
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />

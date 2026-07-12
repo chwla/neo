@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
 import RecoveryPanel from "./RecoveryPanel.jsx";
+import RelatedMemories from "./RelatedMemories.jsx";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
@@ -151,6 +152,19 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
       <p className="task-help">Starting creates a plan and proposal only. Apply, tests, and checkpoints each require approval.</p>
     </form> : <div className="coding-agent-detail">
       <div className="coding-agent-status"><strong>{detail.coding_run.objective}</strong><span className={`agent-status ${detail.coding_run.status}`}>{label(detail.coding_run.status)}</span><small>Iteration {detail.coding_run.current_iteration}/{detail.coding_run.max_iterations}</small></div>
+      {detail.agentic ? <details open className="agent-run-card agentic-coding-summary">
+        <summary><strong>Agentic Core · {detail.agentic.state.current_phase}</strong></summary>
+        <p><strong>Current step:</strong> {detail.agentic.state.current_step || "Complete"}</p>
+        <p><strong>Context budget:</strong> {detail.agentic.context_budget.estimated_token_count || 0} / {detail.agentic.context_budget.max_tokens || 0} estimated tokens</p>
+        <h4>Plan</h4>
+        <ol>{detail.agentic.plan.map((item) => <li key={item.step_index}><strong>{item.title}</strong> · {item.phase}<br /><small>Verify: {item.verification_method}</small></li>)}</ol>
+        <h4>Verification and reflection</h4>
+        <ol>{detail.agentic.steps.slice(-8).map((step) => <li key={step.id}><strong>{step.phase} · {step.title}</strong><br /><small>{step.verification?.passed ? "Verified" : "Not verified"} · {step.reflection?.recommended_next_step || step.status}</small></li>)}</ol>
+        {detail.agentic.blockers?.length ? <div className="settings-error"><strong>Blockers</strong>{detail.agentic.blockers.map((item, index) => <p key={index}>{item.message}</p>)}</div> : null}
+        {detail.agentic.final_report ? <pre>{detail.agentic.final_report}</pre> : null}
+      </details> : null}
+      {detail.coding_run.metadata?.web_search_run_id ? <details className="agent-run-card"><summary><strong>Web search evidence</strong></summary><p>Evidence run: {detail.coding_run.metadata.web_search_run_id}</p></details> : null}
+      <RelatedMemories scopeType={detail.coding_run.task_id ? "task" : "project"} scopeId={detail.coding_run.task_id || detail.coding_run.project_id || detail.coding_run.id} />
       <div className="agent-run-card"><strong>LSP context used: {detail.coding_run.metadata?.lsp_context_used ? "yes" : "no"}</strong>{detail.coding_run.metadata?.lsp_degraded_reason ? <p className="task-help">{detail.coding_run.metadata.lsp_degraded_reason}</p> : null}<small>Diagnostics available: {detail.coding_run.metadata?.context?.diagnostics?.length || 0}</small></div>
       <button type="button" disabled={busy} onClick={exportBundle}>Export bundle</button>
       {detail.agent_definition ? <details open className="agent-run-card"><summary><strong>Active agent: {detail.agent_definition.display_name || detail.agent_definition.name}</strong></summary><p>{detail.agent_definition.description || "No description."}</p><p><strong>Permissions:</strong> {Object.entries(detail.agent_definition.permissions || {}).filter(([, value]) => value === true).map(([key]) => label(key)).join(", ") || "Read-only/default"}</p><p className="task-help">Agents cannot bypass approvals; patch apply, tests, and checkpoints remain explicit user actions.</p></details> : null}

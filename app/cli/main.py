@@ -102,6 +102,53 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("run_id")
     revise.add_argument("--instructions", required=True)
 
+    agentic = sub.add_parser("agentic")
+    agentic_sub = agentic.add_subparsers(dest="agentic_command", required=True)
+    agentic_start = agentic_sub.add_parser("start")
+    agentic_start.add_argument(
+        "--type",
+        dest="run_type",
+        choices=["coding", "research", "task"],
+        required=True,
+    )
+    agentic_start.add_argument("--objective", required=True)
+    agentic_start.add_argument("--project", dest="project_id")
+    agentic_start.add_argument("--task", dest="task_id")
+    agentic_start.add_argument("--repo", dest="repo_id")
+    agentic_start.add_argument("--max-steps", type=int, default=20)
+    agentic_sub.add_parser("list")
+    for command in ("show", "steps", "continue", "context", "stop"):
+        item = agentic_sub.add_parser(command)
+        item.add_argument("run_id")
+
+    web = sub.add_parser("web")
+    web_sub = web.add_subparsers(dest="web_command", required=True)
+    web_plan = web_sub.add_parser("plan")
+    web_plan.add_argument("query")
+    web_run = web_sub.add_parser("run")
+    web_run.add_argument("query")
+    web_run.add_argument("--mode", default="research")
+    web_run.add_argument("--fresh", action="store_true")
+    for name in ("show", "sources", "evidence", "conflicts"):
+        command = web_sub.add_parser(name)
+        command.add_argument("run_id")
+    web_sub.add_parser("cache")
+
+    memory = sub.add_parser("memory")
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+    memory_index = memory_sub.add_parser("index")
+    memory_index.add_argument("--scope", default="")
+    memory_retrieve = memory_sub.add_parser("retrieve")
+    memory_retrieve.add_argument("query")
+    memory_retrieve.add_argument("--scope", default="")
+    memory_retrieve.add_argument("--type", dest="memory_type")
+    memory_sub.add_parser("list")
+    memory_show = memory_sub.add_parser("show")
+    memory_show.add_argument("memory_id")
+    memory_sub.add_parser("prune-preview")
+    memory_apply = memory_sub.add_parser("prune-apply")
+    memory_apply.add_argument("--yes", action="store_true")
+
     lsp = sub.add_parser("lsp")
     lsp_sub = lsp.add_subparsers(dest="lsp_command", required=True)
     lsp_sub.add_parser("status")
@@ -276,6 +323,12 @@ def handle(args, client: NeoApiClient) -> Any:
         return client.get(f"/api/agents/definitions/{args.agent_id}")
     if args.command == "coding":
         return handle_coding(args, client)
+    if args.command == "agentic":
+        return handle_agentic(args, client)
+    if args.command == "web":
+        return handle_web(args, client)
+    if args.command == "memory":
+        return handle_memory(args, client)
     if args.command == "lsp":
         return handle_lsp(args, client)
     if args.command == "recovery":
@@ -358,6 +411,84 @@ def handle_coding(args, client: NeoApiClient) -> Any:
             {"instructions": args.instructions},
         )
     raise ValueError("Unknown coding command.")
+
+
+def handle_agentic(args, client: NeoApiClient) -> Any:
+    if args.agentic_command == "start":
+        return client.post(
+            "/api/agentic/runs",
+            {
+                "objective": args.objective,
+                "run_type": args.run_type,
+                "project_id": args.project_id,
+                "task_id": args.task_id,
+                "repo_id": args.repo_id,
+                "max_steps": args.max_steps,
+                "require_approval_for_actions": True,
+            },
+        )
+    if args.agentic_command == "list":
+        return client.get("/api/agentic/runs")
+    if args.agentic_command == "show":
+        return client.get(f"/api/agentic/runs/{args.run_id}")
+    if args.agentic_command == "steps":
+        return client.get(f"/api/agentic/runs/{args.run_id}/steps")
+    if args.agentic_command == "context":
+        return client.get(f"/api/agentic/runs/{args.run_id}/context")
+    if args.agentic_command == "continue":
+        return client.post(f"/api/agentic/runs/{args.run_id}/continue", {})
+    if args.agentic_command == "stop":
+        return client.post(f"/api/agentic/runs/{args.run_id}/stop")
+    raise ValueError("Unknown agentic command.")
+
+
+def handle_web(args, client: NeoApiClient) -> Any:
+    if args.web_command == "plan":
+        return client.post("/api/web-search/plan", {"query": args.query})
+    if args.web_command == "run":
+        return client.post("/api/web-search/run", {"query": args.query, "mode": args.mode, "freshness_required": args.fresh})
+    if args.web_command == "cache":
+        return client.get("/api/web-search/cache")
+    return client.get(f"/api/web-search/runs/{args.run_id}" + ("" if args.web_command == "show" else f"/{args.web_command}"))
+
+
+def _memory_scope(value: str) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    if ":" not in value:
+        raise ValueError("Memory scope must be type:id.")
+    return tuple(value.split(":", 1))  # type: ignore[return-value]
+
+
+def handle_memory(args, client: NeoApiClient) -> Any:
+    scope_type, scope_id = _memory_scope(getattr(args, "scope", ""))
+    if args.memory_command == "index":
+        return client.post("/api/memory/index", {"scope_type": scope_type, "scope_id": scope_id})
+    if args.memory_command == "retrieve":
+        return client.post(
+            "/api/memory/retrieve",
+            {
+                "query": args.query,
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "memory_types": [args.memory_type] if args.memory_type else [],
+                "include_score_breakdown": True,
+                "created_by": "cli",
+            },
+        )
+    if args.memory_command == "list":
+        return client.get("/api/memory/items")
+    if args.memory_command == "show":
+        return client.get(f"/api/memory/items/{args.memory_id}")
+    if args.memory_command == "prune-preview":
+        return client.post("/api/memory/prune/preview", {})
+    if args.memory_command == "prune-apply":
+        require_confirm(
+            args,
+            "Memory pruning deletes only previewed non-protected memories. Use --yes to confirm.",
+        )
+        return client.post("/api/memory/prune/apply", {"confirm": True})
+    raise ValueError("Unknown memory command.")
 
 
 def handle_lsp(args, client: NeoApiClient) -> Any:

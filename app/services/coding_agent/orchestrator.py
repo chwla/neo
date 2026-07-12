@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+
+# ruff: noqa: E501
 import uuid
 
 import app.services.coding_agent.store as store
@@ -7,6 +10,8 @@ import app.services.recovery.store as recovery_store
 from app.services.agent_framework import AgentDefinitionService
 from app.services.agent_framework import store as framework_store
 from app.services.agent_framework.prompts import prompt_for
+from app.services.agentic_core import AgenticCoreService, AgenticRunCreate
+from app.services.agentic_core import store as agentic_store
 from app.services.agents import store as agent_store
 from app.services.coding_agent.context import CodingContextSelector
 from app.services.coding_agent.planner import CodingTaskPlanner
@@ -18,6 +23,7 @@ from app.services.git import store as git_store
 from app.services.git.service import GitService
 from app.services.git.types import CheckpointCreateRequest
 from app.services.lsp import LSPService
+from app.services.memory_retrieval import MemoryRetrievalService
 from app.services.patch_apply import store as patch_store
 from app.services.patch_apply.service import ControlledPatchApplyService
 from app.services.patch_apply.types import PatchApplyRequest
@@ -81,6 +87,8 @@ class CodingAgentOrchestrator:
         self._apply_agent_routes(rules, primary_agent, role_agents)
         now = store.now_iso()
         context_memory = self._context_memory(task.id, project_id)
+        retrieval_memory = self._retrieval_memory(objective, task.id, project_id)
+        web_search = self._web_search_context(objective)
         agent_run = agent_store.insert_run(
             {
                 "id": str(uuid.uuid4()),
@@ -139,6 +147,10 @@ class CodingAgentOrchestrator:
                         "patches, run tests, or create checkpoints directly."
                     ),
                     "context_memory": context_memory,
+                    "memory_retrieval": retrieval_memory,
+                    "memory_used": bool(retrieval_memory.get("results")),
+                    "web_search_run_id": web_search.get("run_id"),
+                    "web_search_degraded_reason": web_search.get("reason"),
                 },
                 "created_at": now,
                 "updated_at": now,
@@ -150,6 +162,21 @@ class CodingAgentOrchestrator:
                 "agent_definition_id": primary_agent.id,
             }
         )
+        agentic = AgenticCoreService().start(
+            AgenticRunCreate(
+                objective=objective,
+                run_type="coding",
+                project_id=project_id,
+                task_id=task.id,
+                repo_id=repo["id"],
+                source_run_id=coding_run["id"],
+                max_steps=max(8, request.max_iterations * 6),
+                require_approval_for_actions=True,
+            )
+        )
+        metadata = coding_run.get("metadata", {})
+        metadata["agentic_run_id"] = agentic["agentic_run"]["id"]
+        store.update_run(coding_run["id"], {"metadata": metadata, "updated_at": store.now_iso()})
         try:
             self._status(coding_run["id"], "planning")
             self._step(
@@ -207,6 +234,44 @@ class CodingAgentOrchestrator:
         if task_summary["used"] or not project_id:
             return task_summary
         return memory.scope("project", project_id)
+
+    @staticmethod
+    def _retrieval_memory(objective: str, task_id: str, project_id: str | None) -> dict:
+        try:
+            scope_type, scope_id = ("task", task_id) if task_id else ("project", project_id)
+            if not scope_id:
+                return {"used": False, "reason": "No task or project scope is available."}
+            result = MemoryRetrievalService().retrieve_for_agent(
+                objective, scope_type=scope_type, scope_id=scope_id, source="coding_agent"
+            )
+            return {
+                "used": bool(result.get("results")),
+                "retrieval_id": result.get("retrieval", {}).get("id"),
+                "items": result.get("results", []),
+            }
+        except (LookupError, RuntimeError, ValueError):
+            return {
+                "used": False,
+                "reason": "Memory retrieval unavailable; current task context remains authoritative.",
+            }
+
+    @staticmethod
+    def _web_search_context(objective: str) -> dict:
+        if not re.search(r"\b(api|library|version|dependency|documentation|docs|error)\b", objective, re.I):
+            return {"used": False, "reason": "Objective does not require external technical lookup."}
+        try:
+            from app.services.web_search import ReliableWebSearchService
+            from app.services.web_search.types import WebSearchRunRequest
+
+            result = ReliableWebSearchService().run(
+                WebSearchRunRequest(query=objective, mode="technical", freshness_required=True)
+            )
+            return {"used": bool(result.get("evidence")), "run_id": result.get("id"), "reason": result.get("error")}
+        except (LookupError, RuntimeError, ValueError):
+            return {
+                "used": False,
+                "reason": "Web search unavailable; local code context remains authoritative.",
+            }
 
     @staticmethod
     def _lsp_context(repo_id: str, relative_path: str) -> dict:
@@ -374,6 +439,7 @@ class CodingAgentOrchestrator:
 
     def detail(self, run_id: str) -> dict:
         run = self._run(run_id)
+        agentic = agentic_store.find_by_source("coding", run_id)
         recovery_events, _ = recovery_store.list_events(
             run_type="coding_agent", run_id=run_id, limit=50
         )
@@ -415,6 +481,7 @@ class CodingAgentOrchestrator:
                 parent_run_id=run["agent_run_id"], limit=100
             ),
             "tool_calls": calls_for_run(run_id=run["agent_run_id"], coding_run_id=run["id"]),
+            "agentic": AgenticCoreService().detail(agentic["id"]) if agentic else None,
         }
 
     def _execute(self, action: dict, run: dict, options: dict) -> dict:
@@ -866,6 +933,33 @@ class CodingAgentOrchestrator:
                 "completed_at": None if status == "waiting_approval" else now,
             }
         )
+        phase_map = {
+            "plan": "PLAN",
+            "select_context": "INSPECT",
+            "lsp_context": "INSPECT",
+            "patch_proposal": "ACT",
+            "waiting_approval": "BLOCKED",
+            "apply_patch": "ACT",
+            "select_tests": "INSPECT",
+            "run_tests": "VERIFY",
+            "analyze_tests": "VERIFY",
+            "checkpoint": "ACT",
+            "final": "DONE" if status == "completed" else "BLOCKED",
+        }
+        coding_run = next(
+            (item for item in store.list_runs(limit=200)[0] if item.get("agent_run_id") == run_id),
+            None,
+        )
+        if coding_run:
+            AgenticCoreService().record_external_step(
+                run_type="coding",
+                source_run_id=coding_run["id"],
+                phase=phase_map.get(step_type, "ACT"),
+                title=title,
+                status=status,
+                output=output,
+                error=output if status == "failed" else None,
+            )
 
     @staticmethod
     def _decide_waiting_step(agent_run_id: str, decision: str) -> None:

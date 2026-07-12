@@ -20,6 +20,8 @@ from app.services.agents.types import (
     PlanTasksResult,
     RunFromObjectiveRequest,
 )
+from app.services.agentic_core import AgenticCoreService
+from app.services.agentic_core import store as agentic_store
 from app.services.notes.types import Note
 from app.services.tasks.service import TasksValidationError
 from app.services.tasks.types import Task
@@ -44,6 +46,7 @@ class RunReadResponse(BaseModel):
     steps: list[AgentStep]
     artifacts: list[AgentArtifact]
     tool_calls: list[ToolCall] = []
+    agentic: dict | None = None
 
 
 class StepResponse(BaseModel):
@@ -119,6 +122,11 @@ def read_run(run_id: str):
         steps=steps,
         artifacts=artifacts,
         tool_calls=[ToolCall(**item) for item in calls_for_run(run_id=run_id)],
+        agentic=(
+            AgenticCoreService().detail(linked["id"])
+            if (linked := agentic_store.find_by_source("task", run_id))
+            else None
+        ),
     )
 
 

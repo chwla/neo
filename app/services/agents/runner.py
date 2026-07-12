@@ -135,6 +135,9 @@ class AgentRunner:
                         "completed_at": store.now_iso(),
                     },
                 )
+                self._record_agentic_step(
+                    run_id, step["step_type"], step["title"], "completed", output
+                )
 
             final_output = outputs.get("final") or outputs.get("draft")
             if not final_output:
@@ -201,6 +204,9 @@ class AgentRunner:
                     agent_run_id=run_id,
                     metadata={"mode": run["mode"]},
                 )
+            )
+            self._record_agentic_step(
+                run_id, "final", "Agent Runner grounded final output", "completed", final_output
             )
         except Exception as exc:
             if not self._cancelled(run_id):
@@ -380,6 +386,7 @@ class AgentRunner:
                 "output_text": output,
             },
         )
+        self._record_agentic_step(run_id, step_type, step["title"], "completed", output)
 
     def _execute_step(
         self, step_type: str, run: dict, context: str, outputs: dict[str, str]
@@ -512,6 +519,40 @@ class AgentRunner:
         now = store.now_iso()
         store.update_step(step_id, {"status": "failed", "error": error, "completed_at": now})
         store.update_run(run_id, {"status": "failed", "error": error, "completed_at": now})
+        step = store.get_step(step_id)
+        self._record_agentic_step(
+            run_id,
+            step["step_type"] if step else "final",
+            step["title"] if step else "Agent Runner failure",
+            "failed",
+            error,
+        )
+
+    @staticmethod
+    def _record_agentic_step(
+        run_id: str, step_type: str, title: str, status: str, output: str
+    ) -> None:
+        from app.services.agentic_core import AgenticCoreService
+
+        phase_map = {
+            "read_context": "INSPECT",
+            "plan": "PLAN",
+            "think": "REFLECT",
+            "web_search": "INSPECT",
+            "research": "INSPECT",
+            "draft": "ACT",
+            "patch_proposal": "ACT",
+            "final": "DONE" if status == "completed" else "BLOCKED",
+        }
+        AgenticCoreService().record_external_step(
+            run_type="task",
+            source_run_id=run_id,
+            phase=phase_map.get(step_type, "ACT"),
+            title=title,
+            status=status,
+            output=output,
+            error=output if status == "failed" else None,
+        )
 
 
 def _needs_web(objective: str, context: str) -> bool:

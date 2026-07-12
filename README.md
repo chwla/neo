@@ -76,6 +76,13 @@ The guard fails loudly if the real `tests/` suite disappears, pytest collects su
 tests, test sources are deleted or unexpectedly untracked, cache/bytecode is staged or tracked,
 placeholder-like tests replace real coverage, or critical source directories are missing.
 
+## Reliable Web Search
+
+Settings → Reliable Web Search provides bounded research planning, persistent source/evidence
+history, citations, conflict flags, and a safe source cache. It never bypasses paywalls or CAPTCHAs,
+stores credentials, runs code, or performs unbounded crawling. With a disabled provider it records
+a clear degraded audit run instead of generating unsupported claims.
+
 ## CLI / headless runner
 
 Neo includes a small headless CLI for scripted checks and operator workflows against a running Neo
@@ -86,6 +93,10 @@ python -m app.cli status --api-url http://127.0.0.1:8000
 python -m app.cli agents list
 python -m app.cli coding start "Investigate failing tests" --repo repo-id --agent coder
 python -m app.cli coding actions run-id
+python -m app.cli agentic start --type coding --objective "Investigate failing tests"
+python -m app.cli agentic show run-id
+python -m app.cli agentic steps run-id
+python -m app.cli agentic context run-id
 python -m app.cli recovery list
 python -m app.cli rules resolve --repo repo-id --context coding_agent
 python -m app.cli tools list
@@ -158,3 +169,26 @@ Awareness context, a review-only patch proposal, Controlled Patch Apply, a saved
 Runner command, and a local Git checkpoint. Patch application, test execution, and checkpoint
 creation are separate persisted approval requests. Neo never auto-approves them, never edits the
 original repository, and never writes coding-run state to Memory automatically.
+
+## Agentic Core
+
+Agentic Core persists a shared `PLAN → INSPECT → ACT → VERIFY → REFLECT → CONTINUE`
+state machine for coding, research, and task workflows. Each run records an editable plan,
+completion criteria, bounded context budget, explicit tool decisions, verification evidence,
+reflection, failures, recovery attempts, blockers, and a grounded final report. Settings →
+Agentic Runs exposes the run list, plan, timeline, context, controls, and step detail; Coding Agent
+detail embeds its linked agentic state.
+
+The core orchestrates existing Neo services instead of bypassing them. Patch apply, Command
+Sandbox execution, saved tests, local checkpoints, tool mutations, and external writes retain
+their existing explicit approval gates. A blocked or unavailable action is persisted as a blocker;
+it is never silently treated as success.
+
+## Memory Retrieval
+
+Memory Retrieval extends Context Memory with redacted SQLite metadata, FTS keyword matching,
+structured filters, scope/importance/recency scoring, retrieval audits, and safe pruning previews.
+Use `neo memory retrieve "query" --scope project:<id>` or open **Settings → Memory Retrieval**.
+Retrieved memories supplement current instructions and never execute, edit, test, checkpoint, or
+apply Git actions. `neo memory prune-apply --yes` is the only deletion command and protects user
+instructions and safety notes.

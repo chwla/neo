@@ -5,6 +5,7 @@ import uuid
 import app.services.agents.store as store
 from app.services.agent_framework import AgentDefinitionService
 from app.services.agent_framework.prompts import prompt_for
+from app.services.agentic_core import AgenticCoreService, AgenticRunCreate
 from app.services.agents.runner import get_agent_runner
 from app.services.agents.types import (
     AgentArtifact,
@@ -93,6 +94,17 @@ class AgentsService:
             run["id"], 0, "read_context", "Read task context", input_data={"rules": rule_snapshot}
         )
         self._create_initial_step(run["id"], 1, "plan", "Create a safe plan")
+        AgenticCoreService().start(
+            AgenticRunCreate(
+                objective=objective,
+                run_type="task",
+                project_id=task.project_id,
+                task_id=task.id,
+                source_run_id=run["id"],
+                max_steps=20,
+                require_approval_for_actions=True,
+            )
+        )
         self.runner.start(run["id"])
         return AgentRun(**run)
 

@@ -123,6 +123,10 @@ frontend in an intermediate image but are not copied into the final Python slim 
 pytest workflows, use local development mode or build a separate custom image with the required
 tools preinstalled.
 
+Reliable Web Search remains safe when `NEO_SEARCH_PROVIDER=disabled`: plans and audit records work,
+while searches return a persisted degraded result without credentials, browser-cookie access, or a
+SearXNG sidecar.
+
 Test results may be attached to tasks, agent runs, and patch applications. Agent and Chat surfaces
 can read stored results but cannot start commands. Applying a patch never starts tests
 automatically.
@@ -150,3 +154,30 @@ The loop uses only tools already available in the runtime. It does not install p
 dependencies. Patch application, a saved test command, and a local checkpoint each require an
 explicit confirmation in the Coding Run panel. Failed tests may generate a new proposal up to the
 configured iteration limit, but the follow-up patch is still not applied automatically.
+
+## Agentic Core persistence and runtime
+
+Agentic runs and steps are stored in `workspace_agentic_runs` and `workspace_agentic_steps` inside
+`/app/data/neo.db`. Restarting the same data volume preserves the
+active phase, plan, context budget, action decisions, verification, reflection, recovery attempts,
+blockers, and final report.
+
+Runtime probes:
+
+```bash
+curl -fsS http://127.0.0.1:8000/api/agentic/runs
+curl -fsS http://127.0.0.1:8000/api/agentic/runs/<run-id>
+curl -fsS http://127.0.0.1:8000/api/agentic/runs/<run-id>/context
+```
+
+Agentic Core performs read-only inspection and creates bounded proposals. It does not provide a
+shell, install dependencies, alter an original repository, push Git state, or auto-approve patch,
+command, test, checkpoint, tool, or external-write actions.
+
+## Memory Retrieval persistence and runtime
+
+The same Neo SQLite database stores `workspace_memory_items`, its FTS index, retrieval audits, and
+source links. Memory text is redacted before it reaches those tables; no credentials, raw
+environment values, or absolute host paths are persisted. The retrieval service needs no external
+embedding model or sidecar. For a persistent Docker deployment, mount `/app/data` as described
+above; FTS data and audit history restart with `neo.db`.
