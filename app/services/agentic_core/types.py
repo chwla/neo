@@ -88,3 +88,11 @@ class AgenticState(BaseModel):
     context_budget: dict[str, Any] = Field(default_factory=dict)
     memory_retrieval_id: str | None = None
     memory_items_used: list[str] = Field(default_factory=list)
+    research_run_id: str | None = None
+    research_plan: dict[str, Any] = Field(default_factory=dict)
+    web_search_run_ids: list[str] = Field(default_factory=list)
+    memory_retrieval_ids: list[str] = Field(default_factory=list)
+    research_evidence_ids: list[str] = Field(default_factory=list)
+    research_claim_ids: list[str] = Field(default_factory=list)
+    research_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    research_confidence: dict[str, Any] = Field(default_factory=dict)

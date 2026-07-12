@@ -138,6 +138,7 @@ export default function AgenticRuns() {
 
       {state.failures?.length ? <section className="settings-section"><h3>Failures and recovery</h3><pre>{JSON.stringify({ failures: state.failures, recovery_attempts: state.recovery_attempts }, null, 2)}</pre></section> : null}
       {detail.final_report ? <section className="settings-section"><h3>Grounded final report</h3><pre>{detail.final_report}</pre></section> : null}
+      {state.research_run_id ? <section className="settings-section"><h3>Research Mode audit</h3><p>Linked research run: {state.research_run_id}</p><p>Confidence: {Math.round((state.research_confidence?.overall || 0) * 100)}% · {state.research_claim_ids?.length || 0} claim(s) used</p><button type="button" onClick={async () => setMessage(JSON.stringify(await api.researchModeDetail(state.research_run_id), null, 2))}>View research evidence</button></section> : null}
       {state.web_search_run_id ? <section className="settings-section"><h3>Web search used</h3><p>Evidence run: {state.web_search_run_id}</p><button type="button" onClick={async () => setMessage(JSON.stringify(await api.webSearchRunDetail(state.web_search_run_id), null, 2))}>View cited evidence</button></section> : null}
       <RelatedMemories scopeType={state.task_id ? "task" : "project"} scopeId={state.task_id || state.project_id || run.id} />
     </div>}

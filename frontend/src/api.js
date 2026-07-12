@@ -567,6 +567,17 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   researchEvents: (jobId) => `${API_BASE}/research/${jobId}/events`,
+  researchModePlan: (payload) => request("/research/plan", { method: "POST", body: JSON.stringify(payload) }),
+  researchModeRun: (payload) => request("/research/run", { method: "POST", body: JSON.stringify(payload) }),
+  researchModeRuns: () => request("/research/runs"),
+  researchModeDetail: (runId) => request(`/research/runs/${runId}`),
+  researchModeEvidence: (runId) => request(`/research/runs/${runId}/evidence`),
+  researchModeClaims: (runId) => request(`/research/runs/${runId}/claims`),
+  researchModeConflicts: (runId) => request(`/research/runs/${runId}/conflicts`),
+  researchModeReport: (runId) => request(`/research/runs/${runId}/report`),
+  researchModeContinue: (runId) => request(`/research/runs/${runId}/continue`, { method: "POST" }),
+  researchModeRefresh: (runId) => request(`/research/runs/${runId}/refresh`, { method: "POST" }),
+  researchModeValidate: (runId) => request(`/research/runs/${runId}/validate-citations`, { method: "POST" }),
 
   notesList: (params = {}) => {
     const search = new URLSearchParams();

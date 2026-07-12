@@ -1,6 +1,23 @@
 Neo 
 ==========
 
+Enterprise Research Mode
+------------------------
+
+Enterprise Research Mode creates a bounded plan, retrieves relevant workspace memory, uses Neo's Reliable Web Search layer, stores only short attributable evidence passages, scores source quality, synthesizes citation-backed claims, exposes conflicts and confidence, validates citations, and saves an auditable report. If search is disabled it safely reports the evidence gap rather than inventing facts.
+
+```bash
+neo research plan "What is the best architecture for a local coding agent?" --mode technical --fresh
+neo research run "What is the best architecture for a local coding agent?" --mode technical --fresh --depth deep
+neo research list
+neo research show <run_id>
+neo research evidence <run_id>
+neo research claims <run_id>
+neo research conflicts <run_id>
+neo research report <run_id>
+neo research validate-citations <run_id>
+```
+
 LLM provider and model registry
 -------------------------------
 

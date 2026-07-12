@@ -57,6 +57,7 @@ from app.services.projects.store import initialize_project_tables
 from app.services.recovery import initialize_recovery_tables
 from app.services.recovery.scanner import RecoveryScanner
 from app.services.research.store import initialize_research_tables
+from app.services.research_mode import initialize_research_mode_tables
 from app.services.rules.store import initialize_rule_tables
 from app.services.tasks.store import initialize_task_tables
 from app.services.test_runner.store import initialize_test_runner_tables
@@ -128,6 +129,7 @@ def create_app() -> FastAPI:
     initialize_context_memory_tables()
     initialize_memory_retrieval_tables()
     initialize_research_tables()
+    initialize_research_mode_tables()
     initialize_workspace_file_tables()
     initialize_test_runner_tables()
     initialize_git_tables()

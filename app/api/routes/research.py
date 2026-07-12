@@ -23,9 +23,98 @@ from app.services.research import (
     list_jobs,
     start_job,
 )
+from app.services.research_mode import ResearchModeService, ResearchPlanRequest, ResearchRunRequest
+from app.services.research_mode import store as research_mode_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research", tags=["research"])
+
+
+def _mode_service() -> ResearchModeService:
+    return ResearchModeService()
+
+
+# Enterprise Research Mode. These routes intentionally coexist with the legacy
+# asynchronous research job API below so existing sessions remain readable.
+@router.post("/plan")
+def research_mode_plan(payload: ResearchPlanRequest):
+    return _mode_service().plan(payload)
+
+
+@router.post("/run")
+def research_mode_run(payload: ResearchRunRequest):
+    return _mode_service().run(payload)
+
+
+@router.get("/runs")
+def research_mode_runs(limit: int = 100):
+    return {"runs": research_mode_store.list_runs(limit=min(limit, 200))}
+
+
+@router.get("/runs/{run_id}")
+def research_mode_detail(run_id: str):
+    try:
+        return _mode_service().detail(run_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/evidence")
+def research_mode_evidence(run_id: str):
+    detail = research_mode_detail(run_id)
+    return {"evidence": detail["evidence"]}
+
+
+@router.get("/runs/{run_id}/claims")
+def research_mode_claims(run_id: str):
+    detail = research_mode_detail(run_id)
+    return {"claims": detail["claims"]}
+
+
+@router.get("/runs/{run_id}/conflicts")
+def research_mode_conflicts(run_id: str):
+    detail = research_mode_detail(run_id)
+    return {"conflicts": detail["conflicts"]}
+
+
+@router.get("/runs/{run_id}/report")
+def research_mode_report(run_id: str):
+    detail = research_mode_detail(run_id)
+    if not detail["report"]:
+        raise HTTPException(409, "Research report is not ready.")
+    return detail["report"]
+
+
+@router.post("/runs/{run_id}/continue")
+def research_mode_continue(run_id: str):
+    try:
+        return _mode_service().continue_run(run_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/refresh")
+def research_mode_refresh(run_id: str):
+    try:
+        return _mode_service().refresh(run_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/validate-citations")
+def research_mode_validate(run_id: str):
+    try:
+        return _mode_service().validate_citations(run_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.delete("/runs/{run_id}")
+def research_mode_delete(run_id: str):
+    if not research_mode_store.get_run(run_id):
+        raise HTTPException(404, "Research run not found.")
+    research_mode_store.delete_run(run_id)
+    return {"deleted": True, "id": run_id}
 
 
 class StartResponse(BaseModel):

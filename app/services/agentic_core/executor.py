@@ -267,6 +267,23 @@ class AgenticExecutor:
     @staticmethod
     def _inspect_research_evidence(run: dict, state: dict, inputs: dict) -> dict:
         evidence = list(inputs.get("evidence") or [])
+        if not evidence and state.get("research_run_id"):
+            try:
+                from app.services.research_mode import ResearchModeService
+
+                research = ResearchModeService().detail(state["research_run_id"])
+                state["research_claim_ids"] = [item["id"] for item in research["claims"]]
+                state["research_evidence_ids"] = [item["id"] for item in research["evidence"]]
+                state["research_conflicts"] = research["conflicts"]
+                state["research_confidence"] = research.get("confidence") or {}
+                evidence = [
+                    f"{item.get('extracted_claim') or item.get('evidence_text')} "
+                    f"{' '.join(item.get('citation_ids') or [])}"
+                    for item in research["claims"]
+                    if item.get("status") == "supported"
+                ]
+            except (LookupError, RuntimeError, ValueError):
+                evidence = []
         if not evidence:
             evidence = [
                 str(item.get("content"))[:1000]
@@ -357,7 +374,13 @@ class AgenticExecutor:
         return {
             "status": "completed",
             "summary": "Final report can be generated from persisted verified step results.",
-            "evidence": [f"Grounding contains {evidence_count} evidence item(s)."],
+            "evidence": [
+                f"Grounding contains {evidence_count} evidence item(s).",
+                *[
+                    f"Research claim {claim_id} from research run {state['research_run_id']}."
+                    for claim_id in state.get("research_claim_ids", [])
+                ],
+            ],
             "next_action": "Mark the run done with a grounded report.",
         }
 

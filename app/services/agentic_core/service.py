@@ -70,6 +70,36 @@ class AgenticCoreService:
                 "completed_at": None,
             }
         )
+        # Research-heavy agentic runs start with the same evidence-grounded
+        # pipeline and retain its audit identifiers in agentic state.
+        if request.run_type == "research":
+            try:
+                from app.services.research_mode import ResearchModeService, ResearchRunRequest
+
+                research = ResearchModeService().run(
+                    ResearchRunRequest(
+                        question=request.objective, mode="general", created_by="agentic_core"
+                    )
+                )
+                state = run["state"]
+                state.update(
+                    {
+                        "research_run_id": research["id"],
+                        "research_plan": research.get("plan") or {},
+                        "web_search_run_ids": research.get("web_search_run_ids") or [],
+                        "memory_retrieval_ids": research.get("memory_retrieval_ids") or [],
+                        "research_evidence_ids": [
+                            item["id"] for item in research.get("evidence", [])
+                        ],
+                        "research_claim_ids": [item["id"] for item in research.get("claims", [])],
+                        "research_conflicts": research.get("conflicts") or [],
+                        "research_confidence": research.get("confidence") or {},
+                    }
+                )
+                run = store.update_run(run["id"], {"state": state}) or run
+            except Exception:
+                # The normal agentic evidence step safely reports unavailable providers.
+                pass
         self.context(run["id"])
         return self.plan(run["id"]) if auto_plan else self.detail(run["id"])
 
@@ -782,6 +812,17 @@ class AgenticCoreService:
             )
             for evidence in item.get("evidence") or []:
                 lines.append(f"  Evidence: {str(evidence)[:1200]}")
+        if state.get("research_run_id"):
+            research_claims = ", ".join(state.get("research_claim_ids") or []) or "none"
+            lines.extend(
+                [
+                    "",
+                    "Research Mode audit:",
+                    f"- Linked research run: {state['research_run_id']}",
+                    f"- Claim IDs used: {research_claims}",
+                    f"- Confidence: {state.get('research_confidence') or {}}",
+                ]
+            )
         if state.get("failures"):
             lines.append("\nFailures:")
             lines.extend(f"- {item.get('error')}" for item in state["failures"])

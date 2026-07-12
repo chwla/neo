@@ -134,6 +134,32 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("run_id")
     web_sub.add_parser("cache")
 
+    research = sub.add_parser("research")
+    research_sub = research.add_subparsers(dest="research_command", required=True)
+    research_plan = research_sub.add_parser("plan")
+    research_plan.add_argument("question")
+    research_plan.add_argument("--mode", default="general")
+    research_plan.add_argument("--fresh", action="store_true")
+    research_plan.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard")
+    research_run = research_sub.add_parser("run")
+    research_run.add_argument("question")
+    research_run.add_argument("--mode", default="general")
+    research_run.add_argument("--fresh", action="store_true")
+    research_run.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard")
+    research_sub.add_parser("list")
+    for command in (
+        "show",
+        "evidence",
+        "claims",
+        "conflicts",
+        "report",
+        "validate-citations",
+        "continue",
+        "refresh",
+    ):
+        item = research_sub.add_parser(command)
+        item.add_argument("run_id")
+
     memory = sub.add_parser("memory")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
     memory_index = memory_sub.add_parser("index")
@@ -327,6 +353,8 @@ def handle(args, client: NeoApiClient) -> Any:
         return handle_agentic(args, client)
     if args.command == "web":
         return handle_web(args, client)
+    if args.command == "research":
+        return handle_research(args, client)
     if args.command == "memory":
         return handle_memory(args, client)
     if args.command == "lsp":
@@ -446,10 +474,52 @@ def handle_web(args, client: NeoApiClient) -> Any:
     if args.web_command == "plan":
         return client.post("/api/web-search/plan", {"query": args.query})
     if args.web_command == "run":
-        return client.post("/api/web-search/run", {"query": args.query, "mode": args.mode, "freshness_required": args.fresh})
+        return client.post(
+            "/api/web-search/run",
+            {"query": args.query, "mode": args.mode, "freshness_required": args.fresh},
+        )
     if args.web_command == "cache":
         return client.get("/api/web-search/cache")
-    return client.get(f"/api/web-search/runs/{args.run_id}" + ("" if args.web_command == "show" else f"/{args.web_command}"))
+    return client.get(
+        f"/api/web-search/runs/{args.run_id}"
+        + ("" if args.web_command == "show" else f"/{args.web_command}")
+    )
+
+
+def handle_research(args, client: NeoApiClient) -> Any:
+    if args.research_command == "plan":
+        return client.post(
+            "/api/research/plan",
+            {
+                "question": args.question,
+                "mode": args.mode,
+                "freshness_required": args.fresh,
+                "depth": args.depth,
+            },
+        )
+    if args.research_command == "run":
+        return client.post(
+            "/api/research/run",
+            {
+                "question": args.question,
+                "mode": args.mode,
+                "freshness_required": args.fresh,
+                "depth": args.depth,
+                "max_search_runs": 4 if args.depth == "deep" else 2,
+                "max_sources": 20 if args.depth == "deep" else 12,
+                "include_memory": True,
+                "include_conflict_analysis": True,
+                "created_by": "cli",
+            },
+        )
+    if args.research_command == "list":
+        return client.get("/api/research/runs")
+    if args.research_command in {"validate-citations", "continue", "refresh"}:
+        return client.post(f"/api/research/runs/{args.run_id}/{args.research_command}")
+    return client.get(
+        f"/api/research/runs/{args.run_id}"
+        + ("" if args.research_command == "show" else f"/{args.research_command}")
+    )
 
 
 def _memory_scope(value: str) -> tuple[str | None, str | None]:
