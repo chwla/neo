@@ -1,211 +1,247 @@
-Neo 
-==========
+# Neo
 
-Enterprise Research Mode
-------------------------
+Neo is a local-first AI workbench for research, planning, coding, validation, and continuity.
+It combines a FastAPI backend, a React/Vite frontend, a SQLite workspace database, a CLI/TUI,
+and controlled service layers for LLM providers, web search, code analysis, patches, tests,
+Git checkpoints, artifacts, and recovery.
 
-Enterprise Research Mode creates a bounded plan, retrieves relevant workspace memory, uses Neo's Reliable Web Search layer, stores only short attributable evidence passages, scores source quality, synthesizes citation-backed claims, exposes conflicts and confidence, validates citations, and saves an auditable report. If search is disabled it safely reports the evidence gap rather than inventing facts.
+The core design principle is visibility before automation: Neo can help inspect, plan, propose,
+run, and preserve work, but risky operations stay behind explicit approval gates and are recorded
+for later review.
+
+## What is included
+
+### Application surfaces
+
+- Web app: React panels for projects, tasks, notes, research, coding runs, repos, providers,
+  bundles, recovery, evaluations, workspaces, continuity, and settings.
+- API: FastAPI route groups under `/api/...` for every major platform feature.
+- CLI: `neo` command groups for headless operator workflows.
+- TUI: terminal dashboard components under `app/cli/tui/`.
+- Docker runtime: single-container build that serves the backend and built frontend.
+
+### Core platform areas
+
+- Projects, tasks, notes, files, and artifacts for organizing local work.
+- Chat and memory services for structured memory, reflection, retrieval, pruning, and audits.
+- Context Memory and Memory Retrieval for scoped, redacted workspace context.
+- Reliable Web Search and Enterprise Research Mode for bounded, citation-backed research.
+- LLM registry and Provider Runtime for provider/model routing, fallbacks, health, usage,
+  budgets, retries, streaming, and secret redaction.
+- Agent framework, agent task runs, Coding Agent, and Agentic Core for persisted multi-step
+  workflows with plan, inspect, act, verify, reflect, and continue phases.
+- Repository registration, Codebase Index, Symbol Awareness, and LSP support for code-aware
+  context.
+- Controlled Patch Apply, Command Sandbox, Test Runner, and local Git checkpoints for guarded
+  code operations inside managed repository copies.
+- GitHub integration, tools and skills registry, rules profiles, evaluation harness, recovery
+  scanner, session bundles, workspace orchestration, continuity bundles, and integration checks.
+
+## Architecture
+
+Neo is organized into five layers:
+
+| Layer | Location | Responsibility |
+| --- | --- | --- |
+| Frontend | `frontend/src/` | React screens and settings panels. |
+| API | `app/api/routes/` | FastAPI route groups mounted by `app/main.py`. |
+| Services | `app/services/` | Business logic, safety checks, orchestration, provider calls, and persistence workflows. |
+| Storage | `app/models/`, `app/db/`, service stores | SQLite-backed workspace state and filesystem artifacts. |
+| CLI/TUI | `app/cli/` | Terminal commands and API-backed operator views. |
+
+The backend app is created in `app/main.py`. On startup it mounts all route groups, initializes
+workspace tables, seeds built-in tools/agents/evaluations, scans recovery state, and serves the
+built frontend when `frontend/dist/index.html` is available.
+
+## Repository layout
+
+```text
+app/
+  api/routes/                  FastAPI routes
+  cli/                         CLI and terminal UI
+  core/                        Settings and configuration
+  db/                          Database session setup
+  models/                      SQLAlchemy models
+  repositories/                Repository abstractions
+  schemas/                     Shared Pydantic schemas
+  services/                    Platform service modules
+frontend/
+  src/                         React application panels
+  package.json                 Vite/Tailwind frontend scripts
+tests/                         Backend integration tests
+Dockerfile                     Single-container runtime build
+pyproject.toml                 Python package, CLI entry point, lint/test config
+```
+
+## Requirements
+
+- Python 3.12+
+- Node.js and npm for frontend development
+- Docker, optional, for the single-container runtime
+- Ollama or an OpenAI-compatible provider, optional, for model-backed features
+- External SearXNG, optional, for live web search
+
+Neo can run with search disabled. In that mode, research/search features record a clear degraded
+state instead of inventing unsupported evidence.
+
+## Local development
+
+Create and install the Python environment:
 
 ```bash
-neo research plan "What is the best architecture for a local coding agent?" --mode technical --fresh
-neo research run "What is the best architecture for a local coding agent?" --mode technical --fresh --depth deep
-neo research list
-neo research show <run_id>
-neo research evidence <run_id>
-neo research claims <run_id>
-neo research conflicts <run_id>
-neo research report <run_id>
-neo research validate-citations <run_id>
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
 ```
 
-LLM provider and model registry
--------------------------------
+Run the backend:
 
-Neo stores providers, models, role routes, fallbacks, and usage history in the workspace database.
-Native Ollama and OpenAI-compatible chat-completions APIs are supported. Chat, Research, Agent,
-Coding Agent, Patch Proposal, and embedding entry points resolve through named routes. A retryable
-primary failure uses only an explicitly configured fallback, and both the failure and fallback are
-visible in `/api/llm/usage` and Settings → LLM Providers.
-
-API keys are never accepted or returned as provider data. Store only an environment-variable name
-such as `OPENAI_API_KEY` in `api_key_ref`; Neo resolves the value at call time and redacts it from
-stored errors. Existing `neo_llms.json` entries migrate without copying plaintext keys and remain
-available through the compatibility API.
-
-Useful environment defaults:
-
-```env
-NEO_LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-NEO_DEFAULT_MODEL=llama3.2:3b
-NEO_OPENAI_COMPAT_BASE_URL=
-NEO_OPENAI_COMPAT_API_KEY_REF=OPENAI_API_KEY
-NEO_OPENAI_COMPAT_MODEL=
+```bash
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Run everything:
+Run the frontend in another terminal:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
-```
-
-Keep that terminal open; it runs the backend server.
-
-Run the API:
-
-```powershell
-& "C:\Program Files\Python313\python.exe" -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-Run the React/Tailwind frontend:
-
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api` requests to `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:5173`. The Vite dev server proxies `/api` requests to
+`http://127.0.0.1:8000`.
 
-For the single-container deployment, see [docs/deployment.md](docs/deployment.md).
+## Docker
 
-SearXNG is optional and not required for the default Docker setup. Neo does not start a
-SearXNG sidecar, and Ollama/model weights are not bundled.
+Build and run the single-container app:
 
-## Validation guardrail
+```bash
+docker build -t neo:local .
+docker run --rm \
+  --name neo \
+  -p 8000:8000 \
+  -v neo_data:/app/data \
+  -e NEO_SEARCH_PROVIDER=disabled \
+  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+  neo:local
+```
 
-Before marking a change ready, run the repo/test integrity guard and then the normal regression
-suite:
+Open `http://127.0.0.1:8000`.
+
+The container stores SQLite data, uploaded files, managed repository copies, run state, bundles,
+and workspace artifacts under `/app/data`. Ollama, model weights, and SearXNG are not bundled.
+
+## Configuration
+
+Common runtime variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `NEO_DATA_DIR` | Storage root for SQLite and workspace files. |
+| `NEO_SEARCH_PROVIDER` | `disabled` or `external_searxng`. |
+| `NEO_SEARXNG_URL` | External SearXNG URL when search is enabled. |
+| `NEO_LLM_PROVIDER` | Initial provider, usually `ollama` or `openai_compatible`. |
+| `OLLAMA_BASE_URL` | Ollama endpoint. |
+| `NEO_DEFAULT_MODEL` | Initial default model route target. |
+| `NEO_OPENAI_COMPAT_BASE_URL` | OpenAI-compatible `/v1` base URL. |
+| `NEO_OPENAI_COMPAT_API_KEY_REF` | Name of the environment variable containing the provider key. |
+| `NEO_OPENAI_COMPAT_MODEL` | Initial OpenAI-compatible model name. |
+
+Provider API key values are not stored as provider records. Neo stores a variable name such as
+`OPENAI_API_KEY`, resolves it at call time, and redacts secret values from stored errors.
+
+## CLI
+
+Installing the Python package exposes the `neo` command:
+
+```bash
+neo status --api-url http://127.0.0.1:8000
+neo health
+neo research plan "Compare local coding-agent architectures" --mode technical --fresh
+neo research run "Compare local coding-agent architectures" --mode technical --fresh --depth deep
+neo providers list
+neo eval list
+neo workspace list
+neo continuity list
+neo coding start "Investigate failing tests" --repo <repo-id> --agent coder
+neo agentic start --type coding --objective "Investigate failing tests"
+neo recovery list
+neo rules resolve --repo <repo-id> --context coding_agent
+neo tools list
+neo skills list
+neo tests list --repo <repo-id>
+neo git status <repo-id>
+neo export run <run-id> --out run.neo.zip
+neo bundles import validate run.neo.zip
+neo tui
+```
+
+Set `NEO_API_URL` for the default server URL. Use `--json` or `NEO_CLI_OUTPUT=json` for
+machine-readable output. Approval-sensitive commands still use Neo's backend confirmation gates;
+`--yes` only skips the local CLI prompt.
+
+## Safety model
+
+Neo's guarded workflows are intentionally constrained:
+
+- Original repositories are not edited directly. Repo operations use managed copies.
+- Patch apply validates paths, hashes, hunks, and metadata before explicit approval.
+- Patch application is atomic and does not automatically run tests or create checkpoints.
+- Test Runner executes only saved, allowlisted argv commands after confirmation.
+- Command Sandbox, tools, external writes, patches, tests, and checkpoints keep approval records.
+- Git support is limited to local checkpointing inside managed repository copies.
+- Remote Git operations, arbitrary shell access, package installation, and automatic commits are
+  outside the controlled workflow.
+- Bundles and continuity exports redact credentials, environment values, provider secrets, and
+  sensitive host paths.
+- Missing providers create persisted degraded states instead of fabricated success.
+
+## Feature map
+
+| Feature area | UI | API | CLI | Main code |
+| --- | --- | --- | --- | --- |
+| Chat and memory | main app memory surfaces | `/conversation`, `/api/memory` | indirect | `app/services/chat.py`, `app/services/extraction.py`, `app/services/retrieval.py` |
+| Projects | `Projects.jsx` | `/api/projects` | none | `app/services/projects/` |
+| Tasks | `Tasks.jsx` | `/api/tasks` | indirect | `app/services/tasks/` |
+| Notes | `Notes.jsx` | `/api/notes` | none | `app/services/notes/` |
+| Files and artifacts | `Files.jsx`, `ArtifactsPanel.jsx` | `/api/files` | none | `app/services/files/` |
+| Reliable Web Search | `WebSearch.jsx` | `/api/search`, `/api/web`, `/api/web-search` | `neo web ...` | `app/services/search/`, `app/services/web_search/` |
+| Research Mode | `Research.jsx` | `/api/research` | `neo research ...` | `app/services/research_mode/` |
+| LLM registry | settings | `/api/llm`, `/api/llms` | indirect | `app/services/llm_registry/` |
+| Provider Runtime | `ProviderRuntime.jsx` | `/api/providers/runtime` | `neo providers ...` | `app/services/provider_runtime/` |
+| Evaluation Harness | `EvaluationHarness.jsx` | `/api/evals` | `neo eval ...` | `app/services/evaluation/` |
+| Workspace Orchestration | `WorkspaceOrchestration.jsx` | `/api/workspaces` | `neo workspace ...` | `app/services/workspace_orchestration/` |
+| Continuity | `Continuity.jsx` | `/api/continuity` | `neo continuity ...` | `app/services/continuity/` |
+| Bundles | `Bundles.jsx` | `/api/bundles` | `neo bundles ...`, `neo export ...` | `app/services/bundles/` |
+| Repos and code index | `Repos.jsx`, `CodebaseIndex.jsx` | `/api/repos`, `/api/code-index` | repo-backed flows | `app/services/repos/`, `app/services/code_index/` |
+| Symbol and LSP support | `SymbolAwareness.jsx`, `LspPanel.jsx` | `/api/symbols`, `/api/lsp` | `neo lsp ...` | `app/services/symbol_awareness/`, `app/services/lsp/` |
+| Command Sandbox | `CommandSandbox.jsx` | `/api/command-sandbox` | `neo commands ...` | `app/services/command_sandbox/` |
+| Test Runner | `TestRunner.jsx` | `/api/test-runner` | `neo tests ...` | `app/services/test_runner/` |
+| Patch apply | `PatchApplications.jsx` | `/api/patches` | indirect | `app/services/patches/`, `app/services/patch_apply/` |
+| Git checkpoints | `GitCheckpoints.jsx` | `/api/git` | `neo git ...` | `app/services/git/` |
+| Coding Agent | `CodingAgent.jsx` | `/api/coding-agent` | `neo coding ...` | `app/services/coding_agent/` |
+| Agentic Core | `AgenticRuns.jsx` | `/api/agentic` | `neo agentic ...` | `app/services/agentic_core/` |
+| Agents | `AgentSettings.jsx` | `/api/agents` | `neo agents ...` | `app/services/agent_framework/`, `app/services/agents/` |
+| Rules, tools, skills | settings panels | `/api/rules`, `/api/tools` | `neo rules ...`, `neo tools ...`, `neo skills ...` | `app/services/rules/`, `app/services/tools/` |
+| GitHub | `GitHub.jsx` | `/api/github` | `neo github ...` | `app/services/github/` |
+| Context and memory retrieval | `ContextMemory.jsx`, `MemoryRetrieval.jsx` | `/api/context-memory`, `/api/memory` | `neo context ...`, `neo memory ...` | `app/services/context_memory/`, `app/services/memory_retrieval/` |
+| Recovery | `RecoveryPanel.jsx` | `/api/recovery` | `neo recovery ...` | `app/services/recovery/` |
+| Integration and health | no dedicated full screen | `/api/integration`, `/api/health` | `neo integration ...`, `neo health` | `app/services/integration.py`, `app/api/routes/health.py` |
+
+## Validation
+
+Recommended checks before marking a change ready:
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall app tests
+cd frontend
+npm run build
+cd ..
+git diff --check
+```
+
+If a local integrity script exists in your checkout, run it before the regression suite:
 
 ```bash
 .venv/bin/python scripts/check_repo_integrity.py
-.venv/bin/python -m pytest -q
-.venv/bin/python -m compileall app tests scripts
-cd frontend && npm run build
-cd ..
-git diff --check
-git diff --cached --check
 ```
-
-The guard fails loudly if the real `tests/` suite disappears, pytest collects suspiciously few
-tests, test sources are deleted or unexpectedly untracked, cache/bytecode is staged or tracked,
-placeholder-like tests replace real coverage, or critical source directories are missing.
-
-## Reliable Web Search
-
-Settings → Reliable Web Search provides bounded research planning, persistent source/evidence
-history, citations, conflict flags, and a safe source cache. It never bypasses paywalls or CAPTCHAs,
-stores credentials, runs code, or performs unbounded crawling. With a disabled provider it records
-a clear degraded audit run instead of generating unsupported claims.
-
-## CLI / headless runner
-
-Neo includes a small headless CLI for scripted checks and operator workflows against a running Neo
-API:
-
-```bash
-python -m app.cli status --api-url http://127.0.0.1:8000
-python -m app.cli agents list
-python -m app.cli coding start "Investigate failing tests" --repo repo-id --agent coder
-python -m app.cli coding actions run-id
-python -m app.cli agentic start --type coding --objective "Investigate failing tests"
-python -m app.cli agentic show run-id
-python -m app.cli agentic steps run-id
-python -m app.cli agentic context run-id
-python -m app.cli recovery list
-python -m app.cli rules resolve --repo repo-id --context coding_agent
-python -m app.cli tools list
-python -m app.cli skills list
-python -m app.cli tests list --repo repo-id
-python -m app.cli git status repo-id
-python -m app.cli export run run-id --out run.neo.zip
-python -m app.cli bundles list
-python -m app.cli bundles import validate run.neo.zip
-python -m app.cli bundles import run.neo.zip --yes
-```
-
-Configuration is intentionally boring: set `NEO_API_URL` for the default server URL and
-`NEO_CLI_OUTPUT=json` or pass `--json` for machine-readable output. `--timeout` adjusts API request
-timeouts, and `--no-color` is accepted for non-interactive environments.
-
-Commands that approve agent actions, run saved tests, resume/retry/fork recovery runs, or create
-checkpoints ask for confirmation unless `--yes` is passed. `--yes` only skips the local prompt; the
-CLI still sends the existing backend `confirm=true` field and does not bypass Neo's approval gates.
-
-Exit codes are:
-
-- `0`: success.
-- `1`: invalid input, failed confirmation setup, or local export write failure.
-- `2`: Neo API unavailable.
-- `3`: Neo API returned an error response.
-- `4`: operator confirmation denied.
-
-## Session bundles
-
-Neo can package a coding run, agent run, task, or project into a portable `.neo.zip` evidence
-bundle. Each archive contains `neo_bundle.json`, optional patch/test-report artifacts, and a
-`checksums.json` manifest. Credential values, environment values, provider credentials, and
-original absolute host paths are replaced with `[REDACTED]` before an archive is written.
-
-Bundles can be exported from a Coding Run detail or Settings → Bundles, downloaded, validated,
-and imported elsewhere. Import currently supports `archive_only` exclusively: it preserves the
-archive and its read-only metadata for inspection without merging active runs, applying patches,
-running tests, creating checkpoints, or writing any original repository.
-
-## Controlled Test Runner
-
-Registered repositories expose a Test Runner for saved, explicitly confirmed test commands. It
-runs strict argv allowlists only in Neo's managed repository copy, without a shell, Git, package
-installation, background jobs, or automatic execution after patch apply. Output, exit code,
-duration, and associations are stored for later read-only Agent/Chat context. See
-[docs/deployment.md](docs/deployment.md#controlled-test-runner) for runtime tool limitations.
-
-## Controlled multi-file patches
-
-Patch proposals can modify multiple registered text/code files and create new safe text/code files
-inside one managed repository. Neo validates every path, hash, hunk, and metadata entry before an
-explicit approval, then applies the whole patch atomically. A failure restores modified files and
-removes created files. Delete, rename, binary, symlink, permission, hidden/secret, dependency,
-build/cache, and `.git` patches remain unsupported. Applying a patch never runs tests or creates a
-checkpoint automatically, and the original repository is never written.
-
-## Controlled Git checkpoints
-
-Neo can initialize local Git tracking inside a registered managed repository copy, show status and
-diffs, create explicitly confirmed checkpoints, and restore managed files from a checkpoint. The
-original repository is never modified. Remote Git operations, arbitrary Git commands, automatic
-commits, and automatic restores are not available. See
-[docs/deployment.md](docs/deployment.md#controlled-git-checkpoints).
-
-## Multi-Step Coding Agent Loop
-
-Agent Mode and Task detail can orchestrate an objective through bounded Codebase Index and Symbol
-Awareness context, a review-only patch proposal, Controlled Patch Apply, a saved Controlled Test
-Runner command, and a local Git checkpoint. Patch application, test execution, and checkpoint
-creation are separate persisted approval requests. Neo never auto-approves them, never edits the
-original repository, and never writes coding-run state to Memory automatically.
-
-## Agentic Core
-
-Agentic Core persists a shared `PLAN → INSPECT → ACT → VERIFY → REFLECT → CONTINUE`
-state machine for coding, research, and task workflows. Each run records an editable plan,
-completion criteria, bounded context budget, explicit tool decisions, verification evidence,
-reflection, failures, recovery attempts, blockers, and a grounded final report. Settings →
-Agentic Runs exposes the run list, plan, timeline, context, controls, and step detail; Coding Agent
-detail embeds its linked agentic state.
-
-The core orchestrates existing Neo services instead of bypassing them. Patch apply, Command
-Sandbox execution, saved tests, local checkpoints, tool mutations, and external writes retain
-their existing explicit approval gates. A blocked or unavailable action is persisted as a blocker;
-it is never silently treated as success.
-
-## Memory Retrieval
-
-Memory Retrieval extends Context Memory with redacted SQLite metadata, FTS keyword matching,
-structured filters, scope/importance/recency scoring, retrieval audits, and safe pruning previews.
-Use `neo memory retrieve "query" --scope project:<id>` or open **Settings → Memory Retrieval**.
-Retrieved memories supplement current instructions and never execute, edit, test, checkpoint, or
-apply Git actions. `neo memory prune-apply --yes` is the only deletion command and protects user
-instructions and safety notes.
