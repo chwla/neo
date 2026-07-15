@@ -24,6 +24,7 @@ import ProviderRuntime from "./ProviderRuntime.jsx";
 import EvaluationHarness from "./EvaluationHarness.jsx";
 import WorkspaceOrchestration from "./WorkspaceOrchestration.jsx";
 import Continuity from "./Continuity.jsx";
+import ProfilePicker, { GuestCleanup } from "./ProfilePicker.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -1928,7 +1929,7 @@ function MemoryDialog({ onClose, refreshSidebar }) {
   );
 }
 
-export default function App() {
+function NeoApp({ profile, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -2613,6 +2614,10 @@ export default function App() {
   const showEmptyState = messages.length === 0 && !sending;
   return (
     <div className={`neo-app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <button className="profile-session-button" type="button" onClick={onSwitchProfile} title="Switch profile">
+        {profile.avatar_data ? <img src={profile.avatar_data} alt="" /> : <span>{profile.username.slice(0, 1).toUpperCase()}</span>}
+        <span>{profile.is_guest ? "Guest session" : profile.username}</span>
+      </button>
       <button
         className="sidebar-toggle"
         type="button"
@@ -2917,4 +2922,33 @@ export default function App() {
       />
     </div>
   );
+}
+
+export default function App() {
+  const [profile, setProfile] = useState(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    api.currentAccountProfile()
+      .then((data) => setProfile(data.profile))
+      .catch(() => setProfile(null))
+      .finally(() => setCheckingSession(false));
+  }, []);
+
+  async function switchProfile() {
+    try {
+      await api.endAccountProfileSession();
+    } finally {
+      localStorage.removeItem("neo-active-chat-id");
+      setProfile(null);
+    }
+  }
+
+  if (checkingSession) {
+    return <main className="profile-picker"><p className="profile-loading">Loading profiles…</p></main>;
+  }
+  if (!profile) {
+    return <ProfilePicker onSignedIn={setProfile} />;
+  }
+  return <><GuestCleanup profile={profile} /><NeoApp profile={profile} onSwitchProfile={switchProfile} /></>;
 }

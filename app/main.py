@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.agent_framework import router as agent_framework_router
+from app.api.routes.accounts import router as accounts_router
 from app.api.routes.agentic import router as agentic_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.agents import task_router as agent_task_router
@@ -73,6 +74,20 @@ from app.services.tools.executor import ToolsService
 from app.services.web_search import initialize_web_search_tables
 from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
 from app.services.continuity import initialize_continuity_tables
+from app.services.profile_accounts import cleanup_guests, initialize_profile_registry, profile_database
+from app.api.routes.accounts import session_for
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class ProfileDatabaseMiddleware(BaseHTTPMiddleware):
+    """Route every authenticated profile request to its own local database."""
+
+    async def dispatch(self, request, call_next):
+        session = session_for(request)
+        if session is None:
+            return await call_next(request)
+        with profile_database(session["id"], guest=bool(session.get("is_guest"))):
+            return await call_next(request)
 
 
 def create_app() -> FastAPI:
@@ -89,6 +104,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(ProfileDatabaseMiddleware)
+    app.include_router(accounts_router, prefix="/api")
     app.include_router(projects_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
     app.include_router(bundles_router, prefix="/api")
@@ -129,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(rules_router, prefix="/api")
     app.include_router(tools_router, prefix="/api")
     initialize_notes_tables()
+    initialize_profile_registry()
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_tables()
@@ -160,6 +178,10 @@ def create_app() -> FastAPI:
     initialize_workspace_orchestration_tables()
     initialize_continuity_tables()
     RecoveryScanner().scan()
+
+    @app.on_event("shutdown")
+    def remove_temporary_guest_profiles() -> None:
+        cleanup_guests()
     frontend_dir = Path(get_settings().frontend_dir).resolve()
     index_file = frontend_dir / "index.html"
     assets_dir = frontend_dir / "assets"

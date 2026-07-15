@@ -1,8 +1,17 @@
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+active_profile_database_url: ContextVar[str | None] = ContextVar(
+    "active_profile_database_url", default=None
+)
+active_profile_storage_dir: ContextVar[str | None] = ContextVar(
+    "active_profile_storage_dir", default=None
+)
 
 
 class Settings(BaseSettings):
@@ -191,7 +200,37 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-def get_settings() -> Settings:
-    """Return cached application settings."""
-
+def _base_settings() -> Settings:
     return Settings()
+
+
+def get_settings() -> Settings:
+    """Return settings for the current profile, or the app defaults outside a session."""
+
+    settings = _base_settings()
+    profile_database_url = active_profile_database_url.get()
+    if profile_database_url is None:
+        return settings
+    storage_dir = active_profile_storage_dir.get()
+    updates: dict[str, str] = {"database_url": profile_database_url}
+    if storage_dir:
+        root = Path(storage_dir)
+        updates.update(
+            {
+                "data_dir": str(root),
+                "workspace_files_dir": str(root / "workspace_files"),
+                "workspace_repos_dir": str(root / "workspace_repos"),
+                "llm_config_path": str(root / "neo_llms.json"),
+            }
+        )
+    return settings.model_copy(update=updates)
+
+
+def get_base_settings() -> Settings:
+    """Return process-wide paths, regardless of the active profile context."""
+
+    return _base_settings()
+
+
+# Keep the public cache-reset hook used by the test suite and CLI setup code.
+get_settings.cache_clear = _base_settings.cache_clear  # type: ignore[attr-defined]

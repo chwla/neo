@@ -4,7 +4,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ScopeType = Literal["chat", "agent_run", "coding_run", "task", "project", "repo_workspace"]
+ScopeType = Literal[
+    "chat",
+    "agent_run",
+    "coding_run",
+    "task",
+    "project",
+    "repo_workspace",
+    "workspace",
+]
 
 
 class CompactRequest(BaseModel):

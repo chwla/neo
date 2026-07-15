@@ -6,7 +6,7 @@ from app.services.context_memory.summarizer import summarize
 from app.services.context_memory.token_budget import compression
 from app.services.context_memory.types import CompactRequest, ContextEventCreate
 
-VALID_SCOPES = {"chat", "agent_run", "coding_run", "task", "project", "repo_workspace"}
+VALID_SCOPES = {"chat", "agent_run", "coding_run", "task", "project", "repo_workspace", "workspace"}
 
 
 class ContextMemoryService:

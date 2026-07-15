@@ -1,2 +1,21 @@
 # ruff: noqa
-LINKABLE_ENTITY_TYPES = {"agentic_run", "coding_run", "research_run", "web_search_run", "eval_run", "provider_request", "memory_item", "git_checkpoint", "task", "project"}
+LINKABLE_ENTITY_TYPES = {
+    "agentic_run",
+    "coding_run",
+    "research_run",
+    "web_search_run",
+    "eval_run",
+    "provider_request",
+    "memory_item",
+    "context_summary",
+    "command_sandbox_run",
+    "git_checkpoint",
+    "github_issue",
+    "github_pr",
+    "task",
+    "project",
+    "repo_workspace",
+    "continuity_bundle",
+    "session_bundle",
+    "file_artifact",
+}

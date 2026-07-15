@@ -15,6 +15,7 @@ BUILTIN_SUITES = {
     ),
     "context_compaction_regression": ("context_compaction_task", "Context compaction usefulness"),
     "tool_safety_regression": ("tool_safety_task", "Command sandbox approval enforcement"),
+    "core_integration_smoke": ("integration_task", "Core integration cross-system smoke"),
 }
 
 

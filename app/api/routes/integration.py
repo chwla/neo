@@ -17,7 +17,7 @@ def validate():
 
 @router.get("/report")
 def report():
-    return integration.status()
+    return integration.report()
 
 
 @router.post("/smoke")

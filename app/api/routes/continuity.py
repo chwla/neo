@@ -27,6 +27,15 @@ def validation(bid:str):return s().validate(bid)
 @router.get("/bundles/{bid}/report")
 def report(bid:str):return s().report(bid)
 @router.post("/validate-references")
-def vr():return {"status":"passed","results":[],"summary":{"checked":0,"passed":0,"warnings":0,"failed":0}}
+def vr():
+ bundles=s().bundles()
+ results=[s().validate(item["id"]) for item in bundles]
+ checked=sum(item["summary"]["checked"] for item in results)
+ passed=sum(item["summary"]["passed"] for item in results)
+ warnings=sum(item["summary"]["warnings"] for item in results)
+ failed=sum(item["summary"]["failed"] for item in results)
+ return {"status":"failed" if failed else "warning" if warnings else "passed","results":results,"summary":{"checked":checked,"passed":passed,"warnings":warnings,"failed":failed}}
 @router.post("/validate-entity")
-def ve(p:dict):return {"status":"passed","entity":p}
+def ve(p:dict):
+ from app.services import integration
+ return integration.resolve_entity(p.get("entity_type",""),p.get("entity_id",""))

@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import get_settings
+from app.core.config import active_profile_database_url, get_settings
 from app.db.base import Base
 
 
@@ -32,24 +32,46 @@ def configure_sqlite(created_engine) -> None:
 
 
 engine = build_engine()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+_sessionmakers: dict[str, sessionmaker] = {}
 
 
-def initialize_database() -> None:
+def _sessionmaker_for_current_database() -> sessionmaker:
+    url = active_profile_database_url.get() or get_settings().database_url
+    if url == str(engine.url):
+        return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    if url not in _sessionmakers:
+        _sessionmakers[url] = sessionmaker(
+            bind=build_engine(url), autoflush=False, autocommit=False, future=True
+        )
+    return _sessionmakers[url]
+
+
+class _ProfileAwareSessionFactory:
+    """Keep legacy ``SessionLocal()`` callers isolated to the active profile."""
+
+    def __call__(self, *args, **kwargs):
+        return _sessionmaker_for_current_database()(*args, **kwargs)
+
+
+SessionLocal = _ProfileAwareSessionFactory()
+
+
+def initialize_database(database_url: str | None = None) -> None:
     """Create the local schema when running without migrations."""
 
     import app.models  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
-    ensure_chat_message_metadata_columns()
-    ensure_memory_metadata_columns()
-    ensure_memory_embedding_table()
+    target_engine = engine if database_url is None else build_engine(database_url)
+    Base.metadata.create_all(bind=target_engine)
+    ensure_chat_message_metadata_columns(target_engine)
+    ensure_memory_metadata_columns(target_engine)
+    ensure_memory_embedding_table(target_engine)
 
 
-def ensure_chat_message_metadata_columns() -> None:
+def ensure_chat_message_metadata_columns(target_engine=engine) -> None:
     """Add nullable chat metadata columns for existing SQLite databases."""
 
-    inspector = inspect(engine)
+    inspector = inspect(target_engine)
     if "chat_messages" not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns("chat_messages")}
@@ -60,7 +82,7 @@ def ensure_chat_message_metadata_columns() -> None:
         "duration_ms": "INTEGER",
         "thinking": "TEXT",
     }
-    with engine.begin() as connection:
+    with target_engine.begin() as connection:
         for name, column_type in columns.items():
             if name not in existing:
                 connection.execute(
@@ -68,10 +90,10 @@ def ensure_chat_message_metadata_columns() -> None:
                 )
 
 
-def ensure_memory_metadata_columns() -> None:
+def ensure_memory_metadata_columns(target_engine=engine) -> None:
     """Add traceability columns for existing SQLite memory databases."""
 
-    inspector = inspect(engine)
+    inspector = inspect(target_engine)
     if "memories" not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns("memories")}
@@ -83,7 +105,7 @@ def ensure_memory_metadata_columns() -> None:
         "supersedes_id": "INTEGER",
         "update_reason": "TEXT",
     }
-    with engine.begin() as connection:
+    with target_engine.begin() as connection:
         for name, column_type in columns.items():
             if name not in existing:
                 connection.execute(text(f"ALTER TABLE memories ADD COLUMN {name} {column_type}"))
@@ -98,13 +120,13 @@ def ensure_memory_metadata_columns() -> None:
         )
 
 
-def ensure_memory_embedding_table() -> None:
+def ensure_memory_embedding_table(target_engine=engine) -> None:
     """Create embedding metadata table for existing SQLite databases."""
 
-    inspector = inspect(engine)
+    inspector = inspect(target_engine)
     if "memory_embeddings" in inspector.get_table_names():
         return
-    with engine.begin() as connection:
+    with target_engine.begin() as connection:
         connection.execute(
             text(
                 """

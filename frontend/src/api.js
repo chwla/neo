@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
 async function request(path, options = {}) {
   let response;
@@ -89,6 +89,12 @@ async function streamRequest(path, payload, onEvent) {
 }
 
 export const api = {
+  accountProfiles: () => request("/account-profiles"),
+  currentAccountProfile: () => request("/account-profiles/session/current"),
+  createAccountProfile: (payload) => request("/account-profiles", { method: "POST", body: JSON.stringify(payload) }),
+  unlockAccountProfile: (id, password) => request(`/account-profiles/${id}/unlock`, { method: "POST", body: JSON.stringify({ password }) }),
+  createGuestProfile: () => request("/account-profiles/guest", { method: "POST" }),
+  endAccountProfileSession: () => request("/account-profiles/session/end", { method: "POST" }),
   webSearchPlan: (payload) => request("/web-search/plan", { method: "POST", body: JSON.stringify(payload) }),
   webSearchRun: (payload) => request("/web-search/run", { method: "POST", body: JSON.stringify(payload) }),
   webSearchRuns: () => request("/web-search/runs"),
