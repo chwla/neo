@@ -27,7 +27,7 @@ class InternalChatIntent:
 
 _COMMAND_PREFIX = re.compile(
     r"^(?:please\s+)?(?P<verb>find|show|list|check|open|view|inspect|get|"
-    r"resume|retry|fork|repair)\b",
+    r"create|run|resume|retry|fork|repair)\b",
     re.IGNORECASE,
 )
 _EXPLANATORY_REQUEST = re.compile(
@@ -66,7 +66,7 @@ _FEATURE_TARGETS: tuple[tuple[InternalFeature, re.Pattern[str]], ...] = (
         "tests",
         re.compile(
             r"\b(?:test\s+runs?|test\s+history|failed\s+tests?|"
-            r"test\s+results?)\b",
+            r"test\s+results?|run\s+(?:the\s+)?saved\s+test\s+command)\b",
             re.IGNORECASE,
         ),
     ),
@@ -98,7 +98,8 @@ def resolve_internal_chat_intent(prompt: str) -> InternalChatIntent | None:
 
     action: InternalAction = (
         "operation"
-        if command.group("verb").lower() in {"resume", "retry", "fork", "repair"}
+        if command.group("verb").lower()
+        in {"create", "run", "resume", "retry", "fork", "repair"}
         else "lookup"
     )
     for feature, target in _FEATURE_TARGETS:

@@ -9,6 +9,7 @@ from app.models import Event, Goal, Memory, Preference, ProfileFact, Project
 from app.models.enums import CandidateStatus, CandidateType, GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
 from app.services.conflicts import ConflictResolutionService
+from app.services.identity_facts import is_durable_identity_fact, normalize_identity_value
 from app.services.lifecycle import MemoryLifecycleService
 
 
@@ -50,6 +51,20 @@ class MemoryReviewService:
 
         if request.decision == CandidateStatus.MERGED:
             return self._merge(store, candidate, request.merged_into_memory_id)
+
+        if candidate.candidate_type == CandidateType.IDENTITY:
+            attrs = self._attributes(candidate.reasoning)
+            key = str(attrs.get("key", "general"))
+            value = str(attrs.get("value", candidate.candidate_text))
+            if not is_durable_identity_fact(key, value):
+                candidate.status = CandidateStatus.REJECTED
+                candidate.reviewed_at = datetime.now(UTC)
+                candidate.reasoning = self._merge_reasoning(
+                    candidate.reasoning,
+                    {"validation_rejection": "Rejected non-durable identity candidate."},
+                )
+                store.db.flush()
+                return MemoryReviewResult(candidate_id=candidate.id, status=candidate.status)
 
         tombstone = self._resurrection_tombstone(store, candidate)
         if tombstone is not None:
@@ -120,7 +135,7 @@ class MemoryReviewService:
         attrs = self._attributes(candidate.reasoning)
         if candidate.candidate_type == CandidateType.IDENTITY:
             key = str(attrs.get("key", "general"))
-            value = str(attrs.get("value", candidate.candidate_text))
+            value = normalize_identity_value(key, str(attrs.get("value", candidate.candidate_text)))
             memory_text = f"{key} = {value}"
             existing_memory = self._existing_memory(store, MemoryType.IDENTITY, memory_text)
             existing_profile = next(

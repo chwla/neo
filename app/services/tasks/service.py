@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import app.services.projects.store as projects_store
 import app.services.tasks.store as store
-from app.services.chat_intent import is_internal_chat_command
+from app.services.chat_intent import is_internal_chat_command, resolve_internal_chat_intent
 from app.services.projects.types import Project
 from app.services.tasks.types import (
     Task,
@@ -206,6 +206,13 @@ class TaskContextService:
     def answer_for_prompt(self, prompt: str) -> str | None:
         if not is_internal_chat_command(prompt, "tasks"):
             return None
+        command = resolve_internal_chat_intent(prompt)
+        if command is not None and command.action == "operation":
+            if re.match(r"^\s*(?:please\s+)?create\s+(?:a\s+)?task\b", prompt, re.I):
+                return (
+                    "Open Tasks and choose New Task to review the title, priority, and any "
+                    "linked project before creating it. Chat does not create tasks implicitly."
+                )
         lowered = prompt.lower()
         intent = _task_query_intent(lowered)
         if intent is None:

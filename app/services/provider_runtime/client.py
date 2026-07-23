@@ -84,12 +84,20 @@ class ProviderRuntimeClient(BaseLLMClient):
                 seen = len(partial)
         if session["status"] == "completed":
             usage = session.get("provider_usage") or {}
+            self.last_metadata = {
+                "provider_request_id": session.get("id"),
+                "route_name": session.get("route_name") or self.route_name,
+                "provider": session.get("provider_name"),
+                "model": session.get("model_name"),
+                "fallback_used": bool(session.get("fallback_chain")),
+            }
             yield {
                 "type": "done",
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "total_tokens": usage.get("total_tokens"),
                 "duration_ms": session.get("latency_ms"),
+                **self.last_metadata,
             }
         else:
             raise RuntimeError(session.get("error_message") or "Provider stream failed safely.")

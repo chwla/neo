@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 from app.models import MemoryCandidate
 from app.models.enums import CandidateStatus, CandidateType
 from app.repositories.memory_store import MemoryStore
-from app.services.llm import LLMClient, LLMMessage as OllamaMessage
+from app.services.identity_facts import is_durable_identity_fact, normalize_identity_value
+from app.services.llm import LLMClient
+from app.services.llm import LLMMessage as OllamaMessage
 from app.services.scoring import score_importance
 
 
@@ -426,11 +428,16 @@ Rules:
                 r"\bmy name is (?P<value>[A-Z][A-Za-z .'-]{1,80}?)(?=\s*(?:,|;|\band\b|$))",
                 "name",
             ),
+            (
+                r"^\s*(?:i\s*am|i['’]m)\s+(?P<value>[A-Za-z][A-Za-z' -]{1,80})\s*$",
+                "name",
+            ),
             (r"\bmy age is (?P<value>\d{1,3})\b", "age"),
             (r"\bi am (?P<value>\d{1,3})\s+years? old\b", "age"),
             (r"\bi'?m (?P<value>\d{1,3})\s+years? old\b", "age"),
-            (r"\bi am (?P<value>a |an )?(?P<occupation>[^.]{3,80})", "occupation"),
-            (r"\bi'?m (?P<value>a |an )?(?P<occupation>[^.]{3,80})", "occupation"),
+            (r"\bmy occupation is (?P<occupation>[^.]{2,120})", "occupation"),
+            (r"\bi work as (?:a |an )?(?P<occupation>[^.]{2,120})", "occupation"),
+            (r"\bi(?:\s*am|'m) (?:a |an )(?P<occupation>[^.]{2,120})", "occupation"),
             (r"\bi live in (?P<value>[A-Za-z ,'-]{2,80})", "location"),
             (r"\bi study at (?P<value>[A-Za-z0-9 ,.'-]{2,120})", "education"),
         ]
@@ -444,11 +451,9 @@ Rules:
             value = re.sub(r"^(a|an)\s+", "", value.strip(), flags=re.IGNORECASE)
             value = re.split(r"\s+\band\b\s+", value, maxsplit=1, flags=re.IGNORECASE)[0]
             value = value.strip(" ,;")
-            if key == "occupation" and re.match(
-                r"(?i)^(learning|studying|working|building|using|drinking|about|currently|from|graduating)\b",
-                value,
-            ):
+            if not is_durable_identity_fact(key, value):
                 continue
+            value = normalize_identity_value(key, value)
             text = f"{key} = {value}"
             return ExtractedItem(
                 candidate_type=CandidateType.IDENTITY,

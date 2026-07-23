@@ -8,6 +8,7 @@ from app.services.chat import NeoChatService
 from app.services.chat_intent import InternalChatIntent, resolve_internal_chat_intent
 from app.services.provider_runtime.client import ProviderRuntimeClient
 from app.services.recovery.service import RecoveryService
+from app.services.tasks.service import TaskContextService
 
 REPRODUCTION_PROMPT = (
     "Explain in detail how a local-first AI assistant should manage long-term memory, "
@@ -15,6 +16,23 @@ REPRODUCTION_PROMPT = (
     "deletion, privacy, and recovery after restart. Include examples and potential failure "
     "cases."
 )
+
+NORMAL_CHAT_INPUTS = [
+    "hello",
+    "hi",
+    "hey",
+    "helo",
+    "good morning",
+    "what can you do?",
+    "testing",
+    "recovery",
+    "tell me about recovery",
+    "projects are useful",
+    "I want to research this later",
+    "こんにちは 👋",
+    "# Heading\n\n`markdown` **text**",
+    "<article>Hello</article>",
+]
 
 
 @pytest.mark.parametrize(
@@ -54,6 +72,11 @@ def test_explanatory_or_ambiguous_prompts_never_select_internal_action(prompt: s
         ("Show git status.", InternalChatIntent("git", "lookup")),
         ("List failed tests.", InternalChatIntent("tests", "lookup")),
         ("Show my open tasks.", InternalChatIntent("tasks", "lookup")),
+        ("Create a task called Test Neo.", InternalChatIntent("tasks", "operation")),
+        (
+            "Run the saved test command.",
+            InternalChatIntent("tests", "operation"),
+        ),
     ],
 )
 def test_explicit_panel_commands_select_only_the_requested_feature(
@@ -70,6 +93,15 @@ def test_recovery_result_cannot_replace_an_informational_answer() -> None:
     assert recovery.answer_for_prompt("Describe how Neo finds recoverable runs.") is None
     assert recovery.answer_for_prompt("Find my recoverable runs.") == (
         "No recoverable agent or coding-agent runs were found."
+    )
+
+
+def test_explicit_task_creation_routes_to_safe_internal_guidance() -> None:
+    tasks = TaskContextService()
+
+    assert tasks.answer_for_prompt("Create a task called Test Neo.") == (
+        "Open Tasks and choose New Task to review the title, priority, and any linked project "
+        "before creating it. Chat does not create tasks implicitly."
     )
 
 
@@ -191,6 +223,24 @@ def test_original_prompt_streams_through_llm_and_persists_generation_metadata() 
     assert events[-1]["completion_tokens"] == 17
     assert events[-1]["total_tokens"] == 118
     assert events[-1]["duration_ms"] == 42
+    assert events[-1]["web_debug"]["routing"] == {
+        "chat_id": 1,
+        "message_id": 2,
+        "normalized_input_length": len(REPRODUCTION_PROMPT),
+        "input_sha256": events[-1]["web_debug"]["routing"]["input_sha256"],
+        "selected_route": "llm",
+        "component": "default_chat_route",
+        "matched_intent": None,
+        "confidence": 0.0,
+        "fuzzy_candidate": None,
+        "direct_feature_service": None,
+        "provider_invoked": True,
+        "provider": None,
+        "model": None,
+        "fallback_reason": None,
+        "response_source": "provider",
+        "final_status": "completed",
+    }
     assert service.ollama.stream_calls == [["normal-llm-message"]]
 
     assistant = service.store.messages[-1]
@@ -205,6 +255,37 @@ def test_original_prompt_streams_through_llm_and_persists_generation_metadata() 
     }
 
 
+@pytest.mark.parametrize("prompt", NORMAL_CHAT_INPUTS)
+def test_normal_text_uses_the_real_streaming_chat_service_and_never_returns_suggestions(
+    prompt: str,
+) -> None:
+    """Exercise the same ``stream_message`` entry point used by the chat API."""
+
+    service = _normal_streaming_service()
+
+    events = list(service.stream_message(chat_id=1, prompt=prompt))
+
+    assert service.ollama.stream_calls == [["normal-llm-message"]]
+    assert len([message for message in service.store.messages if message.role == "user"]) == 1
+    assistants = [message for message in service.store.messages if message.role == "assistant"]
+    assert len(assistants) == 1
+    assert "Did you mean" not in assistants[0].content
+    assert events[-1]["type"] == "done"
+    assert events[-1]["total_tokens"] == 118
+    assert events[-1]["web_debug"]["routing"]["selected_route"] == "llm"
+    assert events[-1]["web_debug"]["routing"]["provider_invoked"] is True
+
+
+def test_same_normal_input_in_separate_chats_invokes_provider_independently() -> None:
+    first, second = _normal_streaming_service(), _normal_streaming_service()
+
+    list(first.stream_message(chat_id=1, prompt="hello"))
+    list(second.stream_message(chat_id=2, prompt="hello"))
+
+    assert len(first.ollama.stream_calls) == 1
+    assert len(second.ollama.stream_calls) == 1
+
+
 def test_runtime_stream_exposes_provider_usage_for_chat_persistence() -> None:
     class Runtime:
         def start_stream(self, **_kwargs):
@@ -215,6 +296,9 @@ def test_runtime_stream_exposes_provider_usage_for_chat_persistence() -> None:
             return {
                 "id": "request-1",
                 "status": "completed",
+                "route_name": "chat",
+                "provider_name": "ollama",
+                "model_name": "test-model",
                 "metadata": {"partial_response": "Streamed answer."},
                 "provider_usage": {
                     "prompt_tokens": 55,
@@ -241,5 +325,10 @@ def test_runtime_stream_exposes_provider_usage_for_chat_persistence() -> None:
             "completion_tokens": 21,
             "total_tokens": 76,
             "duration_ms": 123,
+            "provider_request_id": "request-1",
+            "route_name": "chat",
+            "provider": "ollama",
+            "model": "test-model",
+            "fallback_used": False,
         },
     ]

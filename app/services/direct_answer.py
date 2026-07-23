@@ -12,6 +12,10 @@ class DirectMemoryAnswerService:
 
     def answer(self, store: MemoryStore, query: str) -> str | None:
         lowered = query.lower()
+        # Earlier releases accepted transient statements such as "I am bored" as an
+        # occupation. Retire those unsafe rows before returning any profile answer.
+        if hasattr(store, "retire_invalid_profile_facts"):
+            store.retire_invalid_profile_facts()
         if self._asks_profile_summary(lowered):
             return self._profile_summary_answer(store)
         if self._asks_name(lowered):

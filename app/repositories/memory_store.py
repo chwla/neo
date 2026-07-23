@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
 import re
+from datetime import UTC, date, datetime
 
 from sqlalchemy import Select, case, exists, or_, select, text
 from sqlalchemy.orm import Session
@@ -29,7 +29,6 @@ from app.services.embeddings import (
     cosine_similarity,
     decode_vector,
 )
-
 
 QUERY_STOPWORDS = {
     "a",
@@ -302,6 +301,22 @@ class MemoryStore:
         fact.is_active = False
         self._deactivate_matching_memories(MemoryType.IDENTITY, f"{fact.key} = {fact.value}")
         self.db.flush()
+
+    def retire_invalid_profile_facts(self) -> int:
+        """Retire old profile rows that cannot safely be treated as durable identity data."""
+
+        from app.services.identity_facts import is_durable_identity_fact
+
+        retired = 0
+        for fact in self.list_profile(active_only=True):
+            if is_durable_identity_fact(str(fact.key), str(fact.value)):
+                continue
+            fact.is_active = False
+            self._deactivate_matching_memories(MemoryType.IDENTITY, f"{fact.key} = {fact.value}")
+            retired += 1
+        if retired:
+            self.db.flush()
+        return retired
 
     def update_preference(
         self,

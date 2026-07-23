@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import re
 from collections.abc import Iterator
 from datetime import datetime
@@ -37,6 +40,8 @@ from app.services.web_search import (
     WebSearchDecisionService,
     WebSearchService,
 )
+
+_ROUTING_LOG = logging.getLogger("neo.chat.routing")
 
 MONTH_PATTERN = (
     r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -88,6 +93,7 @@ class NeoChatService:
         self.citation_formatter = CitationFormatter()
         self.settings = get_settings()
         self.last_web_debug: dict[str, Any] = {}
+        self.last_routing_debug: dict[str, Any] = {}
 
     def build_context(self, prompt: str) -> ContextPackage:
         return self.context_assembler.assemble(
@@ -172,9 +178,17 @@ class NeoChatService:
             ChatTurn(role=message.role, content=message.content)
             for message in self.store.list_chat_messages(chat_id)
         ]
-        self.store.add_chat_message(chat_id, "user", prompt)
+        user_message = self.store.add_chat_message(chat_id, "user", prompt)
         self.store.rename_chat_from_prompt(chat_id, prompt)
         self.db.commit()
+        self._routing_diagnostic(
+            chat_id,
+            prompt,
+            message_id=user_message.id,
+            selected_route="pending",
+            component="chat_submission",
+            final_status="received",
+        )
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -411,10 +425,20 @@ class NeoChatService:
             except StopIteration as exc:
                 raise ValueError("The edited user message no longer exists.") from exc
             history = history[:message_index]
+            routing_message_id = existing_user_message_id
         else:
-            self.store.add_chat_message(chat_id, "user", prompt)
+            user_message = self.store.add_chat_message(chat_id, "user", prompt)
             self.store.rename_chat_from_prompt(chat_id, prompt)
             self.db.commit()
+            routing_message_id = user_message.id
+        self._routing_diagnostic(
+            chat_id,
+            prompt,
+            message_id=routing_message_id,
+            selected_route="pending",
+            component="chat_submission",
+            final_status="received",
+        )
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -503,7 +527,23 @@ class NeoChatService:
             assistant = self.store.add_chat_message(chat_id, "assistant", recovery_direct_reply)
             self.db.commit()
             self.db.refresh(assistant)
-            self.last_web_debug = {"recovery_context_loaded": True, "web_search_needed": False}
+            self.last_web_debug = {
+                "recovery_context_loaded": True,
+                "web_search_needed": False,
+                "routing": self._routing_diagnostic(
+                    chat_id,
+                    prompt,
+                    message_id=assistant.id,
+                    selected_route="internal",
+                    component="recovery_service",
+                    matched_intent=f"{internal_intent.feature}:{internal_intent.action}",
+                    confidence=1.0,
+                    direct_feature_service="RecoveryService.answer_for_prompt",
+                    provider_invoked=False,
+                    response_source="recovery_service",
+                    final_status="completed",
+                ),
+            }
             yield {"type": "chunk", "content": recovery_direct_reply}
             yield {
                 "type": "done",
@@ -670,6 +710,22 @@ class NeoChatService:
         messages = self.build_messages(
             prompt, history, context, web_context, project_context, task_context
         )
+        self._routing_diagnostic(
+            chat_id,
+            prompt,
+            message_id=routing_message_id,
+            selected_route="llm",
+            component="default_chat_route",
+            matched_intent=(
+                f"{internal_intent.feature}:{internal_intent.action}"
+                if internal_intent is not None
+                else None
+            ),
+            confidence=1.0 if internal_intent is not None else 0.0,
+            provider_invoked=True,
+            response_source="provider_pending",
+            final_status="streaming",
+        )
         self.db.rollback()
 
         raw_reply = ""
@@ -785,6 +841,29 @@ class NeoChatService:
             web_context_in_prompt=bool(web_context.needed and web_context.context_text),
             final_answer=reply,
         )
+        self.last_web_debug["routing"] = self._routing_diagnostic(
+            chat_id,
+            prompt,
+            message_id=assistant.id,
+            selected_route="llm",
+            component="default_chat_route",
+            matched_intent=(
+                f"{internal_intent.feature}:{internal_intent.action}"
+                if internal_intent is not None
+                else None
+            ),
+            confidence=1.0 if internal_intent is not None else 0.0,
+            provider_invoked=True,
+            provider=final_metadata.get("provider")
+            or getattr(self.ollama, "last_metadata", {}).get("provider"),
+            model=final_metadata.get("model")
+            or getattr(self.ollama, "last_metadata", {}).get("model"),
+            fallback_reason=(
+                "provider_fallback" if final_metadata.get("fallback_used") else None
+            ),
+            response_source="provider",
+            final_status="completed",
+        )
         yield {
             "type": "done",
             "message_id": assistant.id,
@@ -832,12 +911,53 @@ class NeoChatService:
         return "\n".join(lines)
 
     def _direct_reply(self, prompt: str) -> str | None:
-        short = _short_input_clarification(prompt)
-        if short is not None:
-            return short
         if not self.explainer.should_handle(prompt):
             return self.direct_answers.answer(self.store, prompt)
         return self.explainer.answer(self.store, prompt)
+
+    def _routing_diagnostic(
+        self,
+        chat_id: int,
+        prompt: str,
+        *,
+        message_id: int | None,
+        selected_route: str,
+        component: str,
+        matched_intent: str | None = None,
+        confidence: float | None = None,
+        fuzzy_candidate: str | None = None,
+        direct_feature_service: str | None = None,
+        provider_invoked: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+        fallback_reason: str | None = None,
+        response_source: str | None = None,
+        final_status: str | None = None,
+    ) -> dict[str, Any]:
+        """Emit a privacy-safe trace for the production chat-routing decision."""
+
+        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "normalized_input_length": len(normalized),
+            "input_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16],
+            "selected_route": selected_route,
+            "component": component,
+            "matched_intent": matched_intent,
+            "confidence": confidence,
+            "fuzzy_candidate": fuzzy_candidate,
+            "direct_feature_service": direct_feature_service,
+            "provider_invoked": provider_invoked,
+            "provider": provider,
+            "model": model,
+            "fallback_reason": fallback_reason,
+            "response_source": response_source,
+            "final_status": final_status,
+        }
+        self.last_routing_debug = payload
+        _ROUTING_LOG.warning("chat_routing=%s", json.dumps(payload, sort_keys=True))
+        return payload
 
     def _web_query_with_memory_region(self, query: str, context: ContextPackage) -> str:
         if not self._is_release_date_query(query):
@@ -1526,52 +1646,6 @@ _FACTUAL_ENTITY_QUERY = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-
-
-_SHORT_TOOL_HINTS: dict[str, str] = {
-    "sed": "`sed`, the Unix stream editor",
-    "awk": "`awk`, the text processing language",
-    "grep": "`grep`, the text search utility",
-    "npm": "`npm`, the Node.js package manager",
-    "docker": "`docker`, the container platform",
-    "git": "`git`, the version control system",
-    "curl": "`curl`, the URL transfer tool",
-    "wget": "`wget`, the file download utility",
-    "pip": "`pip`, the Python package manager",
-    "yarn": "`yarn`, the JavaScript package manager",
-    "vim": "`vim`, the text editor",
-    "bash": "`bash`, the Unix shell",
-    "zsh": "`zsh`, the Z shell",
-    "ssh": "`ssh`, the secure shell protocol",
-    "tar": "`tar`, the archive utility",
-    "make": "`make`, the build automation tool",
-    "gcc": "`gcc`, the GNU C compiler",
-    "apt": "`apt`, the Debian package manager",
-    "brew": "`brew`, the macOS package manager",
-    "ps": "`ps`, the process status command",
-    "ls": "`ls`, the directory listing command",
-    "cat": "`cat`, the file concatenation command",
-    "chmod": "`chmod`, the file permission command",
-    "rsync": "`rsync`, the file synchronization tool",
-}
-
-
-def _short_input_clarification(prompt: str) -> str | None:
-    """Fast response for very short, ambiguous, or typo-like inputs."""
-    cleaned = prompt.strip().rstrip("'\"?!.,;:")
-    if len(cleaned) > 12 or len(cleaned) < 3:
-        return None
-    if " " in cleaned and len(cleaned.split()) > 2:
-        return None
-    lowered = cleaned.lower()
-    hint = _SHORT_TOOL_HINTS.get(lowered)
-    if hint is not None:
-        return f"Did you mean {hint}?"
-    if re.match(r"^[a-z]{2,10}$", lowered):
-        return (
-            f"Did you mean `{lowered}`? Could you give me a bit more context about what you need?"
-        )
-    return None
 
 
 def _reply_expresses_uncertainty(reply: str) -> bool:
