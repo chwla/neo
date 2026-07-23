@@ -7,6 +7,17 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Remove service workers and Cache Storage left by older Neo frontend builds.
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => registration.unregister());
+        });
+      }
+      if ("caches" in window) {
+        caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
+      }
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

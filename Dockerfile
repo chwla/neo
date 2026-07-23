@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEO_FRONTEND_DIR=/app/app/static \
     NEO_SEARCH_PROVIDER=disabled \
     NEO_LLM_PROVIDER=ollama \
-    NEO_DEFAULT_MODEL=llama3.2:3b \
+    NEO_DEFAULT_MODEL=qwen3-coder:30b \
     NEO_SEARXNG_URL=http://127.0.0.1:8080 \
     OLLAMA_BASE_URL=http://host.docker.internal:11434
 
@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir . \
     && mkdir -p /app/data/workspace_files /app/data/workspace_repos \
     && useradd --create-home --uid 10001 neo \
     && chown -R neo:neo /app/data
+RUN rm -rf /app/app/static && mkdir -p /app/app/static
 COPY --from=frontend-build /src/frontend/dist/ /app/app/static/
 
 VOLUME ["/app/data"]

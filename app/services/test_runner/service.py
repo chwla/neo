@@ -4,6 +4,7 @@ import re
 import uuid
 
 from app.services.agents import store as agent_store
+from app.services.chat_intent import is_internal_chat_command
 from app.services.patch_apply import store as patch_store
 from app.services.repos import store as repo_store
 from app.services.rules.resolver import RuleResolver
@@ -201,7 +202,7 @@ class TestRunnerContextService:
         )
 
     def answer_for_prompt(self, prompt: str) -> str | None:
-        if not TEST_INTENT.search(prompt):
+        if not is_internal_chat_command(prompt, "tests"):
             return None
         runs, _ = store.list_runs(limit=10)
         if not runs:

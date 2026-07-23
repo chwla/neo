@@ -61,6 +61,7 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
   const [loading, setLoading] = useState(false);
   const [attachProjectId, setAttachProjectId] = useState("");
   const [attachTaskId, setAttachTaskId] = useState("");
+  const [expandedNoteIds, setExpandedNoteIds] = useState(() => new Set());
 
   const dirty = useMemo(() => noteChanged(draft, isNew ? null : selectedNote), [draft, isNew, selectedNote]);
 
@@ -236,6 +237,15 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     setStatus("Unsaved changes");
   }
 
+  function toggleNoteExpanded(noteId) {
+    setExpandedNoteIds((current) => {
+      const next = new Set(current);
+      if (next.has(noteId)) next.delete(noteId);
+      else next.add(noteId);
+      return next;
+    });
+  }
+
   async function attachToProject() {
     if (!selectedNote || isNew || !attachProjectId) return;
     setError("");
@@ -313,26 +323,44 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
               {query.trim() || tagFilter ? "No notes match your search." : "No notes yet. Create a note or save a research report."}
             </div>
           ) : (
-            notes.map((note) => (
-              <button
-                key={note.id}
-                className={`notes-item ${selectedNote?.id === note.id ? "active" : ""}`}
-                type="button"
-                onClick={() => openExistingNote(note.id)}
-              >
-                <span className="notes-item-title">
-                  {note.pinned && <span className="notes-pin" title="Pinned">PIN</span>}
-                  {note.title}
-                </span>
-                <span className="notes-item-preview">{note.preview || note.body}</span>
-                <span className="notes-item-tags">
-                  {(note.tags || []).slice(0, 4).map((tag) => (
-                    <span key={tag}>{tag}</span>
-                  ))}
-                </span>
-                <span className="notes-item-time">{formatTime(note.updated_at)}</span>
-              </button>
-            ))
+            notes.map((note) => {
+              const expanded = expandedNoteIds.has(note.id);
+              return (
+                <article key={note.id} className={`notes-item-card ${expanded ? "expanded" : ""}`}>
+                  <button
+                    className={`notes-item ${selectedNote?.id === note.id ? "active" : ""}`}
+                    type="button"
+                    onClick={() => openExistingNote(note.id)}
+                  >
+                    <span className="notes-item-title">
+                      {note.pinned && <span className="notes-pin" title="Pinned">PIN</span>}
+                      {note.title}
+                    </span>
+                    <span className="notes-item-preview">{note.preview || note.body}</span>
+                    <span className="notes-item-tags">
+                      {(note.tags || []).slice(0, 4).map((tag) => (
+                        <span key={tag}>{tag}</span>
+                      ))}
+                    </span>
+                    <span className="notes-item-time">{formatTime(note.updated_at)}</span>
+                  </button>
+                  <button
+                    className="notes-item-expand"
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => toggleNoteExpanded(note.id)}
+                  >
+                    {expanded ? "Collapse" : "Expand"}
+                  </button>
+                  {expanded && (
+                    <div className="notes-item-expanded-content">
+                      {note.summary && <p>{note.summary}</p>}
+                      <div>{note.body}</div>
+                    </div>
+                  )}
+                </article>
+              );
+            })
           )}
         </div>
       </section>

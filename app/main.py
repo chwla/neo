@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.agent_framework import router as agent_framework_router
@@ -117,7 +117,6 @@ def create_app() -> FastAPI:
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(provider_runtime_router, prefix="/api")
     app.include_router(evaluation_router, prefix="/api")
-    app.include_router(memory_router)
     app.include_router(memory_router, prefix="/api")
     app.include_router(memory_retrieval_router, prefix="/api")
     app.include_router(search_router, prefix="/api")
@@ -189,11 +188,42 @@ def create_app() -> FastAPI:
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
+        # A prior local build may have left a service worker controlling this
+        # origin.  Serving an unregistering worker at the common entry-point
+        # paths lets the browser replace it during its normal update check.
+        retired_worker = (
+            "self.addEventListener('install', () => self.skipWaiting());"
+            "self.addEventListener('activate', (event) => event.waitUntil("
+            "self.registration.unregister().then(() => self.clients.matchAll({type: 'window'}))"
+            ".then((clients) => Promise.all(clients.map((client) => client.navigate(client.url)))))"
+            ");"
+        )
+
+        def retire_legacy_worker() -> Response:
+            return Response(
+                content=retired_worker,
+                media_type="application/javascript",
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Service-Worker-Allowed": "/",
+                },
+            )
+
+        app.add_api_route("/service-worker.js", retire_legacy_worker, methods=["GET"], include_in_schema=False)
+        app.add_api_route("/sw.js", retire_legacy_worker, methods=["GET"], include_in_schema=False)
+
         @app.get("/{full_path:path}", include_in_schema=False)
         def frontend(full_path: str) -> FileResponse:
             if full_path == "api" or full_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="Not Found")
-            return FileResponse(index_file)
+            return FileResponse(
+                index_file,
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
 
     return app
 

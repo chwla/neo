@@ -124,7 +124,57 @@ class LLMRegistryService:
                         "updated_at": now,
                     }
                 )
+        self._refresh_environment_default()
         self._migrate_legacy_json()
+
+    def _refresh_environment_default(self) -> None:
+        """Keep only automatically-created Ollama defaults aligned with the container.
+
+        User-created providers, models, and routes are intentionally left untouched.
+        This lets an upgraded Docker image recover from an unavailable bundled
+        default model without overwriting an explicit provider choice.
+        """
+
+        settings = get_settings()
+        provider = self.get_provider("ollama-default")
+        model = self.get_model("ollama-default-model")
+        if (
+            provider is None
+            or model is None
+            or provider.get("provider_type") != "ollama"
+            or provider.get("metadata", {}).get("source") != "environment"
+            or model.get("metadata", {}).get("source") != "environment"
+        ):
+            return
+
+        if provider.get("default_model") != settings.default_model:
+            self.update_provider(
+                provider["id"],
+                ProviderUpdate(default_model=settings.default_model),
+            )
+        if model.get("model_name") != settings.default_model:
+            self.update_model(
+                model["id"],
+                ModelUpdate(
+                    model_name=settings.default_model,
+                    display_name=settings.default_model,
+                ),
+            )
+
+        for route in self.list_routes():
+            if (
+                route.get("provider_id") == provider["id"]
+                and route.get("model_id") == model["id"]
+                and route.get("metadata", {}).get("source") == "default"
+            ):
+                self.update_route(
+                    route["route_name"],
+                    RouteUpdate(
+                        provider_id=provider["id"],
+                        model_id=model["id"],
+                        metadata=route.get("metadata", {}),
+                    ),
+                )
 
     def _migrate_legacy_json(self) -> None:
         path = Path(get_settings().llm_config_path)

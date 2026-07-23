@@ -54,3 +54,33 @@ class ChatMessage(Base):
     )
 
     chat = relationship("Chat", back_populates="messages")
+
+
+class ChatGeneration(Base):
+    """Durable, refresh-safe execution state for one chat response."""
+
+    __tablename__ = "chat_generations"
+    __table_args__ = (
+        Index("ix_chat_generations_chat_created", "chat_id", "created_at"),
+        Index("ix_chat_generations_chat_status", "chat_id", "status"),
+        Index("ix_chat_generations_client_request", "client_request_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    llm_id: Mapped[str | None] = mapped_column(String(80))
+    client_request_id: Mapped[str | None] = mapped_column(String(80))
+    user_message_id: Mapped[int | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    partial_response: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reply: Mapped[str | None] = mapped_column(Text)
+    assistant_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL")
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

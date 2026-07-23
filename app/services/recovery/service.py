@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Any
 
@@ -9,6 +8,7 @@ import app.services.coding_agent.store as coding_store
 import app.services.recovery.store as store
 import app.services.test_runner.store as test_store
 from app.services.agents.runner import get_agent_runner
+from app.services.chat_intent import is_internal_chat_command
 from app.services.coding_agent.orchestrator import CodingAgentOrchestrator
 from app.services.coding_agent.types import CodingRunCreate
 from app.services.recovery.safety import (
@@ -23,12 +23,6 @@ from app.services.recovery.types import RecoveryEvent, RecoverySummary
 
 class RecoveryValidationError(ValueError):
     pass
-
-
-RECOVERY_INTENT = re.compile(
-    r"\b(waiting for|can .*resume|resumable|why .*stop|stopped|forks? came|recovery|recoverable)\b",
-    re.I,
-)
 
 
 class RecoveryService:
@@ -409,7 +403,7 @@ class RecoveryService:
         return {"recovery_events": events, "total": total}
 
     def answer_for_prompt(self, prompt: str) -> str | None:
-        if not RECOVERY_INTENT.search(prompt):
+        if not is_internal_chat_command(prompt, "recovery"):
             return None
         candidates: list[RecoverySummary] = []
         for run_type in ("coding_agent", "agent"):

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+import uuid
+from datetime import date, datetime, timezone
+from threading import Thread
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import delete, select
 
 from app.api.deps import get_store
+from app.api.routes.accounts import session_for
 from app.db.session import SessionLocal
-from app.models import ChatMessage
+from app.models import Chat, ChatGeneration, ChatMessage
 from app.models.enums import CandidateStatus, GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
 from app.schemas.memory_objects import (
@@ -35,6 +39,7 @@ from app.services.retrieval import RetrievalRequest
 from app.services.review import MemoryReviewRequest, MemoryReviewResult, MemoryReviewService
 from app.services.rules.resolver import RuleResolver
 from app.services.rules.types import RuleResolveRequest
+from app.services.profile_accounts import profile_database
 
 router = APIRouter()
 StoreDependency = Annotated[MemoryStore, Depends(get_store)]
@@ -112,6 +117,7 @@ class ChatCreateRequest(BaseModel):
 class ChatSendRequest(BaseModel):
     prompt: str = Field(min_length=1)
     llm_id: str | None = Field(default=None, max_length=80)
+    client_request_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class ChatMessageUpdateRequest(BaseModel):
@@ -123,6 +129,26 @@ class ChatSendResponse(BaseModel):
     messages: list[ChatMessageRead]
     reply: str
     web_debug: dict[str, object] = Field(default_factory=dict)
+
+
+class ChatGenerationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    chat_id: int
+    status: str
+    partial_response: str
+    reply: str | None = None
+    error: str | None = None
+    user_message_id: int | None = None
+    assistant_message_id: int | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class ChatGenerationStartResponse(BaseModel):
+    generation: ChatGenerationRead
 
 
 class ProjectCreateRequest(BaseModel):
@@ -280,6 +306,123 @@ def _thread_payload(store: MemoryStore, chat_id: int) -> ChatThreadRead:
     )
 
 
+def _generation_service(db, chat: Chat, llm_id: str | None) -> NeoChatService:
+    rule_result = RuleResolver().resolve(
+        RuleResolveRequest(
+            context_type="chat",
+            context_id=str(chat.id),
+            project_id=str(chat.project_id) if chat.project_id is not None else None,
+        )
+    )
+    route_name = RuleResolver.route_name(rule_result, "chat", "chat")
+    return NeoChatService(db, ollama=_llm_client(llm_id, route_name), rule_result=rule_result)
+
+
+def _run_chat_generation(profile: dict, generation_id: str) -> None:
+    """Finish a response independently of the browser connection."""
+
+    with profile_database(profile["id"], guest=bool(profile.get("is_guest"))):
+        db = SessionLocal()
+        try:
+            generation = db.get(ChatGeneration, generation_id)
+            if generation is None or generation.status not in {"queued", "running"}:
+                return
+            chat = db.get(Chat, generation.chat_id)
+            if chat is None or chat.archived:
+                generation.status = "failed"
+                generation.error = "Chat is no longer available."
+                generation.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+
+            generation.status = "running"
+            generation.started_at = datetime.now(timezone.utc)
+            db.commit()
+            service = _generation_service(db, chat, generation.llm_id)
+            partial_response = ""
+            for event in service.stream_message(
+                chat.id,
+                generation.prompt,
+                existing_user_message_id=generation.user_message_id,
+            ):
+                generation = db.get(ChatGeneration, generation_id)
+                if generation is None:
+                    return
+                if event["type"] == "chunk":
+                    partial_response += str(event.get("content") or "")
+                    generation.partial_response = partial_response
+                elif event["type"] == "replace":
+                    partial_response = str(event.get("content") or "")
+                    generation.partial_response = partial_response
+                elif event["type"] == "done":
+                    generation.status = "completed"
+                    generation.reply = str(event.get("reply") or partial_response)
+                    generation.partial_response = generation.reply
+                    generation.assistant_message_id = event.get("message_id")
+                    generation.completed_at = datetime.now(timezone.utc)
+                db.commit()
+
+            generation = db.get(ChatGeneration, generation_id)
+            if generation is not None and generation.status == "running":
+                generation.status = "failed"
+                generation.error = "The response ended without a completion event."
+                generation.completed_at = datetime.now(timezone.utc)
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            generation = db.get(ChatGeneration, generation_id)
+            if generation is not None:
+                generation.status = "failed"
+                generation.error = str(exc)
+                generation.completed_at = datetime.now(timezone.utc)
+                db.commit()
+        finally:
+            db.close()
+
+
+def _start_chat_generation(
+    request: Request,
+    store: MemoryStore,
+    chat_id: int,
+    payload: ChatSendRequest,
+    *,
+    user_message_id: int | None = None,
+) -> ChatGeneration:
+    profile = session_for(request)
+    if profile is None:
+        raise HTTPException(status_code=401, detail="Choose a profile to continue.")
+    chat = _get_required_chat(store, chat_id)
+    ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+    if payload.client_request_id:
+        existing = store.db.scalar(
+            select(ChatGeneration).where(
+                ChatGeneration.chat_id == chat.id,
+                ChatGeneration.client_request_id == payload.client_request_id,
+            )
+        )
+        if existing is not None:
+            return existing
+    generation = ChatGeneration(
+        id=str(uuid.uuid4()),
+        chat_id=chat.id,
+        prompt=payload.prompt.strip(),
+        llm_id=payload.llm_id,
+        client_request_id=payload.client_request_id,
+        user_message_id=user_message_id,
+        status="queued",
+    )
+    store.db.add(generation)
+    store.db.commit()
+    store.db.refresh(generation)
+    Thread(
+        target=_run_chat_generation,
+        args=(profile, generation.id),
+        daemon=True,
+        name=f"neo-chat-{generation.id[:8]}",
+    ).start()
+    return generation
+
+
 @router.post("/conversation", response_model=ExtractionResult)
 def ingest_conversation(
     request: ExtractionRequest,
@@ -424,6 +567,45 @@ def send_chat_message(
     )
 
 
+@router.post("/chats/{chat_id}/generations", response_model=ChatGenerationStartResponse)
+def start_chat_generation(
+    chat_id: int,
+    payload: ChatSendRequest,
+    request: Request,
+    store: StoreDependency,
+) -> ChatGenerationStartResponse:
+    if not payload.prompt.strip():
+        raise HTTPException(status_code=422, detail="Message content is required")
+    generation = _start_chat_generation(request, store, chat_id, payload)
+    return ChatGenerationStartResponse(generation=ChatGenerationRead.model_validate(generation))
+
+
+@router.get("/chats/{chat_id}/generations/active", response_model=ChatGenerationRead | None)
+def active_chat_generation(chat_id: int, store: StoreDependency) -> ChatGenerationRead | None:
+    _get_required_chat(store, chat_id)
+    ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+    generation = store.db.scalar(
+        select(ChatGeneration)
+        .where(ChatGeneration.chat_id == chat_id, ChatGeneration.status.in_(("queued", "running")))
+        .order_by(ChatGeneration.created_at.desc())
+    )
+    return ChatGenerationRead.model_validate(generation) if generation is not None else None
+
+
+@router.get("/chats/{chat_id}/generations/{generation_id}", response_model=ChatGenerationRead)
+def get_chat_generation(
+    chat_id: int,
+    generation_id: str,
+    store: StoreDependency,
+) -> ChatGenerationRead:
+    _get_required_chat(store, chat_id)
+    ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+    generation = store.db.get(ChatGeneration, generation_id)
+    if generation is None or generation.chat_id != chat_id:
+        raise HTTPException(status_code=404, detail="Chat generation not found")
+    return ChatGenerationRead.model_validate(generation)
+
+
 @router.post("/chats/{chat_id}/messages/stream")
 def stream_chat_message(
     chat_id: int,
@@ -499,6 +681,44 @@ def update_chat_message(
     store.db.commit()
     store.db.refresh(message)
     return ChatMessageRead.model_validate(message)
+
+
+@router.post(
+    "/chats/{chat_id}/messages/{message_id}/rerun",
+    response_model=ChatGenerationStartResponse,
+)
+def rerun_edited_chat_message(
+    chat_id: int,
+    message_id: int,
+    payload: ChatSendRequest,
+    request: Request,
+    store: StoreDependency,
+) -> ChatGenerationStartResponse:
+    _get_required_chat(store, chat_id)
+    message = store.db.get(ChatMessage, message_id)
+    if message is None or message.chat_id != chat_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.role != "user":
+        raise HTTPException(status_code=400, detail="Only user messages can be edited")
+    cleaned = payload.prompt.strip()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="Message content is required")
+    message.content = cleaned
+    store.db.execute(
+        delete(ChatMessage).where(
+            ChatMessage.chat_id == chat_id,
+            ChatMessage.id > message_id,
+        )
+    )
+    store.db.commit()
+    generation = _start_chat_generation(
+        request,
+        store,
+        chat_id,
+        payload,
+        user_message_id=message_id,
+    )
+    return ChatGenerationStartResponse(generation=ChatGenerationRead.model_validate(generation))
 
 
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)

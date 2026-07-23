@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import threading
+from contextvars import copy_context
 
 _CANCEL: dict[str, threading.Event] = {}
 
 
 def start(request_id: str, target) -> None:
     cancelled = _CANCEL.setdefault(request_id, threading.Event())
+    caller_context = copy_context()
 
     def run():
-        target(cancelled)
+        caller_context.run(target, cancelled)
 
     threading.Thread(target=run, daemon=True, name=f"provider-stream-{request_id[:8]}").start()
 

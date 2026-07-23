@@ -463,6 +463,14 @@ export const api = {
     }),
   streamMessage: (chatId, prompt, onEvent, llmId = null) =>
     streamRequest(`/chats/${chatId}/messages/stream`, { prompt, llm_id: llmId }, onEvent),
+  startChatGeneration: (chatId, prompt, llmId = null, clientRequestId = null) =>
+    request(`/chats/${chatId}/generations`, {
+      method: "POST",
+      body: JSON.stringify({ prompt, llm_id: llmId, client_request_id: clientRequestId }),
+    }),
+  activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
+  chatGeneration: (chatId, generationId) =>
+    request(`/chats/${chatId}/generations/${generationId}`),
   llms: () => request("/llms"),
   selectLlm: (id) =>
     request("/llms/active/select", { method: "PUT", body: JSON.stringify({ id }) }),
@@ -510,6 +518,11 @@ export const api = {
     request(`/chats/${chatId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify({ content }),
+    }),
+  rerunChatMessage: (chatId, messageId, prompt, llmId = null, clientRequestId = null) =>
+    request(`/chats/${chatId}/messages/${messageId}/rerun`, {
+      method: "POST",
+      body: JSON.stringify({ prompt, llm_id: llmId, client_request_id: clientRequestId }),
     }),
   deleteChat: (chatId) => request(`/chats/${chatId}`, { method: "DELETE" }),
   createProject: (name) =>

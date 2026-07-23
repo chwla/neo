@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import app.services.projects.store as projects_store
 import app.services.tasks.store as store
+from app.services.chat_intent import is_internal_chat_command
 from app.services.projects.types import Project
 from app.services.tasks.types import (
     Task,
@@ -203,6 +204,8 @@ class TasksService:
 
 class TaskContextService:
     def answer_for_prompt(self, prompt: str) -> str | None:
+        if not is_internal_chat_command(prompt, "tasks"):
+            return None
         lowered = prompt.lower()
         intent = _task_query_intent(lowered)
         if intent is None:

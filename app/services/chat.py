@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.repositories.memory_store import MemoryStore
 from app.services.agents.guidance import agent_run_guidance
+from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
 from app.services.coding_agent.service import CodingAgentService
 from app.services.context import ContextAssemblyService, ContextPackage
@@ -159,7 +160,10 @@ class NeoChatService:
             f"Web context:\n{web_section}"
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
-        messages.extend(LLMMessage(role=turn.role, content=turn.content) for turn in history[-12:])
+        messages.extend(
+            LLMMessage(role=turn.role, content=turn.content)
+            for turn in history[-self.settings.chat_history_turns :]
+        )
         messages.append(LLMMessage(role="user", content=prompt))
         return messages
 
@@ -205,31 +209,52 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.coding_agent.context_for_prompt(prompt)}"
-        coding_direct_reply = self.coding_agent.answer_for_prompt(prompt)
+        internal_intent = resolve_internal_chat_intent(prompt)
+        coding_direct_reply = (
+            self.coding_agent.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "coding"
+            else None
+        )
         if coding_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", coding_direct_reply)
             self.db.commit()
             self.last_web_debug = {"coding_context_loaded": True, "web_search_needed": False}
             return coding_direct_reply
-        recovery_direct_reply = self.recovery.answer_for_prompt(prompt)
+        recovery_direct_reply = (
+            self.recovery.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "recovery"
+            else None
+        )
         if recovery_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", recovery_direct_reply)
             self.db.commit()
             self.last_web_debug = {"recovery_context_loaded": True, "web_search_needed": False}
             return recovery_direct_reply
-        git_direct_reply = self.git_context.answer_for_prompt(prompt)
+        git_direct_reply = (
+            self.git_context.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "git"
+            else None
+        )
         if git_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", git_direct_reply)
             self.db.commit()
             self.last_web_debug = {"git_context_loaded": True, "web_search_needed": False}
             return git_direct_reply
-        test_direct_reply = self.test_runner.answer_for_prompt(prompt)
+        test_direct_reply = (
+            self.test_runner.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "tests"
+            else None
+        )
         if test_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", test_direct_reply)
             self.db.commit()
             self.last_web_debug = {"test_context_loaded": True, "web_search_needed": False}
             return test_direct_reply
-        task_direct_reply = self.task_context.answer_for_prompt(prompt)
+        task_direct_reply = (
+            self.task_context.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "tasks"
+            else None
+        )
         if task_direct_reply is not None:
             self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
             self.db.commit()
@@ -369,14 +394,27 @@ class NeoChatService:
         chat_id: int,
         prompt: str,
         after_reply: Callable[[str, str], None] | None = None,
+        existing_user_message_id: int | None = None,
     ) -> Iterator[dict[str, Any]]:
+        persisted_messages = self.store.list_chat_messages(chat_id)
         history = [
             ChatTurn(role=message.role, content=message.content)
-            for message in self.store.list_chat_messages(chat_id)
+            for message in persisted_messages
         ]
-        self.store.add_chat_message(chat_id, "user", prompt)
-        self.store.rename_chat_from_prompt(chat_id, prompt)
-        self.db.commit()
+        if existing_user_message_id is not None:
+            try:
+                message_index = next(
+                    index
+                    for index, message in enumerate(persisted_messages)
+                    if message.id == existing_user_message_id and message.role == "user"
+                )
+            except StopIteration as exc:
+                raise ValueError("The edited user message no longer exists.") from exc
+            history = history[:message_index]
+        else:
+            self.store.add_chat_message(chat_id, "user", prompt)
+            self.store.rename_chat_from_prompt(chat_id, prompt)
+            self.db.commit()
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -432,7 +470,12 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.coding_agent.context_for_prompt(prompt)}"
-        coding_direct_reply = self.coding_agent.answer_for_prompt(prompt)
+        internal_intent = resolve_internal_chat_intent(prompt)
+        coding_direct_reply = (
+            self.coding_agent.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "coding"
+            else None
+        )
         if coding_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", coding_direct_reply)
             self.db.commit()
@@ -451,7 +494,11 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        recovery_direct_reply = self.recovery.answer_for_prompt(prompt)
+        recovery_direct_reply = (
+            self.recovery.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "recovery"
+            else None
+        )
         if recovery_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", recovery_direct_reply)
             self.db.commit()
@@ -470,7 +517,11 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        git_direct_reply = self.git_context.answer_for_prompt(prompt)
+        git_direct_reply = (
+            self.git_context.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "git"
+            else None
+        )
         if git_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", git_direct_reply)
             self.db.commit()
@@ -489,7 +540,11 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        test_direct_reply = self.test_runner.answer_for_prompt(prompt)
+        test_direct_reply = (
+            self.test_runner.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "tests"
+            else None
+        )
         if test_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", test_direct_reply)
             self.db.commit()
@@ -508,7 +563,11 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        task_direct_reply = self.task_context.answer_for_prompt(prompt)
+        task_direct_reply = (
+            self.task_context.answer_for_prompt(prompt)
+            if internal_intent is not None and internal_intent.feature == "tasks"
+            else None
+        )
         if task_direct_reply is not None:
             assistant = self.store.add_chat_message(chat_id, "assistant", task_direct_reply)
             self.db.commit()
@@ -1305,7 +1364,7 @@ class NeoChatService:
             r"\b(summarize|roadmap|what should|recommend|suggest|build next)\b", prompt.lower()
         ):
             return self.settings.chat_num_predict
-        return min(self.settings.chat_num_predict, 128)
+        return min(self.settings.chat_num_predict, 96)
 
     def extract_after_turn(self, user_prompt: str, assistant_reply: str) -> list[int]:
         if not self.settings.extraction_after_turn_enabled:

@@ -2669,6 +2669,21 @@ textarea:disabled {
   text-align: left;
 }
 
+.notes-item-card {
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.notes-item-card:has(.notes-item.active),
+.notes-item-card.expanded {
+  border-color: var(--neo-line);
+  background: rgba(57,255,20,.04);
+}
+
+.notes-item-card .notes-item {
+  border: 0;
+}
+
 .notes-item:hover,
 .notes-item.active {
   border-color: var(--neo-line);
@@ -2724,6 +2739,31 @@ textarea:disabled {
 .notes-item-time {
   color: var(--neo-muted);
   font-size: 11px;
+}
+
+.notes-item-expand {
+  margin: 0 10px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--neo-green);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.notes-item-expanded-content {
+  border-top: 1px solid rgba(57,255,20,.16);
+  color: var(--neo-text);
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notes-item-expanded-content p {
+  color: var(--neo-muted);
+  margin: 0 0 8px;
 }
 
 .notes-editor-pane {
@@ -3961,4 +4001,513 @@ body,
     flex-direction: column;
     gap: 5px;
   }
+}
+
+/* --------------------------------------------------------------------------
+   NEO // PHOSPHOR WORKSTATION
+   A deliberate final layer: precision instrument panels, green-phosphor CRT
+   light, and dense but calm information hierarchy.                         */
+:root {
+  --phosphor: #79ff61;
+  --phosphor-hot: #bdffb0;
+  --phosphor-dim: #2c8c36;
+  --ink: #030603;
+  --void: #010201;
+  --glass: rgba(7, 18, 8, .76);
+  --line-soft: rgba(121, 255, 97, .18);
+  --line-bright: rgba(121, 255, 97, .52);
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  font-family: var(--sans) !important;
+  letter-spacing: -.012em;
+  background: var(--void) !important;
+}
+
+#root {
+  isolation: isolate;
+}
+
+.neo-app {
+  position: relative;
+  background-color: var(--void) !important;
+  background-image:
+    radial-gradient(circle at 70% -20%, rgba(96, 255, 85, .105), transparent 34%),
+    linear-gradient(90deg, rgba(117,255,97,.028) 1px, transparent 1px),
+    linear-gradient(rgba(117,255,97,.022) 1px, transparent 1px) !important;
+  background-size: auto, 36px 36px, 36px 36px !important;
+}
+
+.neo-app::before,
+.neo-app::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 90;
+}
+
+.neo-app::before {
+  opacity: .16;
+  background-image: repeating-linear-gradient(0deg, rgba(123,255,97,.038) 0, rgba(123,255,97,.038) 1px, transparent 1px, transparent 4px) !important;
+  mix-blend-mode: screen;
+}
+
+.neo-app::after {
+  box-shadow: inset 0 0 160px rgba(0,0,0,.82), inset 0 0 20px rgba(121,255,97,.07);
+}
+
+.neo-topbar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 76;
+  height: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line-soft) !important;
+  background-color: rgba(2, 6, 3, .9) !important;
+  backdrop-filter: blur(18px);
+  padding: 0 30px;
+}
+
+.neo-topbar::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: min(360px, 38vw);
+  height: 1px;
+  background: var(--phosphor);
+  box-shadow: 0 0 16px var(--phosphor);
+}
+
+.neo-wordmark,
+.neo-topbar-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  color: var(--phosphor) !important;
+}
+
+.neo-wordmark {
+  font-size: 18px;
+  font-weight: 850;
+  letter-spacing: .17em;
+}
+
+.neo-wordmark-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line-bright) !important;
+  border-radius: 3px;
+  color: var(--void) !important;
+  background: var(--phosphor) !important;
+  box-shadow: 0 0 18px rgba(121,255,97,.25) !important;
+  letter-spacing: 0;
+}
+
+.neo-wordmark small {
+  margin-left: 5px;
+  color: rgba(200,255,192,.47) !important;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .13em;
+}
+
+.neo-topbar-status {
+  margin-right: 205px;
+  color: rgba(200,255,192,.62) !important;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .1em;
+}
+
+.status-lamp {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--phosphor) !important;
+  box-shadow: 0 0 12px var(--phosphor) !important;
+  animation: neo-pulse 2.5s ease-in-out infinite;
+}
+
+.topbar-divider { color: var(--phosphor-dim) !important; }
+
+.profile-session-button {
+  top: 14px !important;
+  right: 30px !important;
+  z-index: 78 !important;
+  min-height: 38px;
+  border-radius: 4px !important;
+  border-color: var(--line-soft) !important;
+  background: rgba(10, 28, 12, .9) !important;
+  box-shadow: inset 0 0 0 1px rgba(121,255,97,.04) !important;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .055em;
+}
+
+.profile-session-button::after { content: "↗"; color: var(--phosphor) !important; font-size: 13px; }
+.profile-session-button:hover { border-color: var(--phosphor) !important; transform: translateY(-1px); }
+.profile-session-action { margin-left: 4px; color: var(--phosphor); font-weight: 800; text-transform: uppercase; }
+
+.neo-sidebar {
+  top: 66px !important;
+  width: 280px !important;
+  padding: 31px 18px 17px !important;
+  border-right-color: var(--line-soft) !important;
+  background-color: rgba(3, 9, 4, .92) !important;
+  background-image: linear-gradient(180deg, rgba(121,255,97,.045), transparent 25%) !important;
+  box-shadow: 18px 0 46px rgba(0,0,0,.28) !important;
+}
+
+.neo-sidebar::before {
+  content: "WORKSPACE / 01";
+  display: block;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 0 0 13px;
+  color: rgba(200,255,192,.45);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: .17em;
+}
+
+.sidebar-title {
+  margin: 17px 0 19px !important;
+  color: var(--phosphor) !important;
+  font-family: var(--mono);
+  font-size: 19px !important;
+  font-weight: 800 !important;
+  letter-spacing: .11em;
+  text-shadow: 0 0 15px rgba(121,255,97,.35) !important;
+}
+
+.sidebar-title::after { content: "_"; animation: neo-caret 1.05s steps(1) infinite; }
+.sidebar-section { margin: 22px 0 9px !important; color: rgba(200,255,192,.48) !important; font: 700 10px/1.2 var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+.sidebar-caption { color: rgba(200,255,192,.36) !important; font-size: 12px !important; }
+.sidebar-section-toggle { border-radius: 2px !important; font-family: var(--mono); }
+
+.project-folder,
+.chat-item,
+.project-chat-link {
+  border-left: 1px solid transparent !important;
+  border-radius: 2px !important;
+  background: transparent !important;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease !important;
+}
+
+.project-folder:hover,
+.chat-item:hover,
+.project-chat-link:hover { background: rgba(121,255,97,.055) !important; transform: translateX(2px); }
+.project-chat-link.active,
+.chat-item.active { border-left-color: var(--phosphor) !important; background: rgba(121,255,97,.10) !important; box-shadow: inset 12px 0 20px rgba(121,255,97,.035) !important; }
+.chat-item-title, .project-folder-title { font-size: 13px !important; }
+
+.sidebar-form,
+.sidebar-settings-bar { background: rgba(121,255,97,.025) !important; border-radius: 3px !important; }
+.sidebar-settings-bar { background-image: linear-gradient(180deg, transparent, rgba(3,9,4,.95) 40%) !important; }
+
+.sidebar-toggle {
+  top: 16px !important;
+  left: 30px !important;
+  z-index: 78 !important;
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 3px !important;
+  background: rgba(6,19,7,.9) !important;
+}
+
+.neo-app.sidebar-collapsed .sidebar-toggle { left: 17px !important; }
+.neo-main { margin-left: 280px !important; padding: 0 0 128px !important; }
+.neo-app.sidebar-collapsed .neo-main { margin-left: 0 !important; }
+
+.neo-shell {
+  width: min(980px, calc(100% - 58px)) !important;
+  padding-top: 148px !important;
+}
+
+.neo-empty-state {
+  position: relative;
+  overflow: hidden;
+  min-height: 350px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border: 1px solid var(--line-soft) !important;
+  border-radius: 5px !important;
+  background-color: rgba(4, 12, 5, .62) !important;
+  background-image: radial-gradient(circle at 75% 30%, rgba(121,255,97,.12), transparent 22%) !important;
+  padding: clamp(28px, 6vw, 70px) !important;
+  box-shadow: 0 24px 80px rgba(0,0,0,.25), inset 0 1px rgba(121,255,97,.06) !important;
+}
+
+.neo-empty-state::before { content: "NEO:// A PERSONAL COMPUTING ENVIRONMENT"; position: absolute; top: 18px; left: 22px; color: rgba(200,255,192,.38); font: 700 10px var(--mono); letter-spacing: .12em; }
+.neo-empty-state::after { content: "READY_"; position: absolute; right: 22px; bottom: 18px; color: var(--phosphor); font: 700 11px var(--mono); letter-spacing: .16em; animation: neo-caret 1.05s steps(1) infinite; }
+.neo-title { color: var(--phosphor) !important; font-family: var(--mono); font-size: clamp(46px, 8vw, 84px) !important; font-weight: 800 !important; letter-spacing: -.09em !important; text-shadow: 0 0 28px rgba(121,255,97,.38) !important; }
+.neo-subtitle { max-width: 430px; color: rgba(229,255,225,.62) !important; font-size: 16px !important; line-height: 1.65; }
+.neo-status { margin-top: 24px !important; border: 0 !important; background: transparent !important; padding: 0 !important; font: 12px var(--mono); color: rgba(220,255,215,.52) !important; }
+.neo-pill { border-radius: 2px !important; border-color: var(--line-bright) !important; color: var(--phosphor) !important; font-family: var(--mono); letter-spacing: .09em; }
+
+.neo-chat-message { margin: 0 0 22px !important; }
+.message-bubble {
+  position: relative;
+  max-width: min(780px, 90%) !important;
+  border: 1px solid var(--line-soft) !important;
+  border-radius: 4px !important;
+  background: rgba(5, 15, 6, .74) !important;
+  box-shadow: 0 14px 34px rgba(0,0,0,.19), inset 0 1px rgba(121,255,97,.04) !important;
+}
+
+.neo-chat-message.assistant .message-bubble::before,
+.neo-chat-message.user .message-bubble::before { position: absolute; top: -9px; left: 14px; padding: 0 5px; background: var(--void) !important; font: 700 9px var(--mono); letter-spacing: .12em; }
+.neo-chat-message.assistant .message-bubble::before { content: "NEO"; color: var(--phosphor) !important; }
+.neo-chat-message.user .message-bubble::before { content: "OPERATOR"; color: rgba(220,255,215,.57) !important; }
+.neo-chat-message.user .message-bubble { border-color: rgba(121,255,97,.39) !important; background: rgba(13, 32, 14, .78) !important; }
+.chat-content { color: rgba(244,255,241,.91) !important; line-height: 1.72 !important; }
+.message-meta { color: rgba(200,255,192,.35) !important; font: 10px var(--mono); }
+.message-actions button { border-radius: 2px !important; font: 10px var(--mono); letter-spacing: .04em; }
+.thinking-panel { border-left: 2px solid var(--phosphor) !important; border-radius: 0 !important; background: rgba(121,255,97,.045) !important; font-family: var(--mono); }
+
+.chat-input-wrap {
+  left: 280px !important;
+  bottom: 0 !important;
+  padding: 0 29px 24px !important;
+  background: linear-gradient(0deg, rgba(1,2,1,.98) 50%, transparent) !important;
+}
+
+.sidebar-collapsed .chat-input-wrap { left: 0 !important; }
+.chat-input-shell {
+  width: min(980px, calc(100% - 58px)) !important;
+  border: 1px solid var(--line-bright) !important;
+  border-radius: 5px !important;
+  background: rgba(4, 13, 5, .94) !important;
+  box-shadow: 0 18px 48px rgba(0,0,0,.4), 0 0 28px rgba(121,255,97,.055), inset 0 1px rgba(121,255,97,.08) !important;
+}
+
+.chat-input-form textarea { font-size: 15px !important; line-height: 1.55 !important; }
+.chat-mode-row { border-bottom-color: var(--line-soft) !important; }
+.chat-mode-switch { border-radius: 3px !important; font: 700 10px var(--mono); letter-spacing: .07em; }
+.send-button, .agent-run-button { border-radius: 3px !important; background: var(--phosphor) !important; color: #031002 !important; font-family: var(--mono); font-weight: 900; letter-spacing: .08em; box-shadow: 0 0 22px rgba(121,255,97,.2) !important; }
+.send-button:hover:not(:disabled), .agent-run-button:hover:not(:disabled) { background: var(--phosphor-hot) !important; color: #010801 !important; box-shadow: 0 0 30px rgba(121,255,97,.4) !important; }
+.chat-input-disclaimer { color: rgba(200,255,192,.32) !important; font: 9px var(--mono); letter-spacing: .06em; }
+
+.neo-button,
+.settings-link,
+.settings-actions button {
+  border-radius: 3px !important;
+  font-family: var(--mono) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: .045em;
+}
+
+.neo-button.primary,
+.settings-link:hover { border-color: var(--phosphor) !important; background: rgba(121,255,97,.12) !important; }
+
+.modal-backdrop { background: rgba(0,3,1,.72) !important; backdrop-filter: blur(8px) !important; }
+.neo-dialog,
+.settings-dialog,
+.llm-settings-dialog {
+  border: 1px solid var(--line-bright) !important;
+  border-radius: 5px !important;
+  background: rgba(3, 10, 4, .97) !important;
+  box-shadow: 0 30px 100px rgba(0,0,0,.65), 0 0 52px rgba(121,255,97,.09), inset 0 1px rgba(121,255,97,.08) !important;
+}
+
+.dialog-title-row,
+.modal-header { border-bottom: 1px solid var(--line-soft) !important; padding-bottom: 15px !important; }
+.dialog-title-row h2, .modal-header h2 { color: var(--phosphor) !important; font-family: var(--mono); font-size: 16px !important; letter-spacing: .08em; }
+.dialog-title-row h2::before { content: "// "; color: var(--phosphor-dim) !important; }
+.settings-kicker { font-family: var(--mono); letter-spacing: .13em; color: var(--phosphor) !important; }
+.settings-section,
+.memory-card,
+.provider-card,
+.task-card,
+.agent-run-card,
+.bundle-detail { border-radius: 3px !important; border-color: var(--line-soft) !important; background: rgba(121,255,97,.025) !important; }
+.settings-link { position: relative; border-radius: 3px !important; background: rgba(121,255,97,.025) !important; }
+.settings-link::before { content: "↗"; color: var(--phosphor) !important; margin-right: 9px; }
+.settings-link-arrow { margin-left: auto; }
+
+.profile-picker {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--void) !important;
+  background-image: radial-gradient(circle at 50% 4%, rgba(121,255,97,.17), transparent 36%), linear-gradient(90deg, rgba(121,255,97,.035) 1px, transparent 1px), linear-gradient(rgba(121,255,97,.025) 1px, transparent 1px) !important;
+  background-size: auto, 42px 42px, 42px 42px !important;
+}
+
+.profile-picker::before { content: "NEO OPERATING SYSTEM // PRIVATE LOCAL NODE"; position: fixed; top: 25px; left: 30px; color: rgba(200,255,192,.45); font: 700 10px var(--mono); letter-spacing: .14em; }
+.profile-picker::after { content: "V 01.0 · NO NETWORK REQUIRED"; position: fixed; right: 30px; bottom: 25px; color: rgba(200,255,192,.35); font: 700 10px var(--mono); letter-spacing: .09em; }
+.profile-picker-card { position: relative; border-color: var(--line-bright) !important; border-radius: 5px !important; background: rgba(3, 11, 4, .9) !important; box-shadow: 0 35px 100px rgba(0,0,0,.55), 0 0 70px rgba(121,255,97,.08), inset 0 1px rgba(121,255,97,.08) !important; }
+.profile-picker-card::before { content: "IDENTITY SELECTOR"; position: absolute; top: 16px; right: 20px; color: rgba(200,255,192,.35); font: 700 9px var(--mono); letter-spacing: .14em; }
+.profile-kicker { color: var(--phosphor) !important; font-family: var(--mono); letter-spacing: .16em; }
+.profile-picker-card h1 { color: var(--phosphor) !important; font-family: var(--mono); font-size: clamp(34px, 5vw, 54px) !important; letter-spacing: -.06em; text-shadow: 0 0 24px rgba(121,255,97,.28) !important; }
+.profile-grid { gap: 12px !important; }
+.profile-card { min-height: 205px !important; border-radius: 3px !important; background: rgba(121,255,97,.026) !important; font-family: var(--mono); font-size: 13px; letter-spacing: .04em; }
+.profile-card:hover, .profile-card:focus-visible { background: rgba(121,255,97,.11) !important; box-shadow: inset 0 0 0 1px var(--phosphor), 0 0 28px rgba(121,255,97,.13) !important; transform: translateY(-3px); }
+.profile-avatar { border-radius: 3px !important; color: var(--phosphor) !important; background: rgba(121,255,97,.07) !important; }
+.profile-add-icon, .profile-guest-icon { border-radius: 3px !important; }
+
+@keyframes neo-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+@keyframes neo-caret { 0%, 46% { opacity: 1; } 47%, 100% { opacity: 0; } }
+
+@media (max-width: 900px) {
+  .neo-topbar-status { display: none; }
+  .neo-topbar { padding: 0 18px; }
+  .neo-sidebar { width: 252px !important; }
+  .neo-main { margin-left: 252px !important; }
+  .chat-input-wrap { left: 252px !important; }
+}
+
+@media (max-width: 700px) {
+  .neo-topbar { height: 56px; }
+  .neo-wordmark small { display: none; }
+  .profile-session-button { top: 10px !important; right: 13px !important; max-width: 138px !important; }
+  .neo-sidebar { top: 56px !important; width: min(282px, 88vw) !important; }
+  .neo-main, .neo-app.sidebar-collapsed .neo-main { margin-left: 0 !important; }
+  .neo-shell { width: min(100% - 26px, 980px) !important; padding-top: 92px !important; }
+  .neo-empty-state { min-height: 310px; padding: 43px 24px !important; }
+  .chat-input-wrap, .sidebar-collapsed .chat-input-wrap { left: 0 !important; padding: 0 13px 13px !important; }
+  .chat-input-shell { width: 100% !important; }
+  .profile-picker::before, .profile-picker::after { display: none; }
+}
+
+/* Agent mode is deliberately a focused command deck. The full coding workflow
+   is available on demand in its own workbench rather than competing with the
+   primary objective composer. */
+.neo-main.agent-chat-mode { padding-bottom: 250px !important; }
+.agent-chat-mode .neo-status { display: none !important; }
+.agent-chat-mode .neo-empty-state { min-height: 265px !important; }
+
+.agent-mode .chat-input-wrap {
+  background: linear-gradient(0deg, rgba(1,2,1,.99) 48%, rgba(1,2,1,.85) 78%, transparent) !important;
+}
+
+.agent-mode .chat-input-shell {
+  padding: 12px !important;
+  border-color: rgba(121,255,97,.62) !important;
+  background: rgba(3, 11, 4, .97) !important;
+}
+
+.agent-mode .chat-mode-row {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  align-items: stretch !important;
+  gap: 8px !important;
+  margin-bottom: 10px !important;
+}
+
+.agent-mode .chat-mode-switch {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px !important;
+}
+
+.agent-mode .chat-mode-switch::after {
+  content: "TASK AGENT";
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-soft);
+  color: rgba(200,255,192,.40) !important;
+  font: 700 9px var(--mono);
+  letter-spacing: .13em;
+}
+
+.agent-mode .agent-context-pickers {
+  grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr) minmax(0, 1fr) !important;
+  width: auto !important;
+  gap: 7px !important;
+}
+
+.agent-mode .agent-task-picker {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px !important;
+  min-width: 0;
+  color: rgba(200,255,192,.47) !important;
+  font: 700 9px var(--mono) !important;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.agent-mode .agent-task-picker select {
+  min-height: 34px;
+  padding: 5px 25px 5px 8px !important;
+  border-radius: 3px !important;
+  font: 12px var(--sans) !important;
+  text-transform: none;
+}
+
+.agent-mode .chat-input-form { gap: 8px !important; }
+.agent-mode .chat-input-form textarea {
+  --composer-min-height: 54px;
+  min-height: 54px !important;
+  border-radius: 3px !important;
+  padding: 15px 14px !important;
+  color: var(--phosphor-hot) !important;
+  background: rgba(5, 17, 6, .95) !important;
+}
+
+.agent-mode .agent-submit-actions { gap: 7px !important; }
+.agent-mode .agent-submit-actions > button { min-width: 112px; height: 54px !important; border-radius: 3px !important; }
+.agent-mode .agent-run-button { min-width: 132px !important; }
+.agent-mode-hint { margin: 7px 0 0 !important; padding-left: 1px; color: rgba(200,255,192,.42) !important; font: 10px var(--mono); }
+
+.agent-workbench-trigger {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  margin-top: 9px;
+  border: 0 !important;
+  background: transparent !important;
+  color: rgba(225,255,220,.74) !important;
+  padding: 2px 0 !important;
+  font: 11px var(--mono) !important;
+  letter-spacing: .015em;
+}
+
+.agent-workbench-trigger span {
+  border: 1px solid var(--line-bright) !important;
+  color: var(--phosphor) !important;
+  padding: 3px 5px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .09em;
+}
+
+.agent-workbench-trigger small {
+  color: rgba(200,255,192,.34) !important;
+  font: 9px var(--mono);
+}
+
+.agent-workbench-trigger:hover { color: var(--phosphor) !important; }
+.agent-workbench-trigger:hover span { border-color: var(--phosphor) !important; box-shadow: 0 0 12px rgba(121,255,97,.25) !important; }
+
+.coding-workbench-modal { width: min(1180px, calc(100vw - 48px)) !important; max-height: min(840px, calc(100vh - 48px)); overflow: auto; }
+.chat-input-wrap:has(.coding-workbench-modal) { z-index: 100 !important; }
+.coding-workbench-modal .coding-agent { margin-top: 0 !important; padding: 0 !important; border: 0 !important; background: transparent !important; }
+.coding-workbench-modal .coding-agent-title { padding-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
+.coding-workbench-modal .coding-agent-form { margin-top: 18px; }
+.coding-workbench-modal .coding-agent-selectors { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+@media (max-width: 800px) {
+  .neo-main.agent-chat-mode { padding-bottom: 350px !important; }
+  .agent-mode .chat-mode-row { grid-template-columns: 1fr !important; gap: 9px !important; }
+  .agent-mode .agent-context-pickers { grid-template-columns: 1fr !important; }
+  .agent-mode .agent-task-picker { grid-template-columns: 64px minmax(0, 1fr); }
+  .agent-mode .agent-submit-actions { flex-direction: row !important; }
+  .agent-mode .agent-submit-actions > button { min-width: 0; flex: 1; }
+  .agent-workbench-trigger small { display: none; }
+  .coding-workbench-modal { width: min(100% - 20px, 1180px) !important; }
+  .coding-workbench-modal .coding-agent-selectors { grid-template-columns: 1fr; }
 }

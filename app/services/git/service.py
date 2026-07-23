@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.services.agents import store as agent_store
+from app.services.chat_intent import is_internal_chat_command
 from app.services.code_index import store as index_store
 from app.services.files import store as file_store
 from app.services.files.extractors import extract_text
@@ -537,7 +538,7 @@ class GitContextService:
         return "Controlled Git context (read-only; never commit or restore from chat):\n" + text
 
     def answer_for_prompt(self, prompt: str) -> str | None:
-        if not GIT_INTENT.search(prompt):
+        if not is_internal_chat_command(prompt, "git"):
             return None
         checkpoints, _ = store.list_checkpoints(limit=5)
         if not checkpoints:

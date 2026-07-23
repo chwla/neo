@@ -175,6 +175,7 @@ class ProviderRuntimeService:
                 client = build_client(provider, model, num_predict=max_tokens)
                 if stream:
                     partial = ""
+                    stream_usage: dict[str, int | None] = {}
                     store.update_request(request["id"], status="streaming")
                     for event in client.chat_stream(messages, num_predict=max_tokens):
                         if cancelled and cancelled.is_set():
@@ -192,9 +193,15 @@ class ProviderRuntimeService:
                         if event.get("type") == "chunk":
                             partial += event.get("content", "")
                             self._partial(request["id"], partial)
+                        elif event.get("type") == "done":
+                            stream_usage = {
+                                key: event.get(key)
+                                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                                if event.get(key) is not None
+                            }
                     result_content, usage = (
                         partial,
-                        {"total_tokens": estimates["total_tokens_estimate"]},
+                        stream_usage or {"total_tokens": estimates["total_tokens_estimate"]},
                     )
                 else:
                     result = client.chat_with_metadata(messages, num_predict=max_tokens)

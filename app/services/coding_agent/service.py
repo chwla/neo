@@ -3,12 +3,13 @@ from __future__ import annotations
 import re
 
 import app.services.coding_agent.store as store
+from app.services.chat_intent import is_internal_chat_command
 from app.services.coding_agent.orchestrator import CodingAgentOrchestrator
 from app.services.coding_agent.types import CodingRunCreate
 from app.services.command_sandbox import CommandSandboxService
 from app.services.command_sandbox.types import CommandRequest
 
-CODING_INTENT = re.compile(
+CODING_CONTEXT_INTENT = re.compile(
     r"\b(coding run|coding agent|patch applied|selected files|checkpoint created|"
     r"tests pass|tests fail)\b",
     re.I,
@@ -57,7 +58,7 @@ class CodingAgentService:
         return proposal
 
     def context_for_prompt(self, prompt: str) -> str:
-        if not CODING_INTENT.search(prompt):
+        if not CODING_CONTEXT_INTENT.search(prompt):
             return ""
         runs, _ = store.list_runs(limit=5)
         if not runs:
@@ -68,7 +69,7 @@ class CodingAgentService:
         )
 
     def answer_for_prompt(self, prompt: str) -> str | None:
-        if not CODING_INTENT.search(prompt):
+        if not is_internal_chat_command(prompt, "coding"):
             return None
         runs, _ = store.list_runs(limit=1)
         if not runs:

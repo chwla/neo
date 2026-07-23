@@ -83,9 +83,12 @@ class ProviderRuntimeClient(BaseLLMClient):
                 yield {"type": "chunk", "content": partial[seen:]}
                 seen = len(partial)
         if session["status"] == "completed":
+            usage = session.get("provider_usage") or {}
             yield {
                 "type": "done",
-                "total_tokens": (session.get("provider_usage") or {}).get("total_tokens"),
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
                 "duration_ms": session.get("latency_ms"),
             }
         else:

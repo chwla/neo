@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { API_BASE, api } from "./api.js";
+import { api } from "./api.js";
 
 function InitialsAvatar({ profile, large = false }) {
   if (profile.avatar_data) {
@@ -102,14 +102,4 @@ export default function ProfilePicker({ onSignedIn }) {
       </form>}
     </section>
   </main>;
-}
-
-export function GuestCleanup({ profile }) {
-  useEffect(() => {
-    if (!profile?.is_guest) return undefined;
-    const endGuest = () => navigator.sendBeacon(`${API_BASE}/account-profiles/session/end`, "");
-    window.addEventListener("pagehide", endGuest);
-    return () => window.removeEventListener("pagehide", endGuest);
-  }, [profile]);
-  return null;
 }

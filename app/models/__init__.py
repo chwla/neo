@@ -1,6 +1,6 @@
 from app.db.base import Base
 from app.models.associations import event_project_links, memory_project_links
-from app.models.chat import Chat, ChatMessage
+from app.models.chat import Chat, ChatGeneration, ChatMessage
 from app.models.enums import (
     CandidateStatus,
     CandidateType,
@@ -24,6 +24,7 @@ __all__ = [
     "CandidateStatus",
     "CandidateType",
     "Chat",
+    "ChatGeneration",
     "ChatMessage",
     "Event",
     "Goal",

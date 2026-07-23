@@ -24,7 +24,7 @@ import ProviderRuntime from "./ProviderRuntime.jsx";
 import EvaluationHarness from "./EvaluationHarness.jsx";
 import WorkspaceOrchestration from "./WorkspaceOrchestration.jsx";
 import Continuity from "./Continuity.jsx";
-import ProfilePicker, { GuestCleanup } from "./ProfilePicker.jsx";
+import ProfilePicker from "./ProfilePicker.jsx";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
@@ -71,6 +71,13 @@ function errorMessage(error) {
   return error.message || String(error);
 }
 
+function clientRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function formatAgentStatus(value) {
   if (value === "waiting_approval") return "Waiting for approval";
   return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -82,8 +89,15 @@ function formatAgentTime(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
+function parseNeoTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return Number.NaN;
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`;
+  return Date.parse(normalized);
+}
+
 function createdTime(record) {
-  const parsed = Date.parse(record.created_at ?? "");
+  const parsed = parseNeoTimestamp(record.created_at);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
@@ -597,6 +611,7 @@ function ChatComposer({
   onRefreshAgentRun,
 }) {
   const textareaRef = useRef(null);
+  const [showCodingWorkbench, setShowCodingWorkbench] = useState(false);
 
   const resizeComposer = useCallback(() => {
     const textarea = textareaRef.current;
@@ -714,6 +729,17 @@ function ChatComposer({
           <div className="agent-mode-hint">Select an existing task or enter an objective.</div>
         ) : null}
         {mode === "agent" && agentMessage ? <div className="agent-mode-message">{agentMessage}</div> : null}
+        {mode === "agent" ? (
+          <button
+            className="agent-workbench-trigger"
+            type="button"
+            onClick={() => setShowCodingWorkbench(true)}
+          >
+            <span>ADVANCED</span>
+            Open coding workbench
+            <small>repository, patch, test &amp; checkpoint controls</small>
+          </button>
+        ) : null}
         {mode === "agent" && proposedPlan ? (
           <div className="agent-plan-preview">
             <div className="agent-plan-preview-head">
@@ -767,13 +793,22 @@ function ChatComposer({
             ) : null}
           </div>
         ) : null}
-        {mode === "agent" ? <CodingAgent initialTaskId={selectedTaskId} initialProjectId={selectedProjectId} compact /> : null}
       </div>
       <div className="chat-input-disclaimer">
         {mode === "agent"
           ? "Agent runs are task-linked and audited. No chat message is sent in Agent mode."
           : "Neo is an AI and it can make mistakes. Please double-check responses."}
       </div>
+      {mode === "agent" && showCodingWorkbench ? (
+        <Modal
+          title="Coding Workbench"
+          onClose={() => setShowCodingWorkbench(false)}
+          wide
+          className="coding-workbench-modal"
+        >
+          <CodingAgent initialTaskId={selectedTaskId} initialProjectId={selectedProjectId} />
+        </Modal>
+      ) : null}
     </div>
   );
 }
@@ -1962,6 +1997,7 @@ function NeoApp({ profile, onSwitchProfile }) {
   const [sending, setSending] = useState(false);
   const [streamingAssistant, setStreamingAssistant] = useState(null);
   const [generationChatId, setGenerationChatId] = useState(null);
+  const [activeGenerationId, setActiveGenerationId] = useState(null);
   const [generationStartedAt, setGenerationStartedAt] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -2061,6 +2097,19 @@ function NeoApp({ profile, onSwitchProfile }) {
     if (options.history !== "none") {
       updatePermalink(chatPermalink(thread.chat.id), { replace: options.history === "replace" });
     }
+    const generation = await api.activeChatGeneration(thread.chat.id).catch(() => null);
+    if (generation) {
+      setActiveGenerationId(generation.id);
+      setGenerationChatId(thread.chat.id);
+      setSending(true);
+      setGenerationStartedAt(parseNeoTimestamp(generation.started_at || generation.created_at) || Date.now());
+      setStreamingAssistant({
+        rawContent: generation.partial_response || "",
+        ...splitGeneratedText(generation.partial_response || ""),
+      });
+    } else {
+      setActiveGenerationId(null);
+    }
     return thread;
   }, []);
 
@@ -2079,6 +2128,60 @@ function NeoApp({ profile, onSwitchProfile }) {
     },
     [refreshSidebar],
   );
+
+  useEffect(() => {
+    if (!activeGenerationId || !activeChat?.id) {
+      return undefined;
+    }
+    let cancelled = false;
+    let timerId = null;
+
+    async function pollGeneration() {
+      try {
+        const generation = await api.chatGeneration(activeChat.id, activeGenerationId);
+        if (cancelled) return;
+        const rawContent = generation.partial_response || "";
+        setStreamingAssistant({ rawContent, ...splitGeneratedText(rawContent) });
+        if (generation.status === "completed") {
+          await loadChat(activeChat.id, { history: "none" });
+          if (!cancelled) {
+            setActiveGenerationId(null);
+            setSending(false);
+            setGenerationStartedAt(null);
+            setGenerationChatId(null);
+            setStreamingAssistant(null);
+            await refreshSidebar();
+          }
+          return;
+        }
+        if (generation.status === "failed") {
+          setStatusError(generation.error || "Neo could not finish this response.");
+          await loadChat(activeChat.id, { history: "none" });
+          if (!cancelled) {
+            setActiveGenerationId(null);
+            setSending(false);
+            setGenerationStartedAt(null);
+            setGenerationChatId(null);
+            setStreamingAssistant(null);
+            await refreshSidebar();
+          }
+          return;
+        }
+        timerId = window.setTimeout(pollGeneration, 250);
+      } catch (error) {
+        if (!cancelled) {
+          setStatusError(`Could not check the response: ${errorMessage(error)}`);
+          timerId = window.setTimeout(pollGeneration, 1000);
+        }
+      }
+    }
+
+    pollGeneration();
+    return () => {
+      cancelled = true;
+      if (timerId) window.clearTimeout(timerId);
+    };
+  }, [activeChat?.id, activeGenerationId, loadChat, refreshSidebar]);
 
   useEffect(() => {
     if (bootstrapped.current) {
@@ -2113,7 +2216,11 @@ function NeoApp({ profile, onSwitchProfile }) {
         }
 
         if (permalink?.type === "chat") {
-          await loadChat(permalink.id, { history: "replace" });
+          try {
+            await loadChat(permalink.id, { history: "replace" });
+          } catch {
+            await createActiveChat(null, { history: "replace" });
+          }
           clearSidebarQueryActions();
           return;
         }
@@ -2363,11 +2470,28 @@ function NeoApp({ profile, onSwitchProfile }) {
     }
     setStatusError("");
     try {
-      const updated = await api.updateChatMessage(activeChat.id, message.id, cleaned);
-      setMessages((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      const result = await api.rerunChatMessage(
+        activeChat.id,
+        message.id,
+        cleaned,
+        selectedLlmId || null,
+        clientRequestId(),
+      );
+      setMessages((current) => {
+        const index = current.findIndex((item) => item.id === message.id);
+        if (index === -1) return current;
+        return current.slice(0, index + 1).map((item) =>
+          item.id === message.id ? { ...item, content: cleaned } : item,
+        );
+      });
       setEditingMessageId(null);
       setEditingValue("");
-      await refreshSidebar();
+      setSending(true);
+      setGenerationChatId(activeChat.id);
+      setActiveGenerationId(result.generation.id);
+      setGenerationStartedAt(parseNeoTimestamp(result.generation.created_at) || Date.now());
+      setElapsedMs(0);
+      setStreamingAssistant({ rawContent: "", content: "", thinking: "" });
     } catch (error) {
       setStatusError(errorMessage(error));
     }
@@ -2396,39 +2520,25 @@ function NeoApp({ profile, onSwitchProfile }) {
       created_at: new Date().toISOString(),
     };
     setMessages((current) => [...current, optimisticMessage]);
-    let requestChatId = activeChat?.id ?? null;
 
     try {
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
-      requestChatId = chat.id;
       setGenerationChatId(chat.id);
-      let rawContent = "";
-      await api.streamMessage(chat.id, prompt, (event) => {
-        if (event.type === "chunk") {
-          rawContent += event.content;
-          if (visibleChatIdRef.current === chat.id) {
-            setStreamingAssistant({
-              rawContent,
-              ...splitGeneratedText(rawContent),
-            });
-          }
-        }
-      }, selectedLlmId || null);
-      if (visibleChatIdRef.current === chat.id) {
-        await loadChat(chat.id, { history: "none" });
-      }
-      await refreshSidebar();
+      const result = await api.startChatGeneration(
+        chat.id,
+        prompt,
+        selectedLlmId || null,
+        clientRequestId(),
+      );
+      setActiveGenerationId(result.generation.id);
     } catch (error) {
-      if (visibleChatIdRef.current === requestChatId) {
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === pendingId ? { ...message, failed: true } : message,
-          ),
-        );
-        setComposerValue(prompt);
-        setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
-      }
-    } finally {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === pendingId ? { ...message, failed: true } : message,
+        ),
+      );
+      setComposerValue(prompt);
+      setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
       setSending(false);
       setGenerationStartedAt(null);
       setGenerationChatId(null);
@@ -2614,9 +2724,29 @@ function NeoApp({ profile, onSwitchProfile }) {
   const showEmptyState = messages.length === 0 && !sending;
   return (
     <div className={`neo-app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <button className="profile-session-button" type="button" onClick={onSwitchProfile} title="Switch profile">
+      <header className="neo-topbar">
+        <div className="neo-wordmark" aria-label="Neo local intelligence system">
+          <span className="neo-wordmark-mark">N</span>
+          <span>NEO</span>
+          <small>LOCAL INTELLIGENCE SYSTEM</small>
+        </div>
+        <div className="neo-topbar-status" aria-label="System online">
+          <span className="status-lamp" />
+          <span>CORE ONLINE</span>
+          <span className="topbar-divider">//</span>
+          <span>PRIVATE MODE</span>
+        </div>
+      </header>
+      <button
+        className="profile-session-button"
+        type="button"
+        onClick={onSwitchProfile}
+        title="Log out and choose another profile"
+        aria-label="Log out and choose another profile"
+      >
         {profile.avatar_data ? <img src={profile.avatar_data} alt="" /> : <span>{profile.username.slice(0, 1).toUpperCase()}</span>}
         <span>{profile.is_guest ? "Guest session" : profile.username}</span>
+        <span className="profile-session-action">Log out</span>
       </button>
       <button
         className="sidebar-toggle"
@@ -2940,7 +3070,7 @@ export default function App() {
       await api.endAccountProfileSession();
     } finally {
       localStorage.removeItem("neo-active-chat-id");
-      setProfile(null);
+      window.location.assign("/");
     }
   }
 
@@ -2950,5 +3080,5 @@ export default function App() {
   if (!profile) {
     return <ProfilePicker onSignedIn={setProfile} />;
   }
-  return <><GuestCleanup profile={profile} /><NeoApp profile={profile} onSwitchProfile={switchProfile} /></>;
+  return <NeoApp profile={profile} onSwitchProfile={switchProfile} />;
 }
