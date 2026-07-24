@@ -236,6 +236,12 @@ class MemoryUpdateRequest(BaseModel):
     importance: int = Field(ge=1, le=10)
 
 
+class MemoryCreateRequest(BaseModel):
+    memory_text: str = Field(min_length=1, max_length=4000)
+    memory_type: MemoryType = MemoryType.KNOWLEDGE
+    importance: int = Field(default=5, ge=1, le=10)
+
+
 class EducationUpdateRequest(BaseModel):
     institution: str = Field(min_length=1, max_length=255)
     degree: str | None = Field(default=None, max_length=255)
@@ -1374,6 +1380,24 @@ def delete_event(event_id: int, store: StoreDependency) -> Response:
 @router.get("/memories", response_model=list[MemoryRead])
 def list_memories(store: StoreDependency) -> list[MemoryRead]:
     return [MemoryRead.model_validate(memory) for memory in store.list_memories()]
+
+
+@router.post("/memories", response_model=MemoryRead, status_code=status.HTTP_201_CREATED)
+def create_memory(
+    request: MemoryCreateRequest,
+    response: Response,
+    store: StoreDependency,
+) -> MemoryRead:
+    memory, created = store.create_manual_memory(
+        request.memory_text.strip(),
+        request.memory_type,
+        request.importance,
+    )
+    store.db.commit()
+    store.db.refresh(memory)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return MemoryRead.model_validate(memory)
 
 
 @router.patch("/memories/{memory_id}", response_model=MemoryRead)

@@ -395,8 +395,8 @@ class DirectMemoryAnswerService:
     def _asks_working_on(self, lowered: str) -> bool:
         return bool(
             re.search(
-                r"\b(what am i working on|what are you helping me with|"
-                r"what'?s my current project)\b",
+                r"\b(what am i (?:currently )?working on|what are you helping me with|"
+                r"what'?s my current project|what am i (?:currently )?building)\b",
                 lowered,
             )
         )
@@ -404,7 +404,7 @@ class DirectMemoryAnswerService:
     def _asks_projects(self, lowered: str) -> bool:
         return bool(
             re.search(
-                r"\b(what projects (?:am i|i am) working on|what projects do i have|"
+                r"\b(what projects (?:am i|i am) (?:currently )?working on|what projects do i have|"
                 r"(?:show|list|tell me|remind me of) my (?:active )?projects|"
                 r"what am i building)\b",
                 lowered,

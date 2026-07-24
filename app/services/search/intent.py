@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING
 
+from app.services.llm import LLMMessage
 from app.services.search.types import ResolvedSearchIntent, SearchIntentKind
+
+if TYPE_CHECKING:
+    from app.services.llm import LLMClient
 
 _SPACE = re.compile(r"\s+")
 _QUESTION_WORD = re.compile(r"\b(?:who|what|when|where|why|how|which)\b", re.IGNORECASE)
@@ -16,12 +22,6 @@ _CURRENT_WEB_SIGNAL = re.compile(
     r"\b(?:latest|newest|current|currently|today|yesterday|tomorrow|recent news|"
     r"right now|this week|news|price|prices|cost|schedule|fixtures?|"
     r"ranking|rankings|version|available|availability)\b",
-    re.IGNORECASE,
-)
-_STABLE_FACT_LOOKUP = re.compile(
-    r"\b(?:how many (?:seasons?|episodes?|parts?)|"
-    r"who (?:created|wrote|directed|produced|founded|invented)|"
-    r"release date|when did .+ (?:release|premiere|launch)|cast of)\b",
     re.IGNORECASE,
 )
 _LOCAL_DATETIME = re.compile(
@@ -110,6 +110,45 @@ _CURRENCY_CODES = {
 }
 _CURRENCY_TOKEN = r"(?:USD|INR|EUR|GBP|JPY|dollars?|rupees?|euros?|pounds?|yen)"
 
+_ROUTE_DECISION_SYSTEM_PROMPT = """You are Neo's conservative chat router.
+Decide how to answer a user message.
+
+Return exactly one JSON object with no Markdown or extra text:
+{"route":"memory"|"web"|"direct", "confidence":0.0-1.0}
+
+Routes:
+- memory: the user asks about their own prior statements, saved profile,
+  preferences, goals, projects, activities, or chats.
+- web: the user explicitly asks to search/verify online, or needs current external
+  information that cannot reliably come from chat or saved memory.
+- direct: explanation, writing, reasoning, casual conversation, or any ambiguous
+  request. Default to direct when uncertain.
+
+Never select web from a topic word alone. Words such as current, currently,
+latest, recovery, memory, research, files, projects, notes, tasks, agent, and
+restart are not web commands by themselves.
+
+Examples:
+USER: What am I currently building?
+JSON: {"route":"memory","confidence":0.99}
+USER: What projects am I currently working on?
+JSON: {"route":"memory","confidence":0.99}
+USER: What are my saved goals for this year?
+JSON: {"route":"memory","confidence":0.99}
+USER: Explain recovery after an application restart.
+JSON: {"route":"direct","confidence":0.98}
+USER: How should a local-first assistant manage memory?
+JSON: {"route":"direct","confidence":0.98}
+USER: Search the web for Kanye West concert dates in 2026.
+JSON: {"route":"web","confidence":0.99}
+USER: What is the current price of NVIDIA stock?
+JSON: {"route":"web","confidence":0.96}
+USER: Is SQLite WAL safe for a local app?
+JSON: {"route":"direct","confidence":0.82}
+"""
+
+_ROUTE_DECISION_JSON = re.compile(r"\{\s*\"route\".*?\}", re.DOTALL)
+
 
 class SearchIntentResolver:
     """Resolve live-data intent conservatively.
@@ -138,6 +177,7 @@ class SearchIntentResolver:
                 1.0,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
 
         if self._is_personal_declaration(cleaned):
@@ -149,6 +189,7 @@ class SearchIntentResolver:
                 0.99,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
         if _PERSONAL_RECALL.search(cleaned):
             return self._result(
@@ -159,6 +200,7 @@ class SearchIntentResolver:
                 0.99,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
         if _META_LANGUAGE.search(cleaned):
             return self._result(
@@ -169,6 +211,7 @@ class SearchIntentResolver:
                 0.98,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
 
         if _CONNECTOR_SIGNAL.search(cleaned):
@@ -180,6 +223,7 @@ class SearchIntentResolver:
                 0.92,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
 
         if _LOCAL_DATETIME.search(cleaned) and not _RELEASE_SIGNAL.search(cleaned):
@@ -191,6 +235,7 @@ class SearchIntentResolver:
                 0.99,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
 
         weather = self._weather_intent(cleaned, previous)
@@ -223,19 +268,16 @@ class SearchIntentResolver:
                 }
             )
 
-        if (
-            _EXPLICIT_LOOKUP.search(cleaned)
-            or _CURRENT_WEB_SIGNAL.search(cleaned)
-            or _STABLE_FACT_LOOKUP.search(cleaned)
-        ):
+        if _EXPLICIT_LOOKUP.search(cleaned):
             return self._result(
                 SearchIntentKind.GENERAL_WEB,
                 original,
                 cleaned,
-                "Explicit or freshness-sensitive information request.",
-                0.86,
+                "Explicit online lookup request.",
+                0.99,
                 timezone=timezone,
                 locale=locale,
+                decision_source="structured",
             )
 
         return self._result(
@@ -246,7 +288,89 @@ class SearchIntentResolver:
             0.8,
             timezone=timezone,
             locale=locale,
+            decision_source="fallback",
         )
+
+    def resolve_with_model(
+        self,
+        query: str,
+        *,
+        llm: LLMClient | None,
+        previous: ResolvedSearchIntent | None = None,
+        timezone: str | None = None,
+        locale: str | None = None,
+    ) -> ResolvedSearchIntent:
+        """Use the selected chat model for ordinary route choice.
+
+        Deterministic parsing remains responsible for structured, safety-sensitive
+        operations (weather, currency, date/time, explicit tools and explicit web
+        commands). All ordinary questions are deliberately model-routed so a single
+        freshness word cannot force external search.
+        """
+        base = self.resolve(query, previous=previous, timezone=timezone, locale=locale)
+        if base.kind is not SearchIntentKind.NONE or not base.original_query.strip():
+            return base
+
+        decision = self._model_route(query, llm)
+        if decision is None:
+            return base.model_copy(
+                update={
+                    "reason": "No reliable model route decision; defaulting to local chat.",
+                    "confidence": 0.7,
+                    "decision_source": "fallback",
+                }
+            )
+
+        route, confidence = decision
+        if route == "web":
+            return base.model_copy(
+                update={
+                    "kind": SearchIntentKind.GENERAL_WEB,
+                    "reason": "Selected model identified a current external-information request.",
+                    "confidence": confidence,
+                    "decision_source": "model",
+                }
+            )
+        reason = (
+            "Selected model identified a personal-memory recall request."
+            if route == "memory"
+            else "Selected model identified a normal local chat request."
+        )
+        return base.model_copy(
+            update={
+                "reason": reason,
+                "confidence": confidence,
+                "decision_source": "model",
+            }
+        )
+
+    @staticmethod
+    def _model_route(query: str, llm: LLMClient | None) -> tuple[str, float] | None:
+        if llm is None:
+            return None
+        try:
+            raw = llm.chat(
+                [
+                    LLMMessage(role="system", content=_ROUTE_DECISION_SYSTEM_PROMPT),
+                    LLMMessage(role="user", content=query),
+                ],
+                temperature=0.0,
+            )
+            cleaned = llm.clean_response(raw) if hasattr(llm, "clean_response") else raw
+            match = _ROUTE_DECISION_JSON.search(cleaned)
+            payload = json.loads(match.group(0) if match else cleaned.strip())
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        route = str(payload.get("route", "")).strip().lower()
+        if route not in {"memory", "web", "direct"}:
+            return None
+        try:
+            confidence = float(payload.get("confidence", 0.8))
+        except (TypeError, ValueError):
+            confidence = 0.8
+        return route, min(1.0, max(0.0, confidence))
 
     def _is_personal_declaration(self, query: str) -> bool:
         match = _PERSONAL_DECLARATION.search(query)

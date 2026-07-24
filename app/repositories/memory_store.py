@@ -839,6 +839,44 @@ class MemoryStore:
         )
         self.db.flush()
 
+    def create_manual_memory(
+        self,
+        memory_text: str,
+        memory_type: MemoryType,
+        importance: int,
+    ) -> tuple[Memory, bool]:
+        """Add a durable user-authored memory without creating a fake chat source.
+
+        A repeated submission returns the existing active memory. This keeps the
+        manual form idempotent while preserving the entry's lifecycle and index.
+        """
+        fingerprint = memory_fingerprint("manual", memory_type.value, memory_text)
+        existing = self.active_memory_by_fingerprint(memory_type, fingerprint)
+        if existing is not None:
+            if importance > existing.importance:
+                existing.importance = importance
+                existing.update_reason = "User raised the importance of a manual memory."
+                self._sync_memory_fts(existing)
+                self._mark_embedding_stale(existing)
+                self._sync_memory_embedding(existing)
+                self.db.flush()
+            return existing, False
+        memory = self.add(
+            Memory(
+                memory_text=memory_text,
+                memory_type=memory_type,
+                importance=importance,
+                confidence=1.0,
+                source="manual",
+                source_sentence=memory_text,
+                fingerprint=fingerprint,
+                update_reason="User added this memory manually.",
+                status="active",
+                is_active=True,
+            )
+        )
+        return memory, True
+
     def update_education(
         self,
         education_id: int,

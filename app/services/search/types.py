@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,7 @@ class ResolvedSearchIntent(BaseModel):
     to_currency: str | None = None
     timezone: str | None = None
     locale: str | None = None
+    decision_source: Literal["structured", "model", "fallback"] = "fallback"
 
     @property
     def needs_external_data(self) -> bool:

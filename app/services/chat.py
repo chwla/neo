@@ -35,7 +35,7 @@ from app.services.retrieval import RetrievalRequest
 from app.services.rules.resolver import RuleResolver
 from app.services.search.citations import validate_citation_markers
 from app.services.search.content import FactResult, extract_release_date, run_extractors
-from app.services.search.intent import resolve_search_intent
+from app.services.search.intent import SearchIntentResolver, resolve_search_intent
 from app.services.search.live_data import (
     FrankfurterClient,
     LiveDataError,
@@ -106,6 +106,7 @@ class NeoChatService:
         self.last_web_debug: dict[str, Any] = {}
         self.last_routing_debug: dict[str, Any] = {}
         self.last_search_intent: ResolvedSearchIntent | None = None
+        self.search_intent_resolver = SearchIntentResolver()
 
     def build_context(self, prompt: str) -> ContextPackage:
         return self.context_assembler.assemble(
@@ -1445,8 +1446,9 @@ class NeoChatService:
         locale: str | None,
     ) -> ResolvedSearchIntent:
         previous = self._previous_search_intent(prior_messages)
-        intent = resolve_search_intent(
+        intent = self.search_intent_resolver.resolve_with_model(
             prompt,
+            llm=self.ollama,
             previous=previous,
             timezone=timezone,
             locale=locale,

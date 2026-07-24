@@ -661,6 +661,8 @@ export const api = {
   updateEvent: (id, payload) =>
     request(`/events/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteEvent: (id) => request(`/events/${id}`, { method: "DELETE" }),
+  createMemory: (payload) =>
+    request("/memories", { method: "POST", body: JSON.stringify(payload) }),
   updateMemory: (id, payload) =>
     request(`/memories/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteMemory: (id) => request(`/memories/${id}`, { method: "DELETE" }),

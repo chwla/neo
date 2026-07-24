@@ -1823,6 +1823,81 @@ function GeneralMemoryEditor({ records, refresh, setError }) {
   ));
 }
 
+function ManualMemoryForm({ refresh, setError }) {
+  const [memoryText, setMemoryText] = useState("");
+  const [memoryType, setMemoryType] = useState("knowledge");
+  const [importance, setImportance] = useState(5);
+  const [saving, setSaving] = useState(false);
+
+  async function save(event) {
+    event.preventDefault();
+    if (!memoryText.trim()) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await api.createMemory({
+        memory_text: memoryText.trim(),
+        memory_type: memoryType,
+        importance: Number(importance),
+      });
+      setMemoryText("");
+      setMemoryType("knowledge");
+      setImportance(5);
+      await refresh();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="memory-card is-open">
+      <div className="memory-card-head">
+        <p className="memory-card-summary">Add a memory manually</p>
+      </div>
+      <div className="memory-card-body">
+        <form onSubmit={save}>
+          <Field label="Memory">
+            <textarea
+              value={memoryText}
+              onChange={(event) => setMemoryText(event.target.value)}
+              placeholder="For example: I prefer concise answers with practical examples."
+              maxLength="4000"
+            />
+          </Field>
+          <Field label="Category">
+            <select value={memoryType} onChange={(event) => setMemoryType(event.target.value)}>
+              {MEMORY_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {formatMemoryType(type)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Importance">
+            <input
+              type="number"
+              min="1"
+              max="10"
+              step="1"
+              value={importance}
+              onChange={(event) => setImportance(event.target.value)}
+            />
+          </Field>
+          <div className="memory-actions">
+            <NeoButton type="submit" disabled={saving || !memoryText.trim()}>
+              {saving ? "Saving..." : "Add memory"}
+            </NeoButton>
+          </div>
+        </form>
+      </div>
+    </section>
+  );
+}
+
 function GeneralMemoryForm({ record, refresh, setError }) {
   const [memoryText, setMemoryText] = useState(record.memory_text);
   const [memoryType, setMemoryType] = useState(record.memory_type);
@@ -2086,10 +2161,13 @@ function MemoryDialog({ onClose, refreshSidebar }) {
       content = <EventEditor records={data.events} {...editorProps} />;
     } else {
       content = (
-        <GeneralMemoryEditor
-          records={sortMemoryRecords(data.memories, memorySortOrder)}
-          {...editorProps}
-        />
+        <>
+          <ManualMemoryForm {...editorProps} />
+          <GeneralMemoryEditor
+            records={sortMemoryRecords(data.memories, memorySortOrder)}
+            {...editorProps}
+          />
+        </>
       );
     }
   }
