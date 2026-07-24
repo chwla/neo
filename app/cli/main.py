@@ -173,7 +173,16 @@ def build_parser() -> argparse.ArgumentParser:
     wc.add_argument("--goal", required=True)
     wc.add_argument("--scope", default="")
     workspace_sub.add_parser("list")
-    for command in ("show", "plan", "graph", "timeline", "readiness", "health", "report", "index-memory"):
+    for command in (
+        "show",
+        "plan",
+        "graph",
+        "timeline",
+        "readiness",
+        "health",
+        "report",
+        "index-memory",
+    ):
         item = workspace_sub.add_parser(command)
         item.add_argument("workspace_id")
     wl = workspace_sub.add_parser("link")
@@ -603,33 +612,70 @@ def handle_evals(args, client: NeoApiClient) -> Any:
     if command == "list":
         return client.get("/api/evals/runs")
     if command == "run":
-        return client.post(f"/api/evals/suites/{args.suite}/run", {"fixture_mode": True, "max_cases": args.max_cases, "fail_fast": args.fail_fast})
+        return client.post(
+            f"/api/evals/suites/{args.suite}/run",
+            {"fixture_mode": True, "max_cases": args.max_cases, "fail_fast": args.fail_fast},
+        )
     if command == "baseline":
         return client.post(f"/api/evals/runs/{args.run_id}/set-baseline", {"name": args.name})
     if command == "compare":
-        return client.get("/api/evals/compare", query={"run_id": args.run_id, "baseline_id": args.baseline})
+        return client.get(
+            "/api/evals/compare", query={"run_id": args.run_id, "baseline_id": args.baseline}
+        )
     suffix = "" if command == "show" else f"/{command}"
     return client.get(f"/api/evals/runs/{args.run_id}{suffix}")
 
 
 def handle_workspace(args, client: NeoApiClient) -> Any:
     command = args.workspace_command
-    if command == "list": return client.get("/api/workspaces")
-    if command == "create": return client.post("/api/workspaces", {"name": args.name, "goal": args.goal, "scope": args.scope})
-    if command == "link": return client.post(f"/api/workspaces/{args.workspace_id}/link", {"entity_type": args.type, "entity_id": args.id})
-    if command == "plan": return client.post(f"/api/workspaces/{args.workspace_id}/plan", {})
-    if command == "index-memory": return client.post(f"/api/workspaces/{args.workspace_id}/index-memory", {})
-    return client.get(f"/api/workspaces/{args.workspace_id}" + ("" if command == "show" else f"/{command}"))
+    if command == "list":
+        return client.get("/api/workspaces")
+    if command == "create":
+        return client.post(
+            "/api/workspaces", {"name": args.name, "goal": args.goal, "scope": args.scope}
+        )
+    if command == "link":
+        return client.post(
+            f"/api/workspaces/{args.workspace_id}/link",
+            {"entity_type": args.type, "entity_id": args.id},
+        )
+    if command == "plan":
+        return client.post(f"/api/workspaces/{args.workspace_id}/plan", {})
+    if command == "index-memory":
+        return client.post(f"/api/workspaces/{args.workspace_id}/index-memory", {})
+    return client.get(
+        f"/api/workspaces/{args.workspace_id}" + ("" if command == "show" else f"/{command}")
+    )
+
 
 def handle_continuity(args, client: NeoApiClient) -> Any:
     command = args.continuity_command
-    if command == "bundles": return client.get("/api/continuity/bundles")
-    if command == "export": return client.post("/api/continuity/export", {"bundle_type": args.bundle_type, "root_entity_type": args.root_type, "root_entity_id": args.root_entity_id})
-    if command == "import-dry-run": return client.post("/api/continuity/import/dry-run", {"bundle_path": args.bundle_path})
-    if command == "import": return client.post("/api/continuity/import", {"bundle_path": args.bundle_path, "mode": args.mode})
-    if command == "validate-references": return client.post("/api/continuity/validate-references", {})
-    if command == "validate-entity": return client.post("/api/continuity/validate-entity", {"entity_type": args.type, "entity_id": args.id})
-    return client.get(f"/api/continuity/bundles/{args.bundle_id}" + ("" if command == "show" else f"/{command}"))
+    if command == "bundles":
+        return client.get("/api/continuity/bundles")
+    if command == "export":
+        return client.post(
+            "/api/continuity/export",
+            {
+                "bundle_type": args.bundle_type,
+                "root_entity_type": args.root_type,
+                "root_entity_id": args.root_entity_id,
+            },
+        )
+    if command == "import-dry-run":
+        return client.post("/api/continuity/import/dry-run", {"bundle_path": args.bundle_path})
+    if command == "import":
+        return client.post(
+            "/api/continuity/import", {"bundle_path": args.bundle_path, "mode": args.mode}
+        )
+    if command == "validate-references":
+        return client.post("/api/continuity/validate-references", {})
+    if command == "validate-entity":
+        return client.post(
+            "/api/continuity/validate-entity", {"entity_type": args.type, "entity_id": args.id}
+        )
+    return client.get(
+        f"/api/continuity/bundles/{args.bundle_id}" + ("" if command == "show" else f"/{command}")
+    )
 
 
 def handle_integration(args, client: NeoApiClient) -> Any:

@@ -122,8 +122,7 @@ def clamp_tools(tools: list[str] | None) -> tuple[list[str], list[str]]:
 
 def can_access_path(permissions: AgentPermissions, relative_path: str) -> bool:
     if any(
-        fnmatch.fnmatch(relative_path, pattern)
-        for pattern in permissions.forbidden_file_patterns
+        fnmatch.fnmatch(relative_path, pattern) for pattern in permissions.forbidden_file_patterns
     ):
         return False
     allowed = permissions.allowed_file_patterns

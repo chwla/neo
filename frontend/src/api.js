@@ -1,5 +1,24 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
+function errorDetail(value, fallback) {
+  if (typeof value === "string" && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const messages = value
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "";
+        const location = Array.isArray(item.loc) ? item.loc.slice(1).join(".") : "";
+        return `${location ? `${location}: ` : ""}${item.msg || item.message || ""}`.trim();
+      })
+      .filter(Boolean);
+    if (messages.length) return messages.join(" · ");
+  }
+  if (value && typeof value === "object") {
+    return value.message || value.error || JSON.stringify(value);
+  }
+  return fallback;
+}
+
 async function request(path, options = {}) {
   let response;
   try {
@@ -33,7 +52,7 @@ async function request(path, options = {}) {
     if (response.status === 500 && !detail) {
       throw new Error("Backend API is not running on http://127.0.0.1:8000.");
     }
-    throw new Error(detail || `Request failed with ${response.status}`);
+    throw new Error(errorDetail(detail, `Request failed with ${response.status}`));
   }
 
   return body;
@@ -155,7 +174,42 @@ export const api = {
   }),
   disableToolServer: (id) => request(`/tools/servers/${id}`, { method: "DELETE" }),
   toolServerHealth: (id) => request(`/tools/servers/${id}/health`, { method: "POST" }),
+  testToolServer: (id) => request(`/tools/servers/${id}/test`, { method: "POST" }),
   discoverToolServer: (id) => request(`/tools/servers/${id}/discover`, { method: "POST" }),
+  importOpenApiConnector: (payload) => request("/tools/connectors/openapi/import", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  importOpenApiFile: ({ name, file, allowTrustedLocalhost = false }) => {
+    const body = new FormData();
+    body.set("name", name);
+    body.set("file", file);
+    body.set("allow_trusted_localhost", allowTrustedLocalhost ? "true" : "false");
+    return request("/tools/connectors/openapi/file", { method: "POST", body });
+  },
+  createRestConnector: (payload) => request("/tools/connectors/rest", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  toolServerCredential: (id) => request(`/tools/servers/${id}/credentials`),
+  setToolServerCredential: (id, payload) => request(`/tools/servers/${id}/credentials`, {
+    method: "PUT", body: JSON.stringify(payload),
+  }),
+  deleteToolServerCredential: async (id) => {
+    await request(`/tools/servers/${id}/credentials`, { method: "DELETE" });
+    return { deleted: true };
+  },
+  startToolServerOAuth: (id) =>
+    request(`/tools/servers/${id}/oauth/start`, { method: "POST" }),
+  completeToolServerOAuth: (id, payload) =>
+    request(`/tools/servers/${id}/oauth/callback`, {
+      method: "POST", body: JSON.stringify(payload),
+    }),
+  refreshToolServerOAuth: (id) =>
+    request(`/tools/servers/${id}/oauth/refresh`, { method: "POST" }),
+  revokeToolServerOAuth: (id) =>
+    request(`/tools/servers/${id}/oauth/revoke`, { method: "POST" }),
+  selectConnector: (payload) => request("/tools/connectors/select", {
+    method: "POST", body: JSON.stringify(payload),
+  }),
   toolDefinitions: (includeDisabled = true) =>
     request(`/tools/definitions?include_disabled=${includeDisabled ? "true" : "false"}`),
   createToolDefinition: (payload) => request("/tools/definitions", {
@@ -463,10 +517,22 @@ export const api = {
     }),
   streamMessage: (chatId, prompt, onEvent, llmId = null) =>
     streamRequest(`/chats/${chatId}/messages/stream`, { prompt, llm_id: llmId }, onEvent),
-  startChatGeneration: (chatId, prompt, llmId = null, clientRequestId = null) =>
+  startChatGeneration: (
+    chatId,
+    prompt,
+    llmId = null,
+    clientRequestId = null,
+    context = {},
+  ) =>
     request(`/chats/${chatId}/generations`, {
       method: "POST",
-      body: JSON.stringify({ prompt, llm_id: llmId, client_request_id: clientRequestId }),
+      body: JSON.stringify({
+        prompt,
+        llm_id: llmId,
+        client_request_id: clientRequestId,
+        timezone: context.timezone || null,
+        locale: context.locale || null,
+      }),
     }),
   activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
   chatGeneration: (chatId, generationId) =>
@@ -519,10 +585,23 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ content }),
     }),
-  rerunChatMessage: (chatId, messageId, prompt, llmId = null, clientRequestId = null) =>
+  rerunChatMessage: (
+    chatId,
+    messageId,
+    prompt,
+    llmId = null,
+    clientRequestId = null,
+    context = {},
+  ) =>
     request(`/chats/${chatId}/messages/${messageId}/rerun`, {
       method: "POST",
-      body: JSON.stringify({ prompt, llm_id: llmId, client_request_id: clientRequestId }),
+      body: JSON.stringify({
+        prompt,
+        llm_id: llmId,
+        client_request_id: clientRequestId,
+        timezone: context.timezone || null,
+        locale: context.locale || null,
+      }),
     }),
   deleteChat: (chatId) => request(`/chats/${chatId}`, { method: "DELETE" }),
   createProject: (name) =>
@@ -534,13 +613,26 @@ export const api = {
   memory: () =>
     Promise.all([
       request("/profile"),
+      request("/education"),
+      request("/activities"),
       request("/preferences"),
       request("/goals"),
       request("/chat-projects"),
       request("/events"),
       request("/memories"),
-    ]).then(([profile, preferences, goals, projects, events, memories]) => ({
+    ]).then(([
       profile,
+      education,
+      activities,
+      preferences,
+      goals,
+      projects,
+      events,
+      memories,
+    ]) => ({
+      profile,
+      education,
+      activities,
       preferences,
       goals,
       projects,

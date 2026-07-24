@@ -45,6 +45,7 @@ class _DuckDuckGoHTMLParser(HTMLParser):
         attr = dict(attrs)
         class_name = attr.get("class", "")
         if tag == "a" and "result__a" in class_name:
+            self._finish_current()
             self._current = {
                 "title": "",
                 "url": self._clean_url(attr.get("href", "")),
@@ -57,11 +58,9 @@ class _DuckDuckGoHTMLParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if self._in_title and tag == "a":
             self._in_title = False
-            if self._current and self._current.get("title") and self._current.get("url"):
-                self.results.append(self._current)
-            self._current = None
         if self._in_snippet and tag in {"a", "div"}:
             self._in_snippet = False
+            self._finish_current()
 
     def handle_data(self, data: str) -> None:
         if self._current is None:
@@ -80,6 +79,17 @@ class _DuckDuckGoHTMLParser(HTMLParser):
             uddg = parse_qs(parsed.query).get("uddg", [""])[0]
             return unquote(uddg)
         return href
+
+    def close(self) -> None:
+        super().close()
+        self._finish_current()
+
+    def _finish_current(self) -> None:
+        if self._current and self._current.get("title") and self._current.get("url"):
+            self.results.append(self._current)
+        self._current = None
+        self._in_title = False
+        self._in_snippet = False
 
 
 class _BingHTMLParser(HTMLParser):
@@ -420,7 +430,10 @@ class TavilySearchProvider(WebSearchProvider):
             return WebSearchResponse(
                 query=query,
                 provider=self.name,
-                error=f"Tavily returned HTTP {exc.response.status_code if exc.response is not None else 'unknown'}.",
+                error=(
+                    "Tavily returned HTTP "
+                    f"{exc.response.status_code if exc.response is not None else 'unknown'}."
+                ),
             )
         except (requests.RequestException, json.JSONDecodeError) as exc:
             return WebSearchResponse(query=query, provider=self.name, error=f"Search failed: {exc}")

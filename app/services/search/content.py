@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
@@ -17,7 +18,6 @@ from app.services.search.types import (
     QueryRelevanceProfile,
     SearchResult,
 )
-
 
 SUPPORTED_CONTENT_TYPES = {
     "application/json",
@@ -545,7 +545,8 @@ def augment_page(query: str, page: FetchedPage) -> FetchedPage:
         lines.append(
             "Upcoming match: "
             f"{name}. Date: {date}. Time: {time_} IST. "
-            f"Venue: {venue}. Competition: {competition}. Format: {match_type}. Team type: {team_type}."
+            f"Venue: {venue}. Competition: {competition}. "
+            f"Format: {match_type}. Team type: {team_type}."
         )
     return page.model_copy(update={"text": "\n".join(line for line in lines if line)})
 
@@ -631,12 +632,15 @@ def _listing_evidence_chunks(text: str) -> list[str]:
     chunks: list[str] = []
     openai_pattern = re.compile(
         r"(?P<title>[A-Z][^.!?]{20,160}?)\s+"
-        r"(?P<section>Product|Research|Company|Applied AI|AI Adoption|Safety|Engineering|Security|Global Affairs)\s+"
+        r"(?P<section>Product|Research|Company|Applied AI|AI Adoption|Safety|"
+        r"Engineering|Security|Global Affairs)\s+"
         r"(?P<date>[A-Z][a-z]{2}\s+\d{1,2},\s+20\d{2})"
     )
     for match in openai_pattern.finditer(text):
         chunks.append(
-            f"{match.group('title').strip()}. Category: {match.group('section')}. Date: {match.group('date')}."
+            f"{match.group('title').strip()}. "
+            f"Category: {match.group('section')}. "
+            f"Date: {match.group('date')}."
         )
     return chunks
 
@@ -833,6 +837,25 @@ def _num(text: str) -> int | None:
     return _WORD_TO_NUM.get(text.lower())
 
 
+def _structured_fact_source_bonus(chunk: EvidenceChunk) -> float:
+    domain = urlparse(chunk.source_url).netloc.lower().removeprefix("www.")
+    if (
+        domain == "wikipedia.org"
+        or domain.endswith(".gov")
+        or domain.endswith(".edu")
+        or domain
+        in {
+            "apple.com",
+            "bbc.com",
+            "hbo.com",
+            "imdb.com",
+            "reuters.com",
+        }
+    ):
+        return 0.25
+    return 0.0
+
+
 def extract_season_count(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
     if not re.search(r"\b(season|seasons|how many)\b", query, re.IGNORECASE):
         return None
@@ -843,9 +866,8 @@ def extract_season_count(query: str, chunks: list[EvidenceChunk]) -> FactResult 
         text = f"{chunk.source_title}. {chunk.text}"
         for pattern, reason in [
             (
-                r"\b(?:consists of|has|have|had|ran for|spanned|comprises|featuring|with)\s+(?P<n>\d{1,2}|"
-                + "|".join(_WORD_TO_NUM)
-                + r")\s+seasons?\b",
+                r"\b(?:consists of|has|have|had|ran for|spanned|comprises|"
+                r"featuring|with)\s+(?P<n>\d{1,2}|" + "|".join(_WORD_TO_NUM) + r")\s+seasons?\b",
                 "verb+count",
             ),
             (r"\b(?P<n>\d{1,2}|" + "|".join(_WORD_TO_NUM) + r")\s+seasons?\b", "count+seasons"),
@@ -858,7 +880,10 @@ def extract_season_count(query: str, chunks: list[EvidenceChunk]) -> FactResult 
                 continue
             context_start = max(0, match.start() - 60)
             support = text[context_start : match.end() + 60].strip()
-            confidence = 0.8 if reason == "verb+count" else 0.6
+            confidence = min(
+                0.99,
+                (0.8 if reason == "verb+count" else 0.6) + _structured_fact_source_bonus(chunk),
+            )
             if best is None or confidence > best.confidence:
                 best = FactResult(
                     answer=f"{n} season{'s' if n != 1 else ''}",
@@ -882,9 +907,8 @@ def extract_episode_count(query: str, chunks: list[EvidenceChunk]) -> FactResult
             continue
         for pattern, reason in [
             (
-                r"\b(?:consists of|has|have|with|contains|includes|featuring|totaling)\s+(?P<n>\d{1,3}|"
-                + "|".join(_WORD_TO_NUM)
-                + r")\s+episodes?\b",
+                r"\b(?:consists of|has|have|with|contains|includes|featuring|"
+                r"totaling)\s+(?P<n>\d{1,3}|" + "|".join(_WORD_TO_NUM) + r")\s+episodes?\b",
                 "verb+count",
             ),
             (r"\b(?P<n>\d{1,3}|" + "|".join(_WORD_TO_NUM) + r")\s+episodes?\b", "count+episodes"),
@@ -947,15 +971,21 @@ def extract_champion_or_ranking(query: str, chunks: list[EvidenceChunk]) -> Fact
 
         champion_patterns = [
             (
-                r"(?:world chess champion|world champion|current champion|reigning champion|undisputed champion)\s*(?:is|:)?\s*(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+                r"(?:world chess champion|world champion|current champion|"
+                r"reigning champion|undisputed champion)\s*(?:is|:)?\s*"
+                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
                 "champion_title",
             ),
             (
-                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*(?:is the|became|won|defeated|claimed)\s*(?:the\s+)?(?:world|chess)\s*champion",
+                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*"
+                r"(?:is the|became|won|defeated|claimed)\s*(?:the\s+)?"
+                r"(?:world|chess)\s*champion",
                 "champion_context",
             ),
             (
-                r"(?:World\s+(?:Chess\s+)?Champion(?:ship)?.*?(?:won by|winner|champion)\s*:?\s*)(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+                r"(?:World\s+(?:Chess\s+)?Champion(?:ship)?.*?"
+                r"(?:won by|winner|champion)\s*:?\s*)"
+                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
                 "championship_winner",
             ),
         ]
@@ -966,7 +996,8 @@ def extract_champion_or_ranking(query: str, chunks: list[EvidenceChunk]) -> Fact
             ),
             (r"#1\s+(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})", "ranked_number_one"),
             (
-                r"(?:highest[- ]rated|top[- ]rated|number one|#1)[^.]{0,40}(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+                r"(?:highest[- ]rated|top[- ]rated|number one|#1)[^.]{0,40}"
+                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
                 "highest_rated",
             ),
         ]
@@ -1023,35 +1054,178 @@ def extract_release_date(query: str, chunks: list[EvidenceChunk]) -> FactResult 
         re.IGNORECASE,
     ):
         return None
-    best: FactResult | None = None
+    candidates: list[tuple[str, str, EvidenceChunk, str]] = []
     for chunk in chunks:
-        text = f"{chunk.source_title}. {chunk.text}"
-        for pattern, reason in [
-            (
-                r"(?:release(?:d|s)?\s+(?:date|on)?|premiere(?:d|s)?(?:\s+on)?|(?:coming|came)\s+out\s+(?:on)?|launch(?:ed|es)?\s+(?:on)?)\s*:?\s*(?P<date>(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+20\d{2}|\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+20\d{2}|20\d{2}-\d{2}-\d{2})",
-                "explicit_date",
-            ),
-            (
-                r"(?P<date>(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+20\d{2})",
-                "month_date",
-            ),
-        ]:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if not match:
+        text = chunk.text
+        pattern = (
+            r"(?:"
+            r"(?:is\s+|will\s+be\s+|scheduled\s+to\s+be\s+)?"
+            r"release(?:d|s|ing)?(?:\s+date)?(?:\s+on|\s+in)?|"
+            r"(?:is\s+|will\s+be\s+)?premiere(?:d|s|ing)?(?:\s+on|\s+in)?|"
+            r"(?:is\s+)?(?:coming|came)\s+out(?:\s+on|\s+in)?|"
+            r"(?:is\s+|will\s+be\s+)?launch(?:ed|es|ing)?(?:\s+on|\s+in)?|"
+            r"(?:in|into)\s+(?:Indian\s+)?(?:theatres|theaters|cinemas)(?:\s+on)?"
+            r")\s*:?\s*"
+            r"(?P<date>"
+            r"(?:January|February|March|April|May|June|July|August|September|"
+            r"October|November|December)\s+\d{1,2},?\s+20\d{2}|"
+            r"\d{1,2}\s+(?:January|February|March|April|May|June|July|August|"
+            r"September|October|November|December)\s+20\d{2}|"
+            r"20\d{2}-\d{2}-\d{2}"
+            r")"
+        )
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            if _is_publication_date_match(text, match.start(), match.start("date")):
+                continue
+            context_start = max(0, match.start() - 100)
+            support = text[context_start : match.end() + 80].strip()
+            if not _release_entity_matches(query, f"{chunk.source_title} {support}"):
                 continue
             date = match.group("date").strip()
-            context_start = max(0, match.start() - 60)
-            support = text[context_start : match.end() + 60].strip()
-            confidence = 0.85 if reason == "explicit_date" else 0.6
-            if best is None or confidence > best.confidence:
-                best = FactResult(
-                    answer=date,
-                    support_text=support,
-                    source_index=chunk.source_index or 1,
-                    confidence=confidence,
-                    match_reason=reason,
-                )
-    return best
+            candidates.append((date, _normalized_release_date(date), chunk, support))
+
+    official = [candidate for candidate in candidates if _is_official_release_source(candidate[2])]
+    if official:
+        date, _, chunk, support = max(official, key=lambda item: item[2].relevance_score)
+        return FactResult(
+            answer=date,
+            support_text=support,
+            source_index=chunk.source_index or 1,
+            confidence=0.98,
+            match_reason="official_explicit_release_date",
+        )
+
+    by_date: dict[str, list[tuple[str, str, EvidenceChunk, str]]] = {}
+    for candidate in candidates:
+        if _is_authoritative_release_source(candidate[2]):
+            by_date.setdefault(candidate[1], []).append(candidate)
+    corroborated = [
+        rows
+        for rows in by_date.values()
+        if len({urlparse(row[2].source_url).netloc.lower().removeprefix("www.") for row in rows})
+        >= 2
+    ]
+    if not corroborated:
+        return None
+    rows = max(corroborated, key=lambda items: max(item[2].relevance_score for item in items))
+    date, _, chunk, support = max(rows, key=lambda item: item[2].relevance_score)
+    return FactResult(
+        answer=date,
+        support_text=support,
+        source_index=chunk.source_index or 1,
+        confidence=0.92,
+        match_reason="corroborated_release_date",
+    )
+
+
+def _normalized_release_date(value: str) -> str:
+    normalized = re.sub(r"[\s,]+", " ", value).strip()
+    for date_format in ("%B %d %Y", "%d %B %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(normalized, date_format).date().isoformat()
+        except ValueError:
+            continue
+    return normalized.lower()
+
+
+def _is_publication_date_match(text: str, trigger_start: int, date_start: int) -> bool:
+    """Reject page/article metadata that merely resembles release syntax."""
+
+    before_trigger = text[max(0, trigger_start - 60) : trigger_start].lower()
+    before_date = text[max(0, date_start - 80) : date_start].lower()
+    if re.search(
+        r"\b(?:news|press|media|article|blog|post|announcement|update)\s+$",
+        before_trigger,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:published|posted|updated|publication date|article date)\b",
+            before_date,
+        )
+    )
+
+
+def _release_entity_matches(query: str, evidence: str) -> bool:
+    normalized_query = (
+        query.lower().replace("spider-man", "spiderman").replace("spider man", "spiderman")
+    )
+    normalized_evidence = (
+        evidence.lower().replace("spider-man", "spiderman").replace("spider man", "spiderman")
+    )
+    ignored = {
+        "are",
+        "coming",
+        "date",
+        "did",
+        "does",
+        "game",
+        "going",
+        "has",
+        "have",
+        "how",
+        "india",
+        "indian",
+        "is",
+        "launch",
+        "movie",
+        "next",
+        "official",
+        "premiere",
+        "release",
+        "released",
+        "releasing",
+        "scheduled",
+        "set",
+        "the",
+        "what",
+        "when",
+        "which",
+        "will",
+        "was",
+        "were",
+    }
+    terms = [
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9'-]*", normalized_query)
+        if len(token) > 2 and token not in ignored
+    ]
+    if not terms:
+        return False
+    required = 2 if len(terms) >= 2 else 1
+    return sum(1 for term in set(terms) if term in normalized_evidence) >= required
+
+
+def _is_official_release_source(chunk: EvidenceChunk) -> bool:
+    domain = urlparse(chunk.source_url).netloc.lower().removeprefix("www.")
+    official_suffixes = (
+        "apple.com",
+        "marvel.com",
+        "nintendo.com",
+        "playstation.com",
+        "primevideo.com",
+        "sonypictures.com",
+        "sonypictures.in",
+        "xbox.com",
+    )
+    return any(domain == suffix or domain.endswith(f".{suffix}") for suffix in official_suffixes)
+
+
+def _is_authoritative_release_source(chunk: EvidenceChunk) -> bool:
+    domain = urlparse(chunk.source_url).netloc.lower().removeprefix("www.")
+    authoritative_suffixes = (
+        "apnews.com",
+        "bbc.com",
+        "bookmyshow.com",
+        "district.in",
+        "ign.com",
+        "reuters.com",
+        "theverge.com",
+        "variety.com",
+    )
+    return any(
+        domain == suffix or domain.endswith(f".{suffix}") for suffix in authoritative_suffixes
+    )
 
 
 def extract_software_version(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
@@ -1062,7 +1236,9 @@ def extract_software_version(query: str, chunks: list[EvidenceChunk]) -> FactRes
         text = f"{chunk.source_title}. {chunk.text}"
         for pattern, reason in [
             (
-                r"(?:latest version|current version|newest version|version)\s*:?\s*(?:is\s+)?(?:v)?(?P<ver>\d+\.\d+(?:\.\d+)?(?:-[a-z0-9.]+)?)",
+                r"(?:latest version|current version|newest version|version)"
+                r"\s*:?\s*(?:is\s+)?(?:v)?"
+                r"(?P<ver>\d+\.\d+(?:\.\d+)?(?:-[a-z0-9.]+)?)",
                 "explicit_version",
             ),
             (
@@ -1121,7 +1297,9 @@ def extract_price(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
         text = f"{chunk.source_title}. {chunk.text}"
         for pattern, reason in [
             (
-                r"(?:price|priced at|starts?\s+at|starting\s+at|from|costs?|MRP)\s*:?\s*(?P<price>[$\u20b9\u00a3\u20ac][\d,]+(?:\.\d{2})?|[\d,]+(?:\.\d{2})?\s*(?:USD|INR|GBP|EUR))",
+                r"(?:price|priced at|starts?\s+at|starting\s+at|from|costs?|"
+                r"MRP)\s*:?\s*(?P<price>[$\u20b9\u00a3\u20ac][\d,]+"
+                r"(?:\.\d{2})?|[\d,]+(?:\.\d{2})?\s*(?:USD|INR|GBP|EUR))",
                 "explicit_price",
             ),
             (r"(?P<price>[$\u20b9\u00a3\u20ac][\d,]+(?:\.\d{2})?)", "currency_symbol"),
@@ -1167,7 +1345,96 @@ def extract_price(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
     return best
 
 
+def extract_weather(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
+    """Extract a current temperature only from an explicit location forecast sentence."""
+
+    if not re.search(
+        r"\b(weather|forecast|temperature|how hot|how cold)\b",
+        query,
+        re.IGNORECASE,
+    ):
+        return None
+    location_match = re.search(
+        r"\b(?:weather|forecast|temperature)\s+(?:in|for|at)\s+"
+        r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
+        query.strip(),
+        re.IGNORECASE,
+    )
+    if location_match is None:
+        return None
+    location = location_match.group("location").strip()
+    location_aliases = [location]
+    if location.lower() == "bengaluru":
+        location_aliases.append("Bangalore")
+    condition_pattern = (
+        r"partly\s+cloudy|mostly\s+cloudy|mostly\s+sunny|"
+        r"sunny|clear|cloudy|overcast|rain(?:y)?|showers?|"
+        r"thunderstorms?|snow(?:y)?|fog(?:gy)?|haze|windy"
+    )
+    for chunk in chunks:
+        text = re.sub(r"\s+", " ", f"{chunk.source_title}. {chunk.text}")
+        matched_alias = next(
+            (alias for alias in location_aliases if alias.lower() in text.lower()),
+            None,
+        )
+        if matched_alias is None:
+            continue
+        match = re.search(
+            rf"\b(?:today(?:'s)?\s+weather\s+in\s+{re.escape(matched_alias)}|"
+            rf"weather\s+(?:today\s+)?in\s+{re.escape(matched_alias)}|"
+            rf"{re.escape(matched_alias)}(?:'s)?\s+weather)"
+            rf".{{0,100}}?(?P<temperature>-?\d{{1,2}})\s*°\s*(?:[CF]\s*)?"
+            rf"(?P<condition>{condition_pattern})\b",
+            text,
+            re.IGNORECASE,
+        )
+        if match is not None:
+            temperature = int(match.group("temperature"))
+            if not -60 <= temperature <= 60:
+                continue
+            condition = re.sub(r"\s+", " ", match.group("condition")).lower()
+            answer = f"{location} is {temperature}°C and {condition} today"
+            low_match = re.search(
+                r"\bLow\s+(?P<low>-?\d{1,2})\s*°",
+                text[match.start() : match.end() + 120],
+                re.IGNORECASE,
+            )
+            if low_match is not None:
+                answer += f", with a reported low of {int(low_match.group('low'))}°C"
+            return FactResult(
+                answer=answer,
+                support_text=match.group(0),
+                source_index=chunk.source_index or 1,
+                confidence=0.92,
+                match_reason="current_weather",
+            )
+        compact_match = re.search(
+            rf"\b(?:{'|'.join(re.escape(alias) for alias in location_aliases)})\s+"
+            r"(?P<temperature>-?\d{1,2})\s*°\s*C\b"
+            r"(?:\s+(?P<aqi>\d{1,3})\s+AQI\b)?",
+            text,
+            re.IGNORECASE,
+        )
+        if compact_match is None:
+            continue
+        temperature = int(compact_match.group("temperature"))
+        if not -60 <= temperature <= 60:
+            continue
+        answer = f"{location} is {temperature}°C today"
+        if compact_match.group("aqi"):
+            answer += f", with a reported AQI of {int(compact_match.group('aqi'))}"
+        return FactResult(
+            answer=answer,
+            support_text=compact_match.group(0),
+            source_index=chunk.source_index or 1,
+            confidence=0.86,
+            match_reason="current_weather_compact",
+        )
+    return None
+
+
 ALL_EXTRACTORS = [
+    extract_weather,
     extract_season_count,
     extract_episode_count,
     extract_champion_or_ranking,

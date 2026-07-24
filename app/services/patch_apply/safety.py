@@ -18,8 +18,20 @@ FORBIDDEN_MARKERS = (
     "submodule",
 )
 FORBIDDEN_DIRS = {
-    ".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist", "build",
-    ".next", ".cache", "coverage", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    "dist",
+    "build",
+    ".next",
+    ".cache",
+    "coverage",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
 }
 FORBIDDEN_NAMES = {".env", ".env.local", ".env.production", ".ds_store"}
 

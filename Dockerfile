@@ -15,7 +15,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEO_PORT=8000 \
     NEO_DATA_DIR=/app/data \
     NEO_FRONTEND_DIR=/app/app/static \
-    NEO_SEARCH_PROVIDER=disabled \
+    NEO_ENVIRONMENT=production \
+    NEO_CONNECTOR_MASTER_KEY_FILE=/app/data/secrets/connector-master-key \
+    NEO_SEARCH_PROVIDER=duckduckgo \
+    NEO_WEB_SEARCH_FALLBACK_PROVIDERS=bing_html \
     NEO_LLM_PROVIDER=ollama \
     NEO_DEFAULT_MODEL=qwen3-coder:30b \
     NEO_SEARXNG_URL=http://127.0.0.1:8080 \
@@ -38,7 +41,7 @@ VOLUME ["/app/data"]
 EXPOSE 8000
 USER neo
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+HEALTHCHECK --interval=30s --timeout=20s --start-period=30s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=5)"]
 
 CMD ["python", "-m", "app.runtime"]

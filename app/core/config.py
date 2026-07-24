@@ -5,7 +5,6 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 active_profile_database_url: ContextVar[str | None] = ContextVar(
     "active_profile_database_url", default=None
 )
@@ -26,9 +25,7 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333")
     ollama_url: str = Field(
         default="http://127.0.0.1:11434",
-        validation_alias=AliasChoices(
-            "OLLAMA_BASE_URL", "NEO_OLLAMA_BASE_URL", "NEO_OLLAMA_URL"
-        ),
+        validation_alias=AliasChoices("OLLAMA_BASE_URL", "NEO_OLLAMA_BASE_URL", "NEO_OLLAMA_URL"),
     )
     chat_model: str = Field(default="llama3.2:3b")
     llm_provider: str = Field(default="ollama")
@@ -40,7 +37,7 @@ class Settings(BaseSettings):
     openai_compat_api_key_ref: str = Field(default="OPENAI_API_KEY")
     openai_compat_model: str = Field(default="")
     chat_timeout_seconds: int = Field(default=240)
-    chat_num_predict: int = Field(default=128)
+    chat_num_predict: int = Field(default=512)
     chat_history_turns: int = Field(default=8, ge=1, le=24)
     llm_config_path: str = Field(default="neo_llms.json")
     workspace_files_dir: str = Field(default="data/workspace_files")
@@ -51,7 +48,8 @@ class Settings(BaseSettings):
     workspace_repo_max_file_bytes: int = Field(default=1024 * 1024, ge=1)
     workspace_file_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
     workspace_extracted_text_max_chars: int = Field(default=500_000, ge=1)
-    simple_chat_num_predict: int = Field(default=64)
+    simple_chat_num_predict: int = Field(default=256)
+    default_timezone: str = Field(default="UTC")
     extraction_after_turn_enabled: bool = Field(default=False)
     semantic_retrieval_enabled: bool = Field(default=False)
     auto_embed_memories: bool = Field(default=False)

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from calendar import monthrange
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,8 @@ class ExtractionRequest(BaseModel):
     messages: list[ConversationMessage] = Field(default_factory=list)
     persist: bool = True
     source_conversation_id: int | None = None
+    source_message_id: int | None = None
+    source_timestamp: datetime | None = None
 
 
 class ExtractedItem(BaseModel):
@@ -39,9 +42,11 @@ class ExtractedItem(BaseModel):
 
 class ExtractionResult(BaseModel):
     identity: list[ExtractedItem] = Field(default_factory=list)
+    education: list[ExtractedItem] = Field(default_factory=list)
     preferences: list[ExtractedItem] = Field(default_factory=list)
     goals: list[ExtractedItem] = Field(default_factory=list)
     projects: list[ExtractedItem] = Field(default_factory=list)
+    activities: list[ExtractedItem] = Field(default_factory=list)
     events: list[ExtractedItem] = Field(default_factory=list)
     memories: list[ExtractedItem] = Field(default_factory=list)
     ignored: list[str] = Field(default_factory=list)
@@ -51,9 +56,11 @@ class ExtractionResult(BaseModel):
     def items(self) -> list[ExtractedItem]:
         return [
             *self.identity,
+            *self.education,
             *self.preferences,
             *self.goals,
             *self.projects,
+            *self.activities,
             *self.events,
             *self.memories,
         ]
@@ -62,14 +69,16 @@ class ExtractionResult(BaseModel):
 class MemoryExtractionService:
     """Extract durable memory candidates from conversation text."""
 
+    AUTO_ACCEPT_MIN_CONFIDENCE = 0.8
     LLM_SYSTEM_PROMPT = """
 You extract durable user memory from conversations for a local personal assistant.
 Return JSON only, with this shape:
 {
   "items": [
     {
-      "type": "identity|preference|goal|project|event|memory",
+      "type": "identity|education|preference|goal|project|activity|event|memory",
       "text": "short human sentence",
+      "source_span": "exact words from the user that support this item",
       "confidence": 0.0,
       "importance": 1,
       "attributes": {}
@@ -84,10 +93,14 @@ Rules:
 - For preferences such as "be concise", use type "preference", category "response_style",
   and value like "concise answers".
 - For identity, set attributes {"key":"name|location|occupation|education|general","value":"..."}.
+- For education, include institution, degree, field_of_study, and graduated only when stated.
 - For goals, set attributes {"goal":"...","priority":1-10}.
 - For projects, set attributes {"name":"...","description":"..."}.
+- For current activities, set attributes {"category":"playing|reading|watching|working_on",
+  "activity":"...","subject":"..."}. Do not infer an activity from a question.
 - For events, set attributes {"event":"...","event_date":"YYYY-MM-DD"} when a date is explicit.
 - For general memories, set attributes {"memory_text":"..."}.
+- Every item must be grounded by source_span copied exactly from the user's message.
 - If nothing durable should be stored, return {"items":[]}.
 """.strip()
 
@@ -100,36 +113,159 @@ Rules:
         self._extract_structured_profile(text, result)
 
         for sentence in self._sentences(text):
-            if self._structural_fragment(sentence):
+            if self._structural_fragment(sentence) or self._non_memory_sentence(sentence):
+                continue
+            project_items = self._extract_active_project_list(sentence)
+            if project_items:
+                for item in project_items:
+                    self._append_unique(result, item)
                 continue
             matched = False
+            education_items = self._extract_education_items(sentence)
+            for item in education_items:
+                self._append_unique(result, item)
+                matched = True
+            for item in self._extract_identity_items(sentence):
+                self._append_unique(result, item)
+                matched = True
             for extractor in (
-                self._extract_identity,
                 self._extract_preference,
-                self._extract_goal,
+                lambda value: self._extract_goal(value, request.source_timestamp),
                 self._extract_project,
-                self._extract_event,
-                self._extract_hardware,
-                self._extract_memory,
+                lambda value: self._extract_activity(value, request.source_timestamp),
             ):
                 item = extractor(sentence)
                 if item is not None:
                     self._append_unique(result, item)
                     matched = True
-                    break
+            if not education_items:
+                event = self._extract_event(sentence)
+                if event is not None:
+                    self._append_unique(result, event)
+                    matched = True
+            if not matched:
+                for extractor in (self._extract_hardware, self._extract_memory):
+                    item = extractor(sentence)
+                    if item is not None:
+                        self._append_unique(result, item)
+                        matched = True
+                        break
             if not matched:
                 result.ignored.append(sentence)
 
         self._stamp_source_context(result, request)
         return result
 
+    def is_pure_personal_declaration(
+        self,
+        request: ExtractionRequest,
+        extraction: ExtractionResult | None = None,
+    ) -> bool:
+        """Whether a turn contains only explicit user-memory declarations."""
+
+        extraction = extraction or self.extract(request)
+        if not extraction.items or extraction.ignored:
+            return False
+        sentences = self._sentences(self._request_text(request))
+        return bool(sentences) and all(
+            not self._non_memory_sentence(sentence) for sentence in sentences
+        )
+
+    def format_persisted_acknowledgement(
+        self,
+        request: ExtractionRequest,
+        extraction: ExtractionResult,
+        candidates: list[MemoryCandidate],
+    ) -> str | None:
+        """Return a truthful acknowledgement only after every candidate was accepted."""
+
+        if not self.is_pure_personal_declaration(request, extraction):
+            return None
+        if not candidates or any(
+            candidate.status != CandidateStatus.ACCEPTED for candidate in candidates
+        ):
+            return None
+        return "Got it — I’ve saved that to your memory."
+
+    def _extract_active_project_list(self, sentence: str) -> list[ExtractedItem]:
+        """Extract explicitly named projects without treating work as a person's name."""
+
+        called_project = re.search(
+            r"^\s*i(?:\s+am|'m)?\s+(?:currently\s+)?"
+            r"(?:building|developing|creating|working\s+on)\s+"
+            r"(?:a\s+)?project\s+(?:called|named)\s+"
+            r"(?P<name>[A-Za-z][A-Za-z0-9_.+ -]{0,80})\s*$",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if called_project:
+            name = called_project.group("name").strip(" .")
+            if name.islower():
+                name = " ".join(part.capitalize() for part in name.split())
+            return [
+                self._project_item(
+                    name,
+                    f"Currently building {name}",
+                    "Detected an explicitly named active project.",
+                )
+            ]
+
+        project_list = re.search(
+            r"^\s*my\s+(?:active\s+|current\s+)?projects?\s+(?:are|include)\s+"
+            r"(?P<names>[A-Za-z][A-Za-z0-9_.+-]*(?:"
+            r"\s*(?:,\s*(?:and\s+)?|&\s*|\band\s+)"
+            r"[A-Za-z][A-Za-z0-9_.+-]*){0,7})\s*$",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        match = re.search(
+            r"^\s*i(?:\s+am|'m)?\s+(?:currently\s+)?"
+            r"(?:building|developing|creating|working\s+on)\s+"
+            r"(?P<names>[A-Za-z][A-Za-z0-9_.+-]*(?:"
+            r"\s*(?:,\s*(?:and\s+)?|&\s*|\band\s+)"
+            r"[A-Za-z][A-Za-z0-9_.+-]*){0,7})\s*$",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        match = match or project_list
+        if not match:
+            return []
+
+        names = re.sub(r",\s+and\s+", ", ", match.group("names"), flags=re.IGNORECASE)
+        raw_names = re.split(
+            r"\s*(?:,|&|\band\b)\s*",
+            names,
+            flags=re.IGNORECASE,
+        )
+        items: list[ExtractedItem] = []
+        for raw_name in raw_names:
+            name = raw_name.strip(" .")
+            if not name:
+                continue
+            if name.islower():
+                name = name[0].upper() + name[1:]
+            items.append(
+                self._project_item(
+                    name,
+                    f"Currently building {name}",
+                    "Detected an explicitly named active project.",
+                )
+            )
+        return items
+
     def extract_with_llm(
         self,
         request: ExtractionRequest,
         ollama: LLMClient | None,
     ) -> ExtractionResult:
+        deterministic = self.extract(request)
         if ollama is None:
-            return self.extract(self._fallback_request(request))
+            return deterministic
+        if not deterministic.ignored:
+            return deterministic
+        user_text = self._request_text(request)
+        if not re.search(r"\b(?:i|i'm|i’ve|i've|my|me)\b", user_text, re.IGNORECASE):
+            return deterministic
 
         try:
             response = ollama.chat(
@@ -142,11 +278,18 @@ Rules:
                 ],
                 temperature=0.0,
             )
-            result = self._result_from_llm_response(response)
+            llm_result = self._result_from_llm_response(response)
         except Exception:
-            return self.extract(self._fallback_request(request))
+            return deterministic
 
-        return result
+        for item in llm_result.items:
+            if not self._valid_model_item(item, user_text):
+                continue
+            item.attributes["auto_accept"] = 0
+            item.reasoning = f"{item.reasoning} Pending review: model-only extraction."
+            self._append_unique(deterministic, item)
+        self._stamp_source_context(deterministic, request)
+        return deterministic
 
     def persist_candidates(
         self,
@@ -179,7 +322,12 @@ Rules:
 
         candidates = self.persist_candidates(store, extraction)
         reviewer = MemoryReviewService()
-        for candidate in candidates:
+        for item, candidate in zip(extraction.items, candidates, strict=True):
+            if (
+                item.attributes.get("auto_accept") == 0
+                or item.confidence < self.AUTO_ACCEPT_MIN_CONFIDENCE
+            ):
+                continue
             reviewer.review(
                 store,
                 MemoryReviewRequest(
@@ -195,30 +343,65 @@ Rules:
         return "\n".join(message.content for message in request.messages if message.role == "user")
 
     def _fallback_request(self, request: ExtractionRequest) -> ExtractionRequest:
-        return ExtractionRequest(text=self._request_text(request), persist=request.persist)
+        return ExtractionRequest(
+            text=self._request_text(request),
+            persist=request.persist,
+            source_conversation_id=request.source_conversation_id,
+            source_message_id=request.source_message_id,
+            source_timestamp=request.source_timestamp,
+        )
 
     def _conversation_text(self, request: ExtractionRequest) -> str:
         if request.messages:
-            return "\n".join(f"{message.role}: {message.content}" for message in request.messages)
+            return "\n".join(
+                f"user: {message.content}" for message in request.messages if message.role == "user"
+            )
         return request.text or ""
 
     def _sentences(self, text: str) -> list[str]:
-        parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+        parts = re.split(
+            r"(?<=[.!?;])\s+|,\s+(?=(?:who|what|when|where|why|how|which)\b)|\n+",
+            text,
+            flags=re.IGNORECASE,
+        )
         clauses: list[str] = []
         clause_pattern = (
             r"\s+\band\s+"
-            r"(?=(?:my name is|my age is|i am|i'm|i live in|i study at|"
+            r"(?=(?:my name is|my age is|call me|i go by|i am|i'm|i live in|"
+            r"i am based in|i'm based in|i moved to|i study at|"
             r"i prefer|i like|i want to|my goal is|i need to|i plan to)\b)"
         )
         for part in parts:
             clauses.extend(re.split(clause_pattern, part, flags=re.IGNORECASE))
-        return [clause.strip(" .\t\r\n") for clause in clauses if clause.strip(" .\t\r\n")]
+        return [clause.strip(" .;\t\r\n") for clause in clauses if clause.strip(" .;\t\r\n")]
 
     def _structural_fragment(self, text: str) -> bool:
         stripped = text.strip()
         return bool(
             re.match(r"^[A-Za-z][A-Za-z0-9 /&+.'-]{1,80}:$", stripped)
             or re.match(r"^(?:[-*\u2022]\s+|\d+[.)]\s+)", stripped)
+        )
+
+    def _non_memory_sentence(self, sentence: str) -> bool:
+        stripped = sentence.strip()
+        if not stripped:
+            return True
+        if "?" in stripped or re.match(
+            r"^(?:who|what|when|where|why|how|which|do|does|did|can|could|"
+            r"should|would|will|is|are|am|was|were|please|tell|show|find|search|"
+            r"explain|describe|compare|write|open|run|check|try)\b",
+            stripped,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return bool(
+            re.search(
+                r"\b(?:he|she|they|someone|the assistant)\s+(?:said|says|claimed|"
+                r"told me)\b",
+                stripped,
+                flags=re.IGNORECASE,
+            )
+            or re.match(r"^[\"“'][^\"”']+[\"”']$", stripped)
         )
 
     def _extract_structured_profile(self, text: str, result: ExtractionResult) -> None:
@@ -370,11 +553,15 @@ Rules:
         return None
 
     def _item_from_remembered_list_entry(self, value: str) -> ExtractedItem:
+        education_items = self._extract_education_items(value)
+        if education_items:
+            return education_items[0]
         for extractor in (
             self._extract_identity,
             self._extract_preference,
             self._extract_goal,
             self._extract_project,
+            self._extract_activity,
             self._extract_event,
             self._extract_hardware,
             self._extract_memory,
@@ -422,10 +609,144 @@ Rules:
             reasoning=reasoning,
         )
 
+    def _extract_education_items(self, sentence: str) -> list[ExtractedItem]:
+        graduated = re.search(
+            r"\bi (?:recently\s+)?graduated from (?P<institution>.+?)"
+            r"(?:\s+with\s+(?P<qualification>.+))?$",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if not graduated:
+            return []
+
+        institution = self._normalize_education_name(graduated.group("institution"))
+        qualification = (graduated.group("qualification") or "").strip(" .;,")
+        degree, field = self._split_qualification(qualification)
+        education_text = self._education_description(institution, degree, field)
+        education = ExtractedItem(
+            candidate_type=CandidateType.EDUCATION,
+            text=education_text,
+            confidence=0.94,
+            importance=8,
+            attributes={
+                "institution": institution,
+                "degree": degree,
+                "field_of_study": field,
+                "graduated": 1,
+                "graduation_date": None,
+            },
+            reasoning="Detected an explicit completed education statement.",
+        )
+        event_text = f"Graduated from {institution}"
+        event = ExtractedItem(
+            candidate_type=CandidateType.EVENT,
+            text=event_text,
+            confidence=0.92,
+            importance=8,
+            attributes={
+                "event": event_text,
+                "description": education_text,
+                "event_date": None,
+            },
+            reasoning="Detected the graduation timeline event from explicit user text.",
+        )
+        return [education, event]
+
+    def _extract_identity_items(self, sentence: str) -> list[ExtractedItem]:
+        location = re.search(
+            r"\b(?:i(?:\s+currently)?\s+live in|"
+            r"i(?:\s*am|'m|have been)\s+(?:currently\s+)?(?:based|located) in|"
+            r"i(?:\s*am|'m) from|i moved to|my location is)\s+"
+            r"(?P<value>[A-Za-z ,'-]{2,80})",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if location:
+            values = [
+                self._normalize_place(part)
+                for part in location.group("value").split(",")
+                if part.strip()
+            ]
+            if not values:
+                return []
+            items = [self._identity_item("location", values[0])]
+            if len(values) > 1:
+                items.append(self._identity_item("country", values[-1]))
+            return items
+
+        item = self._extract_identity(sentence)
+        return [item] if item is not None else []
+
+    def _identity_item(self, key: str, value: str) -> ExtractedItem:
+        normalized = normalize_identity_value(key, value)
+        text = f"{key} = {normalized}"
+        return ExtractedItem(
+            candidate_type=CandidateType.IDENTITY,
+            text=text,
+            confidence=0.9,
+            importance=score_importance(text),
+            attributes={"key": key, "value": normalized},
+            reasoning="Detected durable identity statement.",
+        )
+
+    def _normalize_place(self, value: str) -> str:
+        cleaned = " ".join(value.strip(" .;,").split())
+        if cleaned.islower():
+            return " ".join(part.capitalize() for part in cleaned.split())
+        return cleaned
+
+    def _normalize_education_name(self, value: str) -> str:
+        cleaned = " ".join(value.strip(" .;,").split())
+        aliases = {
+            "bits pilani": "BITS Pilani",
+            "birla institute of technology and science pilani": "BITS Pilani",
+        }
+        return aliases.get(cleaned.casefold(), self._normalize_place(cleaned))
+
+    def _split_qualification(self, value: str) -> tuple[str | None, str | None]:
+        if not value:
+            return None, None
+        match = re.match(
+            r"(?P<degree>bachelors?'?s?|bachelor|masters?'?s?|master)"
+            r"\s+of\s+(?P<kind>engineering|science|arts|technology)"
+            r"(?:\s+in\s+(?P<field>.+))?$",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return self._normalize_place(value), None
+        level = "Bachelor" if match.group("degree").lower().startswith("bachelor") else "Master"
+        kind = self._normalize_place(match.group("kind"))
+        field = match.group("field")
+        return (
+            f"{level} of {kind}",
+            self._normalize_place(field) if field else None,
+        )
+
+    def _education_description(
+        self,
+        institution: str,
+        degree: str | None,
+        field: str | None,
+    ) -> str:
+        qualification = degree or "Education"
+        if field:
+            qualification = f"{qualification} in {field}"
+        return f"{qualification} at {institution}"
+
     def _extract_identity(self, sentence: str) -> ExtractedItem | None:
         patterns = [
             (
                 r"\bmy name is (?P<value>[A-Z][A-Za-z .'-]{1,80}?)(?=\s*(?:,|;|\band\b|$))",
+                "name",
+            ),
+            (
+                r"^\s*(?:actually[,:\s]+)?(?:please\s+)?"
+                r"call me\s+(?P<value>[A-Za-z][A-Za-z .'-]{1,80})\s*$",
+                "name",
+            ),
+            (
+                r"^\s*i go by\s+(?P<value>[A-Za-z][A-Za-z .'-]{1,80})\s*$",
                 "name",
             ),
             (
@@ -435,11 +756,31 @@ Rules:
             (r"\bmy age is (?P<value>\d{1,3})\b", "age"),
             (r"\bi am (?P<value>\d{1,3})\s+years? old\b", "age"),
             (r"\bi'?m (?P<value>\d{1,3})\s+years? old\b", "age"),
+            (r"\bi turned (?P<value>\d{1,3})(?:\s+years? old)?\b", "age"),
             (r"\bmy occupation is (?P<occupation>[^.]{2,120})", "occupation"),
+            (r"\bmy job is (?P<occupation>[^.]{2,120})", "occupation"),
             (r"\bi work as (?:a |an )?(?P<occupation>[^.]{2,120})", "occupation"),
-            (r"\bi(?:\s*am|'m) (?:a |an )(?P<occupation>[^.]{2,120})", "occupation"),
-            (r"\bi live in (?P<value>[A-Za-z ,'-]{2,80})", "location"),
+            (
+                r"\bi(?:\s*am|'m) (?:currently\s+)?(?:a |an )"
+                r"(?P<occupation>[^.]{2,120})",
+                "occupation",
+            ),
+            (
+                r"\bi(?:\s+currently)?\s+live in (?P<value>[A-Za-z ,'-]{2,80})",
+                "location",
+            ),
+            (
+                r"\bi(?:\s*am|'m|have been)\s+(?:currently\s+)?"
+                r"(?:based|located) in (?P<value>[A-Za-z ,'-]{2,80})",
+                "location",
+            ),
+            (r"\bi(?:\s*am|'m) from (?P<value>[A-Za-z ,'-]{2,80})", "location"),
+            (r"\bi moved to (?P<value>[A-Za-z ,'-]{2,80})", "location"),
+            (r"\bmy location is (?P<value>[A-Za-z ,'-]{2,80})", "location"),
+            (r"\bmy country is (?P<value>[A-Za-z ,'-]{2,80})", "country"),
+            (r"\bmy nationality is (?P<value>[A-Za-z ,'-]{2,80})", "nationality"),
             (r"\bi study at (?P<value>[A-Za-z0-9 ,.'-]{2,120})", "education"),
+            (r"\bi attend (?P<value>[A-Za-z0-9 ,.'-]{2,120})", "education"),
         ]
         for pattern, key in patterns:
             match = re.search(pattern, sentence, flags=re.IGNORECASE)
@@ -466,6 +807,76 @@ Rules:
         return None
 
     def _extract_preference(self, sentence: str) -> ExtractedItem | None:
+        language_priority = re.search(
+            r"\bi priorit(?:i|ise|ize|is)e?\s+(?:working|coding|programming)\s+with\s+"
+            r"(?P<languages>[^.]{2,120})",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if language_priority:
+            languages = self._ordered_languages(language_priority.group("languages"))
+            if languages:
+                return self._preference_item(
+                    "programming_language_priority",
+                    ", ".join(languages),
+                    confidence=0.92,
+                    reasoning="Detected an explicit ordered programming-language priority.",
+                    canonical_slot="preference:programming_language_priority",
+                )
+
+        reverse_favorite = re.search(
+            r"\b(?P<value>[A-Za-z][A-Za-z .'-]{1,100}?)\s+was\s+my\s+"
+            r"fa(?:vour|vor|bour)ite\s+(?P<subject>[A-Za-z /+.-]{2,60})",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if reverse_favorite:
+            subject = reverse_favorite.group("subject").strip()
+            value = self._display_name(reverse_favorite.group("value"))
+            return self._preference_item(
+                self._favorite_category(subject, value),
+                value,
+                confidence=0.9,
+                reasoning="Detected a favorite preference despite a common spelling error.",
+            )
+
+        explicit_interest = re.search(
+            r"\bi find (?P<value>[^.]{2,120}?)\s+(?:to be\s+)?interesting\b",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if explicit_interest:
+            value = explicit_interest.group("value").strip(" ,;")
+            return self._preference_item(
+                "interest",
+                value,
+                confidence=0.86,
+                reasoning="Detected an explicit personal interest.",
+                canonical_slot=f"preference:interest:{self._slug(value)}",
+                additive=True,
+            )
+
+        typo_love = re.search(
+            r"\bi\s+love+\s+(?P<value>[^.]{2,120})",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if typo_love:
+            value = typo_love.group("value").strip(" ,;")
+            if not re.fullmatch(
+                r"(?:this|that|it|this answer|that answer|this response|that response)",
+                value,
+                flags=re.IGNORECASE,
+            ):
+                return self._preference_item(
+                    "interest",
+                    value,
+                    confidence=0.84,
+                    reasoning="Detected a positive personal interest despite a repeated letter.",
+                    canonical_slot=f"preference:interest:{self._slug(value)}",
+                    additive=True,
+                )
+
         context_preference = re.search(
             r"\bfor (?P<context>[A-Za-z /+.-]{2,80}),?\s+(?:"
             r"i prefer (?P<direct_value>[^.]{2,120})|"
@@ -497,7 +908,8 @@ Rules:
         )
         if not favorite:
             favorite = re.search(
-                r"\b(?:remember that\s+|actually,?\s+)?my preferred (?P<subject>[A-Za-z /+.-]{2,60}?) "
+                r"\b(?:remember that\s+|actually,?\s+)?my preferred "
+                r"(?P<subject>[A-Za-z /+.-]{2,60}?) "
                 r"is (?:now )?(?P<value>[^.]{2,120})",
                 sentence,
                 flags=re.IGNORECASE,
@@ -616,6 +1028,12 @@ Rules:
         )
         if sentiment:
             value = sentiment.group("value").strip(" ,;")
+            if re.fullmatch(
+                r"(?:this|that|it|this answer|that answer|this response|that response)",
+                value,
+                flags=re.IGNORECASE,
+            ):
+                return None
             sentiment_value = f"{sentiment.group('sentiment').lower()} {value}"
             return self._preference_item(
                 self._sentiment_category(value),
@@ -640,24 +1058,87 @@ Rules:
             reasoning="Detected user preference.",
         )
 
-    def _extract_goal(self, sentence: str) -> ExtractedItem | None:
+    def _extract_goal(
+        self,
+        sentence: str,
+        source_timestamp: datetime | None = None,
+    ) -> ExtractedItem | None:
         match = re.search(
-            r"\b(i want to|my goal is to|i need to|i plan to)\s+(?P<goal>[^.]{3,180})",
+            r"\b(?:my (?:current |long[- ]term )?goal is to|"
+            r"i (?:plan|intend|aim|hope) to|i am working toward|i want to)\s+"
+            r"(?P<goal>[^.]{3,180})",
             sentence,
             flags=re.IGNORECASE,
         )
         if not match:
             return None
-        goal = match.group("goal").strip()
+        goal = match.group("goal").strip(" ,;")
+        if sentence.lower().find("i want to") >= 0 and not self._durable_want_goal(goal):
+            return None
+        horizon_months = self._goal_horizon_months(goal)
+        goal = re.sub(
+            r"\s+in\s+\d{1,3}\s+months?\s*$",
+            "",
+            goal,
+            flags=re.IGNORECASE,
+        ).strip()
         explicit_priority = 10 if "highest" in sentence.lower() else None
         priority = score_importance(goal, explicit_priority=explicit_priority)
+        attributes: dict[str, str | int | float | None] = {
+            "goal": goal,
+            "priority": priority,
+            "horizon_months": horizon_months,
+        }
+        if horizon_months:
+            anchor = self._source_datetime(source_timestamp)
+            attributes["target_date"] = self._add_months(anchor.date(), horizon_months).isoformat()
         return ExtractedItem(
             candidate_type=CandidateType.GOAL,
             text=goal,
             confidence=0.8,
             importance=priority,
-            attributes={"goal": goal, "priority": priority},
+            attributes=attributes,
             reasoning="Detected active or intended user goal.",
+        )
+
+    def _extract_activity(
+        self,
+        sentence: str,
+        source_timestamp: datetime | None = None,
+    ) -> ExtractedItem | None:
+        match = re.search(
+            r"\bi(?:\s+am|'m)\s+(?:currently\s+)?"
+            r"(?P<verb>playing|reading|watching|learning)\s+"
+            r"(?P<subject>[^.]{2,140})",
+            sentence,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        verb = match.group("verb").lower()
+        subject = self._display_name(match.group("subject"))
+        category = {
+            "playing": "game",
+            "reading": "book",
+            "watching": "media",
+            "learning": "learning",
+        }[verb]
+        started_at = self._source_datetime(source_timestamp)
+        expires_at = started_at + timedelta(days=30)
+        activity = f"{verb} {subject}"
+        return ExtractedItem(
+            candidate_type=CandidateType.ACTIVITY,
+            text=activity,
+            confidence=0.9,
+            importance=5,
+            attributes={
+                "category": category,
+                "activity": activity,
+                "subject": subject,
+                "started_at": started_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+            reasoning="Detected an explicit time-bounded current activity.",
         )
 
     def _extract_project(self, sentence: str) -> ExtractedItem | None:
@@ -746,7 +1227,8 @@ Rules:
 
         match = re.search(
             r"\b(?:i currently have|i have|my (?:laptop|computer|pc|machine) specs(?: are|:)?|"
-            r"my (?:current )?(?:hardware setup|laptop|computer|pc|machine)(?: is| has|:)?)\s+(?P<value>[^.]{8,240})",
+            r"my (?:current )?(?:hardware setup|laptop|computer|pc|machine)"
+            r"(?: is| has|:)?)\s+(?P<value>[^.]{8,240})",
             sentence,
             flags=re.IGNORECASE,
         )
@@ -798,9 +1280,11 @@ Rules:
     def _append(self, result: ExtractionResult, item: ExtractedItem) -> None:
         target = {
             CandidateType.IDENTITY: result.identity,
+            CandidateType.EDUCATION: result.education,
             CandidateType.PREFERENCE: result.preferences,
             CandidateType.GOAL: result.goals,
             CandidateType.PROJECT: result.projects,
+            CandidateType.ACTIVITY: result.activities,
             CandidateType.EVENT: result.events,
             CandidateType.MEMORY: result.memories,
         }[item.candidate_type]
@@ -820,7 +1304,15 @@ Rules:
             item.attributes.setdefault("source_sentence", self._source_sentence(item, request))
             if request.source_conversation_id is not None:
                 item.attributes.setdefault("source_conversation_id", request.source_conversation_id)
-            item.attributes.setdefault("canonical_slot", self._canonical_slot(item))
+            if request.source_message_id is not None:
+                item.attributes.setdefault("source_message_id", request.source_message_id)
+            if request.source_timestamp is not None:
+                item.attributes.setdefault(
+                    "source_timestamp",
+                    self._source_datetime(request.source_timestamp).isoformat(),
+                )
+            if not item.attributes.get("canonical_slot"):
+                item.attributes["canonical_slot"] = self._canonical_slot(item)
 
     def _source_sentence(self, item: ExtractedItem, request: ExtractionRequest) -> str:
         text = self._request_text(request)
@@ -838,17 +1330,28 @@ Rules:
         return False
 
     def _canonical_slot(self, item: ExtractedItem) -> str | None:
+        explicit = item.attributes.get("canonical_slot")
+        if explicit:
+            return str(explicit)
         if item.candidate_type == CandidateType.IDENTITY:
             key = item.attributes.get("key")
             return f"identity:{key}" if key else "identity"
         if item.candidate_type == CandidateType.PREFERENCE:
             category = item.attributes.get("category")
             return f"preference:{category}" if category else "preference"
+        if item.candidate_type == CandidateType.EDUCATION:
+            institution = item.attributes.get("institution")
+            return f"education:{self._slug(str(institution))}"
         if item.candidate_type == CandidateType.GOAL:
-            return "goal"
+            return f"goal:{self._slug(str(item.attributes.get('goal') or item.text))}"
         if item.candidate_type == CandidateType.PROJECT:
             name = item.attributes.get("name")
             return f"project:{str(name).lower()}" if name else "project"
+        if item.candidate_type == CandidateType.ACTIVITY:
+            category = item.attributes.get("category")
+            return f"activity:{category}" if category else "activity"
+        if item.candidate_type == CandidateType.EVENT:
+            return f"event:{self._slug(str(item.attributes.get('event') or item.text))}"
         if item.text.lower().startswith("current hardware:"):
             return "current_hardware"
         return item.candidate_type.value
@@ -903,6 +1406,72 @@ Rules:
             reasoning=str(raw_item.get("reasoning") or "LLM extracted durable memory."),
         )
 
+    def _llm_item_is_user_grounded(self, item: ExtractedItem, user_text: str) -> bool:
+        normalized_source = self._grounding_text(user_text)
+        values = [
+            value
+            for key, value in item.attributes.items()
+            if key
+            not in {
+                "priority",
+                "horizon_months",
+                "target_date",
+                "event_date",
+                "graduation_date",
+                "confidence",
+            }
+            and isinstance(value, str)
+            and len(value.strip()) >= 3
+        ]
+        values.append(item.text)
+        return any(
+            self._grounding_text(value) in normalized_source
+            for value in values
+            if self._grounding_text(value)
+        )
+
+    def _valid_model_item(self, item: ExtractedItem, user_text: str) -> bool:
+        """Validate model-only candidates before exposing them for human review."""
+
+        if not self._llm_item_is_user_grounded(item, user_text):
+            return False
+        attributes = item.attributes
+        if item.candidate_type == CandidateType.IDENTITY:
+            key = str(attributes.get("key") or "").strip().lower()
+            value = str(attributes.get("value") or "").strip()
+            return is_durable_identity_fact(key, value)
+        if item.candidate_type == CandidateType.EDUCATION:
+            return self._grounded_required_value(attributes, "institution", user_text)
+        if item.candidate_type == CandidateType.PREFERENCE:
+            return self._grounded_required_value(attributes, "value", user_text)
+        if item.candidate_type == CandidateType.GOAL:
+            return self._grounded_required_value(attributes, "goal", user_text)
+        if item.candidate_type == CandidateType.PROJECT:
+            return self._grounded_required_value(attributes, "name", user_text)
+        if item.candidate_type == CandidateType.ACTIVITY:
+            category = str(attributes.get("category") or "").strip().lower()
+            return category in {"playing", "reading", "watching", "working_on"} and (
+                self._grounded_required_value(attributes, "subject", user_text)
+                or self._grounded_required_value(attributes, "activity", user_text)
+            )
+        if item.candidate_type == CandidateType.EVENT:
+            return self._grounded_required_value(attributes, "event", user_text)
+        if item.candidate_type == CandidateType.MEMORY:
+            value = attributes.get("memory_text") or item.text
+            return self._grounding_text(str(value)) in self._grounding_text(user_text)
+        return False
+
+    def _grounded_required_value(
+        self,
+        attributes: dict[str, str | int | float | None],
+        key: str,
+        user_text: str,
+    ) -> bool:
+        value = attributes.get(key)
+        if not isinstance(value, str) or len(value.strip()) < 2:
+            return False
+        return self._grounding_text(value) in self._grounding_text(user_text)
+
     def _json_payload(self, response: str) -> str:
         cleaned = response.strip()
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
@@ -933,15 +1502,24 @@ Rules:
         value: str,
         confidence: float,
         reasoning: str,
+        canonical_slot: str | None = None,
+        additive: bool = False,
     ) -> ExtractedItem:
         normalized_value = self._normalize_preference_value(value)
         text = f"{category} = {normalized_value}"
+        attributes: dict[str, str | int | float | None] = {
+            "category": category,
+            "value": normalized_value,
+            "additive": int(additive),
+        }
+        if canonical_slot:
+            attributes["canonical_slot"] = canonical_slot
         return ExtractedItem(
             candidate_type=CandidateType.PREFERENCE,
             text=text,
             confidence=confidence,
             importance=score_importance(text),
-            attributes={"category": category, "value": normalized_value},
+            attributes=attributes,
             reasoning=reasoning,
         )
 
@@ -997,6 +1575,79 @@ Rules:
         for pattern, replacement in replacements.items():
             cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
         return cleaned
+
+    def _ordered_languages(self, value: str) -> list[str]:
+        raw_values = re.split(r"\s*(?:,|/|\band\b|&)\s*", value, flags=re.IGNORECASE)
+        aliases = {
+            "c": "C",
+            "c++": "C++",
+            "cpp": "C++",
+            "python": "Python",
+            "javascript": "JavaScript",
+            "typescript": "TypeScript",
+            "rust": "Rust",
+            "java": "Java",
+            "go": "Go",
+            "sql": "SQL",
+        }
+        languages: list[str] = []
+        for raw_value in raw_values:
+            normalized = aliases.get(raw_value.strip(" .;").casefold())
+            if normalized and normalized not in languages:
+                languages.append(normalized)
+        return languages
+
+    def _durable_want_goal(self, goal: str) -> bool:
+        normalized = goal.strip().lower()
+        if re.match(
+            r"(?:know|search|find|check|see|ask|tell|show|open|try|look up|"
+            r"get (?:the )?(?:latest|current)|buy|order|watch|read)\b",
+            normalized,
+        ):
+            return False
+        return bool(
+            re.match(
+                r"(?:master|become|build|create|launch|finish|complete|achieve|"
+                r"improve|learn|study|practice|get into|join|move|graduate|earn|"
+                r"transition|switch|prepare|qualify|reach|save)\b",
+                normalized,
+            )
+            or re.search(r"\bin\s+\d{1,3}\s+months?\s*$", normalized)
+        )
+
+    def _goal_horizon_months(self, goal: str) -> int | None:
+        match = re.search(r"\bin\s+(?P<months>\d{1,3})\s+months?\s*$", goal, re.IGNORECASE)
+        if not match:
+            return None
+        months = int(match.group("months"))
+        return months if 1 <= months <= 120 else None
+
+    def _source_datetime(self, value: datetime | None = None) -> datetime:
+        resolved = value or datetime.now(UTC)
+        if resolved.tzinfo is None:
+            return resolved.replace(tzinfo=UTC)
+        return resolved.astimezone(UTC)
+
+    def _add_months(self, value: date, months: int) -> date:
+        month_index = value.month - 1 + months
+        year = value.year + month_index // 12
+        month = month_index % 12 + 1
+        day = min(value.day, monthrange(year, month)[1])
+        return date(year, month, day)
+
+    def _display_name(self, value: str) -> str:
+        cleaned = " ".join(value.strip(" .;,").split())
+        if not cleaned.islower():
+            return cleaned
+        small_words = {"a", "an", "and", "at", "for", "in", "of", "on", "the", "to"}
+        words = cleaned.split()
+        return " ".join(
+            word if index > 0 and word in small_words else word.capitalize()
+            for index, word in enumerate(words)
+        )
+
+    def _grounding_text(self, value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9+#]+", value.casefold()))
 
     def _preferred_side(self, value: str) -> str:
         match = re.match(r"(?P<preferred>.+?)\s+over\s+.+", value, flags=re.IGNORECASE)

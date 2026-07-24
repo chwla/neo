@@ -25,9 +25,7 @@ class AgentPlannerValidationError(ValueError):
 class AgentTaskPlanner:
     def __init__(self, llm_factory: Callable | None = None) -> None:
         self.llm_factory = llm_factory or (
-            lambda: get_llm_client(
-                num_predict=900, timeout=120, route_name="agent"
-            )
+            lambda: get_llm_client(num_predict=900, timeout=120, route_name="agent")
         )
         self._cache: dict[tuple[str, str | None], AgentTaskPlan] = {}
 

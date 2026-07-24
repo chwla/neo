@@ -68,15 +68,21 @@ class OllamaEmbeddingProvider:
                 raise RuntimeError("Ollama embedding response did not include a vector.")
             if provider and model:
                 record_call(
-                    route_name="embedding", provider_id=provider["id"], model_id=model["id"],
-                    status="success", latency_ms=int((time.perf_counter() - started) * 1000),
+                    route_name="embedding",
+                    provider_id=provider["id"],
+                    model_id=model["id"],
+                    status="success",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
                 )
             return [float(value) for value in embedding]
         except Exception as exc:
             if provider and model:
                 record_call(
-                    route_name="embedding", provider_id=provider["id"], model_id=model["id"],
-                    status="failed", latency_ms=int((time.perf_counter() - started) * 1000),
+                    route_name="embedding",
+                    provider_id=provider["id"],
+                    model_id=model["id"],
+                    status="failed",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
                     error=safe_error(exc, provider),
                 )
             raise

@@ -64,9 +64,7 @@ class PatchApplication(BaseModel):
     task_id: str | None = None
     project_id: str | None = None
     agent_run_id: str | None = None
-    status: Literal[
-        "validated", "applied", "failed", "rejected", "apply_failed_rollback_failed"
-    ]
+    status: Literal["validated", "applied", "failed", "rejected", "apply_failed_rollback_failed"]
     original_sha256: str
     new_sha256: str | None = None
     original_content: str

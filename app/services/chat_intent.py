@@ -98,8 +98,7 @@ def resolve_internal_chat_intent(prompt: str) -> InternalChatIntent | None:
 
     action: InternalAction = (
         "operation"
-        if command.group("verb").lower()
-        in {"create", "run", "resume", "retry", "fork", "repair"}
+        if command.group("verb").lower() in {"create", "run", "resume", "retry", "fork", "repair"}
         else "lookup"
     )
     for feature, target in _FEATURE_TARGETS:

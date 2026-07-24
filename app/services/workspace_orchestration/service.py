@@ -99,8 +99,7 @@ class WorkspaceService:
         allowed = {
             k: v
             for k, v in fields.items()
-            if k in {"name", "goal", "scope_text", "status", "readiness_status"}
-            and v is not None
+            if k in {"name", "goal", "scope_text", "status", "readiness_status"} and v is not None
         }
         allowed["updated_at"] = store.now()
         c = store.conn()
@@ -281,14 +280,20 @@ class WorkspaceService:
     def _recompute_readiness(self, wid):
         c = store.conn()
         try:
-            c.execute("DELETE FROM workspace_orchestration_readiness_checks WHERE workspace_id=?", (wid,))
+            c.execute(
+                "DELETE FROM workspace_orchestration_readiness_checks WHERE workspace_id=?", (wid,)
+            )
             c.commit()
         finally:
             c.close()
         nodes = self.nodes(wid)
         artifacts = self.artifacts(wid)
         events = self.timeline(wid)
-        linked_types = {node.get("linked_entity_type") or node.get("node_type") for node in nodes if node.get("linked_entity_id")}
+        linked_types = {
+            node.get("linked_entity_type") or node.get("node_type")
+            for node in nodes
+            if node.get("linked_entity_id")
+        }
         search_space = " ".join(
             [
                 *(str(item.get("title") or "") for item in nodes),
@@ -305,13 +310,26 @@ class WorkspaceService:
             if key == "implementation_complete":
                 status = "passed" if nodes or artifacts else "pending"
             elif key == "tests_pass":
-                status = "passed" if "eval_run" in linked_types or any(word in search_space for word in KEYWORDS[key]) else "pending"
+                status = (
+                    "passed"
+                    if "eval_run" in linked_types
+                    or any(word in search_space for word in KEYWORDS[key])
+                    else "pending"
+                )
             elif key == "eval_harness_pass":
-                status = "passed" if "eval_run" in linked_types or "core_integration_smoke" in search_space else "pending"
+                status = (
+                    "passed"
+                    if "eval_run" in linked_types or "core_integration_smoke" in search_space
+                    else "pending"
+                )
             elif key == "manual_review_complete":
-                status = "passed" if any(word in search_space for word in KEYWORDS[key]) else "pending"
+                status = (
+                    "passed" if any(word in search_space for word in KEYWORDS[key]) else "pending"
+                )
             else:
-                status = "passed" if any(word in search_space for word in KEYWORDS[key]) else "pending"
+                status = (
+                    "passed" if any(word in search_space for word in KEYWORDS[key]) else "pending"
+                )
             checks.append(
                 {
                     "id": store.uid(),
@@ -321,7 +339,9 @@ class WorkspaceService:
                     "status": status,
                     "severity": "critical" if status != "passed" else "info",
                     "evidence_json": json.dumps(evidence),
-                    "recommendation": "Add verified evidence before readiness" if status != "passed" else "",
+                    "recommendation": "Add verified evidence before readiness"
+                    if status != "passed"
+                    else "",
                     "updated_at": store.now(),
                 }
             )
@@ -363,7 +383,9 @@ class WorkspaceService:
                 c.close()
 
     def health(self, wid):
-        checks = self.readiness(wid, recompute=not bool(store.many("workspace_orchestration_readiness_checks", wid)))
+        checks = self.readiness(
+            wid, recompute=not bool(store.many("workspace_orchestration_readiness_checks", wid))
+        )
         failed = sum(item["status"] != "passed" for item in checks)
         blockers = sum(
             item["node_type"] == "blocker" and item["status"] != "resolved"

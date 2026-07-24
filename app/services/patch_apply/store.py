@@ -143,12 +143,22 @@ def insert_application_file(item: dict) -> dict:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                item["id"], item["patch_application_id"], item.get("repo_id"),
-                item.get("workspace_file_id"), item.get("repo_file_id"), item["relative_path"],
-                item["change_type"], item["status"], item.get("original_sha256"),
-                item.get("new_sha256"), item.get("original_size_bytes"),
-                item.get("new_size_bytes"), item.get("original_content"),
-                item.get("new_content"), item.get("error"), item["created_at"],
+                item["id"],
+                item["patch_application_id"],
+                item.get("repo_id"),
+                item.get("workspace_file_id"),
+                item.get("repo_file_id"),
+                item["relative_path"],
+                item["change_type"],
+                item["status"],
+                item.get("original_sha256"),
+                item.get("new_sha256"),
+                item.get("original_size_bytes"),
+                item.get("new_size_bytes"),
+                item.get("original_content"),
+                item.get("new_content"),
+                item.get("error"),
+                item["created_at"],
                 item["updated_at"],
             ),
         )
@@ -160,8 +170,14 @@ def insert_application_file(item: dict) -> dict:
 
 def update_application_file(file_audit_id: str, updates: dict) -> dict | None:
     allowed = {
-        "workspace_file_id", "repo_file_id", "status", "new_sha256", "new_size_bytes",
-        "new_content", "error", "updated_at",
+        "workspace_file_id",
+        "repo_file_id",
+        "status",
+        "new_sha256",
+        "new_size_bytes",
+        "new_content",
+        "error",
+        "updated_at",
     }
     columns, params = [], []
     for key, value in updates.items():

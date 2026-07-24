@@ -175,7 +175,9 @@ class ProviderRuntimeService:
                 client = build_client(provider, model, num_predict=max_tokens)
                 if stream:
                     partial = ""
+                    thinking = ""
                     stream_usage: dict[str, int | None] = {}
+                    finish_reason: str | None = None
                     store.update_request(request["id"], status="streaming")
                     for event in client.chat_stream(messages, num_predict=max_tokens):
                         if cancelled and cancelled.is_set():
@@ -193,7 +195,11 @@ class ProviderRuntimeService:
                         if event.get("type") == "chunk":
                             partial += event.get("content", "")
                             self._partial(request["id"], partial)
+                        elif event.get("type") == "thinking":
+                            thinking += event.get("content", "")
+                            self._thinking(request["id"], thinking)
                         elif event.get("type") == "done":
+                            finish_reason = event.get("finish_reason")
                             stream_usage = {
                                 key: event.get(key)
                                 for key in ("prompt_tokens", "completion_tokens", "total_tokens")
@@ -206,11 +212,13 @@ class ProviderRuntimeService:
                 else:
                     result = client.chat_with_metadata(messages, num_predict=max_tokens)
                     result_content = result.content
+                    thinking = result.thinking or ""
                     usage = {
                         "prompt_tokens": result.prompt_tokens,
                         "completion_tokens": result.completion_tokens,
                         "total_tokens": result.total_tokens,
                     }
+                    finish_reason = result.finish_reason
                 store.record_rate(
                     route["route_name"],
                     provider["provider_type"],
@@ -230,6 +238,8 @@ class ProviderRuntimeService:
                     content=result_content,
                     usage=usage,
                     latency=int((time.perf_counter() - started) * 1000),
+                    thinking=thinking,
+                    finish_reason=finish_reason,
                 )
             except Exception as exc:
                 category, message, error_redaction = safe_error(exc)
@@ -253,6 +263,8 @@ class ProviderRuntimeService:
                             content=result.content,
                             usage={"total_tokens": result.total_tokens},
                             latency=int((time.perf_counter() - started) * 1000),
+                            thinking=result.thinking,
+                            finish_reason=result.finish_reason,
                         )
                     except Exception as retry_exc:
                         category, message, redaction = safe_error(retry_exc)
@@ -277,6 +289,13 @@ class ProviderRuntimeService:
         metadata["partial_response"] = safe
         store.update_request(request_id, metadata=metadata)
 
+    def _thinking(self, request_id: str, thinking: str) -> None:
+        current = store.get_request(request_id) or {}
+        metadata = current.get("metadata") or {}
+        safe, _ = safe_value(thinking)
+        metadata["thinking"] = safe
+        store.update_request(request_id, metadata=metadata)
+
     def _finish(
         self,
         request_id,
@@ -291,10 +310,17 @@ class ProviderRuntimeService:
         usage=None,
         latency=None,
         partial=None,
+        thinking=None,
+        finish_reason=None,
     ) -> RuntimeResult:
         metadata = (store.get_request(request_id) or {}).get("metadata") or {}
         if partial is not None:
             metadata["partial_response"] = partial
+        if thinking:
+            safe_thinking, _ = safe_value(thinking)
+            metadata["thinking"] = safe_thinking
+        if finish_reason:
+            metadata["finish_reason"] = finish_reason
         store.update_request(
             request_id,
             status=status,
@@ -324,6 +350,7 @@ class ProviderRuntimeService:
             retry_count=retries,
             fallback_chain=fallback,
             redaction_summary=redaction,
+            finish_reason=finish_reason,
         )
 
     def start_stream(self, **kwargs) -> dict:

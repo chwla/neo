@@ -4,9 +4,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api.routes.agent_framework import router as agent_framework_router
 from app.api.routes.accounts import router as accounts_router
+from app.api.routes.accounts import session_for
+from app.api.routes.agent_framework import router as agent_framework_router
 from app.api.routes.agentic import router as agentic_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.agents import task_router as agent_task_router
@@ -15,10 +17,13 @@ from app.api.routes.code_index import router as code_index_router
 from app.api.routes.coding_agent import router as coding_agent_router
 from app.api.routes.command_sandbox import router as command_sandbox_router
 from app.api.routes.context_memory import router as context_memory_router
+from app.api.routes.continuity import router as continuity_router
+from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.files import router as files_router
 from app.api.routes.git import router as git_router
 from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
+from app.api.routes.integration import router as integration_router
 from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
 from app.api.routes.lsp import router as lsp_router
@@ -28,7 +33,6 @@ from app.api.routes.notes import router as notes_router
 from app.api.routes.patches import router as patches_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.provider_runtime import router as provider_runtime_router
-from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.recovery import router as recovery_router
 from app.api.routes.repos import router as repos_router
 from app.api.routes.research import router as research_router
@@ -41,8 +45,6 @@ from app.api.routes.tools import router as tools_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
-from app.api.routes.continuity import router as continuity_router
-from app.api.routes.integration import router as integration_router
 from app.core.config import get_settings
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.agentic_core import initialize_agentic_core_tables
@@ -51,6 +53,8 @@ from app.services.bundles import initialize_bundle_tables
 from app.services.coding_agent.store import initialize_coding_agent_tables
 from app.services.command_sandbox import initialize_command_sandbox_tables
 from app.services.context_memory import initialize_context_memory_tables
+from app.services.continuity import initialize_continuity_tables
+from app.services.evaluation import EvaluationService, initialize_evaluation_tables
 from app.services.files.store import initialize_workspace_file_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
@@ -59,9 +63,13 @@ from app.services.llm_registry.store import initialize_llm_registry_tables
 from app.services.lsp import initialize_lsp_tables
 from app.services.memory_retrieval import initialize_memory_retrieval_tables
 from app.services.notes.store import initialize_notes_tables
+from app.services.profile_accounts import (
+    cleanup_guests,
+    initialize_profile_registry,
+    profile_database,
+)
 from app.services.projects.store import initialize_project_tables
 from app.services.provider_runtime import initialize_provider_runtime_tables
-from app.services.evaluation import EvaluationService, initialize_evaluation_tables
 from app.services.recovery import initialize_recovery_tables
 from app.services.recovery.scanner import RecoveryScanner
 from app.services.research.store import initialize_research_tables
@@ -73,10 +81,6 @@ from app.services.tools import initialize_tool_tables
 from app.services.tools.executor import ToolsService
 from app.services.web_search import initialize_web_search_tables
 from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
-from app.services.continuity import initialize_continuity_tables
-from app.services.profile_accounts import cleanup_guests, initialize_profile_registry, profile_database
-from app.api.routes.accounts import session_for
-from starlette.middleware.base import BaseHTTPMiddleware
 
 
 class ProfileDatabaseMiddleware(BaseHTTPMiddleware):
@@ -181,6 +185,7 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     def remove_temporary_guest_profiles() -> None:
         cleanup_guests()
+
     frontend_dir = Path(get_settings().frontend_dir).resolve()
     index_file = frontend_dir / "index.html"
     assets_dir = frontend_dir / "assets"
@@ -209,7 +214,9 @@ def create_app() -> FastAPI:
                 },
             )
 
-        app.add_api_route("/service-worker.js", retire_legacy_worker, methods=["GET"], include_in_schema=False)
+        app.add_api_route(
+            "/service-worker.js", retire_legacy_worker, methods=["GET"], include_in_schema=False
+        )
         app.add_api_route("/sw.js", retire_legacy_worker, methods=["GET"], include_in_schema=False)
 
         @app.get("/{full_path:path}", include_in_schema=False)

@@ -70,8 +70,7 @@ class GitHubService:
         if item["item_type"] != "issue":
             raise ValueError("Only imported issues can create tasks.")
         desc = (
-            f"Imported from GitHub: {item.get('url') or ''}\n\n"
-            f"{item.get('body_text') or ''}"
+            f"Imported from GitHub: {item.get('url') or ''}\n\n{item.get('body_text') or ''}"
         ).strip()
         task = TasksService().create_task(
             TaskCreate(title=item["title"], description=desc, tags=item.get("labels", []))

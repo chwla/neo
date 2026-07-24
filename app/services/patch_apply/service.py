@@ -32,9 +32,7 @@ class ControlledPatchApplyService:
     def validate(self, artifact_id: str, request: PatchValidateRequest) -> PatchValidationResult:
         return validation_result(artifact_id, request.file_id)
 
-    def apply(
-        self, artifact_id: str, request: PatchApplyRequest
-    ) -> tuple[dict, dict | list[dict]]:
+    def apply(self, artifact_id: str, request: PatchApplyRequest) -> tuple[dict, dict | list[dict]]:
         if request.confirm is not True:
             raise ValueError("Patch application requires confirm=true.")
         try:
@@ -72,9 +70,7 @@ class ControlledPatchApplyService:
                     "applied_at": None,
                 }
             )
-            audit_ids = self._insert_audits(
-                application_id, prepared.files, created_records, now
-            )
+            audit_ids = self._insert_audits(application_id, prepared.files, created_records, now)
         except Exception:
             self._hide_created_records(created_records)
             raise
@@ -144,9 +140,7 @@ class ControlledPatchApplyService:
         return application or store.get_application(application_id), result_files
 
     @staticmethod
-    def _workspace_file(
-        item: PreparedFile, created_records: dict[str, tuple[dict, dict]]
-    ) -> dict:
+    def _workspace_file(item: PreparedFile, created_records: dict[str, tuple[dict, dict]]) -> dict:
         if item.workspace_file:
             return item.workspace_file
         return created_records[item.relative_path][0]
@@ -168,13 +162,9 @@ class ControlledPatchApplyService:
         )
         file_id = str(uuid.uuid4())
         filename = Path(item.relative_path).name
-        existing_mapping = repo_store.get_repo_file_by_path(
-            prepared.repo["id"], item.relative_path
-        )
+        existing_mapping = repo_store.get_repo_file_by_path(prepared.repo["id"], item.relative_path)
         if existing_mapping:
-            existing_file = file_store.get_file(
-                existing_mapping["file_id"], include_deleted=True
-            )
+            existing_file = file_store.get_file(existing_mapping["file_id"], include_deleted=True)
             if not existing_file or not existing_file.get("deleted"):
                 raise ValueError(f"Create target metadata already exists: {item.relative_path}.")
             workspace_file = file_store.update_file(
@@ -193,9 +183,7 @@ class ControlledPatchApplyService:
                     "updated_at": now,
                 },
             )
-            repo_store.update_repo_file_hash(
-                existing_file["id"], digest, len(item.new_bytes)
-            )
+            repo_store.update_repo_file_hash(existing_file["id"], digest, len(item.new_bytes))
             return workspace_file, existing_mapping
         workspace_file = file_store.insert_file(
             {

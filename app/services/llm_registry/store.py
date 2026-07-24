@@ -76,8 +76,7 @@ def initialize_llm_registry_tables() -> None:
             ON workspace_llm_calls(status, created_at);
         """)
         conn.execute(
-            "UPDATE workspace_llm_models SET supports_json = 0 "
-            "WHERE typeof(supports_json) = 'text'"
+            "UPDATE workspace_llm_models SET supports_json = 0 WHERE typeof(supports_json) = 'text'"
         )
         conn.commit()
     finally:
@@ -204,9 +203,7 @@ def _insert(table: str, columns: tuple[str, ...], item: dict[str, Any]) -> dict[
     conn = _connect()
     try:
         placeholders = ", ".join("?" for _ in columns)
-        conn.execute(
-            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})", values
-        )
+        conn.execute(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})", values)
         conn.commit()
         kind = table.removeprefix("workspace_llm_").rstrip("s")
         return get_row(table, kind, item["id"])
@@ -265,10 +262,7 @@ def insert_call(item: dict[str, Any]) -> dict[str, Any]:
     conn = _connect()
     try:
         placeholders = ", ".join("?" for _ in columns)
-        values = [
-            int(item.get(c, False)) if c == "fallback_used" else item.get(c)
-            for c in columns
-        ]
+        values = [int(item.get(c, False)) if c == "fallback_used" else item.get(c) for c in columns]
         conn.execute(
             f"INSERT INTO workspace_llm_calls ({', '.join(columns)}) VALUES ({placeholders})",
             values,

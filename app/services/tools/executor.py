@@ -8,7 +8,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.services.agent_framework.service import AgentDefinitionService
 from app.services.tools import store
-from app.services.tools.mcp import execute_mcp_read_only
+from app.services.tools.mcp import execute_mcp_tool
 from app.services.tools.permissions import (
     ToolPermissionError,
     approval_required,
@@ -52,20 +52,27 @@ class ToolsService:
 
     def list_servers(self, *, include_disabled: bool = True) -> list[ToolServer]:
         return [
-            ToolServer(**item)
-            for item in store.list_servers(include_disabled=include_disabled)
+            ToolServer(**item) for item in store.list_servers(include_disabled=include_disabled)
         ]
 
     def create_server(self, payload: ToolServerCreate) -> ToolServer:
         now = store.now_iso()
         data = payload.model_dump()
+        self._validate_server_config(data)
         data["id"] = data.get("id") or f"server.{_slug(data['name']) or uuid.uuid4()}"
+        if store.get_server(data["id"]):
+            if payload.id:
+                raise ToolValidationError("Tool server ID already exists.")
+            data["id"] = f"{data['id']}.{uuid.uuid4().hex[:12]}"
         return ToolServer(**store.insert_server({**data, "created_at": now, "updated_at": now}))
 
     def update_server(self, server_id: str, payload: ToolServerUpdate) -> ToolServer:
         if not store.get_server(server_id):
             raise ToolValidationError("Tool server not found.")
-        item = store.update_server(server_id, payload.model_dump(exclude_unset=True))
+        updates = payload.model_dump(exclude_unset=True)
+        candidate = {**store.get_server(server_id), **updates}
+        self._validate_server_config(candidate)
+        item = store.update_server(server_id, updates)
         return ToolServer(**item)
 
     def disable_server(self, server_id: str) -> ToolServer:
@@ -83,7 +90,13 @@ class ToolsService:
 
     def create_tool(self, payload: ToolDefinitionCreate) -> ToolDefinition:
         data = payload.model_dump()
+        _reject_plaintext_secrets(data.get("metadata") or {}, "metadata")
+        _reject_plaintext_secrets(data.get("permissions") or {}, "permissions")
         data["id"] = data.get("id") or f"tool.{_slug(data['name']) or uuid.uuid4()}"
+        if store.get_tool(data["id"]):
+            if payload.id:
+                raise ToolValidationError("Tool definition ID already exists.")
+            data["id"] = f"{data['id']}.{uuid.uuid4().hex[:12]}"
         self._validate_server(data.get("server_id"))
         now = store.now_iso()
         return ToolDefinition(**store.insert_tool({**data, "created_at": now, "updated_at": now}))
@@ -93,12 +106,12 @@ class ToolsService:
         if not current:
             raise ToolValidationError("Tool definition not found.")
         updates = payload.model_dump(exclude_unset=True)
+        _reject_plaintext_secrets(updates.get("metadata") or {}, "metadata")
+        _reject_plaintext_secrets(updates.get("permissions") or {}, "permissions")
         self._validate_server(updates.get("server_id"))
         if current.get("built_in"):
             updates = {
-                key: value
-                for key, value in updates.items()
-                if key in {"enabled", "metadata"}
+                key: value for key, value in updates.items() if key in {"enabled", "metadata"}
             }
         return ToolDefinition(**store.update_tool(tool_id, updates))
 
@@ -109,8 +122,7 @@ class ToolsService:
 
     def list_skills(self, *, include_disabled: bool = True) -> list[SkillDefinition]:
         return [
-            SkillDefinition(**item)
-            for item in store.list_skills(include_disabled=include_disabled)
+            SkillDefinition(**item) for item in store.list_skills(include_disabled=include_disabled)
         ]
 
     def create_skill(self, payload: SkillDefinitionCreate) -> SkillDefinition:
@@ -129,9 +141,7 @@ class ToolsService:
             self._validate_tool_ids(updates["tool_ids"])
         if current.get("built_in"):
             updates = {
-                key: value
-                for key, value in updates.items()
-                if key in {"enabled", "metadata"}
+                key: value for key, value in updates.items() if key in {"enabled", "metadata"}
             }
         return SkillDefinition(**store.update_skill(skill_id, updates))
 
@@ -186,6 +196,101 @@ class ToolsService:
         item = store.get_call(call_id)
         return ToolCall(**item) if item else None
 
+    def list_enabled_read_tools(
+        self,
+        capability: str | None = None,
+        *,
+        intent: str | None = None,
+    ) -> list[ToolDefinition]:
+        """Return enabled connector reads ordered by deterministic capability score."""
+
+        candidates: list[tuple[int, dict]] = []
+        wanted = _capability_tokens(f"{capability or ''} {intent or ''}")
+        for item in store.list_tools(include_disabled=False):
+            if item["category"] not in {"read_only", "workspace_read", "external_read"}:
+                continue
+            server = store.get_server(item["server_id"]) if item.get("server_id") else None
+            if not server or server["server_type"] == "builtin" or not server.get("enabled"):
+                continue
+            score = _tool_capability_score(item, wanted)
+            if not wanted or score > 0:
+                candidates.append((score, item))
+        candidates.sort(key=lambda pair: (-pair[0], pair[1]["name"], pair[1]["id"]))
+        return [ToolDefinition(**item) for _, item in candidates]
+
+    def select_enabled_read_tool(
+        self,
+        capability: str,
+        *,
+        intent: str | None = None,
+    ) -> ToolDefinition | None:
+        """Select only a unique high-confidence read tool.
+
+        Ambiguous or weak similarity deliberately returns ``None`` so chat can
+        ask for confirmation or fall back instead of calling an arbitrary tool.
+        """
+
+        ranked = self.list_enabled_read_tools(capability, intent=intent)
+        if not ranked:
+            return None
+        wanted = _capability_tokens(f"{capability} {intent or ''}")
+        best_score = _tool_capability_score(ranked[0].model_dump(), wanted)
+        if best_score < 6:
+            return None
+        if len(ranked) > 1:
+            next_score = _tool_capability_score(ranked[1].model_dump(), wanted)
+            if next_score == best_score:
+                return None
+        return ranked[0]
+
+    def invoke_connector(
+        self,
+        *,
+        arguments: dict[str, Any],
+        capability: str | None = None,
+        intent: str | None = None,
+        tool_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Stable chat-facing connector invocation primitive.
+
+        Capability selection is read-only. Explicit write tool IDs enter the
+        existing approval queue and never execute in this call.
+        """
+
+        if tool_id:
+            tool = store.get_tool(tool_id)
+            if not tool:
+                raise ToolValidationError("Tool definition not found.")
+        else:
+            if not capability:
+                raise ToolValidationError("A capability or explicit tool_id is required.")
+            selected = self.select_enabled_read_tool(capability, intent=intent)
+            if selected is None:
+                return {
+                    "status": "not_selected",
+                    "reason": "No unique high-confidence enabled read connector matched.",
+                    "capability": capability,
+                }
+            tool = selected.model_dump()
+        call = self.request_call(ToolCallCreate(tool_id=tool["id"], input=arguments, run_id=run_id))
+        result = {
+            "status": call.status,
+            "call_id": call.id,
+            "approval_status": call.approval_status,
+            "approval_required": call.approval_status == "pending",
+            "tool": {
+                "id": tool["id"],
+                "name": tool["name"],
+                "display_name": tool.get("display_name"),
+                "category": tool["category"],
+            },
+            "result": call.output.get("result") if call.output else None,
+            "provenance": call.output.get("provenance") if call.output else None,
+            "error": call.error,
+        }
+        return result
+
     def _create_initial_call(
         self,
         payload: ToolCallCreate,
@@ -239,7 +344,7 @@ class ToolsService:
         server = store.get_server(tool["server_id"]) if tool.get("server_id") else None
         start = time.monotonic()
         try:
-            output = execute_tool(tool, server, call["input"])
+            output = _redact_sensitive(execute_tool(tool, server, call["input"]))
             return store.update_call(
                 call_id,
                 {
@@ -293,6 +398,31 @@ class ToolsService:
             if not store.get_tool(tool_id):
                 raise ToolValidationError(f"Tool '{tool_id}' not found.")
 
+    @staticmethod
+    def _validate_server_config(server: dict) -> None:
+        metadata = server.get("metadata") or {}
+        if server.get("server_type") == "http":
+            if not server.get("url"):
+                raise ToolValidationError("HTTP tool servers require a URL.")
+            from app.services.tools.security import validate_connector_url
+
+            validate_connector_url(
+                server["url"],
+                allow_trusted_localhost=bool(metadata.get("trusted_localhost")),
+                resolve=False,
+            )
+        elif server.get("server_type") == "stdio":
+            if metadata.get("trusted_stdio") is not True:
+                raise ToolValidationError("Stdio servers require metadata.trusted_stdio=true.")
+            if not server.get("command_json"):
+                raise ToolValidationError("Stdio tool servers require command_json.")
+        _reject_plaintext_secrets(metadata)
+        for target, source in (server.get("env_json") or {}).items():
+            if not _valid_env_name(str(target)) or not _valid_env_name(str(source)):
+                raise ToolValidationError(
+                    "Tool server env_json must map environment names to environment references."
+                )
+
 
 def validate_input_schema(schema: dict[str, Any], payload: dict[str, Any]) -> None:
     if not schema:
@@ -309,21 +439,8 @@ def validate_input_schema(schema: dict[str, Any], payload: dict[str, Any]) -> No
         if extra:
             raise ToolValidationError(f"Unexpected input fields: {', '.join(extra)}.")
     for key, spec in properties.items():
-        if key not in payload:
-            continue
-        value = payload[key]
-        expected = spec.get("type")
-        if expected == "string" and not isinstance(value, str):
-            raise ToolValidationError(f"Input '{key}' must be a string.")
-        if expected == "integer" and not isinstance(value, int):
-            raise ToolValidationError(f"Input '{key}' must be an integer.")
-        if isinstance(value, str) and spec.get("maxLength") and len(value) > spec["maxLength"]:
-            raise ToolValidationError(f"Input '{key}' exceeds max length.")
-        if isinstance(value, int):
-            if "minimum" in spec and value < spec["minimum"]:
-                raise ToolValidationError(f"Input '{key}' is below minimum.")
-            if "maximum" in spec and value > spec["maximum"]:
-                raise ToolValidationError(f"Input '{key}' exceeds maximum.")
+        if key in payload:
+            _validate_schema_value(spec, payload[key], f"Input '{key}'", depth=0)
 
 
 def execute_tool(tool: dict, server: dict | None, payload: dict[str, Any]) -> dict[str, Any]:
@@ -339,10 +456,15 @@ def execute_tool(tool: dict, server: dict | None, payload: dict[str, Any]) -> di
             "created": False,
             "message": "Approved workspace write recorded; no automatic write performed.",
         }
+    if server and executor == "mcp":
+        return execute_mcp_tool(server, tool, payload)
+    if server and executor == "rest":
+        from app.services.tools.rest import execute_rest_tool
+
+        return execute_rest_tool(server, tool, payload)
     if server and server["server_type"] in {"stdio", "http"}:
-        if tool["category"] not in {"read_only", "external_read"}:
-            raise ToolValidationError("MCP write tools are approval-gated but not executable yet.")
-        return execute_mcp_read_only(server, tool, payload)
+        # Backwards-compatible manually-created MCP definitions.
+        return execute_mcp_tool(server, tool, payload)
     raise ToolValidationError("No safe executor is available for this tool.")
 
 
@@ -365,3 +487,154 @@ def _summarize_text(payload: dict[str, Any]) -> dict[str, Any]:
     if len(words) > len(summary.split(" ")):
         summary = f"{summary}…"
     return {"summary": summary, "input_words": len(words)}
+
+
+def _validate_schema_value(schema: dict, value: Any, label: str, *, depth: int) -> None:
+    if depth > 12:
+        raise ToolValidationError("Tool input schema nesting exceeds the limit.")
+    if value is None and schema.get("nullable") is True:
+        return
+    expected = schema.get("type")
+    valid = {
+        "string": isinstance(value, str),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "number": isinstance(value, int | float) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        None: True,
+    }.get(expected, True)
+    if not valid:
+        raise ToolValidationError(f"{label} must be {expected}.")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ToolValidationError(f"{label} is not an allowed value.")
+    if isinstance(value, str):
+        if schema.get("maxLength") is not None and len(value) > int(schema["maxLength"]):
+            raise ToolValidationError(f"{label} exceeds max length.")
+        if schema.get("minLength") is not None and len(value) < int(schema["minLength"]):
+            raise ToolValidationError(f"{label} is shorter than the minimum length.")
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ToolValidationError(f"{label} is below minimum.")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise ToolValidationError(f"{label} exceeds maximum.")
+    if isinstance(value, list):
+        if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+            raise ToolValidationError(f"{label} contains too many items.")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _validate_schema_value(item_schema, item, f"{label}[{index}]", depth=depth + 1)
+    if isinstance(value, dict):
+        required = schema.get("required") or []
+        missing = [key for key in required if key not in value]
+        if missing:
+            raise ToolValidationError(f"{label} is missing: {', '.join(missing)}.")
+        properties = schema.get("properties") or {}
+        if schema.get("additionalProperties") is False:
+            extra = [key for key in value if key not in properties]
+            if extra:
+                raise ToolValidationError(f"{label} has unexpected fields: {', '.join(extra)}.")
+        for key, child in properties.items():
+            if key in value and isinstance(child, dict):
+                _validate_schema_value(
+                    child,
+                    value[key],
+                    f"{label}.{key}",
+                    depth=depth + 1,
+                )
+
+
+def _capability_tokens(value: str) -> set[str]:
+    ignored = {
+        "a",
+        "an",
+        "and",
+        "for",
+        "from",
+        "get",
+        "please",
+        "show",
+        "the",
+        "to",
+        "tool",
+        "use",
+        "with",
+    }
+    tokens = {
+        "".join(character for character in item if character.isalnum())
+        for item in value.lower().replace("_", " ").replace("-", " ").split()
+    }
+    return {item for item in tokens if len(item) >= 2 and item not in ignored}
+
+
+def _tool_capability_score(tool: dict, wanted: set[str]) -> int:
+    if not wanted:
+        return 0
+    metadata = tool.get("metadata") or {}
+    name_tokens = _capability_tokens(f"{tool.get('name', '')} {tool.get('display_name', '')}")
+    capability_tokens = _capability_tokens(
+        " ".join(str(item) for item in metadata.get("capabilities") or [])
+    )
+    description_tokens = _capability_tokens(str(tool.get("description") or ""))
+    normalized_name = "".join(sorted(name_tokens))
+    normalized_wanted = "".join(sorted(wanted))
+    exact_name = normalized_name == normalized_wanted and bool(normalized_name)
+    return (
+        (12 if exact_name else 0)
+        + 6 * len(wanted & name_tokens)
+        + 4 * len(wanted & capability_tokens)
+        + len(wanted & description_tokens)
+    )
+
+
+def _reject_plaintext_secrets(value: Any, path: str = "metadata") -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if normalized in {
+                "api_key",
+                "apikey",
+                "access_token",
+                "refresh_token",
+                "bearer_token",
+                "client_secret",
+                "password",
+                "secret",
+            } and item not in (None, "", False):
+                raise ToolValidationError(
+                    f"Plaintext credential field '{path}.{key}' must use the credential vault."
+                )
+            _reject_plaintext_secrets(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_plaintext_secrets(item, f"{path}[{index}]")
+
+
+def _valid_env_name(value: str) -> bool:
+    return bool(value) and value.replace("_", "A").isalnum() and not value[0].isdigit()
+
+
+def _redact_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if normalized in {
+                "access_token",
+                "api_key",
+                "apikey",
+                "authorization",
+                "bearer_token",
+                "client_secret",
+                "password",
+                "refresh_token",
+                "secret",
+            }:
+                result[key] = "[REDACTED]"
+            else:
+                result[key] = _redact_sensitive(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value

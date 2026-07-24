@@ -25,10 +25,18 @@ import EvaluationHarness from "./EvaluationHarness.jsx";
 import WorkspaceOrchestration from "./WorkspaceOrchestration.jsx";
 import Continuity from "./Continuity.jsx";
 import ProfilePicker from "./ProfilePicker.jsx";
+import {
+  formatDuration,
+  formatResponseKind,
+  formatTokens,
+  splitGeneratedText,
+} from "./chatPresentation.js";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 const MEMORY_TYPES = [
   "identity",
+  "education",
+  "activity",
   "preference",
   "goal_related",
   "project_related",
@@ -38,6 +46,8 @@ const MEMORY_TYPES = [
 ];
 const MEMORY_TABS = [
   ["profile", "Profile"],
+  ["education", "Education"],
+  ["activities", "Activities"],
   ["preferences", "Preferences"],
   ["goals", "Goals"],
   ["projects", "Projects"],
@@ -76,6 +86,19 @@ function clientRequestId() {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function browserChatContext() {
+  let timezone = null;
+  try {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    timezone = null;
+  }
+  return {
+    timezone,
+    locale: navigator.language || null,
+  };
 }
 
 function formatAgentStatus(value) {
@@ -134,6 +157,14 @@ function parseQueryId(params, key) {
 }
 
 function parsePermalink(pathname = window.location.pathname) {
+  const projectChatMatch = pathname.match(/^\/projects\/(\d+)\/chat\/(\d+)\/?$/);
+  if (projectChatMatch) {
+    return {
+      type: "projectChat",
+      projectId: Number(projectChatMatch[1]),
+      id: Number(projectChatMatch[2]),
+    };
+  }
   const chatMatch = pathname.match(/^\/chats\/(\d+)\/?$/);
   if (chatMatch) {
     return { type: "chat", id: Number(chatMatch[1]) };
@@ -155,8 +186,8 @@ function updatePermalink(path, { replace = false } = {}) {
   }
 }
 
-function chatPermalink(chatId) {
-  return `/chats/${chatId}`;
+function chatPermalink(chatId, projectId = null) {
+  return projectId ? `/projects/${encodeURIComponent(projectId)}/chat/${chatId}` : `/chats/${chatId}`;
 }
 
 function projectPermalink(projectId) {
@@ -347,14 +378,27 @@ function Sidebar({
               + New Chat
             </button>
             {project.chats.map((chat) => (
-              <a
+              <div
+                className={`project-chat-item ${chat.id === activeChatId ? "active" : ""}`}
                 key={chat.id}
-                className={`project-chat-link ${chat.id === activeChatId ? "active" : ""}`}
-                href={chatPermalink(chat.id)}
-                onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
               >
-                {chat.title}
-              </a>
+                <a
+                  className="project-chat-link"
+                  href={chatPermalink(chat.id, project.id)}
+                  onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
+                >
+                  {chat.title}
+                </a>
+                <button
+                  className="project-chat-delete"
+                  type="button"
+                  title="Delete chat"
+                  aria-label={`Delete chat ${chat.title}`}
+                  onClick={() => onDeleteChat(chat)}
+                >
+                  X
+                </button>
+              </div>
             ))}
           </details>
         ))
@@ -402,58 +446,12 @@ function Sidebar({
   );
 }
 
-function formatTokens(message) {
-  return Number.isFinite(message.total_tokens) ? `${message.total_tokens} tokens` : "Tokens n/a";
-}
-
-function formatDuration(durationMs) {
-  if (!Number.isFinite(durationMs)) {
-    return "Time n/a";
-  }
-  if (durationMs < 1000) {
-    return `${durationMs} ms`;
-  }
-  const seconds = durationMs / 1000;
-  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
-}
-
 function formatElapsedDuration(durationMs) {
   if (!Number.isFinite(durationMs)) {
     return "0.0 s";
   }
   const seconds = durationMs / 1000;
   return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
-}
-
-function splitGeneratedText(rawContent) {
-  const openTag = "<think>";
-  const closeTag = "</think>";
-  const lowerContent = rawContent.toLowerCase();
-  const thinkingParts = [];
-  const contentParts = [];
-  let cursor = 0;
-
-  while (cursor < rawContent.length) {
-    const start = lowerContent.indexOf(openTag, cursor);
-    if (start === -1) {
-      contentParts.push(rawContent.slice(cursor));
-      break;
-    }
-    contentParts.push(rawContent.slice(cursor, start));
-    const thinkingStart = start + openTag.length;
-    const end = lowerContent.indexOf(closeTag, thinkingStart);
-    if (end === -1) {
-      thinkingParts.push(rawContent.slice(thinkingStart));
-      break;
-    }
-    thinkingParts.push(rawContent.slice(thinkingStart, end));
-    cursor = end + closeTag.length;
-  }
-
-  return {
-    content: contentParts.join("").trim(),
-    thinking: thinkingParts.join("\n\n").trim(),
-  };
 }
 
 function previousUserMessage(messages, message) {
@@ -481,8 +479,13 @@ function ChatMessage({
   thinkingOpen,
 }) {
   const isUser = message.role === "user";
+  const hasThinking = Boolean(message.thinking?.trim());
   const isEditing = isUser && editingMessageId === message.id;
   const previousUser = isUser ? null : previousUserMessage(messages, message);
+  const metadataItems = isUser
+    ? []
+    : [formatResponseKind(message), formatTokens(message), formatDuration(message.duration_ms)]
+      .filter(Boolean);
 
   return (
     <article className={`neo-chat-message ${isUser ? "user" : "assistant"}`}>
@@ -514,10 +517,9 @@ function ChatMessage({
             {message.failed && (
               <div className="chat-message-status">Not sent. Edit and try again.</div>
             )}
-            {!isUser && (
+            {!isUser && metadataItems.length > 0 && (
               <div className="message-meta">
-                <span>{formatTokens(message)}</span>
-                <span>{formatDuration(message.duration_ms)}</span>
+                {metadataItems.map((item) => <span key={item}>{item}</span>)}
               </div>
             )}
             <div className="message-actions">
@@ -537,7 +539,15 @@ function ChatMessage({
                   >
                     Rerun
                   </button>
-                  <button type="button" onClick={() => onToggleThinking(message.id)}>
+                  <button
+                    type="button"
+                    title={
+                      hasThinking
+                        ? "Show the model reasoning returned for this response"
+                        : "Explain why reasoning is unavailable for this response"
+                    }
+                    onClick={() => onToggleThinking(message.id)}
+                  >
                     {thinkingOpen ? "Hide thinking" : "View thinking"}
                   </button>
                 </>
@@ -545,7 +555,18 @@ function ChatMessage({
             </div>
             {!isUser && thinkingOpen && (
               <div className="thinking-panel">
-                {message.thinking || "No thinking process was returned for this message."}
+                {hasThinking ? (
+                  message.thinking
+                ) : (
+                  <>
+                    <strong>Reasoning unavailable for this response.</strong>
+                    <p>
+                      The selected model returned an answer but did not send a reasoning trace.
+                      Neo does not invent one. Choose a reasoning-capable model to view model-provided
+                      reasoning when it is available.
+                    </p>
+                  </>
+                )}
               </div>
             )}
           </>
@@ -567,7 +588,7 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
           <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>
         </div>
         <div className="thinking-panel live-thinking-panel">
-          {hasThinking ? generation.thinking : "Waiting for response..."}
+          {hasThinking ? generation.thinking : (generation?.statusDetail || "Waiting for response...")}
         </div>
         {hasContent && <div className="chat-content live-answer">{generation.content}</div>}
       </div>
@@ -815,7 +836,7 @@ function ChatComposer({
 
 function WebSearchSettingsDialog({ onClose }) {
   const [searchConfig, setSearchConfig] = useState(null);
-  const [provider, setProvider] = useState("searxng");
+  const [provider, setProvider] = useState("duckduckgo");
   const [searxngInstance, setSearxngInstance] = useState("http://localhost:8080");
   const [tavilyKey, setTavilyKey] = useState("");
   const [loading, setLoading] = useState(true);
@@ -836,7 +857,7 @@ function WebSearchSettingsDialog({ onClose }) {
           return;
         }
         setSearchConfig(config);
-        setProvider(config.provider || "searxng");
+        setProvider(config.provider || "duckduckgo");
         setSearxngInstance(config.searxng_instance || "http://localhost:8080");
       } catch (requestError) {
         if (!cancelled) {
@@ -867,7 +888,7 @@ function WebSearchSettingsDialog({ onClose }) {
         tavily_key: provider === "tavily" ? tavilyKey : undefined,
       });
       setSearchConfig(config);
-      setProvider(config.provider || "searxng");
+      setProvider(config.provider || "duckduckgo");
       setSearxngInstance(config.searxng_instance || "http://localhost:8080");
       setTavilyKey("");
       setStatus("Saved.");
@@ -907,8 +928,11 @@ function WebSearchSettingsDialog({ onClose }) {
           <form onSubmit={saveSearchConfig}>
             <Field label="Provider">
               <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+                <option value="duckduckgo">DuckDuckGo</option>
+                <option value="bing_html">Bing</option>
                 <option value="searxng">SearXNG</option>
                 <option value="tavily">Tavily</option>
+                <option value="disabled">Disabled</option>
               </select>
             </Field>
 
@@ -1864,10 +1888,49 @@ function GeneralMemoryForm({ record, refresh, setError }) {
             onChange={(event) => setImportance(event.target.value)}
           />
         </Field>
+        <div className="memory-provenance">
+          <span>Slot: {record.canonical_slot || "general"}</span>
+          {record.expires_at && <span>Expires: {formatAgentTime(record.expires_at)}</span>}
+          <span>
+            Sources: {record.sources?.filter((source) => source.is_active).length || 0}
+          </span>
+        </div>
         <FormActions onDelete={remove} saving={saving} />
       </form>
     </MemoryCard>
   );
+}
+
+function TypedMemoryRecords({ records, kind }) {
+  if (!records.length) {
+    return <p className="dialog-caption">No {kind.toLowerCase()} stored yet.</p>;
+  }
+  return records.map((record) => {
+    const education = kind === "Education";
+    const summary = education
+      ? [record.degree, record.field_of_study, record.institution].filter(Boolean).join(" · ")
+      : record.activity;
+    return (
+      <MemoryCard summary={summary} key={`${kind}-${record.id}`}>
+        <div className="typed-memory-details">
+          {education ? (
+            <>
+              <p><strong>Institution:</strong> {record.institution}</p>
+              <p><strong>Degree:</strong> {record.degree || "Not specified"}</p>
+              <p><strong>Field:</strong> {record.field_of_study || "Not specified"}</p>
+              <p><strong>Graduation date:</strong> {record.graduation_date || "Not stated"}</p>
+            </>
+          ) : (
+            <>
+              <p><strong>Category:</strong> {record.category}</p>
+              <p><strong>Started:</strong> {formatAgentTime(record.started_at)}</p>
+              <p><strong>Expires:</strong> {formatAgentTime(record.expires_at)}</p>
+            </>
+          )}
+        </div>
+      </MemoryCard>
+    );
+  });
 }
 
 function MemoryDialog({ onClose, refreshSidebar }) {
@@ -1901,6 +1964,10 @@ function MemoryDialog({ onClose, refreshSidebar }) {
     const editorProps = { refresh, setError };
     if (activeTab === "profile") {
       content = <ProfileEditor records={data.profile} {...editorProps} />;
+    } else if (activeTab === "education") {
+      content = <TypedMemoryRecords records={data.education} kind="Education" />;
+    } else if (activeTab === "activities") {
+      content = <TypedMemoryRecords records={data.activities} kind="Activities" />;
     } else if (activeTab === "preferences") {
       content = <PreferenceEditor records={data.preferences} {...editorProps} />;
     } else if (activeTab === "goals") {
@@ -1967,6 +2034,7 @@ function MemoryDialog({ onClose, refreshSidebar }) {
 function NeoApp({ profile, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
+  const [chatReady, setChatReady] = useState(false);
   const [messages, setMessages] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
@@ -2031,6 +2099,7 @@ function NeoApp({ profile, onSwitchProfile }) {
   const [chatAgentMessage, setChatAgentMessage] = useState("");
   const [chatAgentDetailsOpen, setChatAgentDetailsOpen] = useState(false);
   const bootstrapped = useRef(false);
+  const createChatPromiseRef = useRef(null);
   const visibleChatIdRef = useRef(null);
 
   const refreshSidebar = useCallback(async () => {
@@ -2095,7 +2164,7 @@ function NeoApp({ profile, onSwitchProfile }) {
     setSelectedProjectId(thread.chat.project_id);
     localStorage.setItem("neo-active-chat-id", String(thread.chat.id));
     if (options.history !== "none") {
-      updatePermalink(chatPermalink(thread.chat.id), { replace: options.history === "replace" });
+      updatePermalink(chatPermalink(thread.chat.id, thread.chat.project_id), { replace: options.history === "replace" });
     }
     const generation = await api.activeChatGeneration(thread.chat.id).catch(() => null);
     if (generation) {
@@ -2106,6 +2175,8 @@ function NeoApp({ profile, onSwitchProfile }) {
       setStreamingAssistant({
         rawContent: generation.partial_response || "",
         ...splitGeneratedText(generation.partial_response || ""),
+        thinking: generation.thinking || splitGeneratedText(generation.partial_response || "").thinking,
+        statusDetail: generation.status_detail || "",
       });
     } else {
       setActiveGenerationId(null);
@@ -2115,16 +2186,29 @@ function NeoApp({ profile, onSwitchProfile }) {
 
   const createActiveChat = useCallback(
     async (projectId = null, options = {}) => {
-      const chat = await api.createChat(projectId);
-      setActiveChat(chat);
-      if (options.resetMessages !== false) {
-        setMessages([]);
+      if (createChatPromiseRef.current) {
+        return createChatPromiseRef.current;
       }
-      setSelectedProjectId(chat.project_id);
-      localStorage.setItem("neo-active-chat-id", String(chat.id));
-      updatePermalink(chatPermalink(chat.id), { replace: options.history === "replace" });
-      await refreshSidebar();
-      return chat;
+      const creation = (async () => {
+        const chat = await api.createChat(projectId);
+        setActiveChat(chat);
+        if (options.resetMessages !== false) {
+          setMessages([]);
+        }
+        setSelectedProjectId(chat.project_id);
+        localStorage.setItem("neo-active-chat-id", String(chat.id));
+        updatePermalink(chatPermalink(chat.id, chat.project_id), { replace: options.history === "replace" });
+        await refreshSidebar();
+        return chat;
+      })();
+      createChatPromiseRef.current = creation;
+      try {
+        return await creation;
+      } finally {
+        if (createChatPromiseRef.current === creation) {
+          createChatPromiseRef.current = null;
+        }
+      }
     },
     [refreshSidebar],
   );
@@ -2141,7 +2225,13 @@ function NeoApp({ profile, onSwitchProfile }) {
         const generation = await api.chatGeneration(activeChat.id, activeGenerationId);
         if (cancelled) return;
         const rawContent = generation.partial_response || "";
-        setStreamingAssistant({ rawContent, ...splitGeneratedText(rawContent) });
+        const parsed = splitGeneratedText(rawContent);
+        setStreamingAssistant({
+          rawContent,
+          ...parsed,
+          thinking: generation.thinking || parsed.thinking,
+          statusDetail: generation.status_detail || "",
+        });
         if (generation.status === "completed") {
           await loadChat(activeChat.id, { history: "none" });
           if (!cancelled) {
@@ -2191,6 +2281,7 @@ function NeoApp({ profile, onSwitchProfile }) {
 
     async function bootstrap() {
       setStatusError("");
+      setChatReady(false);
       try {
         const nextSidebar = await refreshSidebar();
         try {
@@ -2215,7 +2306,7 @@ function NeoApp({ profile, onSwitchProfile }) {
           return;
         }
 
-        if (permalink?.type === "chat") {
+        if (permalink?.type === "chat" || permalink?.type === "projectChat") {
           try {
             await loadChat(permalink.id, { history: "replace" });
           } catch {
@@ -2283,6 +2374,8 @@ function NeoApp({ profile, onSwitchProfile }) {
         clearSidebarQueryActions();
       } catch (error) {
         setStatusError(errorMessage(error));
+      } finally {
+        setChatReady(true);
       }
     }
 
@@ -2292,7 +2385,7 @@ function NeoApp({ profile, onSwitchProfile }) {
   useEffect(() => {
     async function restorePermalink() {
       const permalink = parsePermalink();
-      if (permalink?.type === "chat") {
+      if (permalink?.type === "chat" || permalink?.type === "projectChat") {
         setShowProjects(false);
         setShowTasks(false);
         setShowNotes(false);
@@ -2376,7 +2469,7 @@ function NeoApp({ profile, onSwitchProfile }) {
     setShowProjects(false);
     setInitialProjectId(null);
     if (activeChat?.id) {
-      updatePermalink(chatPermalink(activeChat.id));
+      updatePermalink(chatPermalink(activeChat.id, activeChat.project_id));
       return;
     }
     const storedChatId = Number(localStorage.getItem("neo-active-chat-id"));
@@ -2476,6 +2569,7 @@ function NeoApp({ profile, onSwitchProfile }) {
         cleaned,
         selectedLlmId || null,
         clientRequestId(),
+        browserChatContext(),
       );
       setMessages((current) => {
         const index = current.findIndex((item) => item.id === message.id);
@@ -2498,7 +2592,7 @@ function NeoApp({ profile, onSwitchProfile }) {
   }
 
   async function sendPrompt(prompt) {
-    if (!prompt || sending) {
+    if (!prompt || sending || !chatReady) {
       return;
     }
 
@@ -2529,6 +2623,7 @@ function NeoApp({ profile, onSwitchProfile }) {
         prompt,
         selectedLlmId || null,
         clientRequestId(),
+        browserChatContext(),
       );
       setActiveGenerationId(result.generation.id);
     } catch (error) {
@@ -2907,7 +3002,7 @@ function NeoApp({ profile, onSwitchProfile }) {
           onChange={setComposerValue}
           onSubmit={handleComposerSubmit}
           disabled={chatMode === "chatbot"
-            ? sending
+            ? sending || !chatReady || !activeChat?.id
             : chatAgentBusy || agentPlanning || ACTIVE_AGENT_RUN_STATUSES.has(chatAgentRun?.run?.status)}
           llms={llms}
           llmId={selectedLlmId}

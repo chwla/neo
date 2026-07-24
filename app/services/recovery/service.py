@@ -44,7 +44,7 @@ class RecoveryService:
         if run_type in (None, "coding_agent"):
             runs, _ = coding_store.list_runs(limit=limit)
             items.extend(self.summary("coding_agent", item["id"]) for item in runs)
-        items.sort(key=lambda item: (item.events[0].created_at if item.events else ""), reverse=True)
+        items.sort(key=lambda item: item.events[0].created_at if item.events else "", reverse=True)
         return {"runs": items[:limit], "total": len(items)}
 
     def detail(self, run_type: str, run_id: str) -> dict:
@@ -83,7 +83,11 @@ class RecoveryService:
                 raise RecoveryValidationError("Coding-agent run not found.")
             steps = agent_store.list_steps(run["agent_run_id"])
             pending = next(
-                (a for a in reversed(coding_store.list_actions(run_id)) if a["status"] == "pending"),
+                (
+                    a
+                    for a in reversed(coding_store.list_actions(run_id))
+                    if a["status"] == "pending"
+                ),
                 None,
             )
             forks, _ = coding_store.list_runs(limit=500)
@@ -185,7 +189,9 @@ class RecoveryService:
         actions = coding_store.list_actions(run_id)
         pending = next((a for a in reversed(actions) if a["status"] == "pending"), None)
         if pending and pending["action_type"] in {"apply_patch", "run_tests", "create_checkpoint"}:
-            raise RecoveryValidationError("Run is waiting for approval; resume shows the same gate.")
+            raise RecoveryValidationError(
+                "Run is waiting for approval; resume shows the same gate."
+            )
         if run.get("test_run_id"):
             test_run = test_store.get_run(run["test_run_id"])
             if test_run and test_run["status"] in {"failed", "error", "timed_out", "interrupted"}:
@@ -269,7 +275,9 @@ class RecoveryService:
             )
             return self.detail("coding_agent", run_id)
         if run["status"] in {"interrupted", "failed", "waiting_patch_approval"}:
-            instructions = options.get("instructions") or "Retry proposal generation after recovery."
+            instructions = (
+                options.get("instructions") or "Retry proposal generation after recovery."
+            )
             before = run["status"]
             if run["status"] != "waiting_patch_approval":
                 coding_store.update_run(run_id, {"status": "waiting_patch_approval"})
@@ -367,7 +375,9 @@ class RecoveryService:
         )
         return self.detail("coding_agent", fork_id)
 
-    def repair_state(self, run_type: str, run_id: str, *, confirm: bool, target_status: str) -> dict:
+    def repair_state(
+        self, run_type: str, run_id: str, *, confirm: bool, target_status: str
+    ) -> dict:
         require_confirm(confirm, "repair this run state")
         validate_repair_target(run_type, target_status)
         before = self.summary(run_type, run_id).status
@@ -482,18 +492,29 @@ class RecoveryService:
         )
 
     @staticmethod
-    def _recoverability(run_type: str, run: dict[str, Any], pending: dict | None) -> tuple[str, str]:
+    def _recoverability(
+        run_type: str, run: dict[str, Any], pending: dict | None
+    ) -> tuple[str, str]:
         status = run["status"]
         if status == "completed":
             return "fork_only", "Completed runs are read-only unless forked."
         if status == "cancelled":
             return "fork_only", "Cancelled runs cannot resume; fork to continue differently."
         if pending or status in {"waiting_approval", *CODING_WAITING_STATUSES}:
-            return "resumable", "Run is waiting for explicit approval; resume preserves the same gate."
+            return (
+                "resumable",
+                "Run is waiting for explicit approval; resume preserves the same gate.",
+            )
         if status == "failed":
             return "retry_or_fork", "Failed runs can retry a safe failed step or fork."
         if status in {"interrupted", "needs_review"}:
-            return "needs_review", "Interrupted state requires retry, repair, or fork; no action is automatic."
+            return (
+                "needs_review",
+                "Interrupted state requires retry, repair, or fork; no action is automatic.",
+            )
         if status in {"queued", "planning", "running"}:
-            return "scanner_needed", "Run appears active; scanner can mark it recoverable after restart."
+            return (
+                "scanner_needed",
+                "Run appears active; scanner can mark it recoverable after restart.",
+            )
         return "unknown", f"{run_type} run status is {status}."

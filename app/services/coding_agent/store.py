@@ -130,7 +130,12 @@ def insert_run(item: dict) -> dict:
         """,
             values,
         )
-        for column in ("forked_from_run_id", "recovery_state", "last_recoverable_at", "agent_definition_id"):
+        for column in (
+            "forked_from_run_id",
+            "recovery_state",
+            "last_recoverable_at",
+            "agent_definition_id",
+        ):
             if item.get(column) is not None:
                 conn.execute(
                     f"UPDATE workspace_coding_agent_runs SET {column}=? WHERE id=?",

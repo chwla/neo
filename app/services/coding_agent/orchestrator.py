@@ -257,8 +257,13 @@ class CodingAgentOrchestrator:
 
     @staticmethod
     def _web_search_context(objective: str) -> dict:
-        if not re.search(r"\b(api|library|version|dependency|documentation|docs|error)\b", objective, re.I):
-            return {"used": False, "reason": "Objective does not require external technical lookup."}
+        if not re.search(
+            r"\b(api|library|version|dependency|documentation|docs|error)\b", objective, re.I
+        ):
+            return {
+                "used": False,
+                "reason": "Objective does not require external technical lookup.",
+            }
         try:
             from app.services.web_search import ReliableWebSearchService
             from app.services.web_search.types import WebSearchRunRequest
@@ -266,7 +271,11 @@ class CodingAgentOrchestrator:
             result = ReliableWebSearchService().run(
                 WebSearchRunRequest(query=objective, mode="technical", freshness_required=True)
             )
-            return {"used": bool(result.get("evidence")), "run_id": result.get("id"), "reason": result.get("error")}
+            return {
+                "used": bool(result.get("evidence")),
+                "run_id": result.get("id"),
+                "reason": result.get("error"),
+            }
         except (LookupError, RuntimeError, ValueError):
             return {
                 "used": False,

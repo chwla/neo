@@ -58,10 +58,25 @@ def _decode(row: sqlite3.Row | dict | None) -> dict | None:
 
 
 def create_run(query: str, mode: str, plan: dict, provider: dict, status: str = "running") -> dict:
-    value = {"id": str(uuid.uuid4()), "query_text": query, "mode": mode, "status": status, "plan_json": json.dumps(plan), "provider_json": json.dumps(provider), "summary_text": None, "error": None, "created_by": "user", "created_at": now(), "completed_at": None}
+    value = {
+        "id": str(uuid.uuid4()),
+        "query_text": query,
+        "mode": mode,
+        "status": status,
+        "plan_json": json.dumps(plan),
+        "provider_json": json.dumps(provider),
+        "summary_text": None,
+        "error": None,
+        "created_by": "user",
+        "created_at": now(),
+        "completed_at": None,
+    }
     conn = _connect()
     try:
-        conn.execute("INSERT INTO workspace_web_search_runs VALUES (:id,:query_text,:mode,:status,:plan_json,:provider_json,:summary_text,:error,:created_by,:created_at,:completed_at)", value)
+        conn.execute(
+            "INSERT INTO workspace_web_search_runs VALUES (:id,:query_text,:mode,:status,:plan_json,:provider_json,:summary_text,:error,:created_by,:created_at,:completed_at)",
+            value,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -74,7 +89,9 @@ def update_run(run_id: str, **fields: Any) -> dict | None:
     conn = _connect()
     try:
         columns = ",".join(f"{key}=?" for key in fields)
-        conn.execute(f"UPDATE workspace_web_search_runs SET {columns} WHERE id=?", [*fields.values(), run_id])
+        conn.execute(
+            f"UPDATE workspace_web_search_runs SET {columns} WHERE id=?", [*fields.values(), run_id]
+        )
         conn.commit()
     finally:
         conn.close()
@@ -84,7 +101,9 @@ def update_run(run_id: str, **fields: Any) -> dict | None:
 def get_run(run_id: str) -> dict | None:
     conn = _connect()
     try:
-        return _decode(conn.execute("SELECT * FROM workspace_web_search_runs WHERE id=?", (run_id,)).fetchone())
+        return _decode(
+            conn.execute("SELECT * FROM workspace_web_search_runs WHERE id=?", (run_id,)).fetchone()
+        )
     finally:
         conn.close()
 
@@ -92,16 +111,31 @@ def get_run(run_id: str) -> dict | None:
 def list_runs(limit: int = 100) -> list[dict]:
     conn = _connect()
     try:
-        return [_decode(row) or {} for row in conn.execute("SELECT * FROM workspace_web_search_runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()]
+        return [
+            _decode(row) or {}
+            for row in conn.execute(
+                "SELECT * FROM workspace_web_search_runs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        ]
     finally:
         conn.close()
 
 
 def add_source(run_id: str, value: dict) -> dict:
-    value = {**value, "id": str(uuid.uuid4()), "run_id": run_id, "metadata_json": json.dumps(value.get("metadata") or {}), "redaction_summary_json": json.dumps(value.get("redaction_summary") or {}), "created_at": now()}
+    value = {
+        **value,
+        "id": str(uuid.uuid4()),
+        "run_id": run_id,
+        "metadata_json": json.dumps(value.get("metadata") or {}),
+        "redaction_summary_json": json.dumps(value.get("redaction_summary") or {}),
+        "created_at": now(),
+    }
     conn = _connect()
     try:
-        conn.execute("INSERT INTO workspace_web_sources VALUES (:id,:run_id,:url,:canonical_url,:title,:domain,:snippet,:fetched_text,:fetched_at,:source_type,:credibility_score,:freshness_score,:relevance_score,:final_score,:metadata_json,:redaction_summary_json,:created_at)", value)
+        conn.execute(
+            "INSERT INTO workspace_web_sources VALUES (:id,:run_id,:url,:canonical_url,:title,:domain,:snippet,:fetched_text,:fetched_at,:source_type,:credibility_score,:freshness_score,:relevance_score,:final_score,:metadata_json,:redaction_summary_json,:created_at)",
+            value,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -114,19 +148,33 @@ def update_source(source_id: str, **fields: Any) -> dict | None:
     conn = _connect()
     try:
         columns = ",".join(f"{key}=?" for key in fields)
-        conn.execute(f"UPDATE workspace_web_sources SET {columns} WHERE id=?", [*fields.values(), source_id])
+        conn.execute(
+            f"UPDATE workspace_web_sources SET {columns} WHERE id=?", [*fields.values(), source_id]
+        )
         conn.commit()
-        row = conn.execute("SELECT * FROM workspace_web_sources WHERE id=?", (source_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM workspace_web_sources WHERE id=?", (source_id,)
+        ).fetchone()
         return _decode(row)
     finally:
         conn.close()
 
 
 def add_evidence(run_id: str, source_id: str, value: dict) -> dict:
-    value = {**value, "id": str(uuid.uuid4()), "run_id": run_id, "source_id": source_id, "metadata_json": json.dumps(value.get("metadata") or {}), "created_at": now()}
+    value = {
+        **value,
+        "id": str(uuid.uuid4()),
+        "run_id": run_id,
+        "source_id": source_id,
+        "metadata_json": json.dumps(value.get("metadata") or {}),
+        "created_at": now(),
+    }
     conn = _connect()
     try:
-        conn.execute("INSERT INTO workspace_web_evidence VALUES (:id,:run_id,:source_id,:claim,:evidence_text,:citation_label,:confidence,:metadata_json,:created_at)", value)
+        conn.execute(
+            "INSERT INTO workspace_web_evidence VALUES (:id,:run_id,:source_id,:claim,:evidence_text,:citation_label,:confidence,:metadata_json,:created_at)",
+            value,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -139,7 +187,12 @@ def related(table: str, run_id: str) -> list[dict]:
         raise ValueError("Unsupported web search relation.")
     conn = _connect()
     try:
-        return [_decode(row) or {} for row in conn.execute(f"SELECT * FROM {table} WHERE run_id=? ORDER BY created_at", (run_id,)).fetchall()]
+        return [
+            _decode(row) or {}
+            for row in conn.execute(
+                f"SELECT * FROM {table} WHERE run_id=? ORDER BY created_at", (run_id,)
+            ).fetchall()
+        ]
     finally:
         conn.close()
 
@@ -147,7 +200,12 @@ def related(table: str, run_id: str) -> list[dict]:
 def cache_list() -> list[dict]:
     conn = _connect()
     try:
-        return [_decode(row) or {} for row in conn.execute("SELECT * FROM workspace_web_source_cache ORDER BY fetched_at DESC").fetchall()]
+        return [
+            _decode(row) or {}
+            for row in conn.execute(
+                "SELECT * FROM workspace_web_source_cache ORDER BY fetched_at DESC"
+            ).fetchall()
+        ]
     finally:
         conn.close()
 
@@ -169,7 +227,9 @@ def get_cache(canonical_url: str) -> dict | None:
 def delete_cache(cache_id: str) -> bool:
     conn = _connect()
     try:
-        count = conn.execute("DELETE FROM workspace_web_source_cache WHERE id=?", (cache_id,)).rowcount
+        count = conn.execute(
+            "DELETE FROM workspace_web_source_cache WHERE id=?", (cache_id,)
+        ).rowcount
         conn.commit()
         return bool(count)
     finally:
@@ -177,10 +237,20 @@ def delete_cache(cache_id: str) -> bool:
 
 
 def add_conflict(run_id: str, value: dict) -> dict:
-    payload = {**value, "id": str(uuid.uuid4()), "run_id": run_id, "source_ids_json": json.dumps(value.get("source_ids") or []), "metadata_json": json.dumps(value.get("metadata") or {}), "created_at": now()}
+    payload = {
+        **value,
+        "id": str(uuid.uuid4()),
+        "run_id": run_id,
+        "source_ids_json": json.dumps(value.get("source_ids") or []),
+        "metadata_json": json.dumps(value.get("metadata") or {}),
+        "created_at": now(),
+    }
     conn = _connect()
     try:
-        conn.execute("INSERT INTO workspace_web_conflicts VALUES (:id,:run_id,:topic,:claim_a,:claim_b,:source_ids_json,:severity,:metadata_json,:created_at)", payload)
+        conn.execute(
+            "INSERT INTO workspace_web_conflicts VALUES (:id,:run_id,:topic,:claim_a,:claim_b,:source_ids_json,:severity,:metadata_json,:created_at)",
+            payload,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -190,12 +260,27 @@ def add_conflict(run_id: str, value: dict) -> dict:
 def upsert_cache(value: dict) -> None:
     conn = _connect()
     try:
-        existing = conn.execute("SELECT id FROM workspace_web_source_cache WHERE canonical_url=?", (value["canonical_url"],)).fetchone()
-        payload = {**value, "id": existing["id"] if existing else str(uuid.uuid4()), "fetched_at": now(), "metadata_json": json.dumps(value.get("metadata") or {}), "redaction_summary_json": json.dumps(value.get("redaction_summary") or {})}
+        existing = conn.execute(
+            "SELECT id FROM workspace_web_source_cache WHERE canonical_url=?",
+            (value["canonical_url"],),
+        ).fetchone()
+        payload = {
+            **value,
+            "id": existing["id"] if existing else str(uuid.uuid4()),
+            "fetched_at": now(),
+            "metadata_json": json.dumps(value.get("metadata") or {}),
+            "redaction_summary_json": json.dumps(value.get("redaction_summary") or {}),
+        }
         if existing:
-            conn.execute("UPDATE workspace_web_source_cache SET title=:title,domain=:domain,fetched_text=:fetched_text,fetched_at=:fetched_at,metadata_json=:metadata_json,redaction_summary_json=:redaction_summary_json WHERE id=:id", payload)
+            conn.execute(
+                "UPDATE workspace_web_source_cache SET title=:title,domain=:domain,fetched_text=:fetched_text,fetched_at=:fetched_at,metadata_json=:metadata_json,redaction_summary_json=:redaction_summary_json WHERE id=:id",
+                payload,
+            )
         else:
-            conn.execute("INSERT INTO workspace_web_source_cache VALUES (:id,:canonical_url,:title,:domain,:fetched_text,:fetched_at,NULL,NULL,:metadata_json,:redaction_summary_json)", payload)
+            conn.execute(
+                "INSERT INTO workspace_web_source_cache VALUES (:id,:canonical_url,:title,:domain,:fetched_text,:fetched_at,NULL,NULL,:metadata_json,:redaction_summary_json)",
+                payload,
+            )
         conn.commit()
     finally:
         conn.close()

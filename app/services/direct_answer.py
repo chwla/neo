@@ -24,8 +24,40 @@ class DirectMemoryAnswerService:
             return self._single_profile_answer(store, "age", "You are {value} years old.")
         if self._asks_location(lowered):
             return self._single_profile_answer(store, "location", "You are in {value}.")
+        if self._asks_occupation(lowered):
+            return self._single_profile_answer(store, "occupation", "Your occupation is {value}.")
+        if self._asks_education(lowered):
+            return self._education_answer(store, lowered) or self._single_profile_answer(
+                store,
+                "education",
+                "Your education is {value}.",
+            )
+        if self._asks_country(lowered):
+            return self._single_profile_answer(store, "country", "Your country is {value}.")
+        if self._asks_nationality(lowered):
+            return self._single_profile_answer(
+                store,
+                "nationality",
+                "Your nationality is {value}.",
+            )
         if self._asks_goals(lowered):
             return self._goals_answer(store)
+        if self._asks_interests(lowered):
+            return self._interests_answer(store)
+        if self._asks_favorite_chess_player(lowered):
+            return self._preference_answer(
+                store,
+                "favorite_chess_player",
+                "Your favorite chess player is {value}.",
+            )
+        if self._asks_language_priority(lowered):
+            return self._preference_answer(
+                store,
+                "programming_language_priority",
+                "Your programming-language priority is {value}, in that order.",
+            )
+        if self._asks_current_activity(lowered):
+            return self._current_activity_answer(store, lowered)
         if self._asks_working_on(lowered):
             return self._working_on_answer(store)
         if self._asks_projects(lowered):
@@ -106,13 +138,35 @@ class DirectMemoryAnswerService:
         text = memory.memory_text.removeprefix("Current hardware:").strip()
         return f"Your current hardware is {text}."
 
+    def _education_answer(self, store: MemoryStore, lowered: str) -> str | None:
+        records = store.list_education()
+        if not records:
+            return None
+        education = records[0]
+        if re.search(r"\bwhere\b.*\b(?:graduate|study|college|university)\b", lowered):
+            if education.graduation_date is not None:
+                return (
+                    f"You graduated from {education.institution} "
+                    f"on {education.graduation_date.isoformat()}."
+                )
+            return f"You graduated from {education.institution}."
+        if re.search(r"\bwhat\b.*\b(?:study|degree|major|education)\b", lowered):
+            qualification = education.degree or "a degree"
+            if education.field_of_study:
+                qualification = f"{qualification} in {education.field_of_study}"
+            return f"You studied {qualification} at {education.institution}."
+        return education.description or f"You studied at {education.institution}."
+
     def _dedicated_gpu_answer(self, store: MemoryStore) -> str | None:
         memory = self._current_hardware_memory(store)
         if memory is None:
             return None
         lowered = memory.memory_text.lower()
         if "integrated graphics" in lowered or "integrated graphic" in lowered:
-            return "No. Your stored current hardware says you have integrated graphics, not a dedicated GPU."
+            return (
+                "No. Your stored current hardware says you have integrated graphics, "
+                "not a dedicated GPU."
+            )
         if re.search(r"\b(rtx|gtx|nvidia|radeon|amd gpu|dedicated gpu)\b", lowered):
             return f"Your stored current hardware mentions a dedicated GPU: {memory.memory_text}."
         return (
@@ -145,6 +199,26 @@ class DirectMemoryAnswerService:
             )
             lines.append(f"- {goal.goal}{description}")
         return "\n".join(lines)
+
+    def _interests_answer(self, store: MemoryStore) -> str | None:
+        interests = store.active_preferences_by_category("interest")
+        if not interests:
+            return None
+        values = [preference.value for preference in interests[:8]]
+        if len(values) == 1:
+            return f"You are interested in {values[0]}."
+        return "Your stored interests include " + ", ".join(values[:-1]) + f", and {values[-1]}."
+
+    def _current_activity_answer(self, store: MemoryStore, lowered: str) -> str | None:
+        activities = store.list_activities()
+        if not activities:
+            return None
+        if "playing" in lowered or "game" in lowered:
+            activities = [activity for activity in activities if activity.category == "game"]
+        if not activities:
+            return None
+        activity = activities[0]
+        return f"You are currently {activity.activity}."
 
     def _projects_answer(self, store: MemoryStore) -> str:
         from app.models.enums import ProjectStatus
@@ -245,17 +319,84 @@ class DirectMemoryAnswerService:
             )
         )
 
+    def _asks_occupation(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what(?:'s| is) my (?:occupation|job)|what do i do for "
+                r"(?:work|a living)|where do i work)\b",
+                lowered,
+            )
+        )
+
+    def _asks_education(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what(?:'s| is) my education|where do i study|"
+                r"what school|what university|what college|"
+                r"where did i graduate(?: from)?|what did i study(?: in college)?|"
+                r"what(?:'s| is) my (?:degree|major))\b",
+                lowered,
+            )
+        )
+
+    def _asks_country(self, lowered: str) -> bool:
+        return bool(re.search(r"\bwhat(?:'s| is) my country\b", lowered))
+
+    def _asks_nationality(self, lowered: str) -> bool:
+        return bool(re.search(r"\bwhat(?:'s| is) my nationality\b", lowered))
+
     def _asks_goals(self, lowered: str) -> bool:
         return bool(
             re.search(
-                r"\b(what are my goals|what goals do i have|my goals|active goals)\b", lowered
+                r"\b(what are my goals|what goals do i have|"
+                r"(?:show|list|tell me|remind me of) my (?:active )?goals)\b",
+                lowered,
+            )
+        )
+
+    def _asks_interests(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what am i interested in|what are my interests|"
+                r"what do i (?:like|love)|tell me my interests)\b",
+                lowered,
+            )
+        )
+
+    def _asks_favorite_chess_player(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(who is my fa(?:vour|vor|bour)ite chess player|"
+                r"what(?:'s| is) my fa(?:vour|vor|bour)ite chess player)\b",
+                lowered,
+            )
+        )
+
+    def _asks_language_priority(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what (?:programming )?languages? do i priorit(?:ise|ize)|"
+                r"what(?:'s| is) my (?:programming )?language priority|"
+                r"which (?:programming )?languages? should i focus on)\b",
+                lowered,
+            )
+        )
+
+    def _asks_current_activity(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(what am i currently (?:playing|reading|watching|learning)|"
+                r"what game am i (?:currently )?playing|"
+                r"what am i doing currently)\b",
+                lowered,
             )
         )
 
     def _asks_working_on(self, lowered: str) -> bool:
         return bool(
             re.search(
-                r"\b(what am i working on|what are you helping me with|what'?s my current project)\b",
+                r"\b(what am i working on|what are you helping me with|"
+                r"what'?s my current project)\b",
                 lowered,
             )
         )
@@ -263,7 +404,9 @@ class DirectMemoryAnswerService:
     def _asks_projects(self, lowered: str) -> bool:
         return bool(
             re.search(
-                r"\b(what projects (?:am i|i am) working on|what projects do i have|my projects|active projects|what am i building)\b",
+                r"\b(what projects (?:am i|i am) working on|what projects do i have|"
+                r"(?:show|list|tell me|remind me of) my (?:active )?projects|"
+                r"what am i building)\b",
                 lowered,
             )
         )

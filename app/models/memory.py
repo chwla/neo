@@ -42,6 +42,8 @@ class Memory(TimestampMixin, Base):
     source_sentence: Mapped[str | None] = mapped_column(Text)
     source_conversation_id: Mapped[int | None] = mapped_column(Integer)
     canonical_slot: Mapped[str | None] = mapped_column(String(120))
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("memories.id"))
     update_reason: Mapped[str | None] = mapped_column(Text)
@@ -61,4 +63,9 @@ class Memory(TimestampMixin, Base):
         "Project",
         secondary=memory_project_links,
         back_populates="memories",
+    )
+    sources = relationship(
+        "MemorySource",
+        back_populates="memory",
+        cascade="all, delete-orphan",
     )

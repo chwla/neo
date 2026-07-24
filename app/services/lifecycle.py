@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import re
 
 from app.models import Memory
 from app.models.enums import MemoryType
-
 
 ACTIVE_STATUS = "active"
 ARCHIVED_STATUS = "archived"
@@ -110,6 +109,29 @@ class MemoryLifecycleService:
             previous_status=previous_status,
             new_status=ACTIVE_STATUS,
             reason=reason,
+            source_sentence=memory.source_sentence,
+        )
+        store.db.flush()
+
+    def reactivate_source_replacement(self, store, memory: Memory) -> None:
+        """Reactivate only an archived fact being re-extracted from its same source."""
+
+        if memory.status != ARCHIVED_STATUS:
+            raise ValueError("Only archived source replacements can be reactivated.")
+        previous_status = memory.status
+        memory.is_active = True
+        memory.status = ACTIVE_STATUS
+        memory.update_reason = "Reactivated after replacement source re-extraction."
+        memory.superseded_by_id = None
+        store.reactivate_typed_record_for_memory(memory)
+        store._sync_memory_fts(memory)
+        store._sync_memory_embedding(memory)
+        store.record_lifecycle_audit(
+            memory,
+            "source_reextracted",
+            previous_status=previous_status,
+            new_status=ACTIVE_STATUS,
+            reason="The same user message was re-extracted during edit or rerun.",
             source_sentence=memory.source_sentence,
         )
         store.db.flush()
@@ -280,6 +302,7 @@ class MemoryLifecycleService:
             return True
         if memory.memory_type in {
             MemoryType.IDENTITY,
+            MemoryType.EDUCATION,
             MemoryType.PREFERENCE,
             MemoryType.GOAL_RELATED,
             MemoryType.PROJECT_RELATED,

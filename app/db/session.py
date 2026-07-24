@@ -1,7 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
-from sqlalchemy import inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import active_profile_database_url, get_settings
@@ -64,7 +63,9 @@ def initialize_database(database_url: str | None = None) -> None:
     target_engine = engine if database_url is None else build_engine(database_url)
     Base.metadata.create_all(bind=target_engine)
     ensure_chat_message_metadata_columns(target_engine)
+    ensure_chat_generation_columns(target_engine)
     ensure_memory_metadata_columns(target_engine)
+    ensure_typed_memory_columns(target_engine)
     ensure_memory_embedding_table(target_engine)
 
 
@@ -81,12 +82,62 @@ def ensure_chat_message_metadata_columns(target_engine=engine) -> None:
         "total_tokens": "INTEGER",
         "duration_ms": "INTEGER",
         "thinking": "TEXT",
+        "response_kind": "VARCHAR(40)",
+        "provider_name": "VARCHAR(120)",
+        "model_name": "VARCHAR(240)",
+        "route_name": "VARCHAR(120)",
+        "finish_reason": "VARCHAR(40)",
+        "trace_id": "VARCHAR(80)",
+        "metadata_json": "TEXT",
+        "generation_id": "VARCHAR(36)",
     }
     with target_engine.begin() as connection:
         for name, column_type in columns.items():
             if name not in existing:
                 connection.execute(
                     text(f"ALTER TABLE chat_messages ADD COLUMN {name} {column_type}")
+                )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_chat_messages_generation "
+                "ON chat_messages (generation_id)"
+            )
+        )
+
+
+def ensure_chat_generation_columns(target_engine=engine) -> None:
+    """Add streaming fields introduced after the initial chat-generation schema."""
+
+    inspector = inspect(target_engine)
+    if "chat_generations" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("chat_generations")}
+    columns = {
+        "thinking": "TEXT",
+        "status_detail": "VARCHAR(120)",
+        "timezone": "VARCHAR(80)",
+        "locale": "VARCHAR(40)",
+        "response_kind": "VARCHAR(40)",
+        "provider_name": "VARCHAR(120)",
+        "model_name": "VARCHAR(240)",
+        "route_name": "VARCHAR(120)",
+        "finish_reason": "VARCHAR(40)",
+        "trace_id": "VARCHAR(80)",
+        "metadata_json": "TEXT",
+        "prompt_tokens": "INTEGER",
+        "completion_tokens": "INTEGER",
+        "total_tokens": "INTEGER",
+        "duration_ms": "INTEGER",
+        "worker_id": "VARCHAR(36)",
+        "heartbeat_at": "DATETIME",
+        "lease_token": "VARCHAR(36)",
+        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+    }
+    with target_engine.begin() as connection:
+        for name, column_type in columns.items():
+            if name not in existing:
+                connection.execute(
+                    text(f"ALTER TABLE chat_generations ADD COLUMN {name} {column_type}")
                 )
 
 
@@ -118,6 +169,58 @@ def ensure_memory_metadata_columns(target_engine=engine) -> None:
                 """,
             ),
         )
+
+
+def ensure_typed_memory_columns(target_engine=engine) -> None:
+    """Apply additive, idempotent columns used by typed memory records."""
+
+    inspector = inspect(target_engine)
+    table_names = set(inspector.get_table_names())
+    table_columns = {
+        "memories": {
+            "fingerprint": "VARCHAR(64)",
+            "expires_at": "DATETIME",
+        },
+        "preferences": {
+            "canonical_slot": "VARCHAR(160)",
+            "fingerprint": "VARCHAR(64)",
+        },
+        "goals": {
+            "target_date": "DATE",
+            "horizon_months": "INTEGER",
+            "fingerprint": "VARCHAR(64)",
+        },
+        "events": {
+            "fingerprint": "VARCHAR(64)",
+        },
+        "memory_sources": {
+            "detachment_reason": "VARCHAR(32)",
+        },
+    }
+    indexes = {
+        "ix_memories_fingerprint": ("memories", "fingerprint"),
+        "ix_preferences_canonical_slot": ("preferences", "canonical_slot"),
+        "ix_preferences_fingerprint": ("preferences", "fingerprint"),
+        "ix_goals_fingerprint": ("goals", "fingerprint"),
+        "ix_events_fingerprint": ("events", "fingerprint"),
+    }
+    with target_engine.begin() as connection:
+        for table_name, columns in table_columns.items():
+            if table_name not in table_names:
+                continue
+            existing = {column["name"] for column in inspect(target_engine).get_columns(table_name)}
+            for name, column_type in columns.items():
+                if name not in existing:
+                    connection.execute(
+                        text(f"ALTER TABLE {table_name} ADD COLUMN {name} {column_type}"),
+                    )
+        for index_name, (table_name, column_name) in indexes.items():
+            if table_name in table_names:
+                connection.execute(
+                    text(
+                        f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({column_name})"
+                    ),
+                )
 
 
 def ensure_memory_embedding_table(target_engine=engine) -> None:
@@ -173,9 +276,13 @@ def ensure_memory_embedding_table(target_engine=engine) -> None:
                 SET canonical_slot = CASE
                     WHEN lower(memory_text) LIKE 'current hardware:%' THEN 'current_hardware'
                     WHEN memory_type = 'preference' AND instr(memory_text, '=') > 0
-                        THEN 'preference:' || lower(trim(substr(memory_text, 1, instr(memory_text, '=') - 1)))
+                        THEN 'preference:' || lower(trim(substr(
+                            memory_text, 1, instr(memory_text, '=') - 1
+                        )))
                     WHEN memory_type = 'identity' AND instr(memory_text, '=') > 0
-                        THEN 'identity:' || lower(trim(substr(memory_text, 1, instr(memory_text, '=') - 1)))
+                        THEN 'identity:' || lower(trim(substr(
+                            memory_text, 1, instr(memory_text, '=') - 1
+                        )))
                     WHEN memory_type = 'project_related'
                         THEN 'project:' || lower(trim(memory_text))
                     ELSE memory_type

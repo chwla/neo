@@ -20,6 +20,7 @@ class Event(Base):
     event: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     event_date: Mapped[date | None] = mapped_column(Date)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

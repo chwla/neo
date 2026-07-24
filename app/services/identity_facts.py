@@ -31,13 +31,50 @@ _TRANSIENT_VALUES = frozenset(
 _NAME_DISALLOWED = _TRANSIENT_VALUES | {
     "a",
     "an",
+    "at",
+    "based",
+    "building",
+    "creating",
+    "currently",
     "developer",
+    "developing",
     "engineer",
+    "feeling",
+    "from",
+    "in",
+    "interested",
     "student",
     "teacher",
     "working",
     "learning",
+    "living",
+    "located",
+    "making",
+    "old",
+    "on",
     "studying",
+    "trying",
+    "using",
+    "years",
+    "available",
+    "back",
+    "done",
+    "going",
+    "here",
+    "hoping",
+    "just",
+    "lost",
+    "new",
+    "not",
+    "planning",
+    "playing",
+    "reading",
+    "ready",
+    "really",
+    "there",
+    "very",
+    "wanting",
+    "watching",
 }
 _PROFILE_KEYS = frozenset(
     {"name", "age", "location", "country", "nationality", "occupation", "education", "general"}
@@ -66,10 +103,12 @@ def is_durable_identity_fact(key: str, value: str) -> bool:
         return False
 
     if normalized_key == "name":
+        words = lowered.split()
         return bool(
             re.fullmatch(r"[A-Za-z][A-Za-z' -]{1,80}", cleaned)
+            and 1 <= len(words) <= 5
             and lowered not in _NAME_DISALLOWED
-            and not any(word in _NAME_DISALLOWED for word in lowered.split())
+            and not any(word in _NAME_DISALLOWED for word in words)
         )
 
     if normalized_key == "occupation":
@@ -77,9 +116,8 @@ def is_durable_identity_fact(key: str, value: str) -> bool:
             len(cleaned) >= 2
             and len(cleaned) <= 120
             and lowered not in _TRANSIENT_VALUES
-            and not re.match(
-                r"(?:feeling|being|currently|just|very|really|so)\b", lowered
-            )
+            and not re.search(r"\b(?:at|for)\s+\d{1,2}(?::\d{2})?\b", lowered)
+            and not re.match(r"(?:feeling|being|currently|just|very|really|so)\b", lowered)
         )
 
     if normalized_key == "age":

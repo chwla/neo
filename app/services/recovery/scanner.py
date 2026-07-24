@@ -63,12 +63,17 @@ class RecoveryScanner:
         for status in CODING_RUNNING_STATUSES:
             runs, _ = coding_store.list_runs(status=status, limit=500)
             for run in runs:
-                after = "needs_review" if status in {
-                    "applying_patch",
-                    "running_tests",
-                    "creating_checkpoint",
-                    "analyzing_test_result",
-                } else "interrupted"
+                after = (
+                    "needs_review"
+                    if status
+                    in {
+                        "applying_patch",
+                        "running_tests",
+                        "creating_checkpoint",
+                        "analyzing_test_result",
+                    }
+                    else "interrupted"
+                )
                 now = coding_store.now_iso()
                 coding_store.update_run(
                     run["id"],
@@ -137,7 +142,11 @@ class RecoveryScanner:
             if run.get("agent_run_id"):
                 coding_runs, _ = coding_store.list_runs(limit=500)
                 coding_run = next(
-                    (item for item in coding_runs if item.get("agent_run_id") == run["agent_run_id"]),
+                    (
+                        item
+                        for item in coding_runs
+                        if item.get("agent_run_id") == run["agent_run_id"]
+                    ),
                     None,
                 )
                 if coding_run:

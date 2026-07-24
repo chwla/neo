@@ -76,7 +76,10 @@ class MemoryRetrievalService:
             [request.source_type] if request.source_type else []
         )
         source_types = requested or [
-            "context_summary", "agentic_run", "coding_run", *self.indexer.SOURCE_TYPES
+            "context_summary",
+            "agentic_run",
+            "coding_run",
+            *self.indexer.SOURCE_TYPES,
         ]
         items: list[dict] = []
         counts: dict[str, int] = {}

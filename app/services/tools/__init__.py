@@ -1,5 +1,11 @@
 from app.services.tools.store import initialize_tool_tables
 from app.services.tools.types import (
+    ConnectorCredentialStatus,
+    ConnectorCredentialWrite,
+    ConnectorSelectionRequest,
+    ManualRestToolRequest,
+    OAuthCallbackRequest,
+    OpenAPIImportRequest,
     SkillDefinition,
     SkillDefinitionCreate,
     SkillDefinitionUpdate,
@@ -14,6 +20,12 @@ from app.services.tools.types import (
 )
 
 __all__ = [
+    "ConnectorCredentialStatus",
+    "ConnectorCredentialWrite",
+    "ConnectorSelectionRequest",
+    "ManualRestToolRequest",
+    "OAuthCallbackRequest",
+    "OpenAPIImportRequest",
     "SkillDefinition",
     "SkillDefinitionCreate",
     "SkillDefinitionUpdate",

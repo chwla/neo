@@ -66,6 +66,7 @@ def save_session(workspace_id, language, command, status, error=None):
     c.close()
     return id
 
+
 def replace_diagnostics(workspace_id, file_path, language, diagnostics, redact):
     c = _c()
     try:
@@ -87,13 +88,16 @@ def replace_diagnostics(workspace_id, file_path, language, diagnostics, redact):
                     redact(item.get("message", "")),
                     redact(item.get("source", "")) or None,
                     json.dumps(item.get("range", {})),
-                    json.dumps({"code": item.get("code"), "codeDescription": item.get("codeDescription")}),
+                    json.dumps(
+                        {"code": item.get("code"), "codeDescription": item.get("codeDescription")}
+                    ),
                     now(),
                 ),
             )
         c.commit()
     finally:
         c.close()
+
 
 def diagnostics(workspace_id):
     c = _c()

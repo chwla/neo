@@ -79,10 +79,10 @@ def search_config() -> dict[str, object]:
 def update_search_config(request: SearchConfigUpdateRequest) -> dict[str, object]:
     settings = get_settings()
     provider = (request.provider or settings.web_search_provider).strip().lower()
-    if provider not in {"disabled", "external_searxng", "searxng", "tavily"}:
+    if provider not in PROVIDER_INFO:
         raise HTTPException(
             status_code=422,
-            detail="Provider must be disabled, external_searxng, searxng, or tavily.",
+            detail=f"Unknown search provider: {provider}.",
         )
 
     searxng_instance = settings.searxng_instance
@@ -99,6 +99,9 @@ def update_search_config(request: SearchConfigUpdateRequest) -> dict[str, object
         raise HTTPException(status_code=422, detail="Tavily requires TAVILY_API_KEY.")
 
     settings.web_search_provider = provider
+    # The setting can be changed from a runtime that started with search disabled.
+    # Keep the enable flag in sync so selecting a working provider actually activates it.
+    settings.web_search_enabled = provider != "disabled"
     settings.searxng_instance = searxng_instance
     settings.tavily_api_key = tavily_key or None
     return search_config()

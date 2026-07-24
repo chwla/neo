@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -16,6 +17,13 @@ ToolCallStatus = Literal["pending_approval", "completed", "failed", "rejected", 
 ApprovalStatus = Literal["not_required", "pending", "approved", "rejected"]
 ServerType = Literal["builtin", "stdio", "http"]
 SkillType = Literal["instruction_bundle", "workflow", "checklist"]
+ConnectorAuthType = Literal[
+    "none",
+    "api_key_header",
+    "api_key_query",
+    "bearer",
+    "oauth2",
+]
 
 
 class ToolServerBase(BaseModel):
@@ -40,6 +48,18 @@ class ToolServerBase(BaseModel):
         joined = " ".join(clean)
         if any(token in joined for token in forbidden):
             raise ValueError("MCP stdio commands must be argv arrays, not shell strings.")
+        if Path(clean[0]).name.lower() in {
+            "bash",
+            "cmd",
+            "cmd.exe",
+            "dash",
+            "fish",
+            "powershell",
+            "pwsh",
+            "sh",
+            "zsh",
+        }:
+            raise ValueError("MCP stdio commands may not invoke a command shell.")
         return clean
 
 
@@ -55,6 +75,11 @@ class ToolServerUpdate(BaseModel):
     enabled: bool | None = None
     approval_required: bool | None = None
     metadata: dict[str, Any] | None = None
+
+    @field_validator("command_json")
+    @classmethod
+    def command_must_be_argv(cls, value: list[str] | None) -> list[str] | None:
+        return ToolServerBase.command_must_be_argv(value)
 
 
 class ToolServer(ToolServerBase):
@@ -159,3 +184,79 @@ class ToolCall(BaseModel):
     latency_ms: int | None = None
     created_at: str
     completed_at: str | None = None
+
+
+class ConnectorCredentialWrite(BaseModel):
+    """Write-only credential payload.
+
+    Secret fields are accepted by the API but are never represented by the
+    corresponding read model.
+    """
+
+    auth_type: ConnectorAuthType
+    label: str | None = Field(default=None, max_length=120)
+    secret: str | None = Field(default=None, min_length=1, max_length=16000)
+    header_name: str | None = Field(default=None, max_length=120)
+    query_name: str | None = Field(default=None, max_length=120)
+    client_id: str | None = Field(default=None, max_length=1000)
+    client_secret: str | None = Field(default=None, max_length=16000)
+    authorization_url: str | None = Field(default=None, max_length=2000)
+    token_url: str | None = Field(default=None, max_length=2000)
+    revocation_url: str | None = Field(default=None, max_length=2000)
+    redirect_uri: str | None = Field(default=None, max_length=2000)
+    scopes: list[str] = Field(default_factory=list, max_length=100)
+    extra_token_params: dict[str, str] = Field(default_factory=dict)
+
+
+class ConnectorCredentialStatus(BaseModel):
+    server_id: str
+    configured: bool
+    auth_type: ConnectorAuthType = "none"
+    label: str | None = None
+    client_id: str | None = None
+    header_name: str | None = None
+    query_name: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    expires_at: str | None = None
+    has_refresh_token: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class OpenAPIImportRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    document: dict[str, Any] | str | None = None
+    document_url: str | None = Field(default=None, max_length=2000)
+    enabled: bool = True
+    allow_trusted_localhost: bool = False
+    default_write_approval: bool = True
+
+
+class ManualRestToolRequest(BaseModel):
+    server_id: str | None = Field(default=None, max_length=120)
+    server_name: str | None = Field(default=None, max_length=120)
+    base_url: str | None = Field(default=None, max_length=2000)
+    name: str = Field(min_length=1, max_length=120)
+    display_name: str | None = Field(default=None, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    method: Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    path: str = Field(min_length=1, max_length=2000)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    parameter_locations: dict[str, Literal["path", "query", "header", "body"]] = Field(
+        default_factory=dict
+    )
+    read_only: bool | None = None
+    allow_trusted_localhost: bool = False
+
+
+class OAuthCallbackRequest(BaseModel):
+    state: str = Field(min_length=16, max_length=1000)
+    code: str = Field(min_length=1, max_length=16000)
+
+
+class ConnectorSelectionRequest(BaseModel):
+    capability: str = Field(min_length=1, max_length=200)
+    intent: str | None = Field(default=None, max_length=500)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    invoke: bool = False

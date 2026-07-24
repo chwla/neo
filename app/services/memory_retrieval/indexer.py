@@ -7,16 +7,76 @@ from app.services.context_memory import ContextMemoryService
 from app.services.memory_retrieval import store
 
 SOURCE_CONFIG = {
-    "task": ("workspace_tasks", "project_note", "title", ("description", "status", "priority"), "task_id"),
-    "project": ("workspace_projects", "project_note", "title", ("description", "status", "priority"), "project_id"),
-    "patch_application": ("workspace_patch_applications", "fix", "id", ("status", "patch_text", "error"), "patch_application_id"),
-    "test_run": ("workspace_test_runs", "test_result", "name", ("status", "combined_output", "error"), "test_run_id"),
-    "git_checkpoint": ("workspace_git_checkpoints", "checkpoint", "title", ("message", "status", "changed_files_json"), "checkpoint_id"),
-    "command_sandbox": ("workspace_command_runs", "test_result", "category", ("status", "stdout_text", "stderr_text"), "command_run_id"),
-    "lsp": ("workspace_lsp_diagnostics", "file_context", "file_path", ("severity", "message", "source"), "diagnostic_id"),
-    "bundle": ("workspace_export_bundles", "summary", "file_name", ("bundle_type", "status", "metadata_json"), "bundle_id"),
-    "github": ("workspace_github_items", "open_item", "title", ("item_type", "state", "body_text", "labels_json"), "github_item_id"),
-    "research": ("research_jobs", "research_finding", "user_query", ("status", "report", "evidence_json"), "research_id"),
+    "task": (
+        "workspace_tasks",
+        "project_note",
+        "title",
+        ("description", "status", "priority"),
+        "task_id",
+    ),
+    "project": (
+        "workspace_projects",
+        "project_note",
+        "title",
+        ("description", "status", "priority"),
+        "project_id",
+    ),
+    "patch_application": (
+        "workspace_patch_applications",
+        "fix",
+        "id",
+        ("status", "patch_text", "error"),
+        "patch_application_id",
+    ),
+    "test_run": (
+        "workspace_test_runs",
+        "test_result",
+        "name",
+        ("status", "combined_output", "error"),
+        "test_run_id",
+    ),
+    "git_checkpoint": (
+        "workspace_git_checkpoints",
+        "checkpoint",
+        "title",
+        ("message", "status", "changed_files_json"),
+        "checkpoint_id",
+    ),
+    "command_sandbox": (
+        "workspace_command_runs",
+        "test_result",
+        "category",
+        ("status", "stdout_text", "stderr_text"),
+        "command_run_id",
+    ),
+    "lsp": (
+        "workspace_lsp_diagnostics",
+        "file_context",
+        "file_path",
+        ("severity", "message", "source"),
+        "diagnostic_id",
+    ),
+    "bundle": (
+        "workspace_export_bundles",
+        "summary",
+        "file_name",
+        ("bundle_type", "status", "metadata_json"),
+        "bundle_id",
+    ),
+    "github": (
+        "workspace_github_items",
+        "open_item",
+        "title",
+        ("item_type", "state", "body_text", "labels_json"),
+        "github_item_id",
+    ),
+    "research": (
+        "research_jobs",
+        "research_finding",
+        "user_query",
+        ("status", "report", "evidence_json"),
+        "research_id",
+    ),
 }
 
 
@@ -171,18 +231,26 @@ class MemoryIndexer:
             )
             try:
                 conn = store._connect()
-                identifiers = [row["id"] for row in conn.execute(f"SELECT id FROM {table} LIMIT 500")]
+                identifiers = [
+                    row["id"] for row in conn.execute(f"SELECT id FROM {table} LIMIT 500")
+                ]
                 conn.close()
             except Exception:
                 return []
-            return [item for identifier in identifiers for item in self.index_run(source_type, identifier)]
+            return [
+                item
+                for identifier in identifiers
+                for item in self.index_run(source_type, identifier)
+            ]
         config = SOURCE_CONFIG.get(source_type)
         if not config:
             return []
         table, memory_type, title_key, content_keys, target_type = config
         try:
             conn = store._connect()
-            rows = [dict(row) for row in conn.execute(f"SELECT * FROM {table} LIMIT 500").fetchall()]
+            rows = [
+                dict(row) for row in conn.execute(f"SELECT * FROM {table} LIMIT 500").fetchall()
+            ]
             conn.close()
         except Exception:
             return []
@@ -197,7 +265,13 @@ class MemoryIndexer:
             if scope_id and item_scope_id != scope_id:
                 continue
             content = {key: row.get(key) for key in content_keys if row.get(key) is not None}
-            actual_type = "failure" if source_type in {"test_run", "command_sandbox", "lsp"} and str(row.get("status") or row.get("severity") or "").lower() in {"failed", "error", "critical"} else memory_type
+            actual_type = (
+                "failure"
+                if source_type in {"test_run", "command_sandbox", "lsp"}
+                and str(row.get("status") or row.get("severity") or "").lower()
+                in {"failed", "error", "critical"}
+                else memory_type
+            )
             result.append(
                 self.index_record(
                     scope_type=item_scope_type,

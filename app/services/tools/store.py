@@ -94,6 +94,30 @@ def initialize_tool_tables() -> None:
                 FOREIGN KEY (tool_id) REFERENCES workspace_tool_definitions(id),
                 FOREIGN KEY (skill_id) REFERENCES workspace_skill_definitions(id)
             );
+            CREATE TABLE IF NOT EXISTS workspace_connector_credentials (
+                server_id TEXT PRIMARY KEY,
+                auth_type TEXT NOT NULL,
+                label TEXT,
+                public_config_json TEXT NOT NULL,
+                secret_nonce TEXT NOT NULL,
+                secret_ciphertext TEXT NOT NULL,
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (server_id) REFERENCES workspace_tool_servers(id)
+            );
+            CREATE TABLE IF NOT EXISTS workspace_connector_oauth_states (
+                state_hash TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                session_hash TEXT NOT NULL,
+                verifier_nonce TEXT NOT NULL,
+                verifier_ciphertext TEXT NOT NULL,
+                redirect_uri TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                FOREIGN KEY (server_id) REFERENCES workspace_tool_servers(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_workspace_tool_servers_type
             ON workspace_tool_servers(server_type, enabled);
             CREATE INDEX IF NOT EXISTS idx_workspace_tool_definitions_server
@@ -106,6 +130,8 @@ def initialize_tool_tables() -> None:
             ON workspace_tool_calls(status, approval_status, created_at);
             CREATE INDEX IF NOT EXISTS idx_workspace_tool_calls_run
             ON workspace_tool_calls(run_id, coding_run_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_workspace_connector_oauth_states_server
+            ON workspace_connector_oauth_states(server_id, expires_at);
         """)
         _ensure_column(conn, "workspace_agent_definitions", "skill_ids_json", "TEXT")
         conn.commit()
@@ -427,8 +453,9 @@ def list_calls(
     conn = _connect()
     try:
         total = int(
-            conn.execute(f"SELECT COUNT(*) FROM workspace_tool_calls WHERE {clause}", params)
-            .fetchone()[0]
+            conn.execute(
+                f"SELECT COUNT(*) FROM workspace_tool_calls WHERE {clause}", params
+            ).fetchone()[0]
         )
         rows = conn.execute(
             f"SELECT * FROM workspace_tool_calls WHERE {clause} "
@@ -442,6 +469,169 @@ def list_calls(
 
 def update_call(call_id: str, updates: dict) -> dict | None:
     return _update("workspace_tool_calls", call_id, updates, _CALL_JSON, get_call)
+
+
+def upsert_connector_credential(item: dict) -> dict:
+    now = item.get("created_at") or now_iso()
+    values = {
+        **item,
+        "public_config_json": json.dumps(item.get("public_config", {})),
+        "created_at": now,
+        "updated_at": item.get("updated_at") or now,
+    }
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO workspace_connector_credentials (
+                server_id, auth_type, label, public_config_json, secret_nonce,
+                secret_ciphertext, expires_at, created_at, updated_at
+            ) VALUES (
+                :server_id, :auth_type, :label, :public_config_json, :secret_nonce,
+                :secret_ciphertext, :expires_at, :created_at, :updated_at
+            )
+            ON CONFLICT(server_id) DO UPDATE SET
+                auth_type=excluded.auth_type,
+                label=excluded.label,
+                public_config_json=excluded.public_config_json,
+                secret_nonce=excluded.secret_nonce,
+                secret_ciphertext=excluded.secret_ciphertext,
+                expires_at=excluded.expires_at,
+                updated_at=excluded.updated_at
+            """,
+            values,
+        )
+        conn.commit()
+        return get_connector_credential(item["server_id"]) or item
+    finally:
+        conn.close()
+
+
+def get_connector_credential(server_id: str) -> dict | None:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM workspace_connector_credentials WHERE server_id=?",
+            (server_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["public_config"] = _loads(item.pop("public_config_json", None), {})
+        return item
+    finally:
+        conn.close()
+
+
+def replace_connector_credential(
+    item: dict,
+    *,
+    expected_updated_at: str,
+) -> dict | None:
+    """Atomically replace a credential only if no other worker rotated it."""
+
+    values = {
+        **item,
+        "public_config_json": json.dumps(item.get("public_config", {})),
+        "updated_at": item.get("updated_at") or now_iso(),
+        "expected_updated_at": expected_updated_at,
+    }
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            """
+            UPDATE workspace_connector_credentials SET
+                auth_type=:auth_type,
+                label=:label,
+                public_config_json=:public_config_json,
+                secret_nonce=:secret_nonce,
+                secret_ciphertext=:secret_ciphertext,
+                expires_at=:expires_at,
+                updated_at=:updated_at
+            WHERE server_id=:server_id AND updated_at=:expected_updated_at
+            """,
+            values,
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return None
+        conn.commit()
+        return get_connector_credential(item["server_id"])
+    finally:
+        conn.close()
+
+
+def delete_connector_credential(server_id: str) -> bool:
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM workspace_connector_credentials WHERE server_id=?",
+            (server_id,),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+    finally:
+        conn.close()
+
+
+def insert_oauth_state(item: dict) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO workspace_connector_oauth_states (
+                state_hash, server_id, session_hash, verifier_nonce,
+                verifier_ciphertext, redirect_uri, created_at, expires_at, used_at
+            ) VALUES (
+                :state_hash, :server_id, :session_hash, :verifier_nonce,
+                :verifier_ciphertext, :redirect_uri, :created_at, :expires_at, NULL
+            )
+            """,
+            item,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def consume_oauth_state(state_hash: str, session_hash: str, now: str) -> dict | None:
+    """Atomically consume one unexpired state bound to the current session."""
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT * FROM workspace_connector_oauth_states
+            WHERE state_hash=? AND session_hash=? AND used_at IS NULL AND expires_at>?
+            """,
+            (state_hash, session_hash, now),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE workspace_connector_oauth_states SET used_at=? WHERE state_hash=?",
+            (now, state_hash),
+        )
+        conn.commit()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def delete_expired_oauth_states(now: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "DELETE FROM workspace_connector_oauth_states "
+            "WHERE expires_at<=? OR used_at IS NOT NULL",
+            (now,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 _SERVER_JSON = {

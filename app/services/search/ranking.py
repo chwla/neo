@@ -5,7 +5,6 @@ from urllib.parse import urlparse
 
 from app.services.search.types import FetchedPage, QueryRelevanceProfile, SearchResult
 
-
 QUERY_STOPWORDS = {
     "a",
     "about",
@@ -13,22 +12,39 @@ QUERY_STOPWORDS = {
     "and",
     "are",
     "can",
+    "count",
     "could",
     "current",
+    "date",
+    "did",
+    "do",
+    "does",
+    "film",
     "find",
+    "follow-up",
     "for",
     "from",
     "google",
+    "has",
+    "have",
     "how",
+    "in",
     "is",
+    "it",
     "latest",
     "look",
     "lookup",
+    "many",
+    "movie",
+    "new",
     "news",
     "on",
     "online",
     "please",
     "recent",
+    "release",
+    "released",
+    "releasing",
     "search",
     "the",
     "today",
@@ -40,6 +56,7 @@ QUERY_STOPWORDS = {
     "where",
     "what",
     "who",
+    "will",
     "you",
 }
 
@@ -81,6 +98,7 @@ FRESHNESS_TERMS = {
 }
 
 OFFICIAL_DOMAINS = {
+    "apple.com",
     "about.fb.com",
     "bcci.tv",
     "icc-cricket.com",
@@ -88,16 +106,23 @@ OFFICIAL_DOMAINS = {
     "nextjs.org",
     "npmjs.com",
     "openai.com",
+    "playstation.com",
     "primevideo.com",
     "registry.npmjs.org",
+    "sonypictures.com",
+    "sonypictures.in",
     "x.ai",
     "www.anthropic.com",
     "www.bcci.tv",
     "www.icc-cricket.com",
     "www.marvel.com",
     "www.npmjs.com",
+    "www.playstation.com",
     "www.primevideo.com",
+    "www.sonypictures.com",
+    "www.sonypictures.in",
     "www.x.ai",
+    "www.apple.com",
 }
 
 TRUSTED_NEWS_DOMAINS = {
@@ -122,6 +147,7 @@ INDIA_SOURCE_DOMAINS = {
     "in.bookmyshow.com",
     "indiatoday.in",
     "news24online.com",
+    "sonypictures.in",
     "thehindu.com",
     "timesnownews.com",
     "www.business-standard.com",
@@ -130,6 +156,7 @@ INDIA_SOURCE_DOMAINS = {
     "www.gadgets360.com",
     "www.indiatoday.in",
     "www.news24online.com",
+    "www.sonypictures.in",
     "www.thehindu.com",
     "www.timesnownews.com",
 }
@@ -156,7 +183,9 @@ def build_relevance_profile(query: str, provider_query: str) -> QueryRelevancePr
                 seen.add(alias)
     requires_freshness = bool(
         re.search(
-            r"\b(latest|current|currently|recent|recently|today|news|updates|version|release|newest|ranking|rankings|ranked|rated|right now|fide|updated|champion|world champion|world cup|upcoming|coming out)\b",
+            r"\b(latest|current|currently|recent|recently|today|news|updates|"
+            r"version|release|newest|ranking|rankings|ranked|rated|right now|"
+            r"fide|updated|champion|world champion|world cup|upcoming|coming out)\b",
             query,
             re.IGNORECASE,
         )
@@ -193,6 +222,7 @@ def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) ->
             not profile.requires_freshness
             or has_freshness_hit(f"{result.title} {result.url} {result.snippet or ''}")
             or is_news_like_url(result.url)
+            or is_official_url(result.url)
             or bool(result.published_date)
         )
     ]
@@ -271,7 +301,10 @@ def relevant_fetched_page(
     if has_freshness_hit(page_text) or is_news_like_url(page.url):
         score += 2.0
     if profile.requires_freshness and not (
-        has_freshness_hit(page_text) or is_news_like_url(page.url) or result.published_date
+        has_freshness_hit(page_text)
+        or is_news_like_url(page.url)
+        or is_official_url(page.url)
+        or result.published_date
     ):
         return None
     if score < MIN_CONTEXT_RELEVANCE_SCORE:
@@ -327,6 +360,11 @@ def is_news_like_url(url: str) -> bool:
             "/explore/articles/",
         )
     )
+
+
+def is_official_url(url: str) -> bool:
+    domain = urlparse(url).netloc.lower().removeprefix("www.")
+    return domain in OFFICIAL_DOMAINS or f"www.{domain}" in OFFICIAL_DOMAINS
 
 
 def is_low_quality_result(result: SearchResult) -> bool:

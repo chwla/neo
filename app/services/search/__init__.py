@@ -1,3 +1,8 @@
+from app.services.search.citations import (
+    CitationValidationResult,
+    strip_generated_sources_block,
+    validate_citation_markers,
+)
 from app.services.search.content import WebPageFetcher, untrusted_context_message
 from app.services.search.core import (
     EXTRACTION_FAILURE_MESSAGE,
@@ -6,6 +11,17 @@ from app.services.search.core import (
     WebSearchDecisionService,
     WebSearchService,
     comprehensive_web_search,
+)
+from app.services.search.intent import SearchIntentResolver, resolve_search_intent
+from app.services.search.live_data import (
+    CurrencyQuote,
+    FrankfurterClient,
+    LiveDataError,
+    LocalDateTimeResult,
+    OpenMeteoClient,
+    WeatherReport,
+    local_datetime_answer,
+    resolve_timezone,
 )
 from app.services.search.providers import (
     BingHTMLSearchProvider,
@@ -21,6 +37,8 @@ from app.services.search.types import (
     ComprehensiveSearchResult,
     EvidenceChunk,
     FetchedPage,
+    ResolvedSearchIntent,
+    SearchIntentKind,
     SearchOptions,
     SearchResult,
     StructuredSource,
@@ -32,16 +50,25 @@ from app.services.search.types import (
 __all__ = [
     "BingHTMLSearchProvider",
     "BraveSearchProvider",
+    "CitationValidationResult",
     "ComprehensiveSearchResult",
+    "CurrencyQuote",
     "DisabledSearchProvider",
     "DuckDuckGoSearchProvider",
     "EXTRACTION_FAILURE_MESSAGE",
     "EvidenceChunk",
     "FetchedPage",
+    "FrankfurterClient",
     "GROUNDING_FAILURE_MESSAGE",
+    "LiveDataError",
+    "LocalDateTimeResult",
+    "OpenMeteoClient",
     "ProviderRegistry",
     "SearchOptions",
     "SearchResult",
+    "ResolvedSearchIntent",
+    "SearchIntentKind",
+    "SearchIntentResolver",
     "SearXNGSearchProvider",
     "StructuredSource",
     "TavilySearchProvider",
@@ -53,6 +80,12 @@ __all__ = [
     "WebSearchProvider",
     "WebSearchResponse",
     "WebSearchService",
+    "WeatherReport",
     "comprehensive_web_search",
+    "local_datetime_answer",
+    "resolve_search_intent",
+    "resolve_timezone",
+    "strip_generated_sources_block",
     "untrusted_context_message",
+    "validate_citation_markers",
 ]

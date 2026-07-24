@@ -18,6 +18,8 @@ class Preference(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     category: Mapped[str] = mapped_column(String(128), nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_slot: Mapped[str | None] = mapped_column(String(160), index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)

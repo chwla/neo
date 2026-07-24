@@ -31,5 +31,7 @@ def report(run, results, comparison=None):
     payload = redact(payload)
     payload["json"] = json.dumps(payload, indent=2, sort_keys=True)
     hard_failures = len(payload["hard_failures"])
-    payload["markdown"] = f"# Evaluation Report\n\nScore: {run.get('overall_score')}\n\nHard failures: {hard_failures}"
+    payload["markdown"] = (
+        f"# Evaluation Report\n\nScore: {run.get('overall_score')}\n\nHard failures: {hard_failures}"
+    )
     return payload

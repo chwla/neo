@@ -20,15 +20,9 @@ def validate(claims: list[dict], evidence: list[dict]) -> dict:
                 f"Claim {claim.get('id') or claim.get('claim', '')[:50]} has no evidence."
             )
         elif any(item not in evidence_ids for item in claim_evidence):
-            errors.append(
-                f"Claim {claim_ref} references missing evidence."
-            )
+            errors.append(f"Claim {claim_ref} references missing evidence.")
         if claim.get("status") == "supported" and not claim_citations:
-            errors.append(
-                f"Supported claim {claim_ref} has no citation label."
-            )
+            errors.append(f"Supported claim {claim_ref} has no citation label.")
         elif any(label not in labels for label in claim_citations):
-            errors.append(
-                f"Claim {claim_ref} has an unresolved citation label."
-            )
+            errors.append(f"Claim {claim_ref} has an unresolved citation label.")
     return {"passed": not errors, "checked_claims": checked, "errors": errors}

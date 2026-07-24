@@ -26,10 +26,10 @@ ALLOWED_RUN_STATUSES = {
     "running",
     "waiting_approval",
     "completed",
-        "failed",
-        "cancelled",
-        "interrupted",
-        "needs_review",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "needs_review",
 }
 
 

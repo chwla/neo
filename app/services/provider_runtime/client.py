@@ -41,15 +41,19 @@ class ProviderRuntimeClient(BaseLLMClient):
         )
         if result.status != "completed":
             raise RuntimeError(result.content or "Provider runtime request failed safely.")
+        request = self.runtime.request(result.request_id) or {}
+        thinking = (request.get("metadata") or {}).get("thinking")
         self.last_metadata = {
             "provider_request_id": result.request_id,
             "route_name": result.route.get("route_name"),
             "provider_id": result.route.get("provider_id"),
             "model_id": result.route.get("model_id"),
             "fallback_used": len(result.fallback_chain) > 1,
+            "finish_reason": result.finish_reason,
         }
         return LLMChatResult(
             content=result.content,
+            thinking=str(thinking) if thinking else None,
             prompt_tokens=result.usage.get("prompt_tokens"),
             completion_tokens=result.usage.get("completion_tokens"),
             total_tokens=result.usage.get("total_tokens"),
@@ -57,8 +61,11 @@ class ProviderRuntimeClient(BaseLLMClient):
             route_name=self.last_metadata["route_name"],
             provider_id=self.last_metadata["provider_id"],
             model_id=self.last_metadata["model_id"],
+            provider_name=result.route.get("provider"),
+            model_name=result.route.get("model"),
             fallback_used=self.last_metadata["fallback_used"],
             provider_request_id=result.request_id,
+            finish_reason=result.finish_reason,
         )
 
     def chat_stream(
@@ -73,12 +80,17 @@ class ProviderRuntimeClient(BaseLLMClient):
         )
         yield {"type": "start", "request_id": session["id"]}
         seen = 0
+        seen_thinking = 0
         import time
 
         while session["status"] in {"running", "streaming"}:
             time.sleep(0.02)
             session = self.runtime.request(session["id"]) or session
             partial = (session.get("metadata") or {}).get("partial_response", "")
+            thinking = (session.get("metadata") or {}).get("thinking", "")
+            if len(thinking) > seen_thinking:
+                yield {"type": "thinking", "content": thinking[seen_thinking:]}
+                seen_thinking = len(thinking)
             if len(partial) > seen:
                 yield {"type": "chunk", "content": partial[seen:]}
                 seen = len(partial)
@@ -90,13 +102,16 @@ class ProviderRuntimeClient(BaseLLMClient):
                 "provider": session.get("provider_name"),
                 "model": session.get("model_name"),
                 "fallback_used": bool(session.get("fallback_chain")),
+                "finish_reason": (session.get("metadata") or {}).get("finish_reason"),
             }
+            thinking = (session.get("metadata") or {}).get("thinking")
             yield {
                 "type": "done",
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "total_tokens": usage.get("total_tokens"),
                 "duration_ms": session.get("latency_ms"),
+                "thinking": str(thinking) if thinking else None,
                 **self.last_metadata,
             }
         else:

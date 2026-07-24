@@ -32,8 +32,11 @@ class LLMChatResult(BaseModel):
     route_name: str | None = None
     provider_id: str | None = None
     model_id: str | None = None
+    provider_name: str | None = None
+    model_name: str | None = None
     fallback_used: bool = False
     provider_request_id: str | None = None
+    finish_reason: str | None = None
 
 
 class ChatTurn(BaseModel):
@@ -142,13 +145,15 @@ class OllamaClient(BaseLLMClient):
         )
         response.raise_for_status()
         payload = response.json()
-        raw = str(payload["message"]["content"])
+        message = payload["message"]
+        raw = str(message["content"])
+        native_thinking = str(message.get("thinking") or message.get("reasoning") or "").strip()
         prompt, completion = payload.get("prompt_eval_count"), payload.get("eval_count")
         elapsed = int((time.perf_counter() - started) * 1000)
         duration = payload.get("total_duration")
         return LLMChatResult(
             content=self.clean_response(raw),
-            thinking=self.extract_thinking(raw),
+            thinking=native_thinking or self.extract_thinking(raw),
             prompt_tokens=prompt,
             completion_tokens=completion,
             total_tokens=(
@@ -157,6 +162,9 @@ class OllamaClient(BaseLLMClient):
                 else None
             ),
             duration_ms=int(duration / 1_000_000) if duration else elapsed,
+            finish_reason=str(payload.get("done_reason") or "stop"),
+            provider_name="ollama",
+            model_name=self.model,
         )
 
     def chat_stream(
@@ -179,7 +187,11 @@ class OllamaClient(BaseLLMClient):
             if not line:
                 continue
             chunk = json.loads(line)
-            content = str(chunk.get("message", {}).get("content", ""))
+            message = chunk.get("message", {})
+            content = str(message.get("content", ""))
+            thinking = str(message.get("thinking") or message.get("reasoning") or "")
+            if thinking:
+                yield {"type": "thinking", "content": thinking}
             if content:
                 yield {"type": "chunk", "content": content}
             if chunk.get("done"):
@@ -199,6 +211,7 @@ class OllamaClient(BaseLLMClient):
                         if duration
                         else int((time.perf_counter() - started) * 1000)
                     ),
+                    "finish_reason": str(chunk.get("done_reason") or "stop"),
                 }
                 break
 
@@ -253,15 +266,25 @@ class OpenAICompatibleClient(BaseLLMClient):
         )
         response.raise_for_status()
         payload = response.json()
-        raw = str(payload["choices"][0]["message"].get("content") or "")
+        message = payload["choices"][0]["message"]
+        raw = str(message.get("content") or "")
+        native_thinking = str(
+            message.get("reasoning")
+            or message.get("reasoning_content")
+            or message.get("thinking")
+            or ""
+        ).strip()
         usage = payload.get("usage") or {}
         return LLMChatResult(
             content=self.clean_response(raw),
-            thinking=self.extract_thinking(raw),
+            thinking=native_thinking or self.extract_thinking(raw),
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
             duration_ms=int((time.perf_counter() - started) * 1000),
+            finish_reason=str(payload["choices"][0].get("finish_reason") or "stop"),
+            provider_name="openai_compatible",
+            model_name=self.model,
         )
 
     def chat_stream(
@@ -277,6 +300,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         )
         response.raise_for_status()
         usage: dict[str, Any] = {}
+        finish_reason: str | None = None
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data:"):
                 continue
@@ -285,7 +309,18 @@ class OpenAICompatibleClient(BaseLLMClient):
                 break
             chunk = json.loads(data)
             usage = chunk.get("usage") or usage
-            content = str((chunk.get("choices") or [{}])[0].get("delta", {}).get("content") or "")
+            choice = (chunk.get("choices") or [{}])[0]
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta", {})
+            thinking = str(
+                delta.get("reasoning")
+                or delta.get("reasoning_content")
+                or delta.get("thinking")
+                or ""
+            )
+            if thinking:
+                yield {"type": "thinking", "content": thinking}
+            content = str(delta.get("content") or "")
             if content:
                 yield {"type": "chunk", "content": content}
         yield {
@@ -294,6 +329,7 @@ class OpenAICompatibleClient(BaseLLMClient):
             "completion_tokens": usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
             "duration_ms": int((time.perf_counter() - started) * 1000),
+            "finish_reason": str(finish_reason or "stop"),
         }
 
 
@@ -308,7 +344,7 @@ class LLMRegistry:
             id="ollama-default",
             name="Ollama",
             provider="ollama",
-            model=self._settings.chat_model,
+            model=self._settings.default_model,
             base_url=self._settings.ollama_url,
             timeout_seconds=self._settings.chat_timeout_seconds,
             num_predict=self._settings.chat_num_predict,

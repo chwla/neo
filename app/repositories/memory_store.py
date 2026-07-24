@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, date, datetime
 
 from sqlalchemy import Select, case, exists, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models import (
+    Activity,
     Chat,
     ChatMessage,
+    Education,
     Event,
     Goal,
     GoalStatus,
@@ -17,6 +21,7 @@ from app.models import (
     MemoryCandidate,
     MemoryEmbedding,
     MemoryLifecycleAudit,
+    MemorySource,
     Preference,
     ProfileFact,
     Project,
@@ -29,6 +34,7 @@ from app.services.embeddings import (
     cosine_similarity,
     decode_vector,
 )
+from app.services.memory_fingerprints import source_fingerprint
 
 QUERY_STOPWORDS = {
     "a",
@@ -154,6 +160,14 @@ class MemoryStore:
         total_tokens: int | None = None,
         duration_ms: int | None = None,
         thinking: str | None = None,
+        response_kind: str | None = None,
+        provider_name: str | None = None,
+        model_name: str | None = None,
+        route_name: str | None = None,
+        finish_reason: str | None = None,
+        trace_id: str | None = None,
+        metadata: dict | None = None,
+        generation_id: str | None = None,
     ) -> ChatMessage:
         message = self.add(
             ChatMessage(
@@ -165,12 +179,81 @@ class MemoryStore:
                 total_tokens=total_tokens,
                 duration_ms=duration_ms,
                 thinking=thinking,
+                response_kind=response_kind,
+                provider_name=provider_name,
+                model_name=model_name,
+                route_name=route_name,
+                finish_reason=finish_reason,
+                trace_id=trace_id,
+                metadata_json=json.dumps(metadata, sort_keys=True) if metadata else None,
+                generation_id=generation_id,
             )
         )
         chat = self.get_chat(chat_id)
         if chat is not None:
             chat.updated_at = message.created_at
         return message
+
+    def upsert_generation_assistant(
+        self,
+        chat_id: int,
+        generation_id: str,
+        content: str,
+        **metadata,
+    ) -> ChatMessage:
+        """Persist one assistant message for a durable generation.
+
+        The unique generation key closes the crash window between saving an
+        assistant message and marking its generation complete. A recovered
+        worker updates that same row instead of appending a duplicate.
+        """
+
+        existing = self.db.scalar(
+            select(ChatMessage).where(ChatMessage.generation_id == generation_id)
+        )
+        if existing is None:
+            try:
+                with self.db.begin_nested():
+                    existing = self.add_chat_message(
+                        chat_id,
+                        "assistant",
+                        content,
+                        generation_id=generation_id,
+                        **metadata,
+                    )
+            except IntegrityError:
+                existing = self.db.scalar(
+                    select(ChatMessage).where(ChatMessage.generation_id == generation_id)
+                )
+        if existing is None:
+            raise RuntimeError("The generation assistant message could not be persisted.")
+        if existing.chat_id != chat_id or existing.role != "assistant":
+            raise RuntimeError("The generation correlation belongs to a different message.")
+
+        existing.content = content
+        for field in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "duration_ms",
+            "thinking",
+            "response_kind",
+            "provider_name",
+            "model_name",
+            "route_name",
+            "finish_reason",
+            "trace_id",
+        ):
+            if field in metadata:
+                setattr(existing, field, metadata[field])
+        if "metadata" in metadata:
+            value = metadata["metadata"]
+            existing.metadata_json = json.dumps(value, sort_keys=True) if value else None
+        chat = self.get_chat(chat_id)
+        if chat is not None:
+            chat.updated_at = datetime.now(UTC)
+        self.db.flush()
+        return existing
 
     def update_chat_message_content(self, message_id: int, content: str) -> ChatMessage | None:
         message = self.db.get(ChatMessage, message_id)
@@ -228,6 +311,12 @@ class MemoryStore:
             stmt = stmt.where(Preference.is_active.is_(True))
         return list(self.db.scalars(stmt))
 
+    def list_education(self, active_only: bool = True) -> list[Education]:
+        stmt = select(Education).order_by(Education.updated_at.desc(), Education.id.desc())
+        if active_only:
+            stmt = stmt.where(Education.is_active.is_(True))
+        return list(self.db.scalars(stmt))
+
     def list_goals(self, status: GoalStatus | None = None) -> list[Goal]:
         stmt = select(Goal).order_by(Goal.priority.desc(), Goal.updated_at.desc())
         if status is not None:
@@ -247,6 +336,45 @@ class MemoryStore:
             .limit(limit)
         )
         return list(self.db.scalars(stmt))
+
+    def list_activities(
+        self,
+        active_only: bool = True,
+        now: datetime | None = None,
+    ) -> list[Activity]:
+        now = now or datetime.now(UTC)
+        if active_only:
+            self.archive_expired_activities(now)
+        stmt = select(Activity).order_by(Activity.updated_at.desc(), Activity.id.desc())
+        if active_only:
+            stmt = stmt.where(Activity.is_active.is_(True), Activity.expires_at > now)
+        return list(self.db.scalars(stmt))
+
+    def archive_expired_activities(self, now: datetime | None = None) -> int:
+        now = now or datetime.now(UTC)
+        expired = list(
+            self.db.scalars(
+                select(Activity).where(
+                    Activity.is_active.is_(True),
+                    Activity.expires_at <= now,
+                ),
+            ),
+        )
+        for activity in expired:
+            activity.is_active = False
+            activity.archived_at = now
+            for memory in self.active_memories_by_type(MemoryType.ACTIVITY):
+                if memory.fingerprint == activity.fingerprint:
+                    from app.services.lifecycle import MemoryLifecycleService
+
+                    MemoryLifecycleService().archive(
+                        self,
+                        memory,
+                        "Current activity expired after 30 days.",
+                    )
+        if expired:
+            self.db.flush()
+        return len(expired)
 
     def list_memories(self, active_only: bool = True, limit: int = 50) -> list[Memory]:
         stmt = (
@@ -284,6 +412,219 @@ class MemoryStore:
     def get_event(self, event_id: int) -> Event | None:
         return self.db.get(Event, event_id)
 
+    def active_memory_by_fingerprint(
+        self,
+        memory_type: MemoryType,
+        fingerprint: str,
+    ) -> Memory | None:
+        return self.db.scalar(
+            select(Memory)
+            .where(
+                Memory.memory_type == memory_type,
+                Memory.fingerprint == fingerprint,
+                Memory.is_active.is_(True),
+                Memory.status == "active",
+            )
+            .order_by(Memory.updated_at.desc(), Memory.id.desc()),
+        )
+
+    def attach_memory_source(
+        self,
+        memory: Memory,
+        source_sentence: str,
+        source_conversation_id: int | None = None,
+        source_message_id: int | None = None,
+    ) -> MemorySource:
+        fingerprint = source_fingerprint(
+            source_message_id,
+            source_conversation_id,
+            source_sentence,
+        )
+        existing = self.db.scalar(
+            select(MemorySource).where(
+                MemorySource.memory_id == memory.id,
+                MemorySource.source_fingerprint == fingerprint,
+            ),
+        )
+        if existing is not None:
+            existing.is_active = True
+            existing.detachment_reason = None
+            existing.source_sentence = source_sentence
+            existing.source_conversation_id = source_conversation_id
+            existing.source_message_id = source_message_id
+            self.db.flush()
+            return existing
+        return self.add(
+            MemorySource(
+                memory_id=memory.id,
+                source_conversation_id=source_conversation_id,
+                source_message_id=source_message_id,
+                source_sentence=source_sentence,
+                source_fingerprint=fingerprint,
+                is_active=True,
+                detachment_reason=None,
+            ),
+        )
+
+    def list_memory_sources(
+        self,
+        memory_id: int,
+        active_only: bool = True,
+    ) -> list[MemorySource]:
+        stmt = select(MemorySource).where(MemorySource.memory_id == memory_id)
+        if active_only:
+            stmt = stmt.where(MemorySource.is_active.is_(True))
+        return list(self.db.scalars(stmt.order_by(MemorySource.id)))
+
+    def detach_memory_sources_for_message(
+        self,
+        source_message_id: int,
+        *,
+        reason: str = "deletion",
+    ) -> list[int]:
+        """Remove one message's support without conflating edits and deletions.
+
+        A replacement is a temporary, source-scoped transition used while the same
+        message is re-extracted. Deletion is intentional removal and creates a
+        durable tombstone when the message was the final source.
+        """
+
+        if reason not in {"replacement", "deletion"}:
+            raise ValueError("Memory source detachment reason must be replacement or deletion.")
+
+        sources = list(
+            self.db.scalars(
+                select(MemorySource).where(
+                    MemorySource.source_message_id == source_message_id,
+                ),
+            ),
+        )
+        affected_ids = sorted({source.memory_id for source in sources})
+        for source in sources:
+            if source.is_active or reason == "deletion":
+                source.is_active = False
+                source.detachment_reason = reason
+        self.db.flush()
+        for memory_id in affected_ids:
+            if self.list_memory_sources(memory_id):
+                continue
+            memory = self.get_memory(memory_id)
+            if memory is None:
+                continue
+            if memory.is_active:
+                self._deactivate_typed_record_for_memory(memory)
+            from app.services.lifecycle import MemoryLifecycleService
+
+            lifecycle = MemoryLifecycleService()
+            if reason == "deletion":
+                lifecycle.delete(
+                    self,
+                    memory,
+                    "Deleted because its final user-message source was removed.",
+                )
+            elif memory.is_active:
+                lifecycle.archive(
+                    self,
+                    memory,
+                    "Archived while its user-message source is being replaced.",
+                )
+        self.db.flush()
+        return affected_ids
+
+    def source_was_detached_for_replacement(
+        self,
+        memory_id: int,
+        source_message_id: int | None,
+    ) -> bool:
+        if source_message_id is None:
+            return False
+        return (
+            self.db.scalar(
+                select(MemorySource.id).where(
+                    MemorySource.memory_id == memory_id,
+                    MemorySource.source_message_id == source_message_id,
+                    MemorySource.is_active.is_(False),
+                    MemorySource.detachment_reason == "replacement",
+                ),
+            )
+            is not None
+        )
+
+    def reactivate_typed_record_for_memory(self, memory: Memory) -> None:
+        """Reactivate the typed projection before re-accepting the same source fact."""
+
+        if memory.memory_type == MemoryType.IDENTITY and "=" in memory.memory_text:
+            key, value = (part.strip() for part in memory.memory_text.split("=", 1))
+            fact = self.db.scalar(
+                select(ProfileFact)
+                .where(ProfileFact.key == key, ProfileFact.value == value)
+                .order_by(ProfileFact.id.desc()),
+            )
+            if fact is not None:
+                fact.is_active = True
+        elif memory.memory_type == MemoryType.PREFERENCE:
+            preference = self.db.scalar(
+                select(Preference)
+                .where(Preference.fingerprint == memory.fingerprint)
+                .order_by(Preference.id.desc()),
+            )
+            if preference is not None:
+                preference.is_active = True
+        elif memory.memory_type == MemoryType.EDUCATION:
+            education = self.db.scalar(
+                select(Education)
+                .where(Education.fingerprint == memory.fingerprint)
+                .order_by(Education.id.desc()),
+            )
+            if education is not None:
+                education.is_active = True
+        elif memory.memory_type == MemoryType.GOAL_RELATED:
+            goal = self.db.scalar(
+                select(Goal).where(Goal.fingerprint == memory.fingerprint).order_by(Goal.id.desc()),
+            )
+            if goal is not None:
+                goal.status = GoalStatus.ACTIVE
+        elif memory.memory_type == MemoryType.ACTIVITY:
+            activity = self.db.scalar(
+                select(Activity)
+                .where(Activity.fingerprint == memory.fingerprint)
+                .order_by(Activity.id.desc()),
+            )
+            if activity is not None:
+                activity.is_active = True
+                activity.archived_at = None
+        self.db.flush()
+
+    def _deactivate_typed_record_for_memory(self, memory: Memory) -> None:
+        if memory.memory_type == MemoryType.IDENTITY and "=" in memory.memory_text:
+            key, value = (part.strip() for part in memory.memory_text.split("=", 1))
+            for fact in self.active_profile_by_key(key):
+                if fact.value == value:
+                    fact.is_active = False
+        elif memory.memory_type == MemoryType.PREFERENCE:
+            for preference in self.list_preferences():
+                if preference.fingerprint == memory.fingerprint:
+                    preference.is_active = False
+        elif memory.memory_type == MemoryType.EDUCATION:
+            for education in self.list_education():
+                if education.fingerprint == memory.fingerprint:
+                    education.is_active = False
+        elif memory.memory_type == MemoryType.GOAL_RELATED:
+            for goal in self.list_goals(GoalStatus.ACTIVE):
+                if goal.fingerprint == memory.fingerprint:
+                    goal.status = GoalStatus.ABANDONED
+        elif memory.memory_type == MemoryType.ACTIVITY:
+            for activity in self.db.scalars(
+                select(Activity).where(Activity.is_active.is_(True)),
+            ):
+                if activity.fingerprint == memory.fingerprint:
+                    activity.is_active = False
+                    activity.archived_at = datetime.now(UTC)
+        elif memory.memory_type == MemoryType.LIFE_FACT:
+            for event in self.list_events(limit=100000):
+                if event.fingerprint == memory.fingerprint:
+                    self.db.delete(event)
+
     def update_profile_fact(self, profile_id: int, key: str, value: str) -> None:
         fact = self.get_profile_fact(profile_id)
         if fact is None:
@@ -303,17 +644,52 @@ class MemoryStore:
         self.db.flush()
 
     def retire_invalid_profile_facts(self) -> int:
-        """Retire old profile rows that cannot safely be treated as durable identity data."""
+        """Retire invalid identity rows and restore a valid fact they wrongly superseded."""
 
         from app.services.identity_facts import is_durable_identity_fact
+        from app.services.lifecycle import MemoryLifecycleService
 
         retired = 0
         for fact in self.list_profile(active_only=True):
             if is_durable_identity_fact(str(fact.key), str(fact.value)):
                 continue
+            invalid_text = f"{fact.key} = {fact.value}"
+            invalid_memories = self._matching_memories(MemoryType.IDENTITY, invalid_text)
+            predecessors = [
+                self.db.get(Memory, memory.supersedes_id)
+                for memory in invalid_memories
+                if memory.supersedes_id is not None
+            ]
             fact.is_active = False
-            self._deactivate_matching_memories(MemoryType.IDENTITY, f"{fact.key} = {fact.value}")
+            self._deactivate_matching_memories(MemoryType.IDENTITY, invalid_text)
             retired += 1
+            for predecessor in predecessors:
+                if predecessor is None or predecessor.memory_type != MemoryType.IDENTITY:
+                    continue
+                prefix, separator, value = predecessor.memory_text.partition("=")
+                key = prefix.strip()
+                value = value.strip()
+                if not separator or key != fact.key or not is_durable_identity_fact(key, value):
+                    continue
+                previous_fact = self.db.scalar(
+                    select(ProfileFact)
+                    .where(
+                        ProfileFact.key == key,
+                        ProfileFact.value == value,
+                        ProfileFact.is_active.is_(False),
+                    )
+                    .order_by(ProfileFact.updated_at.desc(), ProfileFact.id.desc())
+                )
+                if previous_fact is None:
+                    continue
+                previous_fact.is_active = True
+                MemoryLifecycleService().restore(
+                    self,
+                    predecessor,
+                    "Restored after retiring an invalid identity value that superseded it.",
+                    explicit_restore=True,
+                )
+                break
         if retired:
             self.db.flush()
         return retired
@@ -463,6 +839,8 @@ class MemoryStore:
             return
         from app.services.lifecycle import MemoryLifecycleService
 
+        if memory.is_active:
+            self._deactivate_typed_record_for_memory(memory)
         MemoryLifecycleService().delete(self, memory)
 
     def _update_matching_memories(
@@ -495,6 +873,7 @@ class MemoryStore:
         memory_type: MemoryType,
         memory_text: str,
         canonical_slot: str | None = None,
+        replacement_source_message_id: int | None = None,
     ) -> Memory | None:
         normalized_text = " ".join(memory_text.lower().split())
         from app.services.lifecycle import tombstone_identity
@@ -505,18 +884,35 @@ class MemoryStore:
             Memory.is_active.is_(False),
             Memory.status.in_(["deleted", "archived", "superseded"]),
         )
+        matches: list[Memory] = []
         for memory in self.db.scalars(stmt):
             memory_identity = tombstone_identity(
                 memory.memory_type, memory.memory_text, memory.canonical_slot
             )
             if candidate_identity and memory_identity == candidate_identity:
-                return memory
+                matches.append(memory)
+                continue
             if canonical_slot and memory.canonical_slot == canonical_slot:
                 if " ".join(memory.memory_text.lower().split()) == normalized_text:
-                    return memory
+                    matches.append(memory)
             elif " ".join(memory.memory_text.lower().split()) == normalized_text:
-                return memory
-        return None
+                matches.append(memory)
+        if not matches:
+            return None
+
+        def priority(memory: Memory) -> tuple[int, int]:
+            if memory.status == "deleted":
+                return (0, -memory.id)
+            if memory.status == "superseded":
+                return (1, -memory.id)
+            if self.source_was_detached_for_replacement(
+                memory.id,
+                replacement_source_message_id,
+            ):
+                return (2, -memory.id)
+            return (3, -memory.id)
+
+        return min(matches, key=priority)
 
     def record_lifecycle_audit(
         self,

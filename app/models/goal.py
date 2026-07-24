@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, Index, Integer, String, Text
+from sqlalchemy import CheckConstraint, Date, DateTime, Enum, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -21,6 +21,9 @@ class Goal(TimestampMixin, Base):
     goal: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    target_date: Mapped[date | None] = mapped_column(Date)
+    horizon_months: Mapped[int | None] = mapped_column(Integer)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[GoalStatus] = mapped_column(
         Enum(GoalStatus, native_enum=False, values_callable=enum_values),
         nullable=False,

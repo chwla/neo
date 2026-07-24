@@ -8,6 +8,8 @@ from app.services.chat import NeoChatService
 from app.services.chat_intent import InternalChatIntent, resolve_internal_chat_intent
 from app.services.provider_runtime.client import ProviderRuntimeClient
 from app.services.recovery.service import RecoveryService
+from app.services.search.types import EvidenceChunk, WebContext
+from app.services.source_citations import CitationFormatter, SourceCitation
 from app.services.tasks.service import TaskContextService
 
 REPRODUCTION_PROMPT = (
@@ -246,13 +248,114 @@ def test_original_prompt_streams_through_llm_and_persists_generation_metadata() 
     assistant = service.store.messages[-1]
     assert assistant.role == "assistant"
     assert assistant.content == "A detailed normal answer."
-    assert assistant.metadata == {
-        "prompt_tokens": 101,
-        "completion_tokens": 17,
-        "total_tokens": 118,
-        "duration_ms": 42,
-        "thinking": None,
-    }
+    assert assistant.metadata["prompt_tokens"] == 101
+    assert assistant.metadata["completion_tokens"] == 17
+    assert assistant.metadata["total_tokens"] == 118
+    assert assistant.metadata["duration_ms"] == 42
+    assert assistant.metadata["thinking"] is None
+    assert assistant.metadata["response_kind"] == "normal_chat"
+    assert assistant.metadata["route_name"] == "chat"
+    assert assistant.metadata["metadata"]["search_intent"]["kind"] == "none"
+
+
+def test_release_chat_rejects_publication_date_and_untrusted_single_source() -> None:
+    service = _normal_streaming_service()
+    service.citation_formatter = CitationFormatter()
+    context = WebContext(
+        query="God of War next game release date official",
+        needed=True,
+        answer_mode="fact_lookup",
+        evidence_chunks=[
+            EvidenceChunk(
+                source_index=1,
+                source_title="State of Play June 2026 announcements",
+                source_url=(
+                    "https://blog.playstation.com/2026/06/02/"
+                    "state-of-play-june-2026-all-announcements-trailers/"
+                ),
+                source="blog.playstation.com",
+                text=(
+                    "Published June 2, 2026. God of War: Sons of Sparta and "
+                    "God of War Laufey are coming to PS5."
+                ),
+                relevance_score=12,
+            ),
+            EvidenceChunk(
+                source_index=2,
+                source_title="God of War Laufey release date",
+                source_url="https://nerdyinfo.com/god-of-war-laufey",
+                source="nerdyinfo.com",
+                text="God of War Laufey releases on June 2, 2026.",
+                relevance_score=10,
+            ),
+        ],
+        citations=[
+            SourceCitation(
+                index=1,
+                title="State of Play June 2026 announcements",
+                url=(
+                    "https://blog.playstation.com/2026/06/02/"
+                    "state-of-play-june-2026-all-announcements-trailers/"
+                ),
+                source="blog.playstation.com",
+                fetched=True,
+            ),
+            SourceCitation(
+                index=2,
+                title="God of War Laufey release date",
+                url="https://nerdyinfo.com/god-of-war-laufey",
+                source="nerdyinfo.com",
+                fetched=True,
+            ),
+        ],
+    )
+    service.web_search = SimpleNamespace(build_context_forced=lambda _query: context)
+    service._direct_web_reply = NeoChatService._direct_web_reply.__get__(service)
+    service._verified_release_answer = NeoChatService._verified_release_answer.__get__(service)
+    service._is_release_date_query = NeoChatService._is_release_date_query.__get__(service)
+    service._target_region = NeoChatService._target_region.__get__(service)
+
+    events = list(
+        service.stream_message(
+            chat_id=1,
+            prompt="When is the next God of War game going to release?",
+        )
+    )
+
+    reply = events[-1]["reply"]
+    assert "cannot report a verified date yet" in reply
+    assert "June 2, 2026" not in reply
+    assert "blog.playstation.com" in reply
+    assert service.ollama.stream_calls == []
+    assert [message.role for message in service.store.messages] == ["user", "assistant"]
+    assert isinstance(events[-1]["duration_ms"], int)
+    assert events[-1]["duration_ms"] >= 0
+    assert service.store.messages[-1].metadata["duration_ms"] == events[-1]["duration_ms"]
+
+
+def test_native_provider_thinking_is_persisted_and_returned_to_the_client() -> None:
+    class ThinkingLLM(_LLM):
+        def chat_stream(self, messages, **_kwargs):
+            self.stream_calls.append(messages)
+            yield {"type": "thinking", "content": "I should answer this carefully."}
+            yield {"type": "chunk", "content": "Answer."}
+            yield {
+                "type": "done",
+                "thinking": "I should answer this carefully.",
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+                "duration_ms": 7,
+            }
+
+    service = _normal_streaming_service()
+    service.ollama = ThinkingLLM()
+
+    events = list(service.stream_message(chat_id=1, prompt="Explain this."))
+
+    assert [event["type"] for event in events] == ["thinking", "chunk", "done"]
+    assert events[-1]["thinking"] == "I should answer this carefully."
+    assert service.store.messages[-1].metadata["thinking"] == "I should answer this carefully."
 
 
 @pytest.mark.parametrize("prompt", NORMAL_CHAT_INPUTS)
@@ -299,7 +402,10 @@ def test_runtime_stream_exposes_provider_usage_for_chat_persistence() -> None:
                 "route_name": "chat",
                 "provider_name": "ollama",
                 "model_name": "test-model",
-                "metadata": {"partial_response": "Streamed answer."},
+                "metadata": {
+                    "partial_response": "Streamed answer.",
+                    "thinking": "Runtime reasoning.",
+                },
                 "provider_usage": {
                     "prompt_tokens": 55,
                     "completion_tokens": 21,
@@ -318,6 +424,7 @@ def test_runtime_stream_exposes_provider_usage_for_chat_persistence() -> None:
 
     assert events == [
         {"type": "start", "request_id": "request-1"},
+        {"type": "thinking", "content": "Runtime reasoning."},
         {"type": "chunk", "content": "Streamed answer."},
         {
             "type": "done",
@@ -330,5 +437,7 @@ def test_runtime_stream_exposes_provider_usage_for_chat_persistence() -> None:
             "provider": "ollama",
             "model": "test-model",
             "fallback_used": False,
+            "finish_reason": None,
+            "thinking": "Runtime reasoning.",
         },
     ]

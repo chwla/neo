@@ -36,7 +36,10 @@ class ChatMessage(Base):
     """Single persisted user, assistant, or system message in a chat."""
 
     __tablename__ = "chat_messages"
-    __table_args__ = (Index("ix_chat_messages_chat_created", "chat_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_chat_messages_chat_created", "chat_id", "created_at"),
+        Index("ix_chat_messages_generation", "generation_id", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
@@ -47,6 +50,14 @@ class ChatMessage(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     thinking: Mapped[str | None] = mapped_column(Text)
+    response_kind: Mapped[str | None] = mapped_column(String(40))
+    provider_name: Mapped[str | None] = mapped_column(String(120))
+    model_name: Mapped[str | None] = mapped_column(String(240))
+    route_name: Mapped[str | None] = mapped_column(String(120))
+    finish_reason: Mapped[str | None] = mapped_column(String(40))
+    trace_id: Mapped[str | None] = mapped_column(String(80))
+    metadata_json: Mapped[str | None] = mapped_column(Text)
+    generation_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -71,16 +82,37 @@ class ChatGeneration(Base):
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     llm_id: Mapped[str | None] = mapped_column(String(80))
     client_request_id: Mapped[str | None] = mapped_column(String(80))
-    user_message_id: Mapped[int | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"))
+    user_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL")
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    status_detail: Mapped[str | None] = mapped_column(String(120))
     partial_response: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    thinking: Mapped[str | None] = mapped_column(Text)
     reply: Mapped[str | None] = mapped_column(Text)
     assistant_message_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_messages.id", ondelete="SET NULL")
     )
     error: Mapped[str | None] = mapped_column(Text)
+    timezone: Mapped[str | None] = mapped_column(String(80))
+    locale: Mapped[str | None] = mapped_column(String(40))
+    response_kind: Mapped[str | None] = mapped_column(String(40))
+    provider_name: Mapped[str | None] = mapped_column(String(120))
+    model_name: Mapped[str | None] = mapped_column(String(240))
+    route_name: Mapped[str | None] = mapped_column(String(120))
+    finish_reason: Mapped[str | None] = mapped_column(String(40))
+    trace_id: Mapped[str | None] = mapped_column(String(80))
+    metadata_json: Mapped[str | None] = mapped_column(Text)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    worker_id: Mapped[str | None] = mapped_column(String(36))
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -24,9 +24,11 @@ class ProjectStatus(StrEnum):
 
 class MemoryType(StrEnum):
     IDENTITY = "identity"
+    EDUCATION = "education"
     PREFERENCE = "preference"
     GOAL_RELATED = "goal_related"
     PROJECT_RELATED = "project_related"
+    ACTIVITY = "activity"
     KNOWLEDGE = "knowledge"
     RELATIONSHIP = "relationship"
     LIFE_FACT = "life_fact"
@@ -34,9 +36,11 @@ class MemoryType(StrEnum):
 
 class CandidateType(StrEnum):
     IDENTITY = "identity"
+    EDUCATION = "education"
     PREFERENCE = "preference"
     GOAL = "goal"
     PROJECT = "project"
+    ACTIVITY = "activity"
     EVENT = "event"
     MEMORY = "memory"
     NONE = "none"

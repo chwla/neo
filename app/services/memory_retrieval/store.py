@@ -170,7 +170,9 @@ def delete_item(item_id: str) -> bool:
         conn.close()
 
 
-def link_memory(memory_id: str, target_type: str, target_id: str, relation: str = "derived_from") -> None:
+def link_memory(
+    memory_id: str, target_type: str, target_id: str, relation: str = "derived_from"
+) -> None:
     conn = _connect()
     try:
         existing = conn.execute(

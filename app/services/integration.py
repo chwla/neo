@@ -560,20 +560,14 @@ def _reference_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failed": sum(item["status"] == "failed" for item in results),
     }
     summary["status"] = (
-        "failed"
-        if summary["failed"]
-        else "warning"
-        if summary["warnings"]
-        else "passed"
+        "failed" if summary["failed"] else "warning" if summary["warnings"] else "passed"
     )
     return summary
 
 
 def workspace_validation(workspace_id: str) -> dict[str, Any]:
     results = [
-        item
-        for item in _collect_reference_results()
-        if item.get("workspace_id") == workspace_id
+        item for item in _collect_reference_results() if item.get("workspace_id") == workspace_id
     ]
     summary = _reference_summary(results)
     return {"workspace_id": workspace_id, "summary": summary, "results": results}
@@ -688,8 +682,7 @@ def report() -> dict[str, Any]:
         "workspaces": [item["readiness"] for item in workspace_reports],
         "status_counts": {
             status: sum(
-                item["workspace"].get("readiness_status") == status
-                for item in workspace_reports
+                item["workspace"].get("readiness_status") == status for item in workspace_reports
             )
             for status in (
                 "automated_ready",
@@ -768,6 +761,7 @@ def validate() -> dict[str, Any]:
 
 def smoke() -> dict[str, Any]:
     from app.services.continuity import ContinuityService
+
     workspace_service = WorkspaceService()
     workspace = workspace_service.create(
         "Core integration smoke",
