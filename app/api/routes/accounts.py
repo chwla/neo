@@ -13,6 +13,7 @@ from app.services.profile_accounts import (
     create_guest,
     create_profile,
     delete_guest,
+    delete_profile,
     list_profiles,
 )
 
@@ -32,6 +33,10 @@ class UnlockRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class DeleteProfileRequest(UnlockRequest):
+    """Password confirmation for irreversible local account deletion."""
+
+
 def session_for(request: Request) -> dict | None:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -45,6 +50,13 @@ def _start_session(response: Response, profile: dict) -> None:
     with _session_lock:
         _sessions[token] = profile
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False)
+
+
+def _end_sessions_for_profile(profile_id: str) -> None:
+    with _session_lock:
+        for token, profile in list(_sessions.items()):
+            if profile.get("id") == profile_id:
+                _sessions.pop(token, None)
 
 
 @router.get("")
@@ -71,6 +83,20 @@ def unlock_profile(profile_id: str, payload: UnlockRequest, response: Response) 
     profile = authenticate(profile_id, payload.password)
     _start_session(response, profile)
     return {"profile": profile}
+
+
+@router.delete("/{profile_id}", status_code=204)
+def remove_profile(
+    profile_id: str,
+    payload: DeleteProfileRequest,
+    request: Request,
+    response: Response,
+) -> Response:
+    delete_profile(profile_id, payload.password)
+    _end_sessions_for_profile(profile_id)
+    response.delete_cookie(SESSION_COOKIE)
+    response.status_code = 204
+    return response
 
 
 @router.get("/session/current")

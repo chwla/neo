@@ -74,6 +74,8 @@ body {
 .profile-form input { width: 100%; padding: 11px 12px; }
 .profile-form .neo-button { justify-self: start; margin-top: 4px; }
 .profile-back { justify-self: start; background: transparent; border: 0; padding: 0; color: var(--neo-green); }
+.profile-danger-link { justify-self: start; border: 0; background: transparent; color: #ff9494; padding: 4px 0; text-decoration: underline; }
+.profile-danger-button { border-color: rgba(255, 105, 105, .65) !important; background: rgba(120, 15, 15, .32) !important; color: #ffd2d2 !important; }
 .profile-unlock-heading { display: flex; align-items: center; gap: 14px; }
 .profile-unlock-heading p { margin: 5px 0 0; color: var(--neo-muted); }
 .profile-picture-input { grid-template-columns: auto 1fr; align-items: center; }

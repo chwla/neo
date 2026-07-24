@@ -204,6 +204,42 @@ def delete_guest(profile_id: str) -> None:
         shutil.rmtree(_profile_directory(profile_id, guest=True), ignore_errors=True)
 
 
+def delete_profile(profile_id: str, password: str) -> dict:
+    """Permanently remove one password-confirmed local account and its private data."""
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        row = conn.execute("SELECT * FROM account_profiles WHERE id = ?", (profile_id,)).fetchone()
+        if row is None or not _verify_password(
+            password, row["password_salt"], row["password_hash"]
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="That password does not match this profile.",
+            )
+
+        # The identifier comes from the registry row, rather than the request path, before it is
+        # ever used as a filesystem component. This keeps removal confined to this account.
+        directory = _profile_directory(row["id"])
+        accounts_root = (_root() / "accounts").resolve()
+        if not directory.resolve().is_relative_to(accounts_root):
+            raise HTTPException(status_code=400, detail="Invalid profile storage location.")
+        if directory.exists():
+            try:
+                shutil.rmtree(directory)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Neo could not remove this profile's local data. The account was kept.",
+                ) from exc
+
+        conn.execute("DELETE FROM account_profiles WHERE id = ?", (row["id"],))
+        conn.commit()
+        return public_profile(row)
+    finally:
+        conn.close()
+
+
 def cleanup_guests() -> None:
     shutil.rmtree(_root() / "guests", ignore_errors=True)
 

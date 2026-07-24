@@ -119,20 +119,27 @@ class ChatSendRequest(BaseModel):
     prompt: str = Field(min_length=1)
     llm_id: str | None = Field(default=None, max_length=80)
     client_request_id: str | None = Field(default=None, min_length=1, max_length=80)
-    timezone: str | None = Field(default=None, min_length=1, max_length=80)
+    timezone: str | None = Field(default=None, max_length=80)
     locale: str | None = Field(default=None, min_length=2, max_length=40)
 
-    @field_validator("timezone")
+    @field_validator("timezone", mode="before")
     @classmethod
-    def validate_timezone(cls, value: str | None) -> str | None:
-        if value is None:
+    def normalize_timezone(cls, value: object) -> str | None:
+        """Accept valid browser timezones without letting optional metadata reject chat.
+
+        The timezone is client-supplied context, not part of the user prompt.  A browser can
+        report an IANA backwards-compatibility name (for example ``Asia/Calcutta``), and a
+        stale or malformed value must simply fall back to the profile/default timezone.
+        """
+        if not isinstance(value, str):
             return None
         cleaned = value.strip()
+        if not cleaned or len(cleaned) > 80:
+            return None
         try:
-            ZoneInfo(cleaned)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return cleaned
+            return ZoneInfo(cleaned).key
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
 
     @field_validator("locale")
     @classmethod

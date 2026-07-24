@@ -54,6 +54,20 @@ export default function ProfilePicker({ onSignedIn }) {
     finally { setBusy(false); }
   }
 
+  async function deleteAccount(event) {
+    event.preventDefault();
+    if (!selected) return;
+    setBusy(true); setError("");
+    try {
+      await api.deleteAccountProfile(selected.id, password);
+      setPassword(""); setSelected(null); setMode("choose");
+      await loadProfiles();
+    } catch (requestError) {
+      setPassword("");
+      setError(requestError.message || "Could not delete this profile.");
+    } finally { setBusy(false); }
+  }
+
   function handleAvatar(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -90,6 +104,14 @@ export default function ProfilePicker({ onSignedIn }) {
         <div className="profile-unlock-heading"><InitialsAvatar profile={selected} large /><div><h2>{selected.username}</h2><p>Enter your password to continue.</p></div></div>
         <label>Password<input ref={passwordInput} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
         <button className="neo-button" type="submit" disabled={busy}>{busy ? "Unlocking…" : "Unlock profile"}</button>
+        <button type="button" className="profile-danger-link" onClick={() => { setPassword(""); setError(""); setMode("delete"); }} disabled={busy}>Delete this account</button>
+      </form>}
+
+      {mode === "delete" && selected && <form className="profile-form" onSubmit={deleteAccount}>
+        <button type="button" className="profile-back" onClick={() => { setPassword(""); setMode("unlock"); }}>← Keep account</button>
+        <div className="profile-unlock-heading"><InitialsAvatar profile={selected} large /><div><h2>Delete {selected.username}?</h2><p>This permanently removes its chats, memories, files, settings, and local credentials from this device.</p></div></div>
+        <label>Enter password to confirm<input ref={passwordInput} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
+        <button className="neo-button profile-danger-button" type="submit" disabled={busy}>{busy ? "Deleting…" : "Delete account permanently"}</button>
       </form>}
 
       {mode === "create" && <form className="profile-form" onSubmit={create}>
