@@ -18,10 +18,26 @@ class ConflictResolutionService:
                 old_fact.is_active = False
 
     def supersede_preference_category(self, store: MemoryStore, new_preference: Preference) -> None:
+        """Backward-compatible resolver for records without a canonical preference slot."""
         for old_preference in store.active_preferences_by_category(new_preference.category):
             is_different_record = old_preference.id != new_preference.id
             has_different_value = old_preference.value != new_preference.value
             if is_different_record and has_different_value:
+                old_preference.is_active = False
+
+    def supersede_preference_slot(self, store: MemoryStore, new_preference: Preference) -> None:
+        """Supersede only a conflicting stance on the same preference subject."""
+        canonical_slot = (new_preference.canonical_slot or "").strip()
+        if not canonical_slot:
+            self.supersede_preference_category(store, new_preference)
+            return
+        for old_preference in store.list_preferences():
+            if (
+                old_preference.is_active
+                and old_preference.id != new_preference.id
+                and old_preference.canonical_slot == canonical_slot
+                and old_preference.value != new_preference.value
+            ):
                 old_preference.is_active = False
 
     def supersede_similar_memory(self, store: MemoryStore, new_memory: Memory) -> None:
@@ -37,7 +53,11 @@ class ConflictResolutionService:
                 )
 
     def _conflicts(self, old_memory: Memory, new_memory: Memory) -> bool:
-        if old_memory.memory_type in {MemoryType.IDENTITY, MemoryType.PREFERENCE}:
+        if old_memory.memory_type == MemoryType.PREFERENCE:
+            if old_memory.canonical_slot and new_memory.canonical_slot:
+                return old_memory.canonical_slot == new_memory.canonical_slot
+            return self._prefix(old_memory.memory_text) == self._prefix(new_memory.memory_text)
+        if old_memory.memory_type == MemoryType.IDENTITY:
             return self._prefix(old_memory.memory_text) == self._prefix(new_memory.memory_text)
         return old_memory.memory_text.strip().lower() == new_memory.memory_text.strip().lower()
 

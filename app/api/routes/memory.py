@@ -236,6 +236,22 @@ class MemoryUpdateRequest(BaseModel):
     importance: int = Field(ge=1, le=10)
 
 
+class EducationUpdateRequest(BaseModel):
+    institution: str = Field(min_length=1, max_length=255)
+    degree: str | None = Field(default=None, max_length=255)
+    field_of_study: str | None = Field(default=None, max_length=255)
+    graduation_date: date | None = None
+    description: str | None = Field(default=None, max_length=4000)
+
+
+class ActivityUpdateRequest(BaseModel):
+    category: str = Field(min_length=1, max_length=128)
+    activity: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    started_at: datetime
+    expires_at: datetime
+
+
 class MemoryExplainRequest(BaseModel):
     query: str = Field(min_length=1)
 
@@ -1137,6 +1153,78 @@ def list_activities(store: StoreDependency) -> list[ActivityRead]:
     store.archive_expired_activities()
     store.db.commit()
     return [ActivityRead.model_validate(item) for item in store.list_activities(active_only=True)]
+
+
+@router.patch("/education/{education_id}", response_model=EducationRead)
+def update_education(
+    education_id: int,
+    request: EducationUpdateRequest,
+    store: StoreDependency,
+) -> EducationRead:
+    education = store.get_education(education_id)
+    if education is None or not education.is_active:
+        raise HTTPException(status_code=404, detail="Education record not found")
+    if request.graduation_date and request.graduation_date > date.today():
+        raise HTTPException(status_code=422, detail="Graduation date cannot be in the future")
+    try:
+        store.update_education(
+            education_id,
+            request.institution.strip(),
+            _clean_optional_text(request.degree),
+            _clean_optional_text(request.field_of_study),
+            request.graduation_date,
+            _clean_optional_text(request.description),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    store.db.commit()
+    return EducationRead.model_validate(store.get_education(education_id))
+
+
+@router.delete("/education/{education_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_education(education_id: int, store: StoreDependency) -> Response:
+    education = store.get_education(education_id)
+    if education is None or not education.is_active:
+        raise HTTPException(status_code=404, detail="Education record not found")
+    store.delete_education(education_id)
+    store.db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/activities/{activity_id}", response_model=ActivityRead)
+def update_activity(
+    activity_id: int,
+    request: ActivityUpdateRequest,
+    store: StoreDependency,
+) -> ActivityRead:
+    activity = store.get_activity(activity_id)
+    if activity is None or not activity.is_active:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    if request.expires_at <= request.started_at:
+        raise HTTPException(status_code=422, detail="Activity expiry must be after its start")
+    try:
+        store.update_activity(
+            activity_id,
+            request.category.strip(),
+            request.activity.strip(),
+            _clean_optional_text(request.description),
+            request.started_at,
+            request.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    store.db.commit()
+    return ActivityRead.model_validate(store.get_activity(activity_id))
+
+
+@router.delete("/activities/{activity_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_activity(activity_id: int, store: StoreDependency) -> Response:
+    activity = store.get_activity(activity_id)
+    if activity is None or not activity.is_active:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    store.delete_activity(activity_id)
+    store.db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch("/goals/{goal_id}", response_model=GoalRead)

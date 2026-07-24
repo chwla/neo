@@ -276,12 +276,19 @@ class MemoryReviewService:
             existing_preference = next(
                 (
                     preference
-                    for preference in store.active_preferences_by_category(category)
+                    for preference in store.list_preferences()
                     if preference.value == value
+                    or preference.canonical_slot == canonical_slot
+                    or self._same_preference_subject_slot(
+                        preference.canonical_slot,
+                        canonical_slot,
+                    )
                 ),
                 None,
             )
             if existing_preference is not None:
+                existing_preference.category = category
+                existing_preference.value = value
                 existing_preference.canonical_slot = canonical_slot
                 existing_preference.fingerprint = fingerprint
                 existing_preference.confidence = max(
@@ -292,10 +299,20 @@ class MemoryReviewService:
                     existing_preference.importance,
                     candidate.importance,
                 )
-                memory = existing_memory or store.add(
-                    self._memory(candidate, MemoryType.PREFERENCE, memory_text)
+                memory = (
+                    existing_memory
+                    or self._memory_for_preference(
+                        store,
+                        canonical_slot,
+                    )
+                    or store.add(self._memory(candidate, MemoryType.PREFERENCE, memory_text))
                 )
+                memory.memory_text = memory_text
+                memory.canonical_slot = canonical_slot
                 self._refresh_memory(memory, candidate)
+                store._sync_memory_fts(memory)
+                store._mark_embedding_stale(memory)
+                store._sync_memory_embedding(memory)
                 return memory
             preference = store.add(
                 Preference(
@@ -311,7 +328,7 @@ class MemoryReviewService:
                 self._memory(candidate, MemoryType.PREFERENCE, memory_text)
             )
             if not attrs.get("additive"):
-                self.conflicts.supersede_preference_category(store, preference)
+                self.conflicts.supersede_preference_slot(store, preference)
                 self.conflicts.supersede_similar_memory(store, memory)
             return memory
 
@@ -586,6 +603,37 @@ class MemoryReviewService:
             ),
             memories[0] if len(memories) == 1 else None,
         )
+
+    @staticmethod
+    def _memory_for_preference(store: MemoryStore, canonical_slot: str) -> Memory | None:
+        return next(
+            (
+                memory
+                for memory in store.active_memories_by_type(MemoryType.PREFERENCE)
+                if memory.canonical_slot == canonical_slot
+                or MemoryReviewService._same_preference_subject_slot(
+                    memory.canonical_slot,
+                    canonical_slot,
+                )
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _same_preference_subject_slot(left: str | None, right: str | None) -> bool:
+        """Match current and legacy slots for one user preference subject."""
+        return (
+            left_subject := MemoryReviewService._preference_subject_slot(left)
+        ) is not None and left_subject == MemoryReviewService._preference_subject_slot(right)
+
+    @staticmethod
+    def _preference_subject_slot(value: str | None) -> str | None:
+        parts = str(value or "").split(":", maxsplit=2)
+        if len(parts) != 3 or parts[0] != "preference":
+            return None
+        if parts[1] not in {"interest", "aversion", "sentiment"}:
+            return None
+        return parts[2] or None
 
     def _existing_memory(
         self,

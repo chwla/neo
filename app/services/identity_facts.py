@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # These are transient states or conversational fillers, not occupations or identity facts.
 # Keep this check deliberately conservative: an uncertain profile value is worse than no
@@ -84,7 +85,7 @@ _PROFILE_KEYS = frozenset(
 def normalize_identity_value(key: str, value: str) -> str:
     """Return a display-safe canonical value for a validated identity fact."""
 
-    cleaned = re.sub(r"\s+", " ", value).strip(" ,;.")
+    cleaned = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip(" ,;.")
     if key.lower() == "name" and cleaned.islower():
         # User input commonly arrives lower-cased (for example ``iam soham``).
         # Title casing is only presentation normalization; it does not infer a name.
@@ -105,8 +106,9 @@ def is_durable_identity_fact(key: str, value: str) -> bool:
     if normalized_key == "name":
         words = lowered.split()
         return bool(
-            re.fullmatch(r"[A-Za-z][A-Za-z' -]{1,80}", cleaned)
+            1 <= len(cleaned) <= 81
             and 1 <= len(words) <= 5
+            and all(_is_name_word(word) for word in words)
             and lowered not in _NAME_DISALLOWED
             and not any(word in _NAME_DISALLOWED for word in words)
         )
@@ -124,3 +126,12 @@ def is_durable_identity_fact(key: str, value: str) -> bool:
         return bool(cleaned.isdigit() and 0 < int(cleaned) < 130)
 
     return len(cleaned) >= 2
+
+
+def _is_name_word(value: str) -> bool:
+    """Allow real Unicode names while excluding punctuation-only or numeric profile values."""
+    return (
+        bool(value)
+        and any(char.isalpha() for char in value)
+        and all(char.isalpha() or char in "'-" for char in value)
+    )

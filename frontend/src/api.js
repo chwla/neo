@@ -643,6 +643,12 @@ export const api = {
   updateProfile: (id, payload) =>
     request(`/profile/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteProfile: (id) => request(`/profile/${id}`, { method: "DELETE" }),
+  updateEducation: (id, payload) =>
+    request(`/education/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteEducation: (id) => request(`/education/${id}`, { method: "DELETE" }),
+  updateActivity: (id, payload) =>
+    request(`/activities/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteActivity: (id) => request(`/activities/${id}`, { method: "DELETE" }),
   updatePreference: (id, payload) =>
     request(`/preferences/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deletePreference: (id) => request(`/preferences/${id}`, { method: "DELETE" }),

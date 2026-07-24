@@ -1901,36 +1901,138 @@ function GeneralMemoryForm({ record, refresh, setError }) {
   );
 }
 
-function TypedMemoryRecords({ records, kind }) {
+function datetimeLocalValue(value) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 16);
+}
+
+function TypedMemoryRecords({ records, kind, refresh, setError }) {
   if (!records.length) {
     return <p className="dialog-caption">No {kind.toLowerCase()} stored yet.</p>;
   }
-  return records.map((record) => {
-    const education = kind === "Education";
-    const summary = education
-      ? [record.degree, record.field_of_study, record.institution].filter(Boolean).join(" · ")
-      : record.activity;
-    return (
-      <MemoryCard summary={summary} key={`${kind}-${record.id}`}>
-        <div className="typed-memory-details">
-          {education ? (
-            <>
-              <p><strong>Institution:</strong> {record.institution}</p>
-              <p><strong>Degree:</strong> {record.degree || "Not specified"}</p>
-              <p><strong>Field:</strong> {record.field_of_study || "Not specified"}</p>
-              <p><strong>Graduation date:</strong> {record.graduation_date || "Not stated"}</p>
-            </>
-          ) : (
-            <>
-              <p><strong>Category:</strong> {record.category}</p>
-              <p><strong>Started:</strong> {formatAgentTime(record.started_at)}</p>
-              <p><strong>Expires:</strong> {formatAgentTime(record.expires_at)}</p>
-            </>
-          )}
-        </div>
-      </MemoryCard>
-    );
-  });
+  return records.map((record) => (
+    kind === "Education"
+      ? <EducationForm key={`education-${record.id}`} record={record} refresh={refresh} setError={setError} />
+      : <ActivityForm key={`activity-${record.id}`} record={record} refresh={refresh} setError={setError} />
+  ));
+}
+
+function EducationForm({ record, refresh, setError }) {
+  const [institution, setInstitution] = useState(record.institution);
+  const [degree, setDegree] = useState(record.degree || "");
+  const [fieldOfStudy, setFieldOfStudy] = useState(record.field_of_study || "");
+  const [graduationDate, setGraduationDate] = useState(record.graduation_date || "");
+  const [description, setDescription] = useState(record.description || "");
+  const [saving, setSaving] = useState(false);
+
+  async function save(event) {
+    event.preventDefault();
+    if (!institution.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api.updateEducation(record.id, {
+        institution: institution.trim(),
+        degree: optionalText(degree),
+        field_of_study: optionalText(fieldOfStudy),
+        graduation_date: graduationDate || null,
+        description: optionalText(description),
+      });
+      await refresh();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    setSaving(true);
+    setError("");
+    try {
+      await api.deleteEducation(record.id);
+      await refresh();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <MemoryCard summary={[record.degree, record.field_of_study, record.institution].filter(Boolean).join(" · ")}>
+      <form onSubmit={save}>
+        <Field label="Institution"><input value={institution} onChange={(event) => setInstitution(event.target.value)} /></Field>
+        <Field label="Degree"><input value={degree} onChange={(event) => setDegree(event.target.value)} /></Field>
+        <Field label="Field of study"><input value={fieldOfStudy} onChange={(event) => setFieldOfStudy(event.target.value)} /></Field>
+        <Field label="Graduation date"><input type="date" value={graduationDate} onChange={(event) => setGraduationDate(event.target.value)} /></Field>
+        <Field label="Notes"><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
+        <FormActions onDelete={remove} saving={saving} />
+      </form>
+    </MemoryCard>
+  );
+}
+
+function ActivityForm({ record, refresh, setError }) {
+  const [category, setCategory] = useState(record.category);
+  const [activity, setActivity] = useState(record.activity);
+  const [description, setDescription] = useState(record.description || "");
+  const [startedAt, setStartedAt] = useState(datetimeLocalValue(record.started_at));
+  const [expiresAt, setExpiresAt] = useState(datetimeLocalValue(record.expires_at));
+  const [saving, setSaving] = useState(false);
+
+  async function save(event) {
+    event.preventDefault();
+    if (!category.trim() || !activity.trim() || !startedAt || !expiresAt) return;
+    const started = new Date(startedAt);
+    const expires = new Date(expiresAt);
+    if (Number.isNaN(started.getTime()) || Number.isNaN(expires.getTime()) || expires <= started) {
+      setError("Activity expiry must be after its start.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await api.updateActivity(record.id, {
+        category: category.trim(),
+        activity: activity.trim(),
+        description: optionalText(description),
+        started_at: started.toISOString(),
+        expires_at: expires.toISOString(),
+      });
+      await refresh();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    setSaving(true);
+    setError("");
+    try {
+      await api.deleteActivity(record.id);
+      await refresh();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <MemoryCard summary={record.activity}>
+      <form onSubmit={save}>
+        <Field label="Category"><input value={category} onChange={(event) => setCategory(event.target.value)} /></Field>
+        <Field label="Activity"><textarea value={activity} onChange={(event) => setActivity(event.target.value)} /></Field>
+        <Field label="Notes"><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
+        <Field label="Started"><input type="datetime-local" value={startedAt} onChange={(event) => setStartedAt(event.target.value)} /></Field>
+        <Field label="Expires"><input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></Field>
+        <FormActions onDelete={remove} saving={saving} />
+      </form>
+    </MemoryCard>
+  );
 }
 
 function MemoryDialog({ onClose, refreshSidebar }) {
@@ -1965,9 +2067,9 @@ function MemoryDialog({ onClose, refreshSidebar }) {
     if (activeTab === "profile") {
       content = <ProfileEditor records={data.profile} {...editorProps} />;
     } else if (activeTab === "education") {
-      content = <TypedMemoryRecords records={data.education} kind="Education" />;
+      content = <TypedMemoryRecords records={data.education} kind="Education" {...editorProps} />;
     } else if (activeTab === "activities") {
-      content = <TypedMemoryRecords records={data.activities} kind="Activities" />;
+      content = <TypedMemoryRecords records={data.activities} kind="Activities" {...editorProps} />;
     } else if (activeTab === "preferences") {
       content = <PreferenceEditor records={data.preferences} {...editorProps} />;
     } else if (activeTab === "goals") {

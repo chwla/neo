@@ -34,7 +34,7 @@ from app.services.embeddings import (
     cosine_similarity,
     decode_vector,
 )
-from app.services.memory_fingerprints import source_fingerprint
+from app.services.memory_fingerprints import memory_fingerprint, source_fingerprint
 
 QUERY_STOPWORDS = {
     "a",
@@ -317,6 +317,9 @@ class MemoryStore:
             stmt = stmt.where(Education.is_active.is_(True))
         return list(self.db.scalars(stmt))
 
+    def get_education(self, education_id: int) -> Education | None:
+        return self.db.get(Education, education_id)
+
     def list_goals(self, status: GoalStatus | None = None) -> list[Goal]:
         stmt = select(Goal).order_by(Goal.priority.desc(), Goal.updated_at.desc())
         if status is not None:
@@ -349,6 +352,9 @@ class MemoryStore:
         if active_only:
             stmt = stmt.where(Activity.is_active.is_(True), Activity.expires_at > now)
         return list(self.db.scalars(stmt))
+
+    def get_activity(self, activity_id: int) -> Activity | None:
+        return self.db.get(Activity, activity_id)
 
     def archive_expired_activities(self, now: datetime | None = None) -> int:
         now = now or datetime.now(UTC)
@@ -833,6 +839,112 @@ class MemoryStore:
         )
         self.db.flush()
 
+    def update_education(
+        self,
+        education_id: int,
+        institution: str,
+        degree: str | None,
+        field_of_study: str | None,
+        graduation_date: date | None,
+        description: str | None,
+    ) -> None:
+        education = self.get_education(education_id)
+        if education is None or not education.is_active:
+            return
+        new_fingerprint = memory_fingerprint(
+            "education", institution, degree, field_of_study, graduation_date
+        )
+        duplicate = self.db.scalar(
+            select(Education).where(
+                Education.id != education_id,
+                Education.is_active.is_(True),
+                Education.fingerprint == new_fingerprint,
+            )
+        )
+        if duplicate is not None:
+            raise ValueError("An identical active education record already exists")
+        old_fingerprint = education.fingerprint
+        education.institution = institution
+        education.degree = degree
+        education.field_of_study = field_of_study
+        education.graduation_date = graduation_date
+        education.description = description or self._education_summary(education)
+        education.fingerprint = new_fingerprint
+        for memory in self._typed_memories_by_fingerprint(MemoryType.EDUCATION, old_fingerprint):
+            memory.memory_text = education.description
+            memory.fingerprint = new_fingerprint
+            memory.canonical_slot = f"education:{self._slot_key(institution)}"
+            memory.update_reason = "User edited education memory."
+            self._sync_memory_fts(memory)
+            self._mark_embedding_stale(memory)
+            self._sync_memory_embedding(memory)
+        self.db.flush()
+
+    def delete_education(self, education_id: int) -> None:
+        education = self.get_education(education_id)
+        if education is None or not education.is_active:
+            return
+        memories = self._typed_memories_by_fingerprint(MemoryType.EDUCATION, education.fingerprint)
+        if memories:
+            for memory in memories:
+                self.delete_memory(memory.id)
+        else:
+            education.is_active = False
+        self.db.flush()
+
+    def update_activity(
+        self,
+        activity_id: int,
+        category: str,
+        activity_text: str,
+        description: str | None,
+        started_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        activity = self.get_activity(activity_id)
+        if activity is None or not activity.is_active:
+            return
+        new_fingerprint = memory_fingerprint("activity", category, activity_text)
+        duplicate = self.db.scalar(
+            select(Activity).where(
+                Activity.id != activity_id,
+                Activity.is_active.is_(True),
+                Activity.fingerprint == new_fingerprint,
+            )
+        )
+        if duplicate is not None:
+            raise ValueError("An identical active activity already exists")
+        old_fingerprint = activity.fingerprint
+        activity.category = category
+        activity.activity = activity_text
+        activity.description = description
+        activity.started_at = started_at
+        activity.expires_at = expires_at
+        activity.fingerprint = new_fingerprint
+        for memory in self._typed_memories_by_fingerprint(MemoryType.ACTIVITY, old_fingerprint):
+            memory.memory_text = activity_text
+            memory.fingerprint = new_fingerprint
+            memory.canonical_slot = f"activity:{self._slot_key(category)}"
+            memory.expires_at = expires_at
+            memory.update_reason = "User edited current activity memory."
+            self._sync_memory_fts(memory)
+            self._mark_embedding_stale(memory)
+            self._sync_memory_embedding(memory)
+        self.db.flush()
+
+    def delete_activity(self, activity_id: int) -> None:
+        activity = self.get_activity(activity_id)
+        if activity is None or not activity.is_active:
+            return
+        memories = self._typed_memories_by_fingerprint(MemoryType.ACTIVITY, activity.fingerprint)
+        if memories:
+            for memory in memories:
+                self.delete_memory(memory.id)
+        else:
+            activity.is_active = False
+            activity.archived_at = datetime.now(UTC)
+        self.db.flush()
+
     def delete_memory(self, memory_id: int) -> None:
         memory = self.get_memory(memory_id)
         if memory is None:
@@ -867,6 +979,33 @@ class MemoryStore:
             Memory.status == "active",
         )
         return list(self.db.scalars(stmt))
+
+    def _typed_memories_by_fingerprint(
+        self,
+        memory_type: MemoryType,
+        fingerprint: str,
+    ) -> list[Memory]:
+        return list(
+            self.db.scalars(
+                select(Memory).where(
+                    Memory.memory_type == memory_type,
+                    Memory.fingerprint == fingerprint,
+                    Memory.is_active.is_(True),
+                    Memory.status == "active",
+                ),
+            )
+        )
+
+    @staticmethod
+    def _slot_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.casefold()) or "general"
+
+    @staticmethod
+    def _education_summary(education: Education) -> str:
+        qualification = education.degree or "Education"
+        if education.field_of_study:
+            qualification = f"{qualification} in {education.field_of_study}"
+        return f"{qualification} at {education.institution}"
 
     def inactive_memory_tombstone(
         self,

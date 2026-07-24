@@ -93,6 +93,14 @@ Rules:
 - Extract only stable facts about the user, their preferences, goals, projects, timeline events,
   and explicit instructions the assistant should remember.
 - Do not store temporary requests, assistant claims, or facts not grounded in the user's words.
+- Do not treat a conversational reaction, a momentary curiosity, tentative exploration, or an
+  uncommitted wish to learn about a topic as a durable preference. A preference must describe an
+  established or explicitly requested-to-be-remembered stance, habit, or communication setting.
+  When the evidence for durability is unclear, use declaration "ambiguous" rather than "clear".
+- Enumerate every independent declaration. A sentence or paragraph can contain multiple
+  memories, so return one item for each fact, preference, goal, project, activity, event, or
+  instruction; never stop after the first or most salient item. For example, a statement with a
+  name, place, and role needs three separate items.
 - For preferences such as "be concise", use type "preference", category "response_style",
   and value like "concise answers".
 - For identity, set attributes {"key":"name|location|occupation|education|general","value":"..."}.
@@ -103,6 +111,8 @@ Rules:
 - For projects, set attributes {"name":"...","description":"..."}.
 - For current activities, set attributes {"category":"playing|reading|watching|working_on",
   "activity":"...","subject":"..."}. Do not infer an activity from a question.
+- Use activity only for something the user explicitly says they are currently or actively doing.
+  Store enduring likes, interests, habits, and communication preferences as type "preference".
 - For events, set attributes {"event":"...","event_date":"YYYY-MM-DD"} when a date is explicit.
 - For general memories, set attributes {"memory_text":"..."}.
 - Every item must be grounded by source_span copied exactly from the user's message.
@@ -114,6 +124,17 @@ Rules:
 - Mark short-lived feelings, current physical states, one-off conditions, and temporary status
   updates as durability "temporary". Do not store them as long-term memory.
 - If nothing durable should be stored, return {"items":[]}.
+""".strip()
+
+    LLM_ADMISSION_REVIEW_SUFFIX = """
+
+You are the final conservative admission reviewer for the proposed memory extraction below.
+Re-read the user turn independently and return the complete set of durable items that are safe
+to persist in the required JSON schema. Preserve valid proposed items, but also add a fact that
+the proposal omitted when it is directly supported by an exact source_span. Reject conversational
+reactions, momentary curiosity, tentative exploration, uncommitted wishes, quoted material, and
+unsupported inferences by omitting them. Only return an item when its long-term durability is
+directly clear from the user's own words. Return {"items":[]} when none qualify.
 """.strip()
 
     def extract(self, request: ExtractionRequest) -> ExtractionResult:
@@ -270,14 +291,20 @@ Rules:
         request: ExtractionRequest,
         ollama: LLMClient | None,
     ) -> ExtractionResult:
-        deterministic = self.extract(request)
         if ollama is None:
-            return deterministic
+            # The legacy recognizer is intentionally an offline degradation path only.  When a
+            # model is available, deciding whether a turn is personal memory belongs to the
+            # structured model result—not to an ever-growing set of English phrasing rules.
+            return self.extract(request)
         user_text = self._request_text(request)
-        if not any(
-            not self._non_memory_sentence(sentence) for sentence in self._sentences(user_text)
-        ):
-            return deterministic
+        if not user_text.strip():
+            return ExtractionResult()
+
+        # Do not decide whether a user is making a declaration from a fixed set of question or
+        # command prefixes.  Phrases such as "Can you remember that …" are valid memory input
+        # even though they look like a question.  The schema-constrained model is responsible
+        # for returning an empty item list for ordinary informational prompts; all accepted
+        # items still pass source, subject, durability, and type validation below.
 
         try:
             response = ollama.chat(
@@ -292,12 +319,51 @@ Rules:
             )
             llm_result = self._result_from_llm_response(response)
         except Exception:
-            return self._unclassified_declaration_fallback(request, deterministic)
+            return self._unclassified_declaration_fallback(request, self.extract(request))
 
         model_result = self._validated_model_result(llm_result, user_text, request)
         model_returned_items = bool(llm_result.items)
         raw_model_results = [llm_result]
-        if not model_result.items and self._is_clear_personal_declaration(user_text):
+        admission_reviewed = False
+        if model_result.items:
+            try:
+                admission_response = ollama.chat(
+                    [
+                        OllamaMessage(
+                            role="system",
+                            content=(
+                                f"{self.LLM_SYSTEM_PROMPT}\n\n{self.LLM_ADMISSION_REVIEW_SUFFIX}"
+                            ),
+                        ),
+                        OllamaMessage(
+                            role="user",
+                            content=(
+                                f"Conversation:\n{self._conversation_text(request)}\n\n"
+                                "Proposed extraction:\n"
+                                f"{self._llm_admission_payload(llm_result)}"
+                            ),
+                        ),
+                    ],
+                    temperature=0.0,
+                )
+                admission_result = self._result_from_llm_response(admission_response)
+                model_returned_items = model_returned_items or bool(admission_result.items)
+                raw_model_results.append(admission_result)
+                model_result = self._validated_model_result(
+                    admission_result,
+                    user_text,
+                    request,
+                )
+                admission_reviewed = True
+            except Exception:
+                # The first pass remains source-grounded. A transient review failure must not
+                # turn a successful declaration into a failed chat turn.
+                pass
+        # A non-empty but invalid response is a formatting/classification failure, not a
+        # trustworthy decision that the user shared nothing.  Ask the model to repair that
+        # output.  In contrast, a valid empty result is authoritative and must not be
+        # overridden by the legacy keyword parser.
+        if not model_result.items and model_returned_items and not admission_reviewed:
             try:
                 retry_response = ollama.chat(
                     [
@@ -329,28 +395,62 @@ Rules:
             except Exception:
                 pass
         if not model_result.items:
-            return (
-                self._unclassified_declaration_fallback(request, deterministic)
-                if not model_returned_items
-                or any(
-                    self._model_output_has_safe_fallback(item, user_text)
-                    for item in raw_model_results
+            if admission_reviewed:
+                # The independent admission review intentionally returned no durable memory.
+                return ExtractionResult()
+            if any(
+                self._model_output_has_safe_fallback(item, user_text) for item in raw_model_results
+            ):
+                return self._unclassified_declaration_fallback(
+                    request,
+                    ExtractionResult(),
+                    model_confirmed=True,
                 )
-                else deterministic
-            )
+            if model_returned_items:
+                # The provider attempted an extraction but produced only unusable values.  This
+                # is different from a deliberate empty response; use the conservative local
+                # parser as a last-resort recovery path rather than silently lose a plainly
+                # stated fact.
+                return self.extract(request)
+            # The model successfully returned an empty structured extraction.  Do not let a
+            # broad phrase match turn a normal request into private long-term memory.
+            return ExtractionResult()
         self._stamp_source_context(model_result, request)
         return model_result
+
+    @staticmethod
+    def _llm_admission_payload(result: ExtractionResult) -> str:
+        """Serialize proposed records for a second model pass without app-private state."""
+        items = []
+        for item in result.items:
+            attributes = dict(item.attributes)
+            items.append(
+                {
+                    "type": item.candidate_type.value,
+                    "text": item.text,
+                    "source_span": attributes.pop("source_sentence", ""),
+                    "declaration": attributes.pop("declaration", ""),
+                    "memory_subject": attributes.pop("memory_subject", ""),
+                    "durability": attributes.pop("durability", ""),
+                    "confidence": item.confidence,
+                    "importance": item.importance,
+                    "attributes": attributes,
+                }
+            )
+        return json.dumps({"items": items}, ensure_ascii=False)
 
     def _unclassified_declaration_fallback(
         self,
         request: ExtractionRequest,
         deterministic: ExtractionResult,
+        *,
+        model_confirmed: bool = False,
     ) -> ExtractionResult:
         """Never silently drop a clear personal declaration when classification is unavailable."""
         if deterministic.items:
             return deterministic
         source = self._request_text(request).strip()
-        if not self._is_clear_personal_declaration(source):
+        if not model_confirmed and not self._is_clear_personal_declaration(source):
             return deterministic
         fallback = ExtractionResult(
             memories=[
@@ -377,6 +477,10 @@ Rules:
             source = str(item.attributes.get("source_sentence") or "")
             if not self._source_span_is_grounded(source, user_text):
                 continue
+            if not self._llm_item_is_user_grounded(item, user_text):
+                continue
+            if self._source_has_explicit_non_user_subject(source):
+                continue
             if str(item.attributes.get("declaration") or "").lower() != "clear":
                 continue
             if str(item.attributes.get("memory_subject") or "").lower() == "user":
@@ -398,6 +502,10 @@ Rules:
                 continue
             memory_subject = str(item.attributes.get("memory_subject") or "").lower()
             if memory_subject in {"other", "unknown"}:
+                continue
+            if self._source_has_explicit_non_user_subject(
+                str(item.attributes.get("source_sentence") or "")
+            ):
                 continue
             if str(item.attributes.get("durability") or "").lower() == "temporary":
                 continue
@@ -488,7 +596,14 @@ Rules:
         model_subject_provided: bool = False,
     ) -> bool:
         normalized = " ".join(source.strip().split())
-        if not normalized or self._non_memory_sentence(normalized):
+        if not normalized:
+            return False
+        # The structured extractor has already labelled the source a clear user declaration.
+        # Do not override that decision merely because the user wrapped it as a question or a
+        # polite request (for example, "Could you save that I'm vegetarian?").
+        if model_subject_provided:
+            return model_declares_clear and model_declares_user
+        if self._non_memory_sentence(normalized):
             return False
         hedged = bool(
             re.search(
@@ -499,8 +614,6 @@ Rules:
         )
         if hedged:
             return False
-        if model_subject_provided:
-            return model_declares_clear and model_declares_user
         return bool(re.search(r"\b(?:i|my|me)\b", normalized, flags=re.IGNORECASE))
 
     def _normalize_model_item(self, item: ExtractedItem, request: ExtractionRequest) -> None:
@@ -549,6 +662,12 @@ Rules:
                 "started_at": started_at.isoformat(),
                 "expires_at": (started_at + timedelta(days=30)).isoformat(),
             }
+        if item.candidate_type == CandidateType.MEMORY:
+            # Generic facts do not need an English taxonomy.  Source-grounding is our durable
+            # contract, so retain the exact user clause instead of trusting a model paraphrase
+            # that may fail a literal validation check or subtly change its meaning.
+            item.text = source
+            item.attributes = {**item.attributes, "memory_text": source}
 
     def _normalize_model_preference(self, item: ExtractedItem, source: str) -> None:
         """Give likes and dislikes a stable slot despite provider-specific category labels.
@@ -558,7 +677,11 @@ Rules:
         that unconstrained label, is the reliable signal for an additive user interest.
         """
         sentiment = re.search(
-            r"\bi\s+(?P<sentiment>love|like|hate|dislike)\s+(?P<subject>[^.?!]{1,160})",
+            (
+                r"\bi\s+(?P<negation>do\s+not|don't|no\s+longer)?\s*"
+                r"(?P<sentiment>love|like|hate|dislike)\s+"
+                r"(?P<subject>[^.?!]{1,160})"
+            ),
             source,
             flags=re.IGNORECASE,
         )
@@ -567,19 +690,20 @@ Rules:
         subject = self._normalize_preference_subject(sentiment.group("subject"))
         if not subject:
             return
-        category = (
-            "interest"
-            if sentiment.group("sentiment").casefold() in {"love", "like"}
-            else "aversion"
-        )
+        sentiment_value = sentiment.group("sentiment").casefold()
+        is_negative = bool(sentiment.group("negation")) or sentiment_value in {"hate", "dislike"}
+        category = "aversion" if is_negative else "interest"
         item.text = f"{category} = {subject}"
         item.attributes = {
             **item.attributes,
             "category": category,
             "value": subject,
-            "sentiment": sentiment.group("sentiment").casefold(),
-            "additive": 1,
-            "canonical_slot": f"preference:{category}:{self._slug(subject)}",
+            "sentiment": sentiment_value,
+            "polarity": "negative" if is_negative else "positive",
+            # A subject has one current stance. A later positive or negative declaration updates
+            # that one slot without affecting unrelated interests.
+            "additive": int(not is_negative),
+            "canonical_slot": f"preference:sentiment:{self._slug(subject)}",
         }
 
     @staticmethod
@@ -596,7 +720,48 @@ Rules:
     def _source_span_is_grounded(self, source_span: str, user_text: str) -> bool:
         compact_span = self._grounding_text(source_span)
         compact_user = self._grounding_text(user_text)
-        return bool(compact_span and compact_span in compact_user)
+        if not compact_span or not compact_user:
+            return False
+        if compact_span in compact_user:
+            return True
+
+        # Models occasionally preserve a clause's meaning but normalize its leading connector,
+        # for example ``I work as a nurse`` for ``... and work as a nurse``.  Accept only a
+        # substantial ordered phrase overlap here; type-specific validation below must still
+        # prove that the extracted value itself occurs in the user's text.  This is deliberately
+        # not semantic similarity, so unsupported rewritten facts remain rejected.
+        span_tokens = compact_span.split()
+        user_tokens = compact_user.split()
+        longest_overlap = self._longest_contiguous_token_overlap(span_tokens, user_tokens)
+        required_overlap = max(2, (len(span_tokens) * 3 + 4) // 5)
+        return longest_overlap >= required_overlap
+
+    @staticmethod
+    def _source_has_explicit_non_user_subject(source_span: str) -> bool:
+        """Reject a fact explicitly owned by a named third party.
+
+        This guards the model's subject label without maintaining a list of people, products, or
+        domains.  A leading proper possessive (for example, ``Alex's``) is direct grammatical
+        evidence that the statement is about someone other than the speaker.
+        """
+        match = re.match(r"^\s*([^\W\d_][\w-]*)['’]s\b", source_span, flags=re.UNICODE)
+        if match is None:
+            return False
+        return match.group(1).casefold() not in {"my", "our", "your", "its"}
+
+    @staticmethod
+    def _longest_contiguous_token_overlap(left: list[str], right: list[str]) -> int:
+        """Return the longest shared ordered token run without fuzzy semantic matching."""
+        previous = [0] * (len(right) + 1)
+        longest = 0
+        for left_token in left:
+            current = [0] * (len(right) + 1)
+            for index, right_token in enumerate(right, start=1):
+                if left_token == right_token:
+                    current[index] = previous[index - 1] + 1
+                    longest = max(longest, current[index])
+            previous = current
+        return longest
 
     def _request_text(self, request: ExtractionRequest) -> str:
         if request.text:
@@ -649,7 +814,7 @@ Rules:
             return True
         if "?" in stripped or re.match(
             r"^(?:who|what|when|where|why|how|which|do|does|did|can|could|"
-            r"should|would|will|is|are|am|was|were|please|tell|show|find|search|"
+            r"should|would|will|is|are|am|was|were|tell|show|find|search|"
             r"explain|describe|compare|write|open|run|check|try)\b",
             stripped,
             flags=re.IGNORECASE,
@@ -1559,12 +1724,54 @@ Rules:
 
     def _append_unique(self, result: ExtractionResult, item: ExtractedItem) -> None:
         normalized_text = " ".join(item.text.lower().split())
+        item_key = self._dedupe_key(item)
         for existing in result.items:
             if existing.candidate_type == item.candidate_type:
                 existing_text = " ".join(existing.text.lower().split())
-                if existing_text == normalized_text:
+                if existing_text == normalized_text or (
+                    item_key is not None and item_key == self._dedupe_key(existing)
+                ):
                     return
         self._append(result, item)
+
+    def _dedupe_key(self, item: ExtractedItem) -> tuple[str, ...] | None:
+        """Return a semantic key for duplicate model passes without conflating distinct facts."""
+        attributes = item.attributes
+        if item.candidate_type == CandidateType.IDENTITY:
+            key = str(attributes.get("key") or "").strip().casefold()
+            value = str(attributes.get("value") or "").strip()
+            if key and value:
+                return (
+                    item.candidate_type.value,
+                    key,
+                    normalize_identity_value(key, value).casefold(),
+                )
+        if item.candidate_type == CandidateType.EDUCATION:
+            values = tuple(
+                " ".join(str(attributes.get(key) or "").casefold().split())
+                for key in ("institution", "degree", "field_of_study", "graduation_date")
+            )
+            return (item.candidate_type.value, *values) if any(values) else None
+        if item.candidate_type == CandidateType.PREFERENCE:
+            slot = str(attributes.get("canonical_slot") or attributes.get("category") or "").strip()
+            value = str(attributes.get("value") or "").strip()
+            if slot and value:
+                return (item.candidate_type.value, slot.casefold(), value.casefold())
+        if item.candidate_type in {CandidateType.GOAL, CandidateType.PROJECT, CandidateType.EVENT}:
+            attribute = {
+                CandidateType.GOAL: "goal",
+                CandidateType.PROJECT: "name",
+                CandidateType.EVENT: "event",
+            }[item.candidate_type]
+            value = str(attributes.get(attribute) or "").strip()
+            if value:
+                return (item.candidate_type.value, " ".join(value.casefold().split()))
+        if item.candidate_type == CandidateType.ACTIVITY:
+            category = str(attributes.get("category") or "").strip()
+            value = str(attributes.get("activity") or attributes.get("subject") or "").strip()
+            if category and value:
+                return (item.candidate_type.value, category.casefold(), value.casefold())
+        return None
 
     def _stamp_source_context(self, result: ExtractionResult, request: ExtractionRequest) -> None:
         for item in result.items:
@@ -1932,7 +2139,10 @@ Rules:
         )
 
     def _grounding_text(self, value: str) -> str:
-        return " ".join(re.findall(r"[a-z0-9+#]+", value.casefold()))
+        # ``[^\W_]`` is Unicode-aware: it retains letters and numbers from the user's own
+        # language while excluding punctuation and underscores.  Keeping ``+``/``#`` preserves
+        # common technical tokens such as C++ and C# for source validation.
+        return " ".join(re.findall(r"[^\W_]+|[+#]", value.casefold(), flags=re.UNICODE))
 
     def _preferred_side(self, value: str) -> str:
         match = re.match(r"(?P<preferred>.+?)\s+over\s+.+", value, flags=re.IGNORECASE)
