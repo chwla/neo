@@ -79,6 +79,9 @@ Return JSON only, with this shape:
       "type": "identity|education|preference|goal|project|activity|event|memory",
       "text": "short human sentence",
       "source_span": "exact words from the user that support this item",
+      "declaration": "clear|ambiguous",
+      "memory_subject": "user|other|unknown",
+      "durability": "durable|temporary",
       "confidence": 0.0,
       "importance": 1,
       "attributes": {}
@@ -93,6 +96,8 @@ Rules:
 - For preferences such as "be concise", use type "preference", category "response_style",
   and value like "concise answers".
 - For identity, set attributes {"key":"name|location|occupation|education|general","value":"..."}.
+- A future, planned, or tentative role is not a current occupation. Store it as an event or
+  general memory using the user's original wording instead of inventing a current role.
 - For education, include institution, degree, field_of_study, and graduated only when stated.
 - For goals, set attributes {"goal":"...","priority":1-10}.
 - For projects, set attributes {"name":"...","description":"..."}.
@@ -101,6 +106,13 @@ Rules:
 - For events, set attributes {"event":"...","event_date":"YYYY-MM-DD"} when a date is explicit.
 - For general memories, set attributes {"memory_text":"..."}.
 - Every item must be grounded by source_span copied exactly from the user's message.
+- Use declaration "clear" only when the source_span directly states something about the user
+  or directly tells the assistant what to remember. Otherwise use "ambiguous".
+- Set memory_subject to "user" only for facts, preferences, plans, or instructions that belong
+  to the person speaking. Never treat a general fact, another person, or the assistant as user
+  memory.
+- Mark short-lived feelings, current physical states, one-off conditions, and temporary status
+  updates as durability "temporary". Do not store them as long-term memory.
 - If nothing durable should be stored, return {"items":[]}.
 """.strip()
 
@@ -261,10 +273,10 @@ Rules:
         deterministic = self.extract(request)
         if ollama is None:
             return deterministic
-        if not deterministic.ignored:
-            return deterministic
         user_text = self._request_text(request)
-        if not re.search(r"\b(?:i|i'm|i’ve|i've|my|me)\b", user_text, re.IGNORECASE):
+        if not any(
+            not self._non_memory_sentence(sentence) for sentence in self._sentences(user_text)
+        ):
             return deterministic
 
         try:
@@ -280,16 +292,134 @@ Rules:
             )
             llm_result = self._result_from_llm_response(response)
         except Exception:
-            return deterministic
+            return self._unclassified_declaration_fallback(request, deterministic)
 
+        model_result = self._validated_model_result(llm_result, user_text, request)
+        model_returned_items = bool(llm_result.items)
+        raw_model_results = [llm_result]
+        if not model_result.items and self._is_clear_personal_declaration(user_text):
+            try:
+                retry_response = ollama.chat(
+                    [
+                        OllamaMessage(
+                            role="system",
+                            content=(
+                                f"{self.LLM_SYSTEM_PROMPT}\n\n"
+                                "Return every clear user declaration in the required JSON schema. "
+                                "If the type is uncertain, return one type memory item with "
+                                "memory_text copied from the exact source_span instead of an "
+                                "empty list."
+                            ),
+                        ),
+                        OllamaMessage(
+                            role="user",
+                            content=f"Conversation:\n{self._conversation_text(request)}",
+                        ),
+                    ],
+                    temperature=0.0,
+                )
+                retry_result = self._result_from_llm_response(retry_response)
+                model_returned_items = model_returned_items or bool(retry_result.items)
+                raw_model_results.append(retry_result)
+                model_result = self._validated_model_result(
+                    retry_result,
+                    user_text,
+                    request,
+                )
+            except Exception:
+                pass
+        if not model_result.items:
+            return (
+                self._unclassified_declaration_fallback(request, deterministic)
+                if not model_returned_items
+                or any(
+                    self._model_output_has_safe_fallback(item, user_text)
+                    for item in raw_model_results
+                )
+                else deterministic
+            )
+        self._stamp_source_context(model_result, request)
+        return model_result
+
+    def _unclassified_declaration_fallback(
+        self,
+        request: ExtractionRequest,
+        deterministic: ExtractionResult,
+    ) -> ExtractionResult:
+        """Never silently drop a clear personal declaration when classification is unavailable."""
+        if deterministic.items:
+            return deterministic
+        source = self._request_text(request).strip()
+        if not self._is_clear_personal_declaration(source):
+            return deterministic
+        fallback = ExtractionResult(
+            memories=[
+                self._memory_item(
+                    source,
+                    confidence=0.8,
+                    importance=score_importance(source),
+                    reasoning=(
+                        "Stored a grounded clear declaration without forcing a typed category."
+                    ),
+                )
+            ]
+        )
+        self._stamp_source_context(fallback, request)
+        return fallback
+
+    def _model_output_has_safe_fallback(
+        self,
+        result: ExtractionResult,
+        user_text: str,
+    ) -> bool:
+        """Whether malformed typed output still proves a clear user declaration exists."""
+        for item in result.items:
+            source = str(item.attributes.get("source_sentence") or "")
+            if not self._source_span_is_grounded(source, user_text):
+                continue
+            if str(item.attributes.get("declaration") or "").lower() != "clear":
+                continue
+            if str(item.attributes.get("memory_subject") or "").lower() == "user":
+                if str(item.attributes.get("durability") or "").lower() == "temporary":
+                    continue
+                return True
+        return False
+
+    def _validated_model_result(
+        self,
+        llm_result: ExtractionResult,
+        user_text: str,
+        request: ExtractionRequest,
+    ) -> ExtractionResult:
+        model_result = ExtractionResult()
         for item in llm_result.items:
+            self._normalize_model_item(item, request)
             if not self._valid_model_item(item, user_text):
                 continue
-            item.attributes["auto_accept"] = 0
-            item.reasoning = f"{item.reasoning} Pending review: model-only extraction."
-            self._append_unique(deterministic, item)
-        self._stamp_source_context(deterministic, request)
-        return deterministic
+            memory_subject = str(item.attributes.get("memory_subject") or "").lower()
+            if memory_subject in {"other", "unknown"}:
+                continue
+            if str(item.attributes.get("durability") or "").lower() == "temporary":
+                continue
+            if self._is_clear_personal_declaration(
+                str(item.attributes.get("source_sentence") or ""),
+                model_declares_clear=str(item.attributes.get("declaration") or "").lower()
+                == "clear",
+                model_declares_user=memory_subject == "user",
+                model_subject_provided=bool(memory_subject),
+            ):
+                item.attributes["auto_accept"] = 1
+                item.reasoning = (
+                    f"{item.reasoning} Accepted from a grounded explicit user declaration."
+                )
+            else:
+                item.attributes["auto_accept"] = 0
+                item.reasoning = (
+                    f"{item.reasoning} Pending review: the model could not establish a clear "
+                    "personal declaration."
+                )
+            self._append_unique(model_result, item)
+        return model_result
 
     def persist_candidates(
         self,
@@ -323,10 +453,7 @@ Rules:
         candidates = self.persist_candidates(store, extraction)
         reviewer = MemoryReviewService()
         for item, candidate in zip(extraction.items, candidates, strict=True):
-            if (
-                item.attributes.get("auto_accept") == 0
-                or item.confidence < self.AUTO_ACCEPT_MIN_CONFIDENCE
-            ):
+            if not self._should_auto_accept(item):
                 continue
             reviewer.review(
                 store,
@@ -336,6 +463,140 @@ Rules:
                 ),
             )
         return candidates
+
+    def _should_auto_accept(self, item: ExtractedItem) -> bool:
+        """Accept clear first-person declarations, not arbitrary model confidence.
+
+        Confidence remains useful for ambiguous text, but direct, source-grounded user
+        statements such as preferences and goals must not be silently ignored merely because
+        they were phrased differently from a hand-written recognizer.
+        """
+        if item.attributes.get("auto_accept") == 0:
+            return False
+        if item.confidence >= self.AUTO_ACCEPT_MIN_CONFIDENCE:
+            return True
+        return self._is_clear_personal_declaration(
+            str(item.attributes.get("source_sentence") or "")
+        )
+
+    def _is_clear_personal_declaration(
+        self,
+        source: str,
+        *,
+        model_declares_clear: bool = False,
+        model_declares_user: bool = False,
+        model_subject_provided: bool = False,
+    ) -> bool:
+        normalized = " ".join(source.strip().split())
+        if not normalized or self._non_memory_sentence(normalized):
+            return False
+        hedged = bool(
+            re.search(
+                r"\b(?:i think|i wonder|i guess|maybe|perhaps|if i|might|could)\b",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+        )
+        if hedged:
+            return False
+        if model_subject_provided:
+            return model_declares_clear and model_declares_user
+        return bool(re.search(r"\b(?:i|my|me)\b", normalized, flags=re.IGNORECASE))
+
+    def _normalize_model_item(self, item: ExtractedItem, request: ExtractionRequest) -> None:
+        """Preserve source wording when normalizing model-derived temporal facts."""
+        source = str(item.attributes.get("source_sentence") or item.text).strip()
+        key = str(item.attributes.get("key") or "").strip().lower()
+        if item.candidate_type == CandidateType.PREFERENCE:
+            self._normalize_model_preference(item, source)
+        if (
+            item.candidate_type == CandidateType.IDENTITY
+            and key == "occupation"
+            and re.search(
+                (
+                    r"\b(?:will|going to|about to|soon|plan(?:ning)? to|intend(?:ing)? to|"
+                    r"start(?:ing)? )\b"
+                ),
+                source,
+                flags=re.IGNORECASE,
+            )
+        ):
+            item.candidate_type = CandidateType.EVENT
+            item.text = source
+            item.attributes = {
+                **item.attributes,
+                "event": source,
+                "description": source,
+                "event_date": None,
+            }
+        if item.candidate_type == CandidateType.EVENT:
+            # An event title or date that the model paraphrases can be subtly wrong. The
+            # source sentence is already verified, so preserve it verbatim and do not invent a
+            # date that was not explicitly supplied by the user.
+            source_date = self._extract_iso_date(source)
+            item.text = source
+            item.attributes = {
+                **item.attributes,
+                "event": source,
+                "description": source,
+                "event_date": source_date.isoformat() if source_date else None,
+            }
+        if item.candidate_type == CandidateType.ACTIVITY:
+            started_at = self._source_datetime(request.source_timestamp)
+            item.attributes = {
+                **item.attributes,
+                "activity": str(item.attributes.get("activity") or source),
+                "started_at": started_at.isoformat(),
+                "expires_at": (started_at + timedelta(days=30)).isoformat(),
+            }
+
+    def _normalize_model_preference(self, item: ExtractedItem, source: str) -> None:
+        """Give likes and dislikes a stable slot despite provider-specific category labels.
+
+        Local models often vary between labels such as ``entertainment`` and
+        ``entertainment_preference`` for the same statement.  The source wording, rather than
+        that unconstrained label, is the reliable signal for an additive user interest.
+        """
+        sentiment = re.search(
+            r"\bi\s+(?P<sentiment>love|like|hate|dislike)\s+(?P<subject>[^.?!]{1,160})",
+            source,
+            flags=re.IGNORECASE,
+        )
+        if sentiment is None:
+            return
+        subject = self._normalize_preference_subject(sentiment.group("subject"))
+        if not subject:
+            return
+        category = (
+            "interest"
+            if sentiment.group("sentiment").casefold() in {"love", "like"}
+            else "aversion"
+        )
+        item.text = f"{category} = {subject}"
+        item.attributes = {
+            **item.attributes,
+            "category": category,
+            "value": subject,
+            "sentiment": sentiment.group("sentiment").casefold(),
+            "additive": 1,
+            "canonical_slot": f"preference:{category}:{self._slug(subject)}",
+        }
+
+    @staticmethod
+    def _normalize_preference_subject(value: str) -> str:
+        """Drop generic media scaffolding without changing the named subject itself."""
+        cleaned = " ".join(value.strip(" .,!?:;\t\r\n").split())
+        return re.sub(
+            r"^(?:the\s+)?(?:show|tv\s+show|television\s+series|series|film|movie)\s+",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    def _source_span_is_grounded(self, source_span: str, user_text: str) -> bool:
+        compact_span = self._grounding_text(source_span)
+        compact_user = self._grounding_text(user_text)
+        return bool(compact_span and compact_span in compact_user)
 
     def _request_text(self, request: ExtractionRequest) -> str:
         if request.text:
@@ -1117,6 +1378,12 @@ Rules:
             return None
         verb = match.group("verb").lower()
         subject = self._display_name(match.group("subject"))
+        subject = re.sub(
+            r"\s+(?:right now|at the moment|currently|these days)$",
+            "",
+            subject,
+            flags=re.IGNORECASE,
+        ).strip()
         category = {
             "playing": "game",
             "reading": "book",
@@ -1383,6 +1650,18 @@ Rules:
         attributes = raw_item.get("attributes")
         if not isinstance(attributes, dict):
             attributes = {}
+        source_span = raw_item.get("source_span")
+        if isinstance(source_span, str) and source_span.strip():
+            attributes = {**attributes, "source_sentence": source_span.strip()}
+        declaration = raw_item.get("declaration")
+        if isinstance(declaration, str) and declaration.strip():
+            attributes = {**attributes, "declaration": declaration.strip().lower()}
+        memory_subject = raw_item.get("memory_subject")
+        if isinstance(memory_subject, str) and memory_subject.strip():
+            attributes = {**attributes, "memory_subject": memory_subject.strip().lower()}
+        durability = raw_item.get("durability")
+        if isinstance(durability, str) and durability.strip():
+            attributes = {**attributes, "durability": durability.strip().lower()}
         text = str(
             raw_item.get("text")
             or attributes.get("memory_text")
@@ -1433,6 +1712,9 @@ Rules:
     def _valid_model_item(self, item: ExtractedItem, user_text: str) -> bool:
         """Validate model-only candidates before exposing them for human review."""
 
+        source_span = str(item.attributes.get("source_sentence") or "")
+        if not self._source_span_is_grounded(source_span, user_text):
+            return False
         if not self._llm_item_is_user_grounded(item, user_text):
             return False
         attributes = item.attributes
@@ -1441,7 +1723,10 @@ Rules:
             value = str(attributes.get("value") or "").strip()
             return is_durable_identity_fact(key, value)
         if item.candidate_type == CandidateType.EDUCATION:
-            return self._grounded_required_value(attributes, "institution", user_text)
+            return any(
+                self._grounded_required_value(attributes, key, user_text)
+                for key in ("institution", "degree", "field_of_study")
+            )
         if item.candidate_type == CandidateType.PREFERENCE:
             return self._grounded_required_value(attributes, "value", user_text)
         if item.candidate_type == CandidateType.GOAL:

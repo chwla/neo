@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, date, datetime
 
 from pydantic import BaseModel, Field
@@ -206,14 +207,7 @@ class MemoryReviewService:
                 MemoryType.EDUCATION,
                 candidate.candidate_text,
             )
-            existing_education = next(
-                (
-                    education
-                    for education in store.list_education()
-                    if education.fingerprint == fingerprint
-                ),
-                None,
-            )
+            existing_education = self._matching_education(store, institution, fingerprint)
             existing_memory = store.active_memory_by_fingerprint(
                 MemoryType.EDUCATION,
                 fingerprint,
@@ -223,15 +217,38 @@ class MemoryReviewService:
                 candidate.candidate_text,
             )
             if existing_education is not None:
-                existing_education.description = description
+                existing_education.degree = degree or existing_education.degree
+                existing_education.field_of_study = field or existing_education.field_of_study
                 existing_education.graduation_date = (
                     graduation_date or existing_education.graduation_date
+                )
+                existing_education.description = self._education_description(existing_education)
+                existing_memory = existing_memory or self._memory_for_education(
+                    store,
+                    existing_education,
                 )
                 memory = existing_memory or store.add(
                     self._memory(candidate, MemoryType.EDUCATION, candidate.candidate_text)
                 )
+                if existing_memory is not None:
+                    memory.memory_text = existing_education.description
+                    memory.canonical_slot = (
+                        f"education:{self._education_key(existing_education.institution)}"
+                    )
                 self._refresh_memory(memory, candidate)
+                if existing_memory is not None:
+                    memory.canonical_slot = (
+                        f"education:{self._education_key(existing_education.institution)}"
+                    )
+                    store._sync_memory_fts(memory)
+                    store._mark_embedding_stale(memory)
+                    store._sync_memory_embedding(memory)
                 return memory
+            if not institution:
+                # There is no profile education record to resolve this partial statement
+                # against. Keep it as a grounded knowledge memory instead of creating an
+                # unusable education row with a fabricated institution.
+                return store.add(self._memory(candidate, MemoryType.KNOWLEDGE, description))
             store.add(
                 Education(
                     institution=institution,
@@ -510,6 +527,65 @@ class MemoryReviewService:
         memory = store.add(self._memory(candidate, MemoryType.KNOWLEDGE, candidate.candidate_text))
         self.conflicts.supersede_similar_memory(store, memory)
         return memory
+
+    def _matching_education(
+        self,
+        store: MemoryStore,
+        institution: str,
+        fingerprint: str,
+    ) -> Education | None:
+        education_records = store.list_education()
+        for education in education_records:
+            if education.fingerprint == fingerprint:
+                return education
+        normalized_institution = self._education_key(institution)
+        if normalized_institution and not self._generic_education_reference(institution):
+            return next(
+                (
+                    education
+                    for education in education_records
+                    if self._education_key(education.institution) == normalized_institution
+                ),
+                None,
+            )
+        # A statement such as "I studied CSE at college" supplies a field but no distinct
+        # institution. It can safely enrich one existing education record, but must not guess
+        # when multiple records are possible.
+        return education_records[0] if len(education_records) == 1 else None
+
+    @staticmethod
+    def _education_key(value: str | None) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+    @staticmethod
+    def _generic_education_reference(value: str) -> bool:
+        return MemoryReviewService._education_key(value) in {
+            "college",
+            "university",
+            "school",
+            "campus",
+            "mycollege",
+            "myuniversity",
+        }
+
+    @staticmethod
+    def _education_description(education: Education) -> str:
+        qualification = education.degree or "Education"
+        if education.field_of_study:
+            qualification = f"{qualification} in {education.field_of_study}"
+        return f"{qualification} at {education.institution}"
+
+    def _memory_for_education(self, store: MemoryStore, education: Education) -> Memory | None:
+        memories = store.active_memories_by_type(MemoryType.EDUCATION)
+        institution_key = self._education_key(education.institution)
+        return next(
+            (
+                memory
+                for memory in memories
+                if institution_key and institution_key in self._education_key(memory.memory_text)
+            ),
+            memories[0] if len(memories) == 1 else None,
+        )
 
     def _existing_memory(
         self,
