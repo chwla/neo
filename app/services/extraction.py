@@ -806,6 +806,13 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         ``entertainment_preference`` for the same statement.  The source wording, rather than
         that unconstrained label, is the reliable signal for an additive user interest.
         """
+        if re.search(r"\b(?:fitness|workout)\s+(?:advice|plans?)\b", source, re.IGNORECASE):
+            item.attributes = {
+                **item.attributes,
+                "category": "workout_advice_preference",
+                "canonical_slot": "preference:workout_advice_preference",
+            }
+            return
         sentiment = re.search(
             (
                 r"\bi\s+(?P<negation>do\s+not|don't|no\s+longer)?\s*"
@@ -1620,7 +1627,8 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         source_timestamp: datetime | None = None,
     ) -> ExtractedItem | None:
         match = re.search(
-            r"\b(?:my (?:current\s+)?(?:major\s+|long[- ]term\s+)?goal is to|"
+            r"\b(?:my (?:current\s+)?(?:(?:major|main|long[- ]term)\s+)?"
+            r"(?:fitness\s+)?goal is to|"
             r"i (?:plan|intend|aim|hope) to|i am working toward|"
             r"i (?:mainly\s+)?want to)\s+"
             r"(?P<goal>[^.]{3,180})",
@@ -2206,6 +2214,8 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
 
     def _preference_category(self, value: str) -> str:
         normalized = value.lower()
+        if re.search(r"\b(?:fitness|workout)\s+(?:advice|plans?)\b", normalized):
+            return "workout_advice_preference"
         if "explanation" in normalized or "answer" in normalized:
             return "response_style"
         if self._looks_like_editor(value):

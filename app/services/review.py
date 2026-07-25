@@ -283,10 +283,29 @@ class MemoryReviewService:
                         preference.canonical_slot,
                         canonical_slot,
                     )
+                    or self._overlapping_preference_refinement(
+                        preference.value,
+                        value,
+                        existing_slot=preference.canonical_slot,
+                        candidate_slot=canonical_slot,
+                        additive=bool(attrs.get("additive")),
+                    )
                 ),
                 None,
             )
             if existing_preference is not None:
+                previous_value = existing_preference.value
+                previous_slot = existing_preference.canonical_slot
+                previous_fingerprint = existing_preference.fingerprint
+                memory = (
+                    existing_memory
+                    or self._memory_for_preference_record(
+                        store,
+                        previous_fingerprint,
+                        previous_slot,
+                        previous_value,
+                    )
+                )
                 existing_preference.category = category
                 existing_preference.value = value
                 existing_preference.canonical_slot = canonical_slot
@@ -300,16 +319,27 @@ class MemoryReviewService:
                     candidate.importance,
                 )
                 memory = (
-                    existing_memory
-                    or self._memory_for_preference(
-                        store,
-                        canonical_slot,
-                    )
+                    memory
                     or store.add(self._memory(candidate, MemoryType.PREFERENCE, memory_text))
                 )
+                previous_memory_text = memory.memory_text
                 memory.memory_text = memory_text
                 memory.canonical_slot = canonical_slot
                 self._refresh_memory(memory, candidate)
+                if previous_memory_text != memory_text:
+                    memory.update_reason = (
+                        "Canonicalized an overlapping preference refinement."
+                    )
+                    store.record_lifecycle_audit(
+                        memory,
+                        "canonicalized",
+                        previous_status="active",
+                        new_status="active",
+                        reason=memory.update_reason,
+                        source_sentence=str(
+                            attrs.get("source_sentence") or candidate.candidate_text
+                        ),
+                    )
                 store._sync_memory_fts(memory)
                 store._mark_embedding_stale(memory)
                 store._sync_memory_embedding(memory)
@@ -336,10 +366,28 @@ class MemoryReviewService:
             goal_text = str(attrs.get("goal", candidate.candidate_text))
             fingerprint = self._fingerprint(candidate, MemoryType.GOAL_RELATED, goal_text)
             for existing_goal in store.list_goals(GoalStatus.ACTIVE):
-                if existing_goal.fingerprint == fingerprint or self._same_text(
+                exact_match = existing_goal.fingerprint == fingerprint or self._same_text(
+                    existing_goal.goal, goal_text
+                )
+                if exact_match or self._overlapping_goal_refinement(
                     existing_goal.goal,
                     goal_text,
                 ):
+                    previous_goal_text = existing_goal.goal
+                    existing_memory = store.active_memory_by_fingerprint(
+                        MemoryType.GOAL_RELATED,
+                        existing_goal.fingerprint or "",
+                    ) or self._existing_memory(
+                        store,
+                        MemoryType.GOAL_RELATED,
+                        previous_goal_text,
+                    )
+                    existing_goal.goal = goal_text
+                    existing_goal.description = candidate.candidate_text
+                    existing_goal.priority = max(
+                        existing_goal.priority,
+                        int(attrs.get("priority", candidate.importance)),
+                    )
                     existing_goal.fingerprint = fingerprint
                     existing_goal.horizon_months = (
                         self._optional_int(
@@ -350,19 +398,34 @@ class MemoryReviewService:
                     existing_goal.target_date = (
                         self._parse_date(attrs.get("target_date")) or existing_goal.target_date
                     )
-                    existing_memory = store.active_memory_by_fingerprint(
-                        MemoryType.GOAL_RELATED,
-                        fingerprint,
-                    ) or self._existing_memory(
-                        store,
-                        MemoryType.GOAL_RELATED,
-                        existing_goal.goal,
-                    )
                     if existing_memory is not None:
+                        existing_memory.memory_text = goal_text
+                        existing_memory.canonical_slot = str(
+                            attrs.get("canonical_slot")
+                            or f"goal:{self._canonical_token_key(goal_text)}"
+                        )
                         self._refresh_memory(existing_memory, candidate)
+                        if previous_goal_text != goal_text:
+                            existing_memory.update_reason = (
+                                "Canonicalized an overlapping goal refinement."
+                            )
+                            store.record_lifecycle_audit(
+                                existing_memory,
+                                "canonicalized",
+                                previous_status="active",
+                                new_status="active",
+                                reason=existing_memory.update_reason,
+                                source_sentence=str(
+                                    attrs.get("source_sentence")
+                                    or candidate.candidate_text
+                                ),
+                            )
+                        store._sync_memory_fts(existing_memory)
+                        store._mark_embedding_stale(existing_memory)
+                        store._sync_memory_embedding(existing_memory)
                         return existing_memory
                     return store.add(
-                        self._memory(candidate, MemoryType.GOAL_RELATED, existing_goal.goal)
+                        self._memory(candidate, MemoryType.GOAL_RELATED, goal_text)
                     )
             goal = store.add(
                 Goal(
@@ -618,6 +681,117 @@ class MemoryReviewService:
             ),
             None,
         )
+
+    @staticmethod
+    def _memory_for_preference_record(
+        store: MemoryStore,
+        fingerprint: str | None,
+        canonical_slot: str | None,
+        value: str,
+    ) -> Memory | None:
+        expected_text = value.casefold().strip()
+        return next(
+            (
+                memory
+                for memory in store.active_memories_by_type(MemoryType.PREFERENCE)
+                if (fingerprint and memory.fingerprint == fingerprint)
+                or (canonical_slot and memory.canonical_slot == canonical_slot)
+                or memory.memory_text.partition("=")[2].casefold().strip() == expected_text
+            ),
+            None,
+        )
+
+    @classmethod
+    def _overlapping_goal_refinement(cls, left: str, right: str) -> bool:
+        return cls._canonical_overlap(left, right, minimum_common=3, minimum_ratio=0.65)
+
+    @classmethod
+    def _overlapping_preference_refinement(
+        cls,
+        left: str,
+        right: str,
+        *,
+        existing_slot: str | None,
+        candidate_slot: str | None,
+        additive: bool,
+    ) -> bool:
+        if additive:
+            return False
+        protected_prefixes = (
+            "preference:interest:",
+            "preference:sentiment:",
+            "preference:aversion:",
+        )
+        if any(
+            str(slot or "").startswith(protected_prefixes)
+            for slot in (existing_slot, candidate_slot)
+        ):
+            return False
+        return cls._canonical_overlap(left, right, minimum_common=4, minimum_ratio=0.6)
+
+    @classmethod
+    def _canonical_overlap(
+        cls,
+        left: str,
+        right: str,
+        *,
+        minimum_common: int,
+        minimum_ratio: float,
+    ) -> bool:
+        left_tokens = cls._canonical_tokens(left)
+        right_tokens = cls._canonical_tokens(right)
+        if not left_tokens or not right_tokens:
+            return False
+        common = left_tokens & right_tokens
+        containment = len(common) / min(len(left_tokens), len(right_tokens))
+        return len(common) >= minimum_common and containment >= minimum_ratio
+
+    @staticmethod
+    def _canonical_tokens(value: str) -> set[str]:
+        stopwords = {
+            "a",
+            "an",
+            "and",
+            "are",
+            "but",
+            "for",
+            "i",
+            "in",
+            "is",
+            "my",
+            "of",
+            "on",
+            "the",
+            "to",
+            "want",
+            "while",
+            "with",
+        }
+        aliases = {
+            "cardio": "stamina",
+            "exercises": "exercise",
+            "fitness": "fitness",
+            "improved": "improve",
+            "improving": "improve",
+            "plans": "plan",
+            "reps": "rep",
+            "sets": "set",
+            "steps": "step",
+            "workout": "fitness",
+            "workouts": "fitness",
+        }
+        tokens: set[str] = set()
+        for raw_token in re.findall(r"[a-z0-9+#]+", value.casefold()):
+            token = aliases.get(raw_token, raw_token)
+            if token.endswith("s") and len(token) > 4 and token not in {"fitness"}:
+                token = token[:-1]
+            if token not in stopwords:
+                tokens.add(token)
+        return tokens
+
+    @staticmethod
+    def _canonical_token_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
     @staticmethod
     def _same_preference_subject_slot(left: str | None, right: str | None) -> bool:
