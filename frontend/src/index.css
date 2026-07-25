@@ -1764,6 +1764,16 @@ textarea:disabled {
   padding: 6px 28px 6px 9px;
 }
 
+.memory-reflection-bar {
+  align-items: flex-start;
+}
+
+.memory-reflection-bar p {
+  margin: 0;
+  color: var(--neo-muted);
+  line-height: 1.45;
+}
+
 .memory-scroll {
   position: relative;
   z-index: 1;

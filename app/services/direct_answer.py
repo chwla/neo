@@ -16,6 +16,10 @@ class DirectMemoryAnswerService:
         # occupation. Retire those unsafe rows before returning any profile answer.
         if hasattr(store, "retire_invalid_profile_facts"):
             store.retire_invalid_profile_facts()
+        if self._asks_saved_goals_and_preferences(lowered):
+            return self._saved_goals_and_preferences_answer(store)
+        if self._asks_memory_summary(lowered):
+            return self._memory_summary_answer(store)
         if self._asks_profile_summary(lowered):
             return self._profile_summary_answer(store)
         if self._asks_name(lowered):
@@ -81,6 +85,52 @@ class DirectMemoryAnswerService:
         if self._asks_flutter_priority(lowered):
             return self._flutter_priority_answer(store)
         return None
+
+    def _memory_summary_answer(self, store: MemoryStore) -> str:
+        memories = store.list_memories(limit=20)
+        if not memories:
+            return "I do not have any saved memories about you yet."
+        parts = [memory.memory_text.strip() for memory in memories if memory.memory_text.strip()]
+        return (
+            "Confirmed saved memories: "
+            + "; ".join(parts[:12])
+            + ". Uncertain or pending information is not included."
+        )
+
+    def _saved_goals_and_preferences_answer(self, store: MemoryStore) -> str:
+        """Return the active canonical rows for a memory-only scoped query."""
+        memories = store.list_memories(limit=100)
+        goals = [
+            memory
+            for memory in memories
+            if memory.memory_type == MemoryType.GOAL_RELATED and memory.memory_text.strip()
+        ]
+        preferences = [
+            memory
+            for memory in memories
+            if memory.memory_type == MemoryType.PREFERENCE and memory.memory_text.strip()
+        ]
+        if not goals and not preferences:
+            return "I do not have any saved goals or preferences about you yet."
+
+        goals.sort(key=lambda memory: self._memory_value(memory.memory_text).casefold())
+        lines = ["Your saved goals and preferences are:"]
+        lines.extend(f"- Goal: {self._memory_value(memory.memory_text)}" for memory in goals)
+        for memory in preferences:
+            key, separator, _value = memory.memory_text.partition("=")
+            label = (
+                "Response style"
+                if separator and key.strip() == "response_style"
+                else "Preference"
+            )
+            lines.append(f"- {label}: {self._memory_value(memory.memory_text)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _memory_value(memory_text: str) -> str:
+        """Remove a typed-memory key without changing the stored value."""
+        _key, separator, value = memory_text.partition("=")
+        return value.strip() if separator and value.strip() else memory_text.strip()
 
     def _profile_summary_answer(self, store: MemoryStore) -> str | None:
         facts = [
@@ -303,6 +353,33 @@ class DirectMemoryAnswerService:
                 lowered,
             )
         )
+
+    def _asks_memory_summary(self, lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:based\s+only\s+on|from|show|list|summari[sz]e)\s+"
+                r"(?:(?:the|my)\s+)?(?:saved\s+)?memor(?:y|ies)\b|"
+                r"\bwhat\s+memories\s+do\s+you\s+(?:have|currently\s+have)\b",
+                lowered,
+            )
+        )
+
+    def _asks_saved_goals_and_preferences(self, lowered: str) -> bool:
+        asks_both_categories = bool(
+            re.search(r"\bgoals?\b", lowered)
+            and re.search(r"\bpreferences?\b", lowered)
+        )
+        requires_saved_memory = bool(
+            re.search(
+                r"\b(?:only\s+use|use\s+only)\s+(?:my\s+)?(?:saved\s+)?memor(?:y|ies)\b|"
+                r"\bbased\s+only\s+on\s+(?:my\s+)?(?:saved\s+)?memor(?:y|ies)\b",
+                lowered,
+            )
+        )
+        asks_what_is_remembered = bool(
+            re.search(r"\bwhat\s+do\s+you\s+remember\b", lowered)
+        )
+        return asks_both_categories and requires_saved_memory and asks_what_is_remembered
 
     def _asks_name(self, lowered: str) -> bool:
         return bool(

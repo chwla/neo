@@ -2116,6 +2116,8 @@ function MemoryDialog({ onClose, refreshSidebar }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reflection, setReflection] = useState(null);
+  const [runningReflection, setRunningReflection] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -2133,6 +2135,20 @@ function MemoryDialog({ onClose, refreshSidebar }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  async function runReflection() {
+    setRunningReflection(true);
+    setError("");
+    try {
+      const result = await api.runReflection();
+      setReflection(result);
+      await refresh();
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setRunningReflection(false);
+    }
+  }
 
   let content = null;
   if (loading) {
@@ -2189,6 +2205,12 @@ function MemoryDialog({ onClose, refreshSidebar }) {
         ))}
       </div>
       {error && <div className="neo-error">{error}</div>}
+      <div className="memory-sort-bar memory-reflection-bar">
+        <NeoButton type="button" onClick={runReflection} disabled={runningReflection}>
+          {runningReflection ? "Running reflection..." : "Run reflection"}
+        </NeoButton>
+        {reflection && <p>{reflection.reflection}</p>}
+      </div>
       {activeTab === "memories" && (
         <div className="memory-sort-bar">
           <label>

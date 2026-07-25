@@ -53,7 +53,7 @@ _CONNECTOR_SIGNAL = re.compile(
 # These patterns identify declarations before generic freshness terms are considered.
 # They intentionally cover common spelling variants from real user input.
 _PERSONAL_DECLARATION = re.compile(
-    r"^\s*(?:actually[,:\s]+|please\s+remember(?:\s+that)?\s+|"
+    r"^\s*(?:actually[,:\s]+|correction[,:\s]+|please\s+remember(?:\s+that)?\s+|"
     r"remember(?:\s+that)?\s+)?(?:"
     r"my\s+(?:name|age|occupation|job|location|country|nationality|education|"
     r"favo(?:u)?rite|preferred|goal|project|projects)\b|"
@@ -70,7 +70,7 @@ _PERSONAL_DECLARATION = re.compile(
     r"i\s+(?:prefer|prioriti[sz]e|like|love+|hate|dislike|use)\b|"
     r"i\s+find\b|"
     r"i\s+(?:plan|intend|aim|hope)\s+to\b|"
-    r"i\s+want\s+to\b"
+    r"i\s+(?:mainly\s+)?want\s+to\b"
     r")",
     re.IGNORECASE,
 )

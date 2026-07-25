@@ -609,7 +609,7 @@ class MemoryStore:
                     fact.is_active = False
         elif memory.memory_type == MemoryType.PREFERENCE:
             for preference in self.list_preferences():
-                if preference.fingerprint == memory.fingerprint:
+                if self._preference_represents_memory(preference, memory):
                     preference.is_active = False
         elif memory.memory_type == MemoryType.EDUCATION:
             for education in self.list_education():
@@ -630,6 +630,32 @@ class MemoryStore:
             for event in self.list_events(limit=100000):
                 if event.fingerprint == memory.fingerprint:
                     self.db.delete(event)
+
+    @staticmethod
+    def _preference_represents_memory(preference: Preference, memory: Memory) -> bool:
+        """Relate a preference projection to its durable memory defensively.
+
+        Fingerprints are the primary relationship.  Older data can contain a typed
+        projection whose fingerprint predates a memory migration, however, and an
+        explicit delete must not leave that semantically identical projection active.
+        The fallback therefore requires both the same canonical category and value.
+        """
+        if memory.fingerprint and preference.fingerprint == memory.fingerprint:
+            return True
+        if not memory.canonical_slot or not preference.canonical_slot:
+            return False
+        if memory.canonical_slot != preference.canonical_slot:
+            return False
+        _key, separator, memory_value = memory.memory_text.partition("=")
+        if not separator:
+            return False
+        memory_value = MemoryStore._normalise_projection_value(memory_value)
+        preference_value = MemoryStore._normalise_projection_value(preference.value)
+        return memory_value == preference_value
+
+    @staticmethod
+    def _normalise_projection_value(value: str) -> str:
+        return " ".join(value.casefold().split())
 
     def update_profile_fact(self, profile_id: int, key: str, value: str) -> None:
         fact = self.get_profile_fact(profile_id)
@@ -992,6 +1018,57 @@ class MemoryStore:
         if memory.is_active:
             self._deactivate_typed_record_for_memory(memory)
         MemoryLifecycleService().delete(self, memory)
+
+    def delete_memories_matching_explicit_removal(self, target: str) -> list[int]:
+        """Delete active memories named by an explicit natural-language removal request.
+
+        This deliberately uses exact normalized tokens rather than fuzzy semantic matching: an
+        explicit request to forget a named fact can remove all duplicate projections of that
+        fact, but cannot delete a merely similar memory.
+        """
+        ignored = {
+            "remember",
+            "memory",
+            "fact",
+            "save",
+            "store",
+            "keep",
+            "remove",
+            "delete",
+            "forget",
+            "prefer",
+            "preference",
+            "current",
+            "goal",
+            "goals",
+            "system",
+            "systems",
+        }
+        target_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9+#]+", target.casefold())
+            if len(token) >= 3 and token not in ignored
+        }
+        if not target_tokens:
+            return []
+        matched: list[Memory] = []
+        for memory in self.list_memories(active_only=True, limit=500):
+            haystack = " ".join(
+                part
+                for part in (
+                    memory.memory_text,
+                    memory.source_sentence or "",
+                    memory.canonical_slot or "",
+                )
+                if part
+            ).casefold()
+            memory_tokens = set(re.findall(r"[a-z0-9+#]+", haystack))
+            if target_tokens & memory_tokens:
+                matched.append(memory)
+        for memory in matched:
+            self.delete_memory(memory.id)
+        self.db.flush()
+        return [memory.id for memory in matched]
 
     def _update_matching_memories(
         self,

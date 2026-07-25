@@ -14,6 +14,7 @@ from app.repositories.memory_store import MemoryStore
 from app.services.identity_facts import is_durable_identity_fact, normalize_identity_value
 from app.services.llm import LLMClient
 from app.services.llm import LLMMessage as OllamaMessage
+from app.services.memory_intent import MemoryIntentKind, resolve_memory_intent
 from app.services.scoring import score_importance
 
 
@@ -123,6 +124,8 @@ Rules:
   memory.
 - Mark short-lived feelings, current physical states, one-off conditions, and temporary status
   updates as durability "temporary". Do not store them as long-term memory.
+- A message that says not to remember, save, store, or keep something is an exclusion
+  instruction, never a memory candidate. Return {"items":[]} for it.
 - If nothing durable should be stored, return {"items":[]}.
 """.strip()
 
@@ -140,7 +143,17 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
     def extract(self, request: ExtractionRequest) -> ExtractionResult:
         text = self._request_text(request)
         result = ExtractionResult()
-        if not text.strip():
+        memory_intent = resolve_memory_intent(text)
+        if (
+            not text.strip()
+            or memory_intent.kind
+            in {
+                MemoryIntentKind.EXCLUDE,
+                MemoryIntentKind.REMOVE,
+                MemoryIntentKind.QUERY,
+            }
+            or self._is_explicitly_undecided_future(text)
+        ):
             return result
 
         self._extract_structured_profile(text, result)
@@ -187,7 +200,7 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
                 result.ignored.append(sentence)
 
         self._stamp_source_context(result, request)
-        return result
+        return self._without_transient_items(result)
 
     def is_pure_personal_declaration(
         self,
@@ -196,8 +209,23 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
     ) -> bool:
         """Whether a turn contains only explicit user-memory declarations."""
 
+        if resolve_memory_intent(self._request_text(request)).kind in {
+            MemoryIntentKind.EXCLUDE,
+            MemoryIntentKind.REMOVE,
+            MemoryIntentKind.QUERY,
+        }:
+            return False
         extraction = extraction or self.extract(request)
-        if not extraction.items or extraction.ignored:
+        unhandled = [
+            sentence
+            for sentence in extraction.ignored
+            if not re.search(
+                r"^\s*(?:correction|actually)\s*:",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+        ]
+        if not extraction.items or unhandled:
             return False
         sentences = self._sentences(self._request_text(request))
         return bool(sentences) and all(
@@ -218,7 +246,18 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             candidate.status != CandidateStatus.ACCEPTED for candidate in candidates
         ):
             return None
-        return "Got it — I’ve saved that to your memory."
+        count = len(candidates)
+        noun = "memory" if count == 1 else "memories"
+        return f"Saved {count} durable {noun} after extraction and review."
+
+    @staticmethod
+    def is_memory_exclusion(text: str) -> bool:
+        """Recognize a no-persistence instruction without treating it as deletion."""
+        return resolve_memory_intent(text).kind == MemoryIntentKind.EXCLUDE
+
+    @staticmethod
+    def is_memory_removal(text: str) -> bool:
+        return resolve_memory_intent(text).kind == MemoryIntentKind.REMOVE
 
     def _extract_active_project_list(self, sentence: str) -> list[ExtractedItem]:
         """Extract explicitly named projects without treating work as a person's name."""
@@ -299,6 +338,16 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         user_text = self._request_text(request)
         if not user_text.strip():
             return ExtractionResult()
+        memory_intent = resolve_memory_intent(user_text)
+        if memory_intent.kind in {
+            MemoryIntentKind.EXCLUDE,
+            MemoryIntentKind.REMOVE,
+            MemoryIntentKind.QUERY,
+        }:
+            return ExtractionResult()
+        if self._is_explicitly_undecided_future(user_text):
+            return ExtractionResult()
+        deterministic = self.extract(request)
 
         # Do not decide whether a user is making a declaration from a fixed set of question or
         # command prefixes.  Phrases such as "Can you remember that …" are valid memory input
@@ -325,7 +374,7 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         model_returned_items = bool(llm_result.items)
         raw_model_results = [llm_result]
         admission_reviewed = False
-        if model_result.items:
+        if model_result.items or self._may_contain_personal_declaration(user_text):
             try:
                 admission_response = ollama.chat(
                     [
@@ -397,7 +446,7 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         if not model_result.items:
             if admission_reviewed:
                 # The independent admission review intentionally returned no durable memory.
-                return ExtractionResult()
+                return self._merge_deterministic_items(ExtractionResult(), deterministic)
             if any(
                 self._model_output_has_safe_fallback(item, user_text) for item in raw_model_results
             ):
@@ -414,8 +463,18 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
                 return self.extract(request)
             # The model successfully returned an empty structured extraction.  Do not let a
             # broad phrase match turn a normal request into private long-term memory.
-            return ExtractionResult()
+            return self._merge_deterministic_items(ExtractionResult(), deterministic)
         self._stamp_source_context(model_result, request)
+        return self._merge_deterministic_items(model_result, deterministic)
+
+    def _merge_deterministic_items(
+        self,
+        model_result: ExtractionResult,
+        deterministic: ExtractionResult,
+    ) -> ExtractionResult:
+        """Preserve validated common declarations that the model omitted."""
+        for item in deterministic.items:
+            self._append_unique(model_result, item)
         return model_result
 
     @staticmethod
@@ -450,6 +509,8 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         if deterministic.items:
             return deterministic
         source = self._request_text(request).strip()
+        if self._source_is_transient_or_hypothetical(source):
+            return deterministic
         if not model_confirmed and not self._is_clear_personal_declaration(source):
             return deterministic
         fallback = ExtractionResult(
@@ -481,6 +542,8 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
                 continue
             if self._source_has_explicit_non_user_subject(source):
                 continue
+            if self._source_is_transient_or_hypothetical(source):
+                continue
             if str(item.attributes.get("declaration") or "").lower() != "clear":
                 continue
             if str(item.attributes.get("memory_subject") or "").lower() == "user":
@@ -499,6 +562,9 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         for item in llm_result.items:
             self._normalize_model_item(item, request)
             if not self._valid_model_item(item, user_text):
+                continue
+            source = str(item.attributes.get("source_sentence") or "")
+            if self._source_is_transient_or_hypothetical(source):
                 continue
             memory_subject = str(item.attributes.get("memory_subject") or "").lower()
             if memory_subject in {"other", "unknown"}:
@@ -528,6 +594,70 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
                 )
             self._append_unique(model_result, item)
         return model_result
+
+    def _may_contain_personal_declaration(self, text: str) -> bool:
+        """Decide when an empty first-pass extraction deserves independent review.
+
+        This is intentionally grammatical rather than topic-specific: the model still decides
+        durability and category, while a clear first-person statement gets a second chance at
+        schema-constrained extraction instead of being silently dropped.
+        """
+        return not self._non_memory_sentence(text) and bool(
+            re.search(r"\b(?:i|i'm|i am|my|me)\b", text, flags=re.IGNORECASE)
+        )
+
+    def _source_is_transient_or_hypothetical(self, source: str) -> bool:
+        """Reject short-lived self reports unless the user explicitly requests retention."""
+        lowered = " ".join(source.casefold().split())
+        if not lowered:
+            return True
+        if self.is_memory_exclusion(lowered):
+            return True
+        if self._is_explicitly_undecided_future(lowered):
+            return True
+        if re.search(
+            r"\b(?:remember|save|store|keep)\s+(?:this|that|it)\b",
+            lowered,
+        ):
+            return False
+        if re.search(r"\b(?:maybe|perhaps|might|could|thinking of|considering)\b", lowered):
+            return True
+        if re.search(
+            r"\b(?:headache|migraine|fever|cold|nausea|sick|ill|tired|exhausted|hungry|"
+            r"thirsty|stressed|anxious)\b",
+            lowered,
+        ):
+            return True
+        if re.search(r"\b(?:slept|sleeping)\s+(?:too\s+)?late\b", lowered):
+            return True
+        return bool(re.search(r"\b(?:too much|a lot of)\s+(?:coffee|caffeine)\b", lowered))
+
+    @staticmethod
+    def _is_explicitly_undecided_future(text: str) -> bool:
+        """Recognize a user explicitly declining to make a future possibility a goal."""
+        normalized = " ".join(text.casefold().split())
+        has_future_possibility = bool(
+            re.search(r"\b(?:might|may|could)\b.*\b(?:someday|one day|eventually)?", normalized)
+        )
+        has_disavowal = bool(
+            re.search(
+                r"\b(?:haven't|have not|not)\s+(?:decided|sure)\b|"
+                r"\bnot\s+(?:one\s+of\s+)?(?:my\s+)?current\s+goals?\b",
+                normalized,
+            )
+        )
+        return has_future_possibility and has_disavowal
+
+    def _without_transient_items(self, result: ExtractionResult) -> ExtractionResult:
+        """Apply the same durability floor to the offline degradation parser."""
+        filtered = ExtractionResult(ignored=list(result.ignored))
+        for item in result.items:
+            source = str(item.attributes.get("source_sentence") or item.text)
+            if self._source_is_transient_or_hypothetical(source):
+                filtered.ignored.append(source)
+                continue
+            self._append_unique(filtered, item)
+        return filtered
 
     def persist_candidates(
         self,
@@ -1490,8 +1620,9 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         source_timestamp: datetime | None = None,
     ) -> ExtractedItem | None:
         match = re.search(
-            r"\b(?:my (?:current |long[- ]term )?goal is to|"
-            r"i (?:plan|intend|aim|hope) to|i am working toward|i want to)\s+"
+            r"\b(?:my (?:current\s+)?(?:major\s+|long[- ]term\s+)?goal is to|"
+            r"i (?:plan|intend|aim|hope) to|i am working toward|"
+            r"i (?:mainly\s+)?want to)\s+"
             r"(?P<goal>[^.]{3,180})",
             sentence,
             flags=re.IGNORECASE,
@@ -1532,6 +1663,8 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         sentence: str,
         source_timestamp: datetime | None = None,
     ) -> ExtractedItem | None:
+        if re.search(r"\bi\s+prefer\b", sentence, flags=re.IGNORECASE):
+            return None
         match = re.search(
             r"\bi(?:\s+am|'m)\s+(?:currently\s+)?"
             r"(?P<verb>playing|reading|watching|learning)\s+"
@@ -1939,12 +2072,20 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         if item.candidate_type == CandidateType.GOAL:
             return self._grounded_required_value(attributes, "goal", user_text)
         if item.candidate_type == CandidateType.PROJECT:
-            return self._grounded_required_value(attributes, "name", user_text)
+            return self._grounded_required_value(
+                attributes,
+                "name",
+                user_text,
+            ) and self._source_supports_project(source_span)
         if item.candidate_type == CandidateType.ACTIVITY:
             category = str(attributes.get("category") or "").strip().lower()
-            return category in {"playing", "reading", "watching", "working_on"} and (
-                self._grounded_required_value(attributes, "subject", user_text)
-                or self._grounded_required_value(attributes, "activity", user_text)
+            return (
+                category in {"playing", "reading", "watching", "working_on"}
+                and self._source_supports_activity(source_span)
+                and (
+                    self._grounded_required_value(attributes, "subject", user_text)
+                    or self._grounded_required_value(attributes, "activity", user_text)
+                )
             )
         if item.candidate_type == CandidateType.EVENT:
             return self._grounded_required_value(attributes, "event", user_text)
@@ -1952,6 +2093,30 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             value = attributes.get("memory_text") or item.text
             return self._grounding_text(str(value)) in self._grounding_text(user_text)
         return False
+
+    @staticmethod
+    def _source_supports_project(source: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:project|repo(?:sitory)?|building|developing|creating|"
+                r"working\s+on|maintaining)\b",
+                source,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _source_supports_activity(source: str) -> bool:
+        if re.search(r"\bwhen\s+i(?:\s+am|'m)\b", source, flags=re.IGNORECASE):
+            return False
+        return bool(
+            re.search(
+                r"(?:^|[.!?]\s*)i(?:\s+am|'m)\s+(?:currently\s+)?"
+                r"(?:playing|reading|watching|learning|working\s+on)\b",
+                source.strip(),
+                flags=re.IGNORECASE,
+            )
+        )
 
     def _grounded_required_value(
         self,

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models import ChatGeneration, ChatMessage
-from app.models.enums import MemoryType
+from app.models.enums import CandidateStatus, MemoryType
 from app.repositories.memory_store import MemoryStore
 from app.services.agents.guidance import agent_run_guidance
 from app.services.chat_intent import resolve_internal_chat_intent
@@ -29,6 +29,13 @@ from app.services.files.service import WorkspaceFilesService
 from app.services.git.service import GitContextService
 from app.services.identity_facts import is_durable_identity_fact
 from app.services.llm import ChatTurn, LLMClient, LLMMessage
+from app.services.memory_intent import (
+    MemoryIntentKind,
+    MemoryMutationResult,
+    ResolvedMemoryIntent,
+    extract_memory_removal_target,
+    resolve_memory_intent,
+)
 from app.services.projects import ProjectContextService
 from app.services.recovery.service import RecoveryService
 from app.services.retrieval import RetrievalRequest
@@ -171,7 +178,11 @@ class NeoChatService:
             "project context only when it is provided and relevant. Never write project "
             "details to memory automatically. Task context is also a user-owned workspace "
             "layer. Use it only when relevant, treat it as read-only, and never write task "
-            "details to Memory automatically.\n\n"
+            "details to Memory automatically. Memory persistence is controlled exclusively "
+            "by the backend before this answer is generated. Never claim that you saved, "
+            "updated, stored, noted, remembered, removed, deleted, or forgot user information. "
+            "If no deterministic memory-status response was returned before reaching you, "
+            "then no user-visible memory mutation is confirmed.\n\n"
             f"Memory context:\n{self._compact_context(context)}\n\n"
             f"Project context:\n{project_section}\n\n"
             f"Task context:\n{task_section}\n\n"
@@ -204,11 +215,15 @@ class NeoChatService:
             timezone=timezone,
             locale=locale,
         )
+        memory_intent = resolve_memory_intent(prompt)
         user_message = self.store.add_chat_message(
             chat_id,
             "user",
             prompt,
-            metadata={"search_intent": search_intent.model_dump(mode="json")},
+            metadata={
+                "search_intent": search_intent.model_dump(mode="json"),
+                "memory_intent": memory_intent.model_dump(mode="json"),
+            },
         )
         self.store.rename_chat_from_prompt(chat_id, prompt)
         self.db.commit()
@@ -220,6 +235,31 @@ class NeoChatService:
             component="chat_submission",
             final_status="received",
         )
+
+        memory_action = self._handle_memory_action(
+            prompt,
+            persisted_messages,
+            memory_intent,
+        )
+        if memory_action is not None:
+            memory_action_reply, memory_result = memory_action
+            self.store.add_chat_message(
+                chat_id,
+                "assistant",
+                memory_action_reply,
+                response_kind=memory_intent.kind.value,
+                provider_name="Neo memory",
+                route_name=memory_intent.kind.value,
+                finish_reason="stop",
+                duration_ms=0,
+                metadata={"memory_mutation": memory_result.model_dump(mode="json")},
+            )
+            self.db.commit()
+            self.last_web_debug = {
+                "web_search_needed": False,
+                "memory_mutation": memory_result.model_dump(mode="json"),
+            }
+            return memory_action_reply
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -243,15 +283,22 @@ class NeoChatService:
             return agent_guidance
         memory_started = time.perf_counter()
         try:
-            _, memory_ack = self.persist_user_memory(
+            memory_result = self.persist_user_memory(
                 prompt,
                 chat_id,
                 source_message_id=user_message.id,
                 source_timestamp=user_message.created_at,
+                memory_intent=memory_intent,
             )
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
-            memory_ack = None
+            memory_result = self._failed_memory_mutation(memory_intent, exc)
+        memory_ack = memory_result.acknowledgement()
+        if not memory_result.succeeded and memory_intent.kind in {
+            MemoryIntentKind.STORE,
+            MemoryIntentKind.UPDATE,
+        }:
+            memory_ack = memory_result.acknowledgement()
         if memory_ack is not None:
             self.store.add_chat_message(
                 chat_id,
@@ -263,14 +310,14 @@ class NeoChatService:
                 finish_reason="stop",
                 duration_ms=int((time.perf_counter() - memory_started) * 1000),
                 metadata={
-                    "memory_persisted": True,
+                    "memory_mutation": memory_result.model_dump(mode="json"),
                     "search_intent": search_intent.model_dump(mode="json"),
                 },
             )
             self.db.commit()
             self.last_web_debug = {
                 "web_search_needed": False,
-                "memory_persisted": True,
+                "memory_mutation": memory_result.model_dump(mode="json"),
             }
             return memory_ack
         context = self.build_context(prompt)
@@ -510,6 +557,7 @@ class NeoChatService:
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                 )
                 raise
+        reply = self._enforce_memory_truthfulness(reply, prompt, memory_result)
         self.store.add_chat_message(
             chat_id,
             "assistant",
@@ -527,6 +575,7 @@ class NeoChatService:
             trace_id=trace_id,
             metadata={
                 "search_intent": search_intent.model_dump(mode="json"),
+                "memory_mutation": memory_result.model_dump(mode="json"),
                 "web_debug": self._web_debug(
                     web_context,
                     context=context,
@@ -604,6 +653,7 @@ class NeoChatService:
         history = [
             ChatTurn(role=message.role, content=message.content) for message in persisted_messages
         ]
+        memory_intent = resolve_memory_intent(prompt)
         if existing_user_message_id is not None:
             try:
                 message_index = next(
@@ -628,7 +678,10 @@ class NeoChatService:
                 chat_id,
                 "user",
                 prompt,
-                metadata={"search_intent": search_intent.model_dump(mode="json")},
+                metadata={
+                    "search_intent": search_intent.model_dump(mode="json"),
+                    "memory_intent": memory_intent.model_dump(mode="json"),
+                },
             )
             self.store.rename_chat_from_prompt(chat_id, prompt)
             self.db.commit()
@@ -649,6 +702,7 @@ class NeoChatService:
                 if not isinstance(source_metadata, dict):
                     source_metadata = {}
                 source_metadata["search_intent"] = search_intent.model_dump(mode="json")
+                source_metadata["memory_intent"] = memory_intent.model_dump(mode="json")
                 if generation_id is not None:
                     source_metadata["generation_id"] = generation_id
                 source_message.metadata_json = json.dumps(source_metadata, sort_keys=True)
@@ -661,6 +715,39 @@ class NeoChatService:
             component="chat_submission",
             final_status="received",
         )
+
+        memory_action = self._handle_memory_action(
+            prompt,
+            search_history,
+            memory_intent,
+        )
+        if memory_action is not None:
+            memory_action_reply, memory_result = memory_action
+            action_metadata = {
+                "response_kind": memory_intent.kind.value,
+                "provider_name": "Neo memory",
+                "route_name": memory_intent.kind.value,
+                "finish_reason": "stop",
+                "duration_ms": 0,
+                "metadata": {"memory_mutation": memory_result.model_dump(mode="json")},
+            }
+            assistant = persist_assistant(memory_action_reply, **action_metadata)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {
+                "web_search_needed": False,
+                "memory_mutation": memory_result.model_dump(mode="json"),
+            }
+            yield {"type": "chunk", "content": memory_action_reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": memory_action_reply,
+                "thinking": None,
+                "web_debug": self.last_web_debug,
+                **{key: value for key, value in action_metadata.items() if key != "metadata"},
+            }
+            return
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -706,17 +793,19 @@ class NeoChatService:
         memory_started = time.perf_counter()
         try:
             source_message = self.db.get(ChatMessage, routing_message_id)
-            _, memory_ack = self.persist_user_memory(
+            memory_result = self.persist_user_memory(
                 prompt,
                 chat_id,
                 source_message_id=routing_message_id,
                 source_timestamp=(
                     source_message.created_at if source_message is not None else None
                 ),
+                memory_intent=memory_intent,
             )
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
-            memory_ack = None
+            memory_result = self._failed_memory_mutation(memory_intent, exc)
+        memory_ack = memory_result.acknowledgement()
         if memory_ack is not None:
             memory_metadata = {
                 "response_kind": "direct_memory",
@@ -725,7 +814,7 @@ class NeoChatService:
                 "finish_reason": "stop",
                 "duration_ms": int((time.perf_counter() - memory_started) * 1000),
                 "metadata": {
-                    "memory_persisted": True,
+                    "memory_mutation": memory_result.model_dump(mode="json"),
                     "search_intent": search_intent.model_dump(mode="json"),
                 },
             }
@@ -737,7 +826,7 @@ class NeoChatService:
             self.db.refresh(assistant)
             self.last_web_debug = {
                 "web_search_needed": False,
-                "memory_persisted": True,
+                "memory_mutation": memory_result.model_dump(mode="json"),
             }
             yield {"type": "chunk", "content": memory_ack}
             yield {
@@ -1122,7 +1211,10 @@ class NeoChatService:
             "duration_ms": None,
             "finish_reason": None,
         }
-        buffer_for_validation = bool(web_context.needed)
+        buffer_for_validation = bool(
+            web_context.needed
+            or self._requires_memory_truthfulness_validation(prompt, memory_intent)
+        )
         if buffer_for_validation:
             yield {"type": "status", "content": "Reading and validating evidence"}
         try:
@@ -1250,6 +1342,7 @@ class NeoChatService:
             )
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
+        reply = self._enforce_memory_truthfulness(reply, prompt, memory_result)
         if buffer_for_validation or reply != raw_reply:
             yield {"type": "replace", "content": reply}
         thinking = (
@@ -1272,6 +1365,7 @@ class NeoChatService:
             trace_id=final_metadata.get("provider_request_id"),
             metadata={
                 "search_intent": search_intent.model_dump(mode="json"),
+                "memory_mutation": memory_result.model_dump(mode="json"),
                 "web_debug": self._web_debug(
                     web_context,
                     context=context,
@@ -1336,7 +1430,18 @@ class NeoChatService:
         *,
         source_message_id: int | None = None,
         source_timestamp: datetime | None = None,
-    ) -> tuple[list[int], str | None]:
+        memory_intent: ResolvedMemoryIntent | None = None,
+    ) -> MemoryMutationResult:
+        memory_intent = memory_intent or resolve_memory_intent(prompt)
+        before = {
+            memory.id: (
+                memory.memory_text,
+                memory.fingerprint,
+                memory.status,
+                memory.is_active,
+            )
+            for memory in self.store.list_memories(active_only=False, limit=100000)
+        }
         repaired_candidates = self._repair_invalid_identity_sources(chat_id)
         request = ExtractionRequest(
             text=prompt,
@@ -1351,13 +1456,50 @@ class NeoChatService:
         )
         candidates = self.extractor.persist_and_accept(self.store, extraction)
         self.db.commit()
-        candidate_ids = [candidate.id for candidate in [*repaired_candidates, *candidates]]
-        acknowledgement = self.extractor.format_persisted_acknowledgement(
-            request,
-            extraction,
-            candidates,
+        accepted = [
+            candidate
+            for candidate in candidates
+            if candidate.status in {CandidateStatus.ACCEPTED, CandidateStatus.MERGED}
+            and candidate.accepted_memory_id is not None
+        ]
+        accepted_memory_ids = {
+            int(candidate.accepted_memory_id) for candidate in accepted
+        }
+        active_memory_ids = {
+            memory.id
+            for memory in self.store.list_memories(active_only=True, limit=100000)
+        }
+        memory_ids = sorted(
+            accepted_memory_ids & active_memory_ids
         )
-        return candidate_ids, acknowledgement
+        saved_ids = [memory_id for memory_id in memory_ids if memory_id not in before]
+        updated_ids = [
+            memory_id
+            for memory_id in memory_ids
+            if memory_id in before
+        ]
+        all_candidates = [*repaired_candidates, *candidates]
+        report_status = self.extractor.is_pure_personal_declaration(request, extraction)
+        persistence_status = (
+            "committed"
+            if saved_ids or updated_ids
+            else "pending_review"
+            if candidates
+            else "no_change"
+        )
+        return MemoryMutationResult(
+            intent=memory_intent.kind,
+            attempted=bool(candidates),
+            succeeded=True,
+            saved_count=len(saved_ids),
+            updated_count=len(updated_ids),
+            candidate_count=len(candidates),
+            candidate_ids=[candidate.id for candidate in all_candidates],
+            memory_ids=memory_ids,
+            review_decisions=[candidate.status.value for candidate in candidates],
+            persistence_status=persistence_status,
+            report_status=report_status,
+        )
 
     def extract_user_prompt(
         self,
@@ -1367,13 +1509,13 @@ class NeoChatService:
         source_message_id: int | None = None,
         source_timestamp: datetime | None = None,
     ) -> list[int]:
-        candidate_ids, _ = self.persist_user_memory(
+        result = self.persist_user_memory(
             prompt,
             chat_id,
             source_message_id=source_message_id,
             source_timestamp=source_timestamp,
         )
-        return candidate_ids
+        return result.candidate_ids
 
     def _repair_invalid_identity_sources(
         self,
@@ -1431,6 +1573,128 @@ class NeoChatService:
             lines.extend(f"- {item}" for item in warnings)
         lines.append("Rules are guidance only and cannot grant permissions or disable safety.")
         return "\n".join(lines)
+
+    def _handle_memory_action(
+        self,
+        prompt: str,
+        prior_messages: list[ChatMessage],
+        memory_intent: ResolvedMemoryIntent,
+    ) -> tuple[str, MemoryMutationResult] | None:
+        if memory_intent.kind == MemoryIntentKind.EXCLUDE:
+            result = MemoryMutationResult(
+                intent=MemoryIntentKind.EXCLUDE,
+                attempted=False,
+                succeeded=True,
+                excluded_count=1,
+                persistence_status="excluded",
+                report_status=True,
+            )
+            acknowledgement = result.acknowledgement()
+            if acknowledgement is None:
+                raise RuntimeError("Memory exclusion did not produce a status response.")
+            return acknowledgement, result
+        if memory_intent.kind != MemoryIntentKind.REMOVE:
+            return None
+
+        try:
+            target_text = memory_intent.target_text or extract_memory_removal_target(prompt)
+            deleted = (
+                self.store.delete_memories_matching_explicit_removal(target_text)
+                if target_text
+                else []
+            )
+            target = next(
+                (message for message in reversed(prior_messages) if message.role == "user"),
+                None,
+            )
+            affected = (
+                self.store.detach_memory_sources_for_message(target.id, reason="deletion")
+                if not deleted
+                and target is not None
+                and re.search(r"\b(?:that|this)\b", prompt, re.IGNORECASE)
+                else []
+            )
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            failed = self._failed_memory_mutation(memory_intent, exc)
+            failed.report_status = True
+            acknowledgement = failed.acknowledgement()
+            if acknowledgement is None:
+                raise RuntimeError("Failed memory removal did not produce a status.") from exc
+            return acknowledgement, failed
+        removed_ids = sorted({*deleted, *affected})
+        result = MemoryMutationResult(
+            intent=MemoryIntentKind.REMOVE,
+            attempted=True,
+            succeeded=True,
+            removed_count=len(removed_ids),
+            memory_ids=removed_ids,
+            persistence_status="committed" if removed_ids else "no_match",
+            report_status=True,
+        )
+        acknowledgement = result.acknowledgement()
+        if acknowledgement is not None:
+            return acknowledgement, result
+        return (
+            "I could not find an active saved memory matching that removal request.",
+            result,
+        )
+
+    @staticmethod
+    def _failed_memory_mutation(
+        memory_intent: ResolvedMemoryIntent,
+        error: Exception,
+    ) -> MemoryMutationResult:
+        return MemoryMutationResult(
+            intent=memory_intent.kind,
+            attempted=True,
+            succeeded=False,
+            persistence_status="failed",
+            report_status=memory_intent.kind
+            in {
+                MemoryIntentKind.STORE,
+                MemoryIntentKind.UPDATE,
+                MemoryIntentKind.REMOVE,
+            },
+            error=type(error).__name__,
+        )
+
+    @staticmethod
+    def _requires_memory_truthfulness_validation(
+        prompt: str,
+        memory_intent: ResolvedMemoryIntent,
+    ) -> bool:
+        return memory_intent.kind != MemoryIntentKind.NONE or bool(
+            re.search(r"\b(?:i|i'm|i am|my|me)\b", prompt, flags=re.IGNORECASE)
+        )
+
+    @staticmethod
+    def _enforce_memory_truthfulness(
+        reply: str,
+        prompt: str,
+        mutation: MemoryMutationResult,
+    ) -> str:
+        if mutation.durable_mutation_succeeded:
+            return reply
+        unsupported_claim = re.search(
+            r"\bi(?:'ve|\s+have|'ll|\s+will)?\s+"
+            r"(?:saved|updated|stored|added|recorded|noted|remembered|removed|"
+            r"deleted|forgotten|keep)\b",
+            reply,
+            flags=re.IGNORECASE,
+        )
+        if unsupported_claim is None:
+            return reply
+        if resolve_memory_intent(prompt).kind == MemoryIntentKind.EXCLUDE:
+            return (
+                "Understood — I’ll keep that in this conversation only. "
+                "It was not added to durable memory."
+            )
+        return (
+            "Understood. I treated that as conversation context and did not add or "
+            "change durable memory."
+        )
 
     def _direct_reply(self, prompt: str) -> str | None:
         if not self.explainer.should_handle(prompt):
