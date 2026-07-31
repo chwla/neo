@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ from app.schemas.memory_objects import (
     ProjectRead,
 )
 from app.services.archives import ArchiveSearchResult, QdrantArchiveService
+from app.services.memory_scope import domains_for_text, memory_text, scoped_items
 
 
 class RetrievalRequest(BaseModel):
@@ -52,13 +53,22 @@ class RetrievalService:
         personal_intent = self._personal_intent(query)
         advice_intent = self._advice_intent(query)
         memory_intent = personal_intent or advice_intent or self._memory_intent(query)
+        requested_domains = domains_for_text(query)
 
-        memories = store.search_memories(query, limit=request.limit) if memory_intent else []
+        if memory_intent and requested_domains:
+            memories = scoped_items(
+                store.list_memories(limit=max(100, request.limit)),
+                requested_domains,
+                memory_text,
+            )[: request.limit]
+        else:
+            memories = store.search_memories(query, limit=request.limit) if memory_intent else []
         memories = self._filter_memory_hits(
             store,
             query,
             memories,
             advice_intent=advice_intent,
+            requested_domains=requested_domains,
         )
         for memory in memories:
             memory.last_accessed_at = datetime.now(UTC)
@@ -71,41 +81,84 @@ class RetrievalService:
             except Exception as exc:  # Qdrant can be unavailable on local machines.
                 archive_error = str(exc)
 
+        goals = self._goals_for_query(
+            store,
+            query,
+            request.limit,
+            personal_intent,
+            advice_intent,
+        )
+        preferences = self._preferences_for_query(
+            store,
+            query,
+            request.limit,
+            personal_intent,
+            advice_intent,
+        )
+        projects = self._projects_for_query(
+            store,
+            query,
+            request.limit,
+            personal_intent,
+            advice_intent,
+        )
+        events = store.search_events(query) if memory_intent else []
+        if requested_domains and memory_intent:
+            goals = self._goals_for_domains(
+                store,
+                requested_domains,
+                request.limit,
+            )
+            preferences = scoped_items(
+                store.list_preferences(),
+                requested_domains,
+                memory_text,
+            )[: request.limit]
+            projects = scoped_items(projects, requested_domains, memory_text)
+            events = scoped_items(events, requested_domains, memory_text)
+
         return RetrievalResult(
-            goals=[
-                GoalRead.model_validate(goal)
-                for goal in self._goals_for_query(
-                    store, query, request.limit, personal_intent, advice_intent
-                )
-            ],
-            projects=[
-                ProjectRead.model_validate(project)
-                for project in self._projects_for_query(
-                    store, query, request.limit, personal_intent, advice_intent
-                )
-            ],
+            goals=[GoalRead.model_validate(goal) for goal in goals],
+            projects=[ProjectRead.model_validate(project) for project in projects],
             profile=[
                 ProfileFactRead.model_validate(fact)
                 for fact in self._profile_for_query(store, query, request.limit, personal_intent)
             ],
-            preferences=[
-                PreferenceRead.model_validate(preference)
-                for preference in self._preferences_for_query(
-                    store,
-                    query,
-                    request.limit,
-                    personal_intent,
-                    advice_intent,
-                )
-            ],
+            preferences=[PreferenceRead.model_validate(preference) for preference in preferences],
             relevant_memories=[MemoryRead.model_validate(memory) for memory in memories],
-            events=[
-                EventRead.model_validate(event)
-                for event in (store.search_events(query) if memory_intent else [])
-            ],
+            events=[EventRead.model_validate(event) for event in events],
             archive_results=archive_results,
             archive_error=archive_error,
         )
+
+    @staticmethod
+    def _goals_for_domains(
+        store: MemoryStore,
+        requested_domains: frozenset[str],
+        limit: int,
+    ):
+        """Scope typed goals through their domain-bearing active memory rows."""
+
+        goal_memories = scoped_items(
+            store.active_memories_by_type(MemoryType.GOAL_RELATED),
+            requested_domains,
+            memory_text,
+        )
+        fingerprints = {
+            memory.fingerprint for memory in goal_memories if memory.fingerprint
+        }
+        goal_texts = {
+            " ".join(memory.memory_text.casefold().split())
+            for memory in goal_memories
+        }
+        return [
+            goal
+            for goal in store.list_goals(GoalStatus.ACTIVE)
+            if (
+                (goal.fingerprint and goal.fingerprint in fingerprints)
+                or " ".join(goal.goal.casefold().split()) in goal_texts
+            )
+        ][:limit]
 
     def search_all(self, store: MemoryStore, query: str, limit: int = 10) -> dict[str, list[Any]]:
         return {
@@ -235,7 +288,8 @@ class RetrievalService:
     ):
         lowered = query.lower()
         if self._about_me_intent(lowered) or re.search(
-            r"\b(project|projects|building|working on|build|startup|fit|assistant|improve|focus on)\b",
+            r"\b(project|projects|building|working on|build|startup|fit|assistant|"
+            r"improve|focus on)\b",
             lowered,
         ):
             return store.list_projects(ProjectStatus.ACTIVE)[:limit]
@@ -294,10 +348,17 @@ class RetrievalService:
         )
 
     def _filter_memory_hits(
-        self, store: MemoryStore, query: str, memories: list, advice_intent: bool
+        self,
+        store: MemoryStore,
+        query: str,
+        memories: list,
+        advice_intent: bool,
+        requested_domains: frozenset[str] = frozenset(),
     ):
         if not memories:
             return memories
+        if requested_domains:
+            return scoped_items(memories, requested_domains, memory_text)
         lowered = query.lower()
         if self._current_hardware_query(lowered):
             return [

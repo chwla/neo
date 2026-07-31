@@ -25,10 +25,12 @@ from app.core.config import (
     get_base_settings,
     get_settings,
 )
+from app.core.identifiers import canonical_uuid
 from app.db.session import initialize_database
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 PASSWORD_ITERATIONS = 390_000
+PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
 
 
 def _root() -> Path:
@@ -70,9 +72,127 @@ def initialize_profile_registry() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS profile_registry_migrations (
+                revision TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        _apply_profile_owner_migration(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _profile_owner_check_sql(column: str = "owner_id") -> str:
+    compact = f"replace({column}, '-', '')"
+    return (
+        f"length({column}) = 36 AND {column} = lower({column}) "
+        f"AND substr({column}, 9, 1) = '-' AND substr({column}, 14, 1) = '-' "
+        f"AND substr({column}, 19, 1) = '-' AND substr({column}, 24, 1) = '-' "
+        f"AND length({compact}) = 32 AND {compact} NOT GLOB '*[^0-9a-f]*'"
+    )
+
+
+def _owner_uuid_for_existing_profile(profile_id: str) -> str:
+    try:
+        return canonical_uuid(profile_id)
+    except ValueError:
+        return str(uuid.uuid4())
+
+
+def _apply_profile_owner_migration(conn: sqlite3.Connection) -> None:
+    applied = conn.execute(
+        "SELECT 1 FROM profile_registry_migrations WHERE revision = ?",
+        (PROFILE_OWNER_REVISION,),
+    ).fetchone()
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(account_profiles)").fetchall()
+    }
+    if applied is not None:
+        if "owner_id" not in columns:
+            raise RuntimeError("profile_owner_migration_ledger_schema_mismatch")
+        _validate_profile_owner_rows(conn)
+        return
+
+    if "owner_id" not in columns:
+        rows = conn.execute("SELECT * FROM account_profiles ORDER BY id").fetchall()
+        conn.execute("ALTER TABLE account_profiles RENAME TO account_profiles_before_owner_uuid")
+        conn.execute(
+            f"""
+            CREATE TABLE account_profiles (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL UNIQUE CHECK ({_profile_owner_check_sql()}),
+                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                avatar_data TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        used_owners: set[str] = set()
+        for row in rows:
+            owner_id = _owner_uuid_for_existing_profile(str(row["id"]))
+            if owner_id in used_owners:
+                owner_id = str(uuid.uuid4())
+            used_owners.add(owner_id)
+            conn.execute(
+                """
+                INSERT INTO account_profiles (
+                    id, owner_id, username, password_salt, password_hash,
+                    avatar_data, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    owner_id,
+                    row["username"],
+                    row["password_salt"],
+                    row["password_hash"],
+                    row["avatar_data"],
+                    row["created_at"],
+                ),
+            )
+        conn.execute("DROP TABLE account_profiles_before_owner_uuid")
+    else:
+        rows = conn.execute("SELECT id, owner_id FROM account_profiles ORDER BY id").fetchall()
+        used_owners: set[str] = set()
+        for row in rows:
+            try:
+                owner_id = canonical_uuid(row["owner_id"])
+            except (TypeError, ValueError):
+                owner_id = _owner_uuid_for_existing_profile(str(row["id"]))
+            if owner_id in used_owners:
+                owner_id = str(uuid.uuid4())
+            used_owners.add(owner_id)
+            conn.execute(
+                "UPDATE account_profiles SET owner_id = ? WHERE id = ?",
+                (owner_id, row["id"]),
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_account_profiles_owner_id "
+            "ON account_profiles(owner_id)"
+        )
+
+    _validate_profile_owner_rows(conn)
+    conn.execute(
+        "INSERT INTO profile_registry_migrations (revision, applied_at) "
+        "VALUES (?, CURRENT_TIMESTAMP)",
+        (PROFILE_OWNER_REVISION,),
+    )
+
+
+def _validate_profile_owner_rows(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT id, owner_id FROM account_profiles").fetchall()
+    seen: set[str] = set()
+    for row in rows:
+        owner_id = canonical_uuid(row["owner_id"])
+        if owner_id != row["owner_id"] or owner_id in seen:
+            raise RuntimeError("invalid_or_duplicate_profile_owner_uuid")
+        seen.add(owner_id)
 
 
 def _profile_directory(profile_id: str, *, guest: bool = False) -> Path:
@@ -130,6 +250,7 @@ def _verify_password(password: str, salt: str, digest: str) -> bool:
 def public_profile(row: sqlite3.Row | dict) -> dict:
     return {
         "id": row["id"],
+        "owner_id": row["owner_id"],
         "username": row["username"],
         "avatar_data": row["avatar_data"],
         "is_guest": False,
@@ -141,7 +262,7 @@ def list_profiles() -> list[dict]:
     conn = _connect_registry()
     try:
         rows = conn.execute(
-            "SELECT id, username, avatar_data FROM account_profiles "
+            "SELECT id, owner_id, username, avatar_data FROM account_profiles "
             "ORDER BY username COLLATE NOCASE"
         ).fetchall()
         return [public_profile(row) for row in rows]
@@ -159,15 +280,16 @@ def create_profile(username: str, password: str, avatar_data: str | None = None)
     if len(password) < 4:
         raise HTTPException(status_code=422, detail="Password must contain at least 4 characters.")
     profile_id = str(uuid.uuid4())
+    owner_id = canonical_uuid(profile_id)
     salt, digest = _password_parts(password)
     avatar_data = _validate_avatar(avatar_data)
     conn = _connect_registry()
     try:
         conn.execute(
             "INSERT INTO account_profiles "
-            "(id, username, password_salt, password_hash, avatar_data) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (profile_id, username, salt, digest, avatar_data),
+            "(id, owner_id, username, password_salt, password_hash, avatar_data) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (profile_id, owner_id, username, salt, digest, avatar_data),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
@@ -177,7 +299,13 @@ def create_profile(username: str, password: str, avatar_data: str | None = None)
     finally:
         conn.close()
     ensure_profile_storage(profile_id)
-    return {"id": profile_id, "username": username, "avatar_data": avatar_data, "is_guest": False}
+    return {
+        "id": profile_id,
+        "owner_id": owner_id,
+        "username": username,
+        "avatar_data": avatar_data,
+        "is_guest": False,
+    }
 
 
 def authenticate(profile_id: str, password: str) -> dict:
@@ -195,8 +323,52 @@ def authenticate(profile_id: str, password: str) -> dict:
 
 def create_guest() -> dict:
     profile_id = f"guest-{uuid.uuid4()}"
+    owner_id = str(uuid.uuid4())
+    directory = _profile_directory(profile_id, guest=True)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "owner_id").write_text(owner_id, encoding="utf-8")
     ensure_profile_storage(profile_id, guest=True)
-    return {"id": profile_id, "username": "Guest", "avatar_data": None, "is_guest": True}
+    return {
+        "id": profile_id,
+        "owner_id": owner_id,
+        "username": "Guest",
+        "avatar_data": None,
+        "is_guest": True,
+    }
+
+
+def owner_id_for_profile(profile_id: str, *, guest: bool = False) -> str:
+    if guest:
+        path = _profile_directory(profile_id, guest=True) / "owner_id"
+        try:
+            return canonical_uuid(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("guest_profile_owner_id_unavailable") from exc
+
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        row = conn.execute(
+            "SELECT owner_id FROM account_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise RuntimeError("profile_owner_id_not_found")
+    return canonical_uuid(row["owner_id"])
+
+
+def validate_profile_owner_pair(profile_id: str, owner_id: str, *, guest: bool = False) -> str:
+    expected = owner_id_for_profile(profile_id, guest=guest)
+    supplied = canonical_uuid(owner_id)
+    if supplied != expected:
+        raise RuntimeError("profile_owner_id_mismatch")
+    return supplied
+
+
+def database_identity_for_profile(profile_id: str, *, guest: bool = False) -> str:
+    prefix = "guest-profile" if guest else "account-profile"
+    return f"{prefix}:{profile_id}"
 
 
 def delete_guest(profile_id: str) -> None:

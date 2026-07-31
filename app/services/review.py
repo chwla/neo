@@ -22,6 +22,12 @@ from app.services.conflicts import ConflictResolutionService
 from app.services.identity_facts import is_durable_identity_fact, normalize_identity_value
 from app.services.lifecycle import MemoryLifecycleService
 from app.services.memory_fingerprints import memory_fingerprint
+from app.services.memory_scope import (
+    canonical_domain_label,
+    domains_for_text,
+    is_global_response_style,
+    primary_domain_for_text,
+)
 
 
 class MemoryReviewRequest(BaseModel):
@@ -268,6 +274,15 @@ class MemoryReviewService:
             value = str(attrs.get("value", candidate.candidate_text))
             memory_text = f"{category} = {value}"
             canonical_slot = str(attrs.get("canonical_slot") or f"preference:{category}")
+            if self._is_explicit_replacement(attrs):
+                return self._replace_preference(
+                    store,
+                    candidate,
+                    category=category,
+                    value=value,
+                    memory_text=memory_text,
+                    canonical_slot=canonical_slot,
+                )
             fingerprint = self._fingerprint(candidate, MemoryType.PREFERENCE, memory_text)
             existing_memory = store.active_memory_by_fingerprint(
                 MemoryType.PREFERENCE,
@@ -277,18 +292,28 @@ class MemoryReviewService:
                 (
                     preference
                     for preference in store.list_preferences()
-                    if preference.value == value
-                    or preference.canonical_slot == canonical_slot
-                    or self._same_preference_subject_slot(
-                        preference.canonical_slot,
-                        canonical_slot,
+                    if self._compatible_preference_domains(
+                        preference,
+                        category=category,
+                        value=value,
+                        canonical_slot=canonical_slot,
                     )
-                    or self._overlapping_preference_refinement(
-                        preference.value,
-                        value,
-                        existing_slot=preference.canonical_slot,
-                        candidate_slot=canonical_slot,
-                        additive=bool(attrs.get("additive")),
+                    and (
+                        preference.value == value
+                        or (
+                            preference.canonical_slot == canonical_slot
+                            or self._same_preference_subject_slot(
+                                preference.canonical_slot,
+                                canonical_slot,
+                            )
+                            or self._overlapping_preference_refinement(
+                                preference.value,
+                                value,
+                                existing_slot=preference.canonical_slot,
+                                candidate_slot=canonical_slot,
+                                additive=bool(attrs.get("additive")),
+                            )
+                        )
                     )
                 ),
                 None,
@@ -364,15 +389,21 @@ class MemoryReviewService:
 
         if candidate.candidate_type == CandidateType.GOAL:
             goal_text = str(attrs.get("goal", candidate.candidate_text))
+            if self._is_explicit_replacement(attrs):
+                return self._replace_goal(store, candidate, goal_text)
             fingerprint = self._fingerprint(candidate, MemoryType.GOAL_RELATED, goal_text)
             for existing_goal in store.list_goals(GoalStatus.ACTIVE):
                 exact_match = existing_goal.fingerprint == fingerprint or self._same_text(
                     existing_goal.goal, goal_text
                 )
-                if exact_match or self._overlapping_goal_refinement(
+                compatible_refinement = self._compatible_text_domains(
                     existing_goal.goal,
                     goal_text,
-                ):
+                ) and self._overlapping_goal_refinement(
+                    existing_goal.goal,
+                    goal_text,
+                )
+                if exact_match or compatible_refinement:
                     previous_goal_text = existing_goal.goal
                     existing_memory = store.active_memory_by_fingerprint(
                         MemoryType.GOAL_RELATED,
@@ -728,6 +759,385 @@ class MemoryReviewService:
         ):
             return False
         return cls._canonical_overlap(left, right, minimum_common=4, minimum_ratio=0.6)
+
+    @staticmethod
+    def _compatible_preference_domains(
+        existing,
+        *,
+        category: str,
+        value: str,
+        canonical_slot: str,
+    ) -> bool:
+        """Prevent a semantically similar preference from updating another domain."""
+
+        existing_text = " ".join(
+            (
+                str(existing.category or ""),
+                str(existing.value or ""),
+                str(existing.canonical_slot or ""),
+            )
+        )
+        candidate_text = " ".join((category, value, canonical_slot))
+        existing_global = is_global_response_style(existing_text)
+        candidate_global = is_global_response_style(candidate_text)
+        if existing_global or candidate_global:
+            return existing_global and candidate_global
+
+        existing_domain = MemoryReviewService._preference_domain_key(
+            str(existing.category or ""),
+            existing_text,
+        )
+        candidate_domain = MemoryReviewService._preference_domain_key(
+            category,
+            candidate_text,
+        )
+        if existing_domain and candidate_domain:
+            return existing_domain == candidate_domain
+
+        existing_domains = domains_for_text(
+            existing_text
+        )
+        candidate_domains = domains_for_text(candidate_text)
+        return MemoryReviewService._domain_sets_are_compatible(
+            existing_domains,
+            candidate_domains,
+        )
+
+    @staticmethod
+    def _compatible_text_domains(left: str, right: str) -> bool:
+        left_domain = primary_domain_for_text(left)
+        right_domain = primary_domain_for_text(right)
+        if left_domain and right_domain:
+            return left_domain == right_domain
+        return MemoryReviewService._domain_sets_are_compatible(
+            domains_for_text(left),
+            domains_for_text(right),
+        )
+
+    @staticmethod
+    def _preference_domain_key(category: str, full_text: str) -> str | None:
+        if category not in {"general", "response_style"}:
+            return canonical_domain_label(category)
+        return primary_domain_for_text(full_text)
+
+    @staticmethod
+    def _is_explicit_replacement(attrs: dict) -> bool:
+        return bool(attrs.get("replacement_intent")) and bool(
+            attrs.get("replacement_domain") or attrs.get("domain")
+        )
+
+    @staticmethod
+    def _replacement_negated_hints(attrs: dict) -> tuple[str, ...]:
+        return tuple(
+            fragment.strip()
+            for fragment in str(attrs.get("negated_fragments") or "").split("|")
+            if fragment.strip()
+        )
+
+    @staticmethod
+    def _matches_replacement_hint(value: str, hints: tuple[str, ...]) -> bool:
+        value_tokens = re.findall(r"[a-z0-9]+", value.casefold())
+        normalized_value = " ".join(value_tokens)
+        if not normalized_value:
+            return False
+        for hint in hints:
+            hint_tokens = re.findall(r"[a-z0-9]+", hint.casefold())
+            normalized_hint = " ".join(hint_tokens)
+            if normalized_hint and (
+                normalized_hint in normalized_value
+                or normalized_value in normalized_hint
+            ):
+                return True
+            meaningful_hint_tokens = set(hint_tokens) - {"and", "not", "or"}
+            if meaningful_hint_tokens and meaningful_hint_tokens <= set(value_tokens):
+                return True
+        return False
+
+    @classmethod
+    def _matches_replacement_domain(
+        cls,
+        existing_domain: str | None,
+        target_domain: str,
+        value: str,
+        hints: tuple[str, ...],
+    ) -> bool:
+        """Match exact domains, or a hinted legacy head-only representation."""
+
+        normalized_existing = canonical_domain_label(existing_domain or "")
+        normalized_target = canonical_domain_label(target_domain) or target_domain
+        if normalized_existing == normalized_target:
+            return True
+        if not normalized_existing:
+            return cls._matches_replacement_hint(value, hints)
+        legacy_head = normalized_target.rsplit("_", maxsplit=1)[-1]
+        return (
+            normalized_existing == legacy_head
+            and cls._matches_replacement_hint(value, hints)
+        )
+
+    @staticmethod
+    def _is_legacy_domain_head(
+        existing_domain: str | None,
+        target_domain: str,
+    ) -> bool:
+        normalized_existing = canonical_domain_label(existing_domain or "")
+        normalized_target = canonical_domain_label(target_domain) or target_domain
+        return (
+            "_" in normalized_target
+            and normalized_existing == normalized_target.rsplit("_", maxsplit=1)[-1]
+        )
+
+    def _replace_preference(
+        self,
+        store: MemoryStore,
+        candidate,
+        *,
+        category: str,
+        value: str,
+        memory_text: str,
+        canonical_slot: str,
+    ) -> Memory:
+        """Create a new canonical preference and retire its contradicted predecessor."""
+
+        attrs = self._attributes(candidate.reasoning)
+        raw_domain = str(attrs.get("replacement_domain") or attrs.get("domain") or "")
+        domain = canonical_domain_label(raw_domain) or raw_domain
+        if domain:
+            category = domain
+            canonical_slot = f"preference:{domain}"
+            memory_text = f"{category} = {value}"
+        negated_hints = self._replacement_negated_hints(attrs)
+        old_preferences = [
+            preference
+            for preference in store.list_preferences()
+            if preference.is_active
+            and self._matches_replacement_domain(
+                self._preference_domain_key(
+                    str(preference.category or ""),
+                    " ".join(
+                        (
+                            str(preference.category or ""),
+                            str(preference.value or ""),
+                            str(preference.canonical_slot or ""),
+                        )
+                    ),
+                ),
+                domain,
+                preference.value,
+                negated_hints,
+            )
+        ]
+        fingerprint = self._fingerprint(
+            candidate,
+            MemoryType.PREFERENCE,
+            memory_text,
+        )
+        preference = next(
+            (
+                existing
+                for existing in old_preferences
+                if self._same_text(existing.value, value)
+            ),
+            None,
+        )
+        if preference is None:
+            preference = next(
+                (
+                    existing
+                    for existing in store.list_preferences()
+                    if existing.is_active
+                    and self._same_text(existing.value, value)
+                    and self._is_legacy_domain_head(
+                        self._preference_domain_key(
+                            str(existing.category or ""),
+                            " ".join(
+                                (
+                                    str(existing.category or ""),
+                                    str(existing.value or ""),
+                                    str(existing.canonical_slot or ""),
+                                )
+                            ),
+                        ),
+                        domain,
+                    )
+                ),
+                None,
+            )
+        existing_preference = preference is not None
+        if preference is None:
+            preference = store.add(
+                Preference(
+                    category=category,
+                    value=value,
+                    canonical_slot=canonical_slot,
+                    fingerprint=fingerprint,
+                    confidence=candidate.confidence,
+                    importance=candidate.importance,
+                )
+            )
+        else:
+            preference.category = category
+            preference.canonical_slot = canonical_slot
+            preference.fingerprint = fingerprint
+            preference.confidence = max(preference.confidence, candidate.confidence)
+            preference.importance = max(preference.importance, candidate.importance)
+        memory = next(
+            (
+                existing
+                for existing in store.active_memories_by_type(MemoryType.PREFERENCE)
+                if self._same_text(
+                    existing.memory_text.partition("=")[2] or existing.memory_text,
+                    value,
+                )
+                and (
+                    self._memory_domain(existing) == domain
+                    or self._is_legacy_domain_head(
+                        self._memory_domain(existing),
+                        domain,
+                    )
+                )
+            ),
+            None,
+        )
+        if memory is None and existing_preference:
+            memory = self._existing_memory(
+                store,
+                MemoryType.PREFERENCE,
+                memory_text,
+            )
+        if memory is None:
+            memory = store.add(self._memory(candidate, MemoryType.PREFERENCE, memory_text))
+        else:
+            memory.memory_text = memory_text
+            memory.canonical_slot = canonical_slot
+            self._refresh_memory(memory, candidate)
+            store._sync_memory_fts(memory)
+            store._mark_embedding_stale(memory)
+            store._sync_memory_embedding(memory)
+        for old_preference in old_preferences:
+            if old_preference.id != preference.id:
+                old_preference.is_active = False
+        for old_memory in list(store.active_memories_by_type(MemoryType.PREFERENCE)):
+            if old_memory.id == memory.id:
+                continue
+            if not self._matches_replacement_domain(
+                self._memory_domain(old_memory),
+                domain,
+                old_memory.memory_text,
+                negated_hints,
+            ):
+                continue
+            self.lifecycle.supersede(
+                store,
+                old_memory,
+                memory,
+                "Superseded by the user's explicit same-domain preference correction.",
+            )
+        return memory
+
+    def _replace_goal(self, store: MemoryStore, candidate, goal_text: str) -> Memory:
+        """Replace a same-domain goal even when its wording has no token overlap."""
+
+        attrs = self._attributes(candidate.reasoning)
+        raw_domain = str(attrs.get("replacement_domain") or attrs.get("domain") or "")
+        domain = canonical_domain_label(raw_domain) or raw_domain
+        negated_hints = self._replacement_negated_hints(attrs)
+        old_memories = [
+            memory
+            for memory in store.active_memories_by_type(MemoryType.GOAL_RELATED)
+            if self._matches_replacement_domain(
+                self._memory_domain(memory),
+                domain,
+                memory.memory_text,
+                negated_hints,
+            )
+        ]
+        fingerprint = self._fingerprint(
+            candidate,
+            MemoryType.GOAL_RELATED,
+            goal_text,
+        )
+        goal = next(
+            (
+                existing
+                for existing in store.list_goals(GoalStatus.ACTIVE)
+                if existing.fingerprint == fingerprint
+                or self._same_text(existing.goal, goal_text)
+            ),
+            None,
+        )
+        memory = next(
+            (
+                existing
+                for existing in old_memories
+                if existing.fingerprint == fingerprint
+                or self._same_text(existing.memory_text, goal_text)
+            ),
+            None,
+        ) or self._existing_memory(
+            store,
+            MemoryType.GOAL_RELATED,
+            goal_text,
+        )
+        for old_goal in store.list_goals(GoalStatus.ACTIVE):
+            if goal is not None and old_goal.id == goal.id:
+                continue
+            if any(self._same_text(old_goal.goal, old.memory_text) for old in old_memories):
+                old_goal.status = GoalStatus.ABANDONED
+        if goal is None:
+            goal = store.add(
+                Goal(
+                    goal=goal_text,
+                    description=candidate.candidate_text,
+                    priority=int(attrs.get("priority", candidate.importance)),
+                    target_date=self._parse_date(attrs.get("target_date")),
+                    horizon_months=self._optional_int(attrs.get("horizon_months")),
+                    fingerprint=fingerprint,
+                    status=GoalStatus.ACTIVE,
+                )
+            )
+        else:
+            goal.description = candidate.candidate_text
+            goal.priority = max(
+                goal.priority,
+                int(attrs.get("priority", candidate.importance)),
+            )
+            goal.target_date = self._parse_date(attrs.get("target_date")) or goal.target_date
+            goal.horizon_months = (
+                self._optional_int(attrs.get("horizon_months")) or goal.horizon_months
+            )
+            goal.fingerprint = fingerprint
+        if memory is None:
+            memory = store.add(self._memory(candidate, MemoryType.GOAL_RELATED, goal.goal))
+        else:
+            self._refresh_memory(memory, candidate)
+        for old_memory in old_memories:
+            if old_memory.id == memory.id:
+                continue
+            self.lifecycle.supersede(
+                store,
+                old_memory,
+                memory,
+                "Superseded by the user's explicit same-domain goal correction.",
+            )
+        return memory
+
+    @staticmethod
+    def _memory_domain(memory: Memory) -> str | None:
+        slot = str(memory.canonical_slot or "")
+        parts = slot.split(":")
+        if len(parts) >= 2 and parts[0] in {"goal", "preference"}:
+            return canonical_domain_label(parts[1])
+        return primary_domain_for_text(memory.memory_text)
+
+    @staticmethod
+    def _domain_sets_are_compatible(
+        left: frozenset[str],
+        right: frozenset[str],
+    ) -> bool:
+        if not left and not right:
+            return True
+        return bool(left & right)
 
     @classmethod
     def _canonical_overlap(

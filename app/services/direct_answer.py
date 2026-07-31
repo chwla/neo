@@ -5,6 +5,7 @@ import re
 from app.models import Memory, Preference
 from app.models.enums import GoalStatus, MemoryType
 from app.repositories.memory_store import MemoryStore
+from app.services.memory_scope import domains_for_text, memory_text, scoped_items
 
 
 class DirectMemoryAnswerService:
@@ -17,7 +18,7 @@ class DirectMemoryAnswerService:
         if hasattr(store, "retire_invalid_profile_facts"):
             store.retire_invalid_profile_facts()
         if self._asks_saved_goals_and_preferences(lowered):
-            return self._saved_goals_and_preferences_answer(store)
+            return self._saved_goals_and_preferences_answer(store, lowered)
         if self._asks_memory_summary(lowered):
             return self._memory_summary_answer(store)
         if self._asks_profile_summary(lowered):
@@ -97,9 +98,15 @@ class DirectMemoryAnswerService:
             + ". Uncertain or pending information is not included."
         )
 
-    def _saved_goals_and_preferences_answer(self, store: MemoryStore) -> str:
+    def _saved_goals_and_preferences_answer(
+        self,
+        store: MemoryStore,
+        query: str,
+    ) -> str:
         """Return the active canonical rows for a memory-only scoped query."""
         memories = store.list_memories(limit=100)
+        requested_domains = domains_for_text(query)
+        memories = scoped_items(memories, requested_domains, memory_text)
         goals = [
             memory
             for memory in memories
@@ -111,6 +118,8 @@ class DirectMemoryAnswerService:
             if memory.memory_type == MemoryType.PREFERENCE and memory.memory_text.strip()
         ]
         if not goals and not preferences:
+            if requested_domains:
+                return "I do not have any saved goals or preferences for that topic yet."
             return "I do not have any saved goals or preferences about you yet."
 
         goals.sort(key=lambda memory: self._memory_value(memory.memory_text).casefold())
@@ -119,9 +128,7 @@ class DirectMemoryAnswerService:
         for memory in preferences:
             key, separator, _value = memory.memory_text.partition("=")
             label = (
-                "Response style"
-                if separator and key.strip() == "response_style"
-                else "Preference"
+                "Response style" if separator and key.strip() == "response_style" else "Preference"
             )
             lines.append(f"- {label}: {self._memory_value(memory.memory_text)}")
         return "\n".join(lines)
@@ -366,8 +373,7 @@ class DirectMemoryAnswerService:
 
     def _asks_saved_goals_and_preferences(self, lowered: str) -> bool:
         asks_both_categories = bool(
-            re.search(r"\bgoals?\b", lowered)
-            and re.search(r"\bpreferences?\b", lowered)
+            re.search(r"\bgoals?\b", lowered) and re.search(r"\bpreferences?\b", lowered)
         )
         requires_saved_memory = bool(
             re.search(
@@ -376,9 +382,7 @@ class DirectMemoryAnswerService:
                 lowered,
             )
         )
-        asks_what_is_remembered = bool(
-            re.search(r"\bwhat\s+do\s+you\s+remember\b", lowered)
-        )
+        asks_what_is_remembered = bool(re.search(r"\bwhat\s+do\s+you\s+remember\b", lowered))
         return asks_both_categories and requires_saved_memory and asks_what_is_remembered
 
     def _asks_name(self, lowered: str) -> bool:

@@ -1465,10 +1465,9 @@ class NeoChatService:
         accepted_memory_ids = {
             int(candidate.accepted_memory_id) for candidate in accepted
         }
-        active_memory_ids = {
-            memory.id
-            for memory in self.store.list_memories(active_only=True, limit=100000)
-        }
+        active_memories = self.store.list_memories(active_only=True, limit=100000)
+        active_by_id = {memory.id: memory for memory in active_memories}
+        active_memory_ids = set(active_by_id)
         memory_ids = sorted(
             accepted_memory_ids & active_memory_ids
         )
@@ -1478,6 +1477,23 @@ class NeoChatService:
             for memory_id in memory_ids
             if memory_id in before
         ]
+        # An explicit correction normally creates a new auditable row. Count it as an
+        # update only when it actually supersedes a row that was active before this turn;
+        # an unrelated insertion must remain visible as a save instead of being masked.
+        if memory_intent.kind == MemoryIntentKind.UPDATE and saved_ids:
+            replacement_ids = {
+                memory_id
+                for memory_id in saved_ids
+                if (
+                    (supersedes_id := active_by_id[memory_id].supersedes_id) is not None
+                    and supersedes_id in before
+                    and before[supersedes_id][3]
+                )
+            }
+            updated_ids = sorted({*updated_ids, *replacement_ids})
+            saved_ids = [
+                memory_id for memory_id in saved_ids if memory_id not in replacement_ids
+            ]
         all_candidates = [*repaired_candidates, *candidates]
         report_status = self.extractor.is_pure_personal_declaration(request, extraction)
         persistence_status = (

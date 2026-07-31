@@ -15,6 +15,13 @@ from app.services.identity_facts import is_durable_identity_fact, normalize_iden
 from app.services.llm import LLMClient
 from app.services.llm import LLMMessage as OllamaMessage
 from app.services.memory_intent import MemoryIntentKind, resolve_memory_intent
+from app.services.memory_scope import (
+    canonical_domain_label,
+    domains_for_text,
+    is_global_response_style,
+    preference_domain,
+    primary_domain_for_text,
+)
 from app.services.scoring import score_importance
 
 
@@ -71,6 +78,13 @@ class MemoryExtractionService:
     """Extract durable memory candidates from conversation text."""
 
     AUTO_ACCEPT_MIN_CONFIDENCE = 0.8
+    _REPLACEMENT_BOUNDARY = re.compile(
+        r"(?:^|[\s,;:—–]+)\b(?:"
+        r"instead\s+of|rather\s+than|"
+        r"no\s+longer(?!\s+than\b)|not(?!\s+only\b)"
+        r")\b\s+",
+        flags=re.IGNORECASE,
+    )
     LLM_SYSTEM_PROMPT = """
 You extract durable user memory from conversations for a local personal assistant.
 Return JSON only, with this shape:
@@ -104,6 +118,13 @@ Rules:
   name, place, and role needs three separate items.
 - For preferences such as "be concise", use type "preference", category "response_style",
   and value like "concise answers".
+- Use category "response_style" only when the user explicitly applies the preference globally,
+  for example to all answers, every topic, or all chats. Advice preferences tied to a named
+  subject are ordinary domain preferences, even when they describe format, duration, or detail.
+- When the user explicitly replaces a goal or preference, extract only the new positive value.
+  A trailing "not ...", "instead of ...", "rather than ...", or "no longer ..." clause
+  identifies the old value to supersede; never return that old clause as a new goal,
+  preference, response style, or general memory.
 - For identity, set attributes {"key":"name|location|occupation|education|general","value":"..."}.
 - A future, planned, or tentative role is not a current occupation. Store it as an event or
   general memory using the user's original wording instead of inventing a current role.
@@ -199,8 +220,164 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             if not matched:
                 result.ignored.append(sentence)
 
+        self._reconcile_turn_domains(result)
+        self._annotate_replacement_items(result, text)
         self._stamp_source_context(result, request)
         return self._without_transient_items(result)
+
+    def _reconcile_turn_domains(self, result: ExtractionResult) -> None:
+        """Carry an explicit advice domain onto its paired goal in one user turn.
+
+        A user often names the domain only once: "I want to improve presentations.
+        I prefer public-speaking advice ..."  The preference is the explicit domain
+        declaration, so it safely disambiguates that paired goal without inventing a
+        new fact.
+        """
+
+        if len(result.goals) != 1 or len(result.preferences) != 1:
+            return
+        goal = result.goals[0]
+        preference = result.preferences[0]
+        domain = preference.attributes.get("domain")
+        if not isinstance(domain, str) or not domain:
+            return
+        if primary_domain_for_text(goal.text) == domain:
+            return
+        goal.attributes = {
+            **goal.attributes,
+            "domain": domain,
+            "domain_keywords": self._domain_keywords(f"{domain} {goal.text}"),
+            "scope": "domain_specific",
+            "canonical_slot": f"goal:{domain}:{self._slug(goal.text)}",
+        }
+
+    def _annotate_replacement_items(self, result: ExtractionResult, text: str) -> None:
+        """Mark explicit corrections so review can supersede low-overlap old facts."""
+
+        if not re.search(
+            r"\b(?:correction|replace my|instead of|my current .*? goal is|i now prefer)\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return
+        target_domains = self._replacement_domains(text)
+        if not target_domains:
+            return
+        hints_by_type = self._replacement_hints_by_type(text)
+        for item in [*result.goals, *result.preferences]:
+            domain = item.attributes.get("domain")
+            if not isinstance(domain, str) or not domain:
+                domain = primary_domain_for_text(item.text)
+            if target_domains and domain not in target_domains:
+                continue
+            negated = hints_by_type.get(item.candidate_type, [])
+            item.attributes = {
+                **item.attributes,
+                "replacement_intent": 1,
+                "replacement_domain": domain,
+                "negated_fragments": " | ".join(negated) or None,
+            }
+
+    @classmethod
+    def _replacement_hints_by_type(
+        cls,
+        text: str,
+    ) -> dict[CandidateType, list[str]]:
+        hints: dict[CandidateType, list[str]] = {
+            CandidateType.GOAL: [],
+            CandidateType.PREFERENCE: [],
+        }
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            _, fragment = cls._split_replacement_value(sentence)
+            if not fragment:
+                continue
+            candidate_type = None
+            if re.search(
+                r"\b(?:my current .*? goal is|goal is|replace my .*? goal)\b",
+                sentence,
+                flags=re.IGNORECASE,
+            ):
+                candidate_type = CandidateType.GOAL
+            elif re.search(
+                r"\b(?:i now prefer|i prefer|replace my .*? preference)\b",
+                sentence,
+                flags=re.IGNORECASE,
+            ):
+                candidate_type = CandidateType.PREFERENCE
+            if candidate_type is not None and fragment not in hints[candidate_type]:
+                hints[candidate_type].append(fragment)
+        return hints
+
+    @classmethod
+    def _negated_fragments(cls, text: str) -> list[str]:
+        fragments = [
+            fragment
+            for values in cls._replacement_hints_by_type(text).values()
+            for fragment in values
+        ]
+        return fragments
+
+    def _is_negated_replacement_item(
+        self,
+        item: ExtractedItem,
+        negated_fragments: list[str],
+    ) -> bool:
+        """Reject provider fragments that merely restate a replacement's old value."""
+
+        if not negated_fragments:
+            return False
+        normalized_fragments = {
+            self._grounding_text(fragment)
+            for fragment in negated_fragments
+            if self._grounding_text(fragment)
+        }
+        semantic_values = [
+            item.text,
+            *(
+                str(item.attributes[key])
+                for key in (
+                    "value",
+                    "goal",
+                    "memory_text",
+                    "canonical_text",
+                    "source_phrase",
+                )
+                if item.attributes.get(key)
+            ),
+        ]
+        for raw_value in semantic_values:
+            value = raw_value.partition("=")[2] or raw_value
+            value = value.strip(" ,;:")
+            if re.match(r"^not\b", value, flags=re.IGNORECASE):
+                return True
+            normalized_value = self._grounding_text(value)
+            if not normalized_value:
+                continue
+            if any(
+                normalized_value == fragment
+                or normalized_value in fragment
+                or fragment in normalized_value
+                for fragment in normalized_fragments
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _replacement_domains(text: str) -> set[str]:
+        domains: set[str] = set()
+        for match in re.finditer(
+            r"\b(?:replace my|current)\s+"
+            r"(?P<domain>[a-z0-9][a-z0-9+#_ -]{1,60}?)\s+"
+            r"(?:goal|preference)\b|\bi now prefer\s+"
+            r"(?P<domain2>[a-z0-9][a-z0-9+#_ -]{1,60}?)\s+advice\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            raw_domain = match.group("domain") or match.group("domain2")
+            domain = canonical_domain_label(raw_domain or "")
+            if domain:
+                domains.add(domain)
+        return domains
 
     def is_pure_personal_declaration(
         self,
@@ -446,7 +623,9 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         if not model_result.items:
             if admission_reviewed:
                 # The independent admission review intentionally returned no durable memory.
-                return self._merge_deterministic_items(ExtractionResult(), deterministic)
+                return self._finalize_model_merge(
+                    ExtractionResult(), deterministic, request
+                )
             if any(
                 self._model_output_has_safe_fallback(item, user_text) for item in raw_model_results
             ):
@@ -463,9 +642,130 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
                 return self.extract(request)
             # The model successfully returned an empty structured extraction.  Do not let a
             # broad phrase match turn a normal request into private long-term memory.
-            return self._merge_deterministic_items(ExtractionResult(), deterministic)
+            return self._finalize_model_merge(ExtractionResult(), deterministic, request)
         self._stamp_source_context(model_result, request)
-        return self._merge_deterministic_items(model_result, deterministic)
+        return self._finalize_model_merge(model_result, deterministic, request)
+
+    def _finalize_model_merge(
+        self,
+        model_result: ExtractionResult,
+        deterministic: ExtractionResult,
+        request: ExtractionRequest,
+    ) -> ExtractionResult:
+        """Apply turn-level semantics after model and deterministic items are combined.
+
+        The deterministic parser owns explicit correction metadata.  It must therefore run
+        after merge as well: a valid model item may otherwise be retained without the
+        replacement marker needed to supersede the previous same-domain canonical fact.
+        """
+        request_text = self._request_text(request)
+        merged = self._merge_explicit_replacement(
+            model_result,
+            deterministic,
+            request_text,
+        )
+        if merged is None:
+            merged = self._merge_deterministic_items(model_result, deterministic)
+        self._reconcile_turn_domains(merged)
+        self._annotate_replacement_items(merged, request_text)
+        self._stamp_source_context(merged, request)
+        return self._without_transient_items(merged)
+
+    def _merge_explicit_replacement(
+        self,
+        model_result: ExtractionResult,
+        deterministic: ExtractionResult,
+        text: str,
+    ) -> ExtractionResult | None:
+        """Make grounded positive clauses authoritative for a complete replacement."""
+
+        target_domains = self._replacement_domains(text)
+        target_types = self._replacement_target_types(text)
+        if not target_domains or not target_types:
+            return None
+
+        covered_targets = {
+            (
+                str(
+                    item.attributes.get("replacement_domain")
+                    or item.attributes.get("domain")
+                    or ""
+                ),
+                item.candidate_type,
+            )
+            for item in deterministic.items
+            if item.attributes.get("replacement_intent")
+        }
+        required_targets = {
+            (domain, candidate_type)
+            for domain in target_domains
+            for candidate_type in target_types
+        }
+        if not required_targets <= covered_targets:
+            return None
+
+        replacement_sentences = self._replacement_sentences(text)
+        merged = ExtractionResult(ignored=list(deterministic.ignored))
+        for item in deterministic.items:
+            self._append_unique(merged, item)
+        for item in model_result.items:
+            if self._item_comes_from_replacement_sentence(
+                item,
+                replacement_sentences,
+            ):
+                continue
+            self._append_unique(merged, item)
+        return merged
+
+    @staticmethod
+    def _replacement_target_types(text: str) -> set[CandidateType]:
+        targets: set[CandidateType] = set()
+        if re.search(
+            r"\breplace my\b[^.]{0,120}\bgoal\b|"
+            r"\bmy current\b[^.]{0,80}\bgoal is\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            targets.add(CandidateType.GOAL)
+        if re.search(
+            r"\breplace my\b[^.]{0,120}\bpreference\b|"
+            r"\bi now prefer\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            targets.add(CandidateType.PREFERENCE)
+        return targets
+
+    def _replacement_sentences(self, text: str) -> list[str]:
+        return [
+            sentence
+            for sentence in self._sentences(text)
+            if re.search(
+                r"\breplace my\b[^.]{0,120}\b(?:goal|preference)\b|"
+                r"\bmy current\b[^.]{0,80}\bgoal is\b|"
+                r"\bi now prefer\b",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+        ]
+
+    def _item_comes_from_replacement_sentence(
+        self,
+        item: ExtractedItem,
+        replacement_sentences: list[str],
+    ) -> bool:
+        source = str(item.attributes.get("source_sentence") or "")
+        normalized_source = self._grounding_text(source)
+        if not normalized_source:
+            return False
+        for sentence in replacement_sentences:
+            normalized_sentence = self._grounding_text(sentence)
+            if (
+                normalized_source in normalized_sentence
+                or normalized_sentence in normalized_source
+            ):
+                return True
+        return False
 
     def _merge_deterministic_items(
         self,
@@ -559,8 +859,15 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         request: ExtractionRequest,
     ) -> ExtractionResult:
         model_result = ExtractionResult()
+        negated_fragments = (
+            self._negated_fragments(user_text)
+            if self._replacement_domains(user_text)
+            else []
+        )
         for item in llm_result.items:
             self._normalize_model_item(item, request)
+            if self._is_negated_replacement_item(item, negated_fragments):
+                continue
             if not self._valid_model_item(item, user_text):
                 continue
             source = str(item.attributes.get("source_sentence") or "")
@@ -749,9 +1056,19 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
     def _normalize_model_item(self, item: ExtractedItem, request: ExtractionRequest) -> None:
         """Preserve source wording when normalizing model-derived temporal facts."""
         source = str(item.attributes.get("source_sentence") or item.text).strip()
+        contextual_source = self._containing_source_sentence(
+            source,
+            self._request_text(request),
+        )
         key = str(item.attributes.get("key") or "").strip().lower()
         if item.candidate_type == CandidateType.PREFERENCE:
-            self._normalize_model_preference(item, source)
+            self._normalize_model_preference(item, contextual_source)
+        if item.candidate_type == CandidateType.GOAL:
+            self._normalize_model_goal(
+                item,
+                contextual_source,
+                request.source_timestamp,
+            )
         if (
             item.candidate_type == CandidateType.IDENTITY
             and key == "occupation"
@@ -799,6 +1116,49 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             item.text = source
             item.attributes = {**item.attributes, "memory_text": source}
 
+    def _normalize_model_goal(
+        self,
+        item: ExtractedItem,
+        source: str,
+        source_timestamp: datetime | None,
+    ) -> None:
+        """Canonicalize a model goal from the complete grounded user sentence."""
+
+        deterministic = self._extract_goal(source, source_timestamp)
+        if deterministic is not None:
+            model_metadata = self._model_source_metadata(item)
+            item.text = deterministic.text
+            item.attributes = {
+                **deterministic.attributes,
+                **model_metadata,
+            }
+            return
+
+        goal = self._strip_negated_old_clause(
+            str(item.attributes.get("goal") or item.text).strip(),
+            replacement=self._is_explicit_replacement_sentence(source),
+        )
+        if not goal:
+            return
+        domain = primary_domain_for_text(f"{source} {goal}")
+        canonical_slot = (
+            f"goal:{domain}:{self._slug(goal)}"
+            if domain
+            else f"goal:{self._slug(goal)}"
+        )
+        item.text = goal
+        item.attributes = {
+            **item.attributes,
+            "goal": goal,
+            "memory_kind": "goal",
+            "domain": domain,
+            "domain_keywords": self._domain_keywords(f"{source} {goal}"),
+            "source_phrase": source,
+            "canonical_text": goal,
+            "scope": "domain_specific" if domain else "unspecified",
+            "canonical_slot": canonical_slot,
+        }
+
     def _normalize_model_preference(self, item: ExtractedItem, source: str) -> None:
         """Give likes and dislikes a stable slot despite provider-specific category labels.
 
@@ -806,13 +1166,21 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         ``entertainment_preference`` for the same statement.  The source wording, rather than
         that unconstrained label, is the reliable signal for an additive user interest.
         """
-        if re.search(r"\b(?:fitness|workout)\s+(?:advice|plans?)\b", source, re.IGNORECASE):
+        deterministic = self._extract_preference(source)
+        if deterministic is not None:
+            model_metadata = self._model_source_metadata(item)
+            item.text = deterministic.text
             item.attributes = {
-                **item.attributes,
-                "category": "workout_advice_preference",
-                "canonical_slot": "preference:workout_advice_preference",
+                **deterministic.attributes,
+                **model_metadata,
             }
             return
+        if (
+            str(item.attributes.get("category") or "").casefold()
+            == "response_style"
+            and not is_global_response_style(source)
+        ):
+            self._demote_non_global_response_style(item, source)
         sentiment = re.search(
             (
                 r"\bi\s+(?P<negation>do\s+not|don't|no\s+longer)?\s*"
@@ -844,6 +1212,55 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         }
 
     @staticmethod
+    def _model_source_metadata(
+        item: ExtractedItem,
+    ) -> dict[str, str | int | float | None]:
+        return {
+            key: value
+            for key, value in item.attributes.items()
+            if key
+            in {
+                "source_sentence",
+                "declaration",
+                "memory_subject",
+                "durability",
+                "source_conversation_id",
+                "source_message_id",
+                "source_timestamp",
+            }
+        }
+
+    def _demote_non_global_response_style(
+        self,
+        item: ExtractedItem,
+        source: str,
+    ) -> None:
+        """Never let a topic-local advice format become a global answer setting."""
+
+        value = self._strip_negated_old_clause(
+            str(item.attributes.get("value") or item.text).strip(),
+            replacement=self._is_explicit_replacement_sentence(source),
+        )
+        if not value:
+            return
+        domain = preference_domain(f"{source} {value}")
+        category = domain or "general"
+        item.text = f"{category} = {value}"
+        item.attributes = {
+            **item.attributes,
+            "category": category,
+            "value": value,
+            "additive": int(bool(item.attributes.get("additive"))),
+            "memory_kind": "preference",
+            "domain": domain,
+            "domain_keywords": self._domain_keywords(f"{source} {value}"),
+            "source_phrase": value,
+            "canonical_text": value,
+            "scope": "domain_specific" if domain else "unspecified",
+            "canonical_slot": f"preference:{domain or category}",
+        }
+
+    @staticmethod
     def _normalize_preference_subject(value: str) -> str:
         """Drop generic media scaffolding without changing the named subject itself."""
         cleaned = " ".join(value.strip(" .,!?:;\t\r\n").split())
@@ -853,6 +1270,17 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             cleaned,
             flags=re.IGNORECASE,
         ).strip()
+
+    def _containing_source_sentence(self, source: str, user_text: str) -> str:
+        """Expand a literal model fragment to the complete sentence that gives it scope."""
+
+        normalized_source = self._grounding_text(source)
+        if not normalized_source:
+            return source
+        for sentence in self._sentences(user_text):
+            if normalized_source in self._grounding_text(sentence):
+                return sentence
+        return source
 
     def _source_span_is_grounded(self, source_span: str, user_text: str) -> bool:
         compact_span = self._grounding_text(source_span)
@@ -1606,13 +2034,20 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             )
 
         match = re.search(
-            r"\bi prefer (?P<value>[^.]{3,160})|\bi like (?P<like>[^.]{3,160})",
+            r"\bi (?:now\s+)?prefer (?P<value>[^.]{3,160})|"
+            r"\bi like (?P<like>[^.]{3,160})",
             sentence,
             flags=re.IGNORECASE,
         )
         if not match:
             return None
-        value = (match.group("value") or match.group("like")).strip()
+        value = self._strip_negated_old_clause(
+            (match.group("value") or match.group("like")).strip(),
+            replacement=bool(match.group("value"))
+            and self._is_explicit_replacement_sentence(sentence),
+        )
+        if not value:
+            return None
         category = self._preference_category(value)
         return self._preference_item(
             category,
@@ -1627,6 +2062,11 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         source_timestamp: datetime | None = None,
     ) -> ExtractedItem | None:
         match = re.search(
+            r"\bmy current (?:[a-z0-9][a-z0-9+#_ -]{0,60}\s+)?goal is to\s+"
+            r"(?P<goal>[^.]{3,180})",
+            sentence,
+            flags=re.IGNORECASE,
+        ) or re.search(
             r"\b(?:my (?:current\s+)?(?:(?:major|main|long[- ]term)\s+)?"
             r"(?:fitness\s+)?goal is to|"
             r"i (?:plan|intend|aim|hope) to|i am working toward|"
@@ -1637,7 +2077,12 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         )
         if not match:
             return None
-        goal = match.group("goal").strip(" ,;")
+        goal = self._strip_negated_old_clause(
+            match.group("goal").strip(" ,;"),
+            replacement=self._is_explicit_replacement_sentence(sentence),
+        )
+        if not goal:
+            return None
         if sentence.lower().find("i want to") >= 0 and not self._durable_want_goal(goal):
             return None
         horizon_months = self._goal_horizon_months(goal)
@@ -1654,6 +2099,22 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             "priority": priority,
             "horizon_months": horizon_months,
         }
+        domain = primary_domain_for_text(f"{sentence} {goal}")
+        attributes.update(
+            {
+                "memory_kind": "goal",
+                "domain": domain,
+                "domain_keywords": self._domain_keywords(f"{sentence} {goal}"),
+                "source_phrase": sentence.strip(),
+                "canonical_text": goal,
+                "scope": "domain_specific" if domain else "unspecified",
+                "canonical_slot": (
+                    f"goal:{domain}:{self._slug(goal)}"
+                    if domain
+                    else f"goal:{self._slug(goal)}"
+                ),
+            }
+        )
         if horizon_months:
             anchor = self._source_datetime(source_timestamp)
             attributes["target_date"] = self._add_months(anchor.date(), horizon_months).isoformat()
@@ -1665,6 +2126,42 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             attributes=attributes,
             reasoning="Detected active or intended user goal.",
         )
+
+    @classmethod
+    def _is_explicit_replacement_sentence(cls, value: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:correction|replace my|my current .*? goal is|i now prefer)\b",
+                value,
+                flags=re.IGNORECASE,
+            )
+            or cls._REPLACEMENT_BOUNDARY.search(value)
+        )
+
+    @classmethod
+    def _split_replacement_value(cls, value: str) -> tuple[str, str | None]:
+        """Split one replacement at its first old-value boundary."""
+
+        match = cls._REPLACEMENT_BOUNDARY.search(value)
+        if match is None:
+            return value.strip(" ,;"), None
+        positive = value[: match.start()].strip(" ,;")
+        old_hint = value[match.end() :].strip(" ,;:.")
+        return positive, old_hint or None
+
+    @classmethod
+    def _strip_negated_old_clause(
+        cls,
+        value: str,
+        *,
+        replacement: bool = False,
+    ) -> str:
+        """Keep the current replacement while excluding explicitly negated history."""
+
+        if not replacement:
+            return value.strip(" ,;")
+        positive, _ = cls._split_replacement_value(value)
+        return positive
 
     def _extract_activity(
         self,
@@ -1939,7 +2436,18 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         return text.strip() or item.text
 
     def _source_sentence_matches_item(self, sentence: str, item: ExtractedItem) -> bool:
-        for value in item.attributes.values():
+        for key in (
+            "canonical_text",
+            "source_phrase",
+            "goal",
+            "value",
+            "memory_text",
+            "activity",
+            "event",
+            "name",
+            "description",
+        ):
+            value = item.attributes.get(key)
             if isinstance(value, str) and value and value.lower() in sentence.lower():
                 return True
         return False
@@ -2172,13 +2680,31 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
     ) -> ExtractedItem:
         normalized_value = self._normalize_preference_value(value)
         text = f"{category} = {normalized_value}"
+        global_scope = category == "response_style" and is_global_response_style(normalized_value)
+        domain = None if global_scope else preference_domain(normalized_value)
+        if domain is None and category not in {"general", "response_style"}:
+            domain = category
+        resolved_slot = canonical_slot
+        if resolved_slot is None:
+            resolved_slot = (
+                "preference:response_style"
+                if global_scope
+                else f"preference:{domain or category}"
+            )
         attributes: dict[str, str | int | float | None] = {
             "category": category,
             "value": normalized_value,
             "additive": int(additive),
+            "memory_kind": "response_style" if global_scope else "preference",
+            "domain": domain,
+            "domain_keywords": self._domain_keywords(
+                f"{domain or ''} {normalized_value}"
+            ),
+            "source_phrase": normalized_value,
+            "canonical_text": normalized_value,
+            "scope": "global" if global_scope else "domain_specific",
+            "canonical_slot": resolved_slot,
         }
-        if canonical_slot:
-            attributes["canonical_slot"] = canonical_slot
         return ExtractedItem(
             candidate_type=CandidateType.PREFERENCE,
             text=text,
@@ -2213,16 +2739,23 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
         return f"sentiment_{self._slug(normalized_value)}"
 
     def _preference_category(self, value: str) -> str:
-        normalized = value.lower()
-        if re.search(r"\b(?:fitness|workout)\s+(?:advice|plans?)\b", normalized):
-            return "workout_advice_preference"
-        if "explanation" in normalized or "answer" in normalized:
+        normalized = value.casefold()
+        if is_global_response_style(normalized):
             return "response_style"
+        domain = preference_domain(normalized)
+        if domain:
+            return domain
         if self._looks_like_editor(value):
             return "editor"
         if self._looks_like_programming_language(value):
             return "programming_language"
         return "general"
+
+    @staticmethod
+    def _domain_keywords(text: str) -> str:
+        """Persist a deterministic, bounded topic signature in candidate metadata."""
+
+        return ",".join(sorted(domains_for_text(text)))[:1000]
 
     def _normalize_preference_value(self, value: str) -> str:
         cleaned = " ".join(value.strip(" .,\t\r\n").split())
@@ -2276,7 +2809,8 @@ directly clear from the user's own words. Return {"items":[]} when none qualify.
             re.match(
                 r"(?:master|become|build|create|launch|finish|complete|achieve|"
                 r"improve|learn|study|practice|get into|join|move|graduate|earn|"
-                r"transition|switch|prepare|qualify|reach|save)\b",
+                r"get better at|organize|plan|transition|switch|prepare|qualify|"
+                r"reach|save)\b",
                 normalized,
             )
             or re.search(r"\bin\s+\d{1,3}\s+months?\s*$", normalized)
