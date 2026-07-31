@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "tests" / "test_manifest.json"
-PHASE_NAMES = ("legacy", "phase0", "phase1", "phase2")
+PHASE_NAMES = ("legacy", "phase0", "phase1", "phase2", "phase3")
 
 
 def _manifest() -> dict:

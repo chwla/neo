@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     extraction_after_turn_enabled: bool = Field(default=False)
     semantic_retrieval_enabled: bool = Field(default=False)
     auto_embed_memories: bool = Field(default=False)
+    memory_v2_schema_enabled: bool = Field(default=False)
+    memory_v2_shadow_mutations: bool = Field(default=False)
+    memory_v2_canonical_writes: bool = Field(default=False)
+    memory_v2_legacy_compatibility: bool = Field(default=True)
+    memory_v2_enabled_owner_ids: str = Field(default="")
+    memory_v2_disposable_database_root: str = Field(default="")
     embedding_provider: str = Field(default="ollama")
     embedding_model: str = Field(default="nomic-embed-text:latest")
     embedding_timeout_seconds: int = Field(default=10)
@@ -178,6 +184,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def apply_data_directory(self) -> "Settings":
+        if (self.memory_v2_shadow_mutations or self.memory_v2_canonical_writes) and not (
+            self.memory_v2_schema_enabled
+        ):
+            raise ValueError("memory_v2_writes_require_schema")
+        if self.memory_v2_shadow_mutations and self.memory_v2_canonical_writes:
+            raise ValueError("memory_v2_shadow_and_canonical_are_mutually_exclusive")
+        if self.memory_v2_canonical_writes and not self.memory_v2_enabled_owner_ids.strip():
+            raise ValueError("memory_v2_canonical_writes_require_owner_allowlist")
+        if (self.memory_v2_shadow_mutations or self.memory_v2_canonical_writes) and not (
+            self.memory_v2_disposable_database_root.strip()
+        ):
+            raise ValueError("memory_v2_mutations_require_disposable_database_root")
         fields_set = self.model_fields_set
         if "default_model" not in fields_set:
             self.default_model = self.chat_model

@@ -92,6 +92,23 @@
         "normalization_planning_and_boundaries": "tests/memory_v2/test_phase2_normalization_boundaries.py",
         "sensitive_content_and_owner_security": "tests/memory_v2/test_phase2_security.py"
       }
+    },
+    "phase3": {
+      "minimum_collected": 30,
+      "required_modules": [
+        "tests/memory_v2/test_phase3_candidate_review.py",
+        "tests/memory_v2/test_phase3_failure_architecture.py",
+        "tests/memory_v2/test_phase3_flags_security.py",
+        "tests/memory_v2/test_phase3_lifecycle_source_changes.py",
+        "tests/memory_v2/test_phase3_surface_parity.py"
+      ],
+      "behavioral_categories": {
+        "candidate_review_command_parity": "tests/memory_v2/test_phase3_candidate_review.py",
+        "architecture_and_failure_boundaries": "tests/memory_v2/test_phase3_failure_architecture.py",
+        "feature_flags_owner_and_incognito_security": "tests/memory_v2/test_phase3_flags_security.py",
+        "lifecycle_and_source_change_coordination": "tests/memory_v2/test_phase3_lifecycle_source_changes.py",
+        "generic_typed_chat_import_and_sync_stream_parity": "tests/memory_v2/test_phase3_surface_parity.py"
+      }
     }
   }
 }

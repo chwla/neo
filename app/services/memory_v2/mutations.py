@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -38,6 +38,7 @@ from app.services.memory_v2.contracts import (
     CandidateLifecycleState,
     CreateMemoryCommand,
     DerivedState,
+    DetachMemorySourceCommand,
     EvidenceRole,
     ForgetMemoryCommand,
     MemoryCommand,
@@ -52,6 +53,8 @@ from app.services.memory_v2.contracts import (
     ReplaceMemoryCommand,
     RestoreMemoryCommand,
     Sensitivity,
+    SourceChangeOutcome,
+    SourceChangeResult,
     UpdateMemoryCommand,
     ValidatedCandidateProposal,
 )
@@ -406,6 +409,131 @@ class MemoryMutationService:
             operation_id,
             MemoryErrorCode.INTERNAL_ERROR,
             "canonical_mutation_failed",
+        )
+
+    def detach_source(self, command: DetachMemorySourceCommand) -> SourceChangeResult:
+        """Persist one provenance detachment without a canonical operation or revision bump."""
+
+        if command.owner_id != self.owner_id:
+            return self._source_change_result(
+                command,
+                SourceChangeOutcome.OWNER_MISMATCH,
+                reason="owner_mismatch",
+            )
+
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        with self._sessions.begin() as session:
+            source = session.scalar(
+                select(MemorySourceV2).where(MemorySourceV2.id == str(command.source_id))
+            )
+            if source is None:
+                return self._source_change_result(
+                    command,
+                    SourceChangeOutcome.SOURCE_NOT_FOUND,
+                    reason="source_not_found",
+                )
+            if source.owner_id != self.owner_id:
+                return self._source_change_result(
+                    command,
+                    SourceChangeOutcome.OWNER_MISMATCH,
+                    reason="owner_mismatch",
+                )
+            if source.memory_id != str(command.target.memory_id):
+                return self._source_change_result(
+                    command,
+                    SourceChangeOutcome.SOURCE_NOT_FOUND,
+                    reason="source_memory_mismatch",
+                )
+
+            record = session.scalar(
+                select(MemoryRecordV2).where(
+                    MemoryRecordV2.owner_id == self.owner_id,
+                    MemoryRecordV2.id == str(command.target.memory_id),
+                )
+            )
+            if record is None:
+                return self._source_change_result(
+                    command,
+                    SourceChangeOutcome.SOURCE_NOT_FOUND,
+                    reason="memory_not_found",
+                )
+            if record.revision != command.target.expected_revision:
+                return self._source_change_result(
+                    command,
+                    SourceChangeOutcome.REVISION_CONFLICT,
+                    memory_revision=record.revision,
+                    reason="revision_conflict",
+                )
+
+            remaining = session.scalar(
+                select(func.count(MemorySourceV2.id)).where(
+                    MemorySourceV2.owner_id == self.owner_id,
+                    MemorySourceV2.memory_id == record.id,
+                    MemorySourceV2.assertion_role == "supports",
+                    MemorySourceV2.is_active.is_(True),
+                )
+            )
+            active_support_count = int(remaining or 0)
+            if not source.is_active:
+                return self._source_change_result(
+                    command,
+                    SourceChangeOutcome.ALREADY_DETACHED,
+                    detached_source_id=command.source_id,
+                    remaining_active_source_count=active_support_count,
+                    memory_revision=record.revision,
+                    review_required=active_support_count == 0,
+                    reason="source_already_detached",
+                )
+
+            source.is_active = False
+            source.detachment_reason = command.detachment_reason
+            source.updated_at = now
+            session.flush()
+            if source.assertion_role == "supports":
+                active_support_count -= 1
+            outcome = (
+                SourceChangeOutcome.PRESERVED
+                if active_support_count > 0
+                else SourceChangeOutcome.NEEDS_REVIEW
+            )
+            return self._source_change_result(
+                command,
+                outcome,
+                detached_source_id=command.source_id,
+                remaining_active_source_count=active_support_count,
+                memory_revision=record.revision,
+                review_required=active_support_count == 0,
+                reason=(
+                    "source_detached_memory_preserved"
+                    if active_support_count > 0
+                    else "final_source_detached_review_required"
+                ),
+            )
+
+    @staticmethod
+    def _source_change_result(
+        command: DetachMemorySourceCommand,
+        outcome: SourceChangeOutcome,
+        *,
+        detached_source_id: UUID | None = None,
+        remaining_active_source_count: int | None = None,
+        memory_revision: int | None = None,
+        review_required: bool = False,
+        reason: str,
+    ) -> SourceChangeResult:
+        return SourceChangeResult(
+            outcome=outcome,
+            owner_id=command.owner_id,
+            memory_id=command.target.memory_id,
+            requested_source_id=command.source_id,
+            detached_source_id=detached_source_id,
+            remaining_active_source_count=remaining_active_source_count,
+            memory_revision=memory_revision,
+            review_required=review_required,
+            idempotency_key=command.idempotency_key,
+            reason=reason,
         )
 
     @staticmethod

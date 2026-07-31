@@ -63,6 +63,19 @@ class MemoryOutcome(StrEnum):
     FAILED = "failed"
 
 
+class SourceChangeAction(StrEnum):
+    DETACH_SOURCE = "detach_source"
+
+
+class SourceChangeOutcome(StrEnum):
+    PRESERVED = "preserved"
+    NEEDS_REVIEW = "needs_review"
+    SOURCE_NOT_FOUND = "source_not_found"
+    ALREADY_DETACHED = "already_detached"
+    OWNER_MISMATCH = "owner_mismatch"
+    REVISION_CONFLICT = "revision_conflict"
+
+
 class MemoryRejectionCode(StrEnum):
     AMBIGUOUS_CONFLICT = "ambiguous_conflict"
     CONFLICT_REQUIRES_REPLACE = "conflict_requires_replace"
@@ -260,6 +273,63 @@ class ValidatedCandidateProposal(CandidateProposal):
 class TargetRevision(ContractModel):
     memory_id: UUID
     expected_revision: Revision
+
+
+class DetachMemorySourceCommand(ContractModel):
+    """Detach one exact provenance row without changing canonical memory state."""
+
+    contract_version: Literal[CONTRACT_VERSION] = CONTRACT_VERSION
+    owner_id: OwnerId
+    idempotency_key: IdempotencyKey
+    target: TargetRevision
+    source_id: UUID
+    detachment_reason: NonEmptyText = "source_deleted"
+
+
+class SourceChangeResult(ContractModel):
+    """Stable result for an exact persisted source detachment request."""
+
+    contract_version: Literal[CONTRACT_VERSION] = CONTRACT_VERSION
+    action: Literal[SourceChangeAction.DETACH_SOURCE] = SourceChangeAction.DETACH_SOURCE
+    outcome: SourceChangeOutcome
+    owner_id: OwnerId
+    memory_id: UUID
+    requested_source_id: UUID
+    detached_source_id: UUID | None = None
+    remaining_active_source_count: int | None = Field(default=None, ge=0)
+    memory_revision: int | None = Field(default=None, ge=1)
+    canonical_mutation_performed: Literal[False] = False
+    canonical_revision_changed: Literal[False] = False
+    review_required: bool
+    idempotency_key: IdempotencyKey
+    reason: NonEmptyText
+
+    @model_validator(mode="after")
+    def validate_source_change_result(self) -> SourceChangeResult:
+        detached_outcomes = {
+            SourceChangeOutcome.PRESERVED,
+            SourceChangeOutcome.NEEDS_REVIEW,
+            SourceChangeOutcome.ALREADY_DETACHED,
+        }
+        if self.outcome in detached_outcomes and self.detached_source_id is None:
+            raise ValueError("detached_outcome_requires_source_id")
+        if self.outcome not in detached_outcomes and self.detached_source_id is not None:
+            raise ValueError("non_detached_outcome_cannot_claim_detachment")
+        if self.outcome is SourceChangeOutcome.PRESERVED:
+            if not self.remaining_active_source_count:
+                raise ValueError("preserved_source_change_requires_remaining_support")
+            if self.review_required:
+                raise ValueError("preserved_source_change_cannot_require_review")
+        if self.outcome is SourceChangeOutcome.NEEDS_REVIEW:
+            if self.remaining_active_source_count != 0 or not self.review_required:
+                raise ValueError("final_source_change_requires_review")
+        if self.outcome in {
+            SourceChangeOutcome.SOURCE_NOT_FOUND,
+            SourceChangeOutcome.OWNER_MISMATCH,
+            SourceChangeOutcome.REVISION_CONFLICT,
+        } and self.review_required:
+            raise ValueError("non_applied_source_change_cannot_require_review")
+        return self
 
 
 class MemoryUpdatePatch(ContractModel):
