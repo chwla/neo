@@ -7,6 +7,7 @@ restoration, resurrection, extraction, recall, indexing, or commit decisions.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Collection
 from typing import Any, TypeVar
 
@@ -30,6 +31,12 @@ from app.models.memory_v2 import (
 from app.services.memory_v2.contracts import MemoryLifecycleState, Sensitivity
 from app.services.memory_v2.policy import classify_sensitivity
 from app.services.memory_v2.taxonomy import MemoryType
+
+_UUID_TEXT_PATTERN = re.compile(
+    r"(?i)(?<![0-9a-f])"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"(?![0-9a-f])"
+)
 
 ALLOWED_RECORD_METADATA_KEYS = frozenset({"tags", "user_label", "review_note"})
 _UPDATABLE_RECORD_FIELDS = frozenset(
@@ -150,6 +157,7 @@ class MemoryV2Repository:
         material = "\n".join(
             json.dumps(value, sort_keys=True, default=str) for value in values if value is not None
         )
+        material = _UUID_TEXT_PATTERN.sub("<uuid>", material)
         if material and classify_sensitivity(material) is Sensitivity.PROHIBITED:
             raise MemoryV2ProhibitedContentError("prohibited_content_not_persisted")
 

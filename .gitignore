@@ -62,3 +62,6 @@ Thumbs.db
 
 
 /scripts
+!/scripts/
+/scripts/*
+!/scripts/manual_memory_v2_phase2.py

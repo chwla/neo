@@ -225,7 +225,9 @@ class MemoryOperationV2(MemoryV2Base):
     actor_id: Mapped[str] = mapped_column(String(200), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(40), nullable=False)
     sensitivity: Mapped[str] = mapped_column(String(16), nullable=False)
-    normalized_command_json: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSON)
+    normalized_command_json: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     encrypted_command_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
     encryption_algorithm: Mapped[str | None] = mapped_column(String(80))
     encryption_key_version: Mapped[str | None] = mapped_column(String(80))
