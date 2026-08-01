@@ -16,7 +16,10 @@ from app.services.memory_v2.contracts import (
     ActorKind,
     ArchiveMemoryCommand,
     CandidateIntent,
+    CandidatePersistenceResult,
+    CandidateStatusSnapshot,
     CandidateTargetHints,
+    CanonicalMemorySnapshot,
     CreateMemoryCommand,
     DetachMemorySourceCommand,
     ErasePermanentlyMemoryCommand,
@@ -27,6 +30,7 @@ from app.services.memory_v2.contracts import (
     MemorySource,
     MemoryUpdatePatch,
     MergeMemoryCommand,
+    PersistExtractionCandidateCommand,
     ReplaceMemoryCommand,
     ReplacementAuthority,
     RestoreMemoryCommand,
@@ -162,6 +166,33 @@ class GenericMemoryV2Adapter:
         command: DetachMemorySourceCommand,
     ) -> SourceChangeResult:
         return self.coordinator.detach_source(context.execution, command)
+
+    def list_active_memories(
+        self,
+        context: MemoryV2AdapterContext,
+        *,
+        limit: int = 200,
+        include_archived: bool = False,
+    ) -> tuple[CanonicalMemorySnapshot, ...]:
+        return self.coordinator.list_active_memories(
+            context.execution,
+            limit=limit,
+            include_archived=include_archived,
+        )
+
+    def candidate_status(
+        self,
+        context: MemoryV2AdapterContext,
+        candidate_id: UUID,
+    ) -> CandidateStatusSnapshot | None:
+        return self.coordinator.candidate_status(context.execution, candidate_id)
+
+    def persist_extraction_candidate(
+        self,
+        context: MemoryV2AdapterContext,
+        command: PersistExtractionCandidateCommand,
+    ) -> CandidatePersistenceResult:
+        return self.coordinator.persist_extraction_candidate(context.execution, command)
 
     def create(
         self,
@@ -486,6 +517,8 @@ class ChatMemoryV2Adapter(GenericMemoryV2Adapter):
         candidate_key: str,
         transport: str,
         authority: ReplacementAuthority = ReplacementAuthority.EXPLICIT_CORRECTION,
+        explicit_domain_change: bool = False,
+        explicit_slot_change: bool = False,
     ) -> MemoryV2CoordinationResult:
         if transport not in {"sync", "stream"}:
             raise MemoryV2AdapterError("unsupported_chat_transport")
@@ -503,6 +536,8 @@ class ChatMemoryV2Adapter(GenericMemoryV2Adapter):
             targets,
             authority=authority,
             idempotency_key=key,
+            explicit_domain_change=explicit_domain_change,
+            explicit_slot_change=explicit_slot_change,
         )
 
 

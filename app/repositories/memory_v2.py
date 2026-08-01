@@ -63,6 +63,17 @@ _UPDATABLE_RECORD_FIELDS = frozenset(
         "metadata_json",
     }
 )
+_UPDATABLE_CANDIDATE_FIELDS = frozenset(
+    {
+        "state",
+        "decision_outcome",
+        "decision_rejection_code",
+        "decision_error_code",
+        "decision_reason",
+        "applied_operation_id",
+        "decided_at",
+    }
+)
 
 _OwnedModel = TypeVar(
     "_OwnedModel",
@@ -282,6 +293,55 @@ class MemoryV2Repository:
                 raise MemoryV2NotFoundError("candidate_target_not_found")
         self._session.add(candidate)
         self._session.flush()
+        return candidate
+
+    def get_candidate(self, candidate_id: str) -> MemoryCandidateV2 | None:
+        identifier = canonical_uuid(candidate_id)
+        return self._session.scalar(
+            select(MemoryCandidateV2).where(
+                MemoryCandidateV2.owner_id == self.owner_id,
+                MemoryCandidateV2.id == identifier,
+            )
+        )
+
+    def update_candidate_decision(
+        self,
+        candidate_id: str,
+        *,
+        expected_revision: int,
+        values: dict[str, Any],
+    ) -> MemoryCandidateV2:
+        identifier = canonical_uuid(candidate_id)
+        if expected_revision < 1:
+            raise ValueError("expected_revision_must_be_positive")
+        if not values:
+            raise ValueError("candidate_update_requires_values")
+        unknown = set(values) - _UPDATABLE_CANDIDATE_FIELDS
+        if unknown:
+            raise ValueError(f"candidate_update_fields_not_allowed:{','.join(sorted(unknown))}")
+        operation_id = values.get("applied_operation_id")
+        if operation_id is not None and not self._operation_exists(operation_id):
+            raise MemoryV2NotFoundError("candidate_operation_not_found")
+        self._reject_prohibited_material(values.get("decision_reason"))
+        result = self._session.execute(
+            update(MemoryCandidateV2)
+            .where(
+                MemoryCandidateV2.owner_id == self.owner_id,
+                MemoryCandidateV2.id == identifier,
+                MemoryCandidateV2.revision == expected_revision,
+            )
+            .values(
+                **values,
+                revision=MemoryCandidateV2.revision + 1,
+                updated_at=func.now(),
+            )
+        )
+        if result.rowcount != 1:
+            raise MemoryV2RevisionConflict("candidate_revision_conflict_or_not_found")
+        self._session.flush()
+        candidate = self.get_candidate(identifier)
+        if candidate is None:
+            raise MemoryV2NotFoundError("candidate_not_found")
         return candidate
 
     def add_source(self, source: MemorySourceV2) -> MemorySourceV2:

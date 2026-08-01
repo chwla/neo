@@ -109,6 +109,27 @@
         "lifecycle_and_source_change_coordination": "tests/memory_v2/test_phase3_lifecycle_source_changes.py",
         "generic_typed_chat_import_and_sync_stream_parity": "tests/memory_v2/test_phase3_surface_parity.py"
       }
+    },
+    "phase4": {
+      "minimum_collected": 100,
+      "required_modules": [
+        "tests/memory_v2/test_phase4_architecture_flags.py",
+        "tests/memory_v2/test_phase4_critical_corrections.py",
+        "tests/memory_v2/test_phase4_failures_security.py",
+        "tests/memory_v2/test_phase4_provider_language_regressions.py",
+        "tests/memory_v2/test_phase4_provider_protocols.py",
+        "tests/memory_v2/test_phase4_security_overrides.py",
+        "tests/memory_v2/test_phase4_timing_idempotency.py"
+      ],
+      "behavioral_categories": {
+        "strict_schema_flags_and_architecture": "tests/memory_v2/test_phase4_architecture_flags.py",
+        "deterministic_corrections_taxonomy_and_retractions": "tests/memory_v2/test_phase4_critical_corrections.py",
+        "grounding_failures_security_caps_and_review": "tests/memory_v2/test_phase4_failures_security.py",
+        "provider_protocol_envelopes_errors_and_safe_diagnostics": "tests/memory_v2/test_phase4_provider_protocols.py",
+        "live_shaped_category_location_and_review_persistence": "tests/memory_v2/test_phase4_provider_language_regressions.py",
+        "sentinel_leakage_encryption_and_suppression_authority": "tests/memory_v2/test_phase4_security_overrides.py",
+        "timing_idempotency_overrides_and_candidate_lifecycle": "tests/memory_v2/test_phase4_timing_idempotency.py"
+      }
     }
   }
 }

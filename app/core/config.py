@@ -59,6 +59,21 @@ class Settings(BaseSettings):
     memory_v2_legacy_compatibility: bool = Field(default=True)
     memory_v2_enabled_owner_ids: str = Field(default="")
     memory_v2_disposable_database_root: str = Field(default="")
+    memory_v2_extraction_enabled: bool = Field(default=False)
+    memory_v2_foreground_commands_enabled: bool = Field(default=False)
+    memory_v2_post_turn_extraction_enabled: bool = Field(default=False)
+    memory_v2_live_extraction_model_enabled: bool = Field(default=False)
+    memory_v2_extraction_provider: str = Field(default="")
+    memory_v2_extraction_endpoint: str = Field(default="")
+    memory_v2_extraction_model: str = Field(default="")
+    # Kept for configuration compatibility; new provider integrations use the
+    # stage-specific values below.
+    memory_v2_extraction_timeout_seconds: int = Field(default=120, ge=1, le=600)
+    memory_v2_extraction_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
+    memory_v2_extraction_response_timeout_seconds: int = Field(default=120, ge=1, le=600)
+    memory_v2_extraction_warmup_timeout_seconds: int = Field(default=300, ge=1, le=900)
+    memory_v2_ollama_request_mode: str = Field(default="auto")
+    memory_v2_extraction_max_input_chars: int = Field(default=12_000, ge=500, le=50_000)
     embedding_provider: str = Field(default="ollama")
     embedding_model: str = Field(default="nomic-embed-text:latest")
     embedding_timeout_seconds: int = Field(default=10)
@@ -196,6 +211,25 @@ class Settings(BaseSettings):
             self.memory_v2_disposable_database_root.strip()
         ):
             raise ValueError("memory_v2_mutations_require_disposable_database_root")
+        phase4_subfeature = (
+            self.memory_v2_foreground_commands_enabled
+            or self.memory_v2_post_turn_extraction_enabled
+            or self.memory_v2_live_extraction_model_enabled
+        )
+        if phase4_subfeature and not self.memory_v2_extraction_enabled:
+            raise ValueError("memory_v2_extraction_subfeatures_require_extraction")
+        if self.memory_v2_extraction_enabled and not (
+            self.memory_v2_schema_enabled and self.memory_v2_canonical_writes
+        ):
+            raise ValueError("memory_v2_extraction_requires_canonical_schema_writes")
+        if self.memory_v2_live_extraction_model_enabled and not (
+            self.memory_v2_extraction_endpoint.strip()
+        ):
+            raise ValueError("memory_v2_live_extraction_requires_endpoint")
+        if self.memory_v2_live_extraction_model_enabled and (
+            self.memory_v2_extraction_provider not in {"direct_json", "ollama"}
+        ):
+            raise ValueError("memory_v2_live_extraction_requires_explicit_provider")
         fields_set = self.model_fields_set
         if "default_model" not in fields_set:
             self.default_model = self.chat_model

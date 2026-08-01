@@ -36,6 +36,10 @@ from app.repositories.memory_v2 import (
 from app.services.memory_v2.contracts import (
     MEMORY_COMMAND_ADAPTER,
     CandidateLifecycleState,
+    CandidatePersistenceOutcome,
+    CandidatePersistenceResult,
+    CandidateStatusSnapshot,
+    CanonicalMemorySnapshot,
     CreateMemoryCommand,
     DerivedState,
     DetachMemorySourceCommand,
@@ -50,6 +54,7 @@ from app.services.memory_v2.contracts import (
     MemoryOutcome,
     MemoryRejectionCode,
     MergeMemoryCommand,
+    PersistExtractionCandidateCommand,
     ReplaceMemoryCommand,
     RestoreMemoryCommand,
     Sensitivity,
@@ -87,7 +92,7 @@ from app.services.memory_v2.planner import (
     SourceCreateSpec,
     plan_memory_mutation,
 )
-from app.services.memory_v2.policy import classify_sensitivity
+from app.services.memory_v2.policy import candidate_persistence_decision, classify_sensitivity
 from app.services.memory_v2.taxonomy import Cardinality, MemoryType
 from app.services.memory_v2.tombstones import (
     TombstoneSnapshot,
@@ -510,6 +515,225 @@ class MemoryMutationService:
                     if active_support_count > 0
                     else "final_source_detached_review_required"
                 ),
+            )
+
+    def list_active_records(
+        self,
+        *,
+        limit: int = 200,
+        include_archived: bool = False,
+    ) -> tuple[CanonicalMemorySnapshot, ...]:
+        if not 1 <= limit <= 1_000:
+            raise ValueError("record_limit_out_of_range")
+        with self._sessions() as session:
+            MemoryV2Repository(
+                session,
+                owner_id=self.owner_id,
+                database_identity=self.database_identity,
+            )
+            state = self._load_state(session)
+        allowed_statuses = {MemoryLifecycleState.ACTIVE}
+        if include_archived:
+            allowed_statuses.add(MemoryLifecycleState.ARCHIVED)
+        active = [
+            item
+            for item in state.records
+            if item.status in allowed_statuses
+            and item.canonical_value is not None
+            and item.display_text is not None
+        ]
+        active.sort(key=lambda item: item.id)
+        return tuple(
+            CanonicalMemorySnapshot(
+                memory_id=UUID(item.id),
+                owner_id=item.owner_id,
+                subject_key=item.subject_key,
+                memory_type=item.memory_type,
+                domain_key=item.domain_key,
+                slot_key=item.slot_key,
+                cardinality=item.cardinality,
+                canonical_value=item.canonical_value,
+                display_text=item.display_text,
+                sensitivity=Sensitivity(item.sensitivity),
+                status=item.status,
+                revision=item.revision,
+            )
+            for item in active[:limit]
+        )
+
+    def candidate_status(self, candidate_id: UUID) -> CandidateStatusSnapshot | None:
+        with self._sessions() as session:
+            repository = MemoryV2Repository(
+                session,
+                owner_id=self.owner_id,
+                database_identity=self.database_identity,
+            )
+            candidate = repository.get_candidate(str(candidate_id))
+            if candidate is None:
+                return None
+            return CandidateStatusSnapshot(
+                owner_id=self.owner_id,
+                candidate_id=UUID(candidate.id),
+                state=CandidateLifecycleState(candidate.state),
+                revision=candidate.revision,
+                decision_outcome=(
+                    MemoryOutcome(candidate.decision_outcome)
+                    if candidate.decision_outcome
+                    else None
+                ),
+                rejection_code=(
+                    MemoryRejectionCode(candidate.decision_rejection_code)
+                    if candidate.decision_rejection_code
+                    else None
+                ),
+                applied_operation_id=(
+                    UUID(candidate.applied_operation_id) if candidate.applied_operation_id else None
+                ),
+            )
+
+    def persist_extraction_candidate(
+        self,
+        command: PersistExtractionCandidateCommand,
+    ) -> CandidatePersistenceResult:
+        if command.owner_id != self.owner_id:
+            return CandidatePersistenceResult(
+                outcome=CandidatePersistenceOutcome.REJECTED,
+                owner_id=command.owner_id,
+                candidate_id=command.candidate.proposal_id,
+                reason="owner_mismatch",
+            )
+        policy = candidate_persistence_decision(command.candidate)
+        if not policy.allowed:
+            return CandidatePersistenceResult(
+                outcome=(
+                    CandidatePersistenceOutcome.PROHIBITED
+                    if policy.sensitivity is Sensitivity.PROHIBITED
+                    else CandidatePersistenceOutcome.REJECTED
+                ),
+                owner_id=self.owner_id,
+                candidate_id=command.candidate.proposal_id,
+                reason=(
+                    policy.rejection_code.value
+                    if policy.rejection_code
+                    else "candidate_policy_rejected"
+                ),
+            )
+        candidate_contract = command.candidate.model_copy(
+            update={"sensitivity": policy.sensitivity}
+        )
+        if policy.sensitivity is Sensitivity.SENSITIVE:
+            safe_target_hints = candidate_contract.target_hints.model_copy(
+                update={"old_value_phrases": ()}
+            )
+            candidate_contract = candidate_contract.model_copy(
+                update={"target_hints": safe_target_hints}
+            )
+        try:
+            normalized = normalize_candidate(
+                candidate_contract,
+                owner_id=self.owner_id,
+                keyed_provider=self._fingerprint_provider,
+            )
+        except MemoryNormalizationError as exc:
+            return CandidatePersistenceResult(
+                outcome=CandidatePersistenceOutcome.REJECTED,
+                owner_id=self.owner_id,
+                candidate_id=command.candidate.proposal_id,
+                reason=exc.code,
+            )
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        with self._sessions.begin() as session:
+            repository = MemoryV2Repository(
+                session,
+                owner_id=self.owner_id,
+                database_identity=self.database_identity,
+            )
+            existing = repository.get_candidate(normalized.candidate_id)
+            if existing is not None:
+                return CandidatePersistenceResult(
+                    outcome=CandidatePersistenceOutcome.ALREADY_EXISTS,
+                    owner_id=self.owner_id,
+                    candidate_id=UUID(existing.id),
+                    state=CandidateLifecycleState(existing.state),
+                    revision=existing.revision,
+                    applied_operation_id=(
+                        UUID(existing.applied_operation_id)
+                        if existing.applied_operation_id
+                        else None
+                    ),
+                    reason="candidate_already_exists",
+                )
+            payload = (
+                self._encrypted_candidate_payload(normalized.candidate_id, normalized)
+                if normalized.sensitivity is Sensitivity.SENSITIVE
+                else {
+                    "canonical_payload": normalized.canonical_value,
+                    "display_text": normalized.display_text,
+                    "encrypted_canonical_payload": None,
+                    "encrypted_display_payload": None,
+                    "encryption_algorithm": None,
+                    "encryption_key_version": None,
+                    "canonical_nonce": None,
+                    "display_nonce": None,
+                    "encryption_aad": None,
+                }
+            )
+            repository.add_candidate(
+                MemoryCandidateV2(
+                    id=normalized.candidate_id,
+                    owner_id=self.owner_id,
+                    subject_key=normalized.subject_key,
+                    memory_type=normalized.memory_type.value,
+                    domain_key=normalized.domain_key,
+                    slot_key=normalized.slot_key,
+                    cardinality=normalized.cardinality.value,
+                    sensitivity=normalized.sensitivity.value,
+                    **payload,
+                    intent=normalized.intent.value,
+                    target_hints_json=normalized.target_hints,
+                    trusted_target_ids=list(normalized.target_ids),
+                    predecessor_evidence_json=dict(command.predecessor_evidence),
+                    source_spans_json=[
+                        item.model_dump(mode="json") for item in command.source_spans
+                    ],
+                    grounding_evidence_json=dict(command.grounding_evidence),
+                    confidence=normalized.confidence,
+                    importance=normalized.importance,
+                    explicit_user_request=normalized.explicit_user_request,
+                    extractor_name=command.extractor_name,
+                    extractor_version=command.extractor_version,
+                    raw_output_hash=command.raw_output_hash,
+                    state=command.state.value,
+                    decision_outcome=(
+                        command.decision_outcome.value if command.decision_outcome else None
+                    ),
+                    decision_rejection_code=(
+                        command.rejection_code.value if command.rejection_code else None
+                    ),
+                    decision_error_code=None,
+                    decision_reason=command.decision_reason,
+                    applied_operation_id=None,
+                    created_at=now,
+                    decided_at=(
+                        now if command.state is CandidateLifecycleState.NEEDS_REVIEW else None
+                    ),
+                    revision=1,
+                    contract_version=CONTRACT_VERSION,
+                    policy_version=POLICY_VERSION,
+                    taxonomy_version=TAXONOMY_VERSION,
+                    value_schema_version=normalized.value_schema_version,
+                    candidate_schema_version=1,
+                )
+            )
+            return CandidatePersistenceResult(
+                outcome=CandidatePersistenceOutcome.PERSISTED,
+                owner_id=self.owner_id,
+                candidate_id=UUID(normalized.candidate_id),
+                state=command.state,
+                revision=1,
+                reason="candidate_persisted",
             )
 
     @staticmethod
@@ -1038,8 +1262,22 @@ class MemoryMutationService:
                     purpose="source_excerpt",
                 )
                 encrypted = self._payload_provider.encrypt(excerpt.encode(), associated_data=aad)
+                fingerprint_material = json.dumps(
+                    {
+                        "conversation_id": spec.source.conversation_id,
+                        "evidence": excerpt,
+                        "memory_id": spec.memory_id,
+                        "message_id": spec.source.message_id,
+                        "role": spec.assertion_role,
+                        "session_id": spec.source.session_id,
+                        "source_id": spec.source.source_id,
+                        "structured": dict(spec.structured_evidence),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
                 digest = self._fingerprint_provider.fingerprint(
-                    excerpt.encode(), owner_id=self.owner_id
+                    fingerprint_material, owner_id=self.owner_id
                 )
                 material[f"source:{spec.id}"] = {
                     "encrypted_excerpt": encrypted.ciphertext,
@@ -1289,6 +1527,24 @@ class MemoryMutationService:
     ) -> None:
         for decision in prepared.plan.candidate_decisions:
             candidate = decision.candidate
+            existing = repository.get_candidate(candidate.candidate_id)
+            if existing is not None:
+                repository.update_candidate_decision(
+                    candidate.candidate_id,
+                    expected_revision=existing.revision,
+                    values={
+                        "state": decision.state.value,
+                        "decision_outcome": decision.outcome.value,
+                        "decision_rejection_code": (
+                            decision.rejection_code.value if decision.rejection_code else None
+                        ),
+                        "decision_error_code": None,
+                        "decision_reason": decision.reason,
+                        "applied_operation_id": prepared.plan.operation_id,
+                        "decided_at": prepared.context.now,
+                    },
+                )
+                continue
             payload = self._candidate_payload_fields(
                 _record_id_for_candidate(prepared.plan, candidate),
                 candidate,
@@ -1545,9 +1801,12 @@ class MemoryMutationService:
             excerpt_fields["redacted_excerpt"] = excerpt
             material = json.dumps(
                 {
+                    "conversation_id": spec.source.conversation_id,
                     "evidence": excerpt,
                     "memory_id": spec.memory_id,
+                    "message_id": spec.source.message_id,
                     "role": spec.assertion_role,
+                    "session_id": spec.source.session_id,
                     "source_id": spec.source.source_id,
                     "structured": dict(spec.structured_evidence),
                 },

@@ -76,6 +76,13 @@ class SourceChangeOutcome(StrEnum):
     REVISION_CONFLICT = "revision_conflict"
 
 
+class CandidatePersistenceOutcome(StrEnum):
+    PERSISTED = "persisted"
+    ALREADY_EXISTS = "already_exists"
+    PROHIBITED = "prohibited"
+    REJECTED = "rejected"
+
+
 class MemoryRejectionCode(StrEnum):
     AMBIGUOUS_CONFLICT = "ambiguous_conflict"
     CONFLICT_REQUIRES_REPLACE = "conflict_requires_replace"
@@ -275,6 +282,37 @@ class TargetRevision(ContractModel):
     expected_revision: Revision
 
 
+class CanonicalMemorySnapshot(ContractModel):
+    """Owner-bound canonical query result for deterministic planning, never model input."""
+
+    memory_id: UUID
+    owner_id: OwnerId
+    subject_key: NonEmptyText
+    memory_type: MemoryType
+    domain_key: NonEmptyText
+    slot_key: NonEmptyText
+    cardinality: Cardinality
+    canonical_value: JsonValue
+    display_text: NonEmptyText
+    sensitivity: Sensitivity
+    status: MemoryLifecycleState
+    revision: Revision
+
+
+class CandidateGroundingSpan(ContractModel):
+    message_id: NonEmptyText
+    role: EvidenceRole
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> CandidateGroundingSpan:
+        if self.end <= self.start:
+            raise ValueError("span_end_must_follow_start")
+        return self
+
+
 class DetachMemorySourceCommand(ContractModel):
     """Detach one exact provenance row without changing canonical memory state."""
 
@@ -323,13 +361,72 @@ class SourceChangeResult(ContractModel):
         if self.outcome is SourceChangeOutcome.NEEDS_REVIEW:
             if self.remaining_active_source_count != 0 or not self.review_required:
                 raise ValueError("final_source_change_requires_review")
-        if self.outcome in {
-            SourceChangeOutcome.SOURCE_NOT_FOUND,
-            SourceChangeOutcome.OWNER_MISMATCH,
-            SourceChangeOutcome.REVISION_CONFLICT,
-        } and self.review_required:
+        if (
+            self.outcome
+            in {
+                SourceChangeOutcome.SOURCE_NOT_FOUND,
+                SourceChangeOutcome.OWNER_MISMATCH,
+                SourceChangeOutcome.REVISION_CONFLICT,
+            }
+            and self.review_required
+        ):
             raise ValueError("non_applied_source_change_cannot_require_review")
         return self
+
+
+class PersistExtractionCandidateCommand(ContractModel):
+    """Persist a grounded non-canonical candidate through the mutation boundary."""
+
+    contract_version: Literal[CONTRACT_VERSION] = CONTRACT_VERSION
+    owner_id: OwnerId
+    candidate: ValidatedCandidateProposal
+    state: Literal[
+        CandidateLifecycleState.VALIDATED,
+        CandidateLifecycleState.NEEDS_REVIEW,
+    ]
+    decision_outcome: MemoryOutcome | None = None
+    rejection_code: MemoryRejectionCode | None = None
+    decision_reason: NonEmptyText
+    source_message_id: NonEmptyText
+    source_spans: tuple[CandidateGroundingSpan, ...] = Field(min_length=1)
+    predecessor_evidence: dict[str, JsonValue] = Field(default_factory=dict)
+    grounding_evidence: dict[str, JsonValue] = Field(default_factory=dict)
+    extractor_name: NonEmptyText
+    extractor_version: NonEmptyText
+    raw_output_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_candidate_state(self) -> PersistExtractionCandidateCommand:
+        if self.state is CandidateLifecycleState.NEEDS_REVIEW:
+            if (
+                self.decision_outcome is not MemoryOutcome.NEEDS_REVIEW
+                or self.rejection_code is None
+            ):
+                raise ValueError("review_candidate_requires_outcome_and_code")
+        elif self.decision_outcome is not None or self.rejection_code is not None:
+            raise ValueError("validated_candidate_cannot_have_decision")
+        return self
+
+
+class CandidatePersistenceResult(ContractModel):
+    contract_version: Literal[CONTRACT_VERSION] = CONTRACT_VERSION
+    outcome: CandidatePersistenceOutcome
+    owner_id: OwnerId
+    candidate_id: UUID
+    state: CandidateLifecycleState | None = None
+    revision: int | None = Field(default=None, ge=1)
+    applied_operation_id: UUID | None = None
+    reason: NonEmptyText
+
+
+class CandidateStatusSnapshot(ContractModel):
+    owner_id: OwnerId
+    candidate_id: UUID
+    state: CandidateLifecycleState
+    revision: Revision
+    decision_outcome: MemoryOutcome | None = None
+    rejection_code: MemoryRejectionCode | None = None
+    applied_operation_id: UUID | None = None
 
 
 class MemoryUpdatePatch(ContractModel):

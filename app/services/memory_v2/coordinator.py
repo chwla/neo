@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy.engine import Engine, make_url
 
@@ -16,10 +17,15 @@ from app.services.memory_v2.compatibility import (
     map_compatibility_result,
 )
 from app.services.memory_v2.contracts import (
+    CandidatePersistenceOutcome,
+    CandidatePersistenceResult,
+    CandidateStatusSnapshot,
+    CanonicalMemorySnapshot,
     DetachMemorySourceCommand,
     MemoryCommand,
     MemoryCommandResult,
     MemoryRejectionCode,
+    PersistExtractionCandidateCommand,
     SourceChangeOutcome,
     SourceChangeResult,
 )
@@ -216,6 +222,97 @@ class MemoryV2MutationCoordinator:
             return service.detach_source(command)
         finally:
             engine.dispose()
+
+    def list_active_memories(
+        self,
+        context: MemoryV2ExecutionContext,
+        *,
+        limit: int = 200,
+        include_archived: bool = False,
+    ) -> tuple[CanonicalMemorySnapshot, ...]:
+        owner = self._require_canonical_query_context(context)
+        engine = self._engine_factory(context.database_url)
+        try:
+            upgrade_memory_v2(
+                engine,
+                owner_id=owner,
+                database_identity=context.database_identity,
+            )
+            return self._build_service(engine, owner, context).list_active_records(
+                limit=limit,
+                include_archived=include_archived,
+            )
+        finally:
+            engine.dispose()
+
+    def candidate_status(
+        self,
+        context: MemoryV2ExecutionContext,
+        candidate_id: UUID,
+    ) -> CandidateStatusSnapshot | None:
+        owner = self._require_canonical_query_context(context)
+        engine = self._engine_factory(context.database_url)
+        try:
+            upgrade_memory_v2(
+                engine,
+                owner_id=owner,
+                database_identity=context.database_identity,
+            )
+            return self._build_service(engine, owner, context).candidate_status(candidate_id)
+        finally:
+            engine.dispose()
+
+    def persist_extraction_candidate(
+        self,
+        context: MemoryV2ExecutionContext,
+        command: PersistExtractionCandidateCommand,
+    ) -> CandidatePersistenceResult:
+        owner = self._validate_context(context)
+        if command.owner_id != owner:
+            return CandidatePersistenceResult(
+                outcome=CandidatePersistenceOutcome.REJECTED,
+                owner_id=command.owner_id,
+                candidate_id=command.candidate.proposal_id,
+                reason="command_owner_context_mismatch",
+            )
+        self._require_canonical_query_context(context)
+        engine = self._engine_factory(context.database_url)
+        try:
+            upgrade_memory_v2(
+                engine,
+                owner_id=owner,
+                database_identity=context.database_identity,
+            )
+            return self._build_service(engine, owner, context).persist_extraction_candidate(command)
+        finally:
+            engine.dispose()
+
+    def _require_canonical_query_context(self, context: MemoryV2ExecutionContext) -> str:
+        owner = self._validate_context(context)
+        if context.is_incognito:
+            raise MemoryV2CoordinationError("incognito_extraction_disabled")
+        if not context.memory_enabled:
+            raise MemoryV2CoordinationError("memory_disabled_extraction")
+        if self.flags.mode_for(owner) is not MemoryV2WriteMode.CANONICAL:
+            raise MemoryV2CoordinationError("extraction_requires_canonical_v2_mode")
+        self._require_disposable_database(context)
+        return owner
+
+    def _build_service(
+        self,
+        engine: Engine,
+        owner: str,
+        context: MemoryV2ExecutionContext,
+    ) -> MemoryMutationService:
+        return self._service_factory(
+            engine,
+            owner_id=owner,
+            database_identity=context.database_identity,
+            payload_provider=self._payload_provider,
+            fingerprint_provider=self._fingerprint_provider,
+            tombstone_provider=self._tombstone_provider,
+            key_versions=self._key_versions,
+        )
 
     def _without_call(
         self,
