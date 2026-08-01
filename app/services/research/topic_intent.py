@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.research.types import ResearchSource
 
 TOPIC_AI_CODING_TOOLS = "ai_coding_tools_comparison"
 
@@ -355,10 +359,8 @@ def ai_coding_entity_terms(intent: TopicIntent) -> list[str]:
     return sorted(terms)
 
 
-def classify_evidence_category(text: str, source: "ResearchSource", intent: TopicIntent) -> str:
+def classify_evidence_category(text: str, source: ResearchSource, intent: TopicIntent) -> str:
     """Tag evidence as cursor/codex/comparison/irrelevant for AI coding comparisons."""
-    from app.services.research.types import ResearchSource  # noqa: F401 — type hint only
-
     combined = f"{source.title} {source.url} {text}".lower()
 
     for reject in _REJECT_EVIDENCE_TERMS:
@@ -403,10 +405,8 @@ def _mentions_any_tool(text: str, intent: TopicIntent) -> bool:
     return False
 
 
-def source_is_offtopic_for_ai_coding(source: "ResearchSource", intent: TopicIntent) -> str | None:
+def source_is_offtopic_for_ai_coding(source: ResearchSource, intent: TopicIntent) -> str | None:
     """Return rejection reason if source should be rejected."""
-    from app.services.research.types import ResearchSource  # noqa: F401
-
     title = (source.title or "").lower()
     url = (source.url or "").lower()
     domain = (source.domain or "").lower()
@@ -436,7 +436,7 @@ def source_is_offtopic_for_ai_coding(source: "ResearchSource", intent: TopicInte
     return None
 
 
-def is_preferred_ai_coding_source(source: "ResearchSource") -> bool:
+def is_preferred_ai_coding_source(source: ResearchSource) -> bool:
     domain = (source.domain or "").lower()
     url = (source.url or "").lower()
     if "cursor.com" in domain:
@@ -452,7 +452,7 @@ def is_preferred_ai_coding_source(source: "ResearchSource") -> bool:
     return False
 
 
-def is_low_quality_ai_coding_source(source: "ResearchSource") -> bool:
+def is_low_quality_ai_coding_source(source: ResearchSource) -> bool:
     domain = (source.domain or "").lower()
     return any(d in domain for d in _LOW_QUALITY_DOMAINS)
 

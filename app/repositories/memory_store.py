@@ -90,11 +90,16 @@ class MemoryStore:
         )
         self.auto_embed = auto_embed if auto_embed is not None else settings.auto_embed_memories
         self.embedding_provider = embedding_provider
+        self._memory_v2_recall_active = False
         self.embedding_service = (
             MemoryEmbeddingService(embedding_provider)
             if embedding_provider is not None or self.semantic_enabled or self.auto_embed
             else None
         )
+
+    def set_memory_v2_recall_active(self, active: bool) -> None:
+        """Prevent legacy generic/FTS/vector memory serving during v2 recall."""
+        self._memory_v2_recall_active = bool(active)
 
     def add(self, entity):
         self.db.add(entity)
@@ -1231,6 +1236,8 @@ class MemoryStore:
         )
 
     def search_memories(self, query: str, limit: int = 10) -> list[Memory]:
+        if self._memory_v2_recall_active:
+            raise RuntimeError("legacy_memory_search_disabled_during_v2_recall")
         if self.semantic_enabled:
             hybrid_results = self._search_memories_hybrid(query, limit)
             if hybrid_results is not None:

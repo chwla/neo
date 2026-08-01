@@ -1,16 +1,20 @@
-"""Evidence extraction, quality scoring, entity-relevance filtering, gap detection, and deduplication."""
+"""Evidence extraction, scoring, entity filtering, gap detection, and deduplication."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from app.services.research.types import (
-    ResearchEvidenceChunk,
-    ResearchPlan,
-    ResearchSource,
+from app.services.research.product_intent import (
+    TOPIC_PRODUCT_COMPARISON,
+    classify_product_evidence_category,
+    intent_from_topic,
+    is_low_quality_product_source,
+    is_preferred_product_source,
+    product_entity_terms,
+    source_is_offtopic_for_product,
 )
 from app.services.research.topic_intent import (
     TOPIC_AI_CODING_TOOLS,
@@ -22,14 +26,10 @@ from app.services.research.topic_intent import (
     is_preferred_ai_coding_source,
     source_is_offtopic_for_ai_coding,
 )
-from app.services.research.product_intent import (
-    TOPIC_PRODUCT_COMPARISON,
-    classify_product_evidence_category,
-    intent_from_topic,
-    is_low_quality_product_source,
-    is_preferred_product_source,
-    product_entity_terms,
-    source_is_offtopic_for_product,
+from app.services.research.types import (
+    ResearchEvidenceChunk,
+    ResearchPlan,
+    ResearchSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,7 +386,7 @@ def _extract_from_source(
     text = source.text
     paragraphs = _split_into_paragraphs(text)
     chunks: list[ResearchEvidenceChunk] = []
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     for para in paragraphs:
         if len(para) < _MIN_CHUNK_LENGTH:

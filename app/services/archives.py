@@ -108,6 +108,21 @@ class QdrantArchiveService:
                 )
         return sorted(results, key=lambda item: item.score, reverse=True)[:limit]
 
+    def personal_memory_context(
+        self,
+        results: list[ArchiveSearchResult],
+        *,
+        authenticated_owner_id: str,
+    ) -> list[ArchiveSearchResult]:
+        """Reject current ownerless archives as authenticated personal memory.
+
+        Phase 5 intentionally does not retrofit archive tenancy. Even if a
+        payload happens to contain an ``owner_id`` key, it lacks an approved
+        owner-bound archive manifest and is therefore ineligible.
+        """
+        del results, authenticated_owner_id
+        return []
+
     def _validate_collection(self, collection: str) -> None:
         if collection not in self.COLLECTIONS:
             raise ValueError(f"Unsupported archive collection: {collection}")

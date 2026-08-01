@@ -6,7 +6,15 @@ import json
 import logging
 import re
 
-from app.services.llm import LLMClient, LLMMessage as OllamaMessage, get_llm_client
+from app.services.llm import LLMClient, get_llm_client
+from app.services.llm import LLMMessage as OllamaMessage
+from app.services.research.product_intent import (
+    TOPIC_PRODUCT_COMPARISON,
+    build_product_plan,
+    filter_offtopic_product_queries,
+    intent_from_topic,
+    is_offtopic_product_query,
+)
 from app.services.research.topic_intent import (
     TOPIC_AI_CODING_TOOLS,
     TopicIntent,
@@ -15,14 +23,7 @@ from app.services.research.topic_intent import (
     filter_offtopic_ai_coding_queries,
     is_offtopic_ai_coding_query,
 )
-from app.services.research.product_intent import (
-    TOPIC_PRODUCT_COMPARISON,
-    filter_offtopic_product_queries,
-    build_product_plan,
-    is_offtopic_product_query,
-    intent_from_topic,
-)
-from app.services.research.types import DepthMode, DEPTH_CONFIG, ResearchPlan
+from app.services.research.types import DEPTH_CONFIG, DepthMode, ResearchPlan
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,8 @@ Output ONLY valid JSON with this structure:
 
 CRITICAL Rules for query generation:
 - ALWAYS preserve the FULL entity name in every search query.
-  Example: for "amazing spiderman comics", every query must include "Amazing Spider-Man" or "The Amazing Spider-Man".
+  Example: for "amazing spiderman comics", every query must include
+  "Amazing Spider-Man" or "The Amazing Spider-Man".
   NEVER generate queries like "amazing meaning" or "comics history" without the entity name.
 - Add disambiguating context words: the publisher, creator names, category, official name.
   Example: "Amazing Spider-Man Marvel Comics", "The Amazing Spider-Man Stan Lee Steve Ditko"
@@ -62,6 +64,7 @@ def generate_plan(
     ollama: LLMClient | None = None,
     topic_intent: TopicIntent | None = None,
     original_query: str = "",
+    untrusted_memory_context: str = "",
 ) -> ResearchPlan:
     config = DEPTH_CONFIG[depth]
     orig = original_query or user_query
@@ -82,15 +85,18 @@ def generate_plan(
 
     user_content = f"Research question: {user_query}"
     if entity_hint:
-        user_content += f'\n\nEntity disambiguation: the main subject is "{entity_hint}". All search queries MUST include this entity name.'
+        user_content += (
+            f'\n\nEntity disambiguation: the main subject is "{entity_hint}". '
+            "All search queries MUST include this entity name."
+        )
     if memory_context:
         user_content += f"\n\nUser context (use for personalization only):\n{memory_context}"
     user_content += f"\n\nGenerate {config['min_queries']}-{config['max_queries']} search queries."
 
-    messages = [
-        OllamaMessage(role="system", content=PLANNING_SYSTEM_PROMPT),
-        OllamaMessage(role="user", content=user_content),
-    ]
+    messages = [OllamaMessage(role="system", content=PLANNING_SYSTEM_PROMPT)]
+    if untrusted_memory_context:
+        messages.append(OllamaMessage(role="user", content=untrusted_memory_context))
+    messages.append(OllamaMessage(role="user", content=user_content))
 
     try:
         raw = client.chat(messages, temperature=0.3)
@@ -296,7 +302,7 @@ def generate_followup_queries(
     if entity_hint:
         prompt += f"Main entity: {entity_hint}\n"
     prompt += (
-        f"Gaps found after initial research:\n"
+        "Gaps found after initial research:\n"
         + "\n".join(f"- {g}" for g in gaps)
         + "\n\nGenerate 2-4 follow-up web search queries to fill these gaps. "
         f'Every query MUST include the entity name "{entity_hint or user_query}". '

@@ -1,17 +1,49 @@
 from __future__ import annotations
 
 import re
+from uuid import UUID
 
 from app.models import Memory, Preference
 from app.models.enums import GoalStatus, MemoryType
 from app.repositories.memory_store import MemoryStore
 from app.services.memory_scope import domains_for_text, memory_text, scoped_items
+from app.services.memory_v2.queries import (
+    MemoryQueryContext,
+    RecallMode,
+    RecallQuery,
+)
+from app.services.memory_v2.recall import CanonicalRecallService
+from app.services.memory_v2.taxonomy import MemoryType as CanonicalMemoryType
 
 
 class DirectMemoryAnswerService:
     """Answer simple memory questions without an LLM when evidence is explicit."""
 
-    def answer(self, store: MemoryStore, query: str) -> str | None:
+    def __init__(
+        self,
+        *,
+        canonical_recall: CanonicalRecallService | None = None,
+        memory_v2_enabled: bool = False,
+    ) -> None:
+        self.canonical_recall = canonical_recall
+        self.memory_v2_enabled = memory_v2_enabled
+        self.last_canonical_ids: tuple[UUID, ...] = ()
+
+    def answer(
+        self,
+        store: MemoryStore,
+        query: str,
+        *,
+        query_context: MemoryQueryContext | None = None,
+    ) -> str | None:
+        self.last_canonical_ids = ()
+        if self.memory_v2_enabled:
+            if self.canonical_recall is None or query_context is None:
+                return None
+            if not query_context.memory_enabled or query_context.incognito:
+                return None
+            return self._canonical_answer(query, query_context)
+
         lowered = query.lower()
         # Earlier releases accepted transient statements such as "I am bored" as an
         # occupation. Retire those unsafe rows before returning any profile answer.
@@ -86,6 +118,95 @@ class DirectMemoryAnswerService:
         if self._asks_flutter_priority(lowered):
             return self._flutter_priority_answer(store)
         return None
+
+    def _canonical_answer(
+        self,
+        query: str,
+        context: MemoryQueryContext,
+    ) -> str | None:
+        """Answer only from canonical records selected by the shared recall path."""
+        lowered = query.casefold()
+        broad = self._asks_memory_summary(lowered) or self._asks_saved_goals_and_preferences(
+            lowered
+        )
+        broad = broad or bool(
+            re.search(r"\b(?:show|list|summari[sz]e)\b", lowered)
+            and re.search(r"\bgoals?\b", lowered)
+            and re.search(r"\bpreferences?\b", lowered)
+        )
+        memory_type: CanonicalMemoryType | None = None
+        if self._asks_goals(lowered):
+            memory_type = CanonicalMemoryType.GOAL
+        elif self._asks_projects(lowered) or self._asks_working_on(lowered):
+            memory_type = CanonicalMemoryType.PROJECT
+        elif any(
+            checker(lowered)
+            for checker in (
+                self._asks_name,
+                self._asks_age,
+                self._asks_location,
+                self._asks_occupation,
+                self._asks_education,
+                self._asks_country,
+                self._asks_nationality,
+                self._asks_profile_summary,
+            )
+        ):
+            memory_type = CanonicalMemoryType.IDENTITY
+        elif any(
+            checker(lowered)
+            for checker in (
+                self._asks_interests,
+                self._asks_favorite_chess_player,
+                self._asks_language_priority,
+                self._asks_editor,
+                self._asks_competitive_programming_language,
+                self._asks_flutter_priority,
+            )
+        ):
+            memory_type = CanonicalMemoryType.PREFERENCE
+        elif self._asks_current_activity(lowered):
+            memory_type = CanonicalMemoryType.ACTIVITY
+        elif self._asks_hardware(lowered) or self._asks_dedicated_gpu(lowered):
+            memory_type = CanonicalMemoryType.KNOWLEDGE
+        elif not broad:
+            return None
+
+        mode = RecallMode.BROAD if broad else RecallMode.DETERMINISTIC
+        canonical_context = context.model_copy(update={"mode": mode})
+        result = self.canonical_recall.recall(
+            RecallQuery(
+                context=canonical_context,
+                text=query,
+                memory_type=memory_type,
+                trusted_slot_keys=self._canonical_trusted_slots(lowered),
+            )
+        )
+        self.last_canonical_ids = result.canonical_ids
+        if not result.items:
+            return "I do not have an active saved memory that answers that yet."
+        values = [item.memory.display_text.strip() for item in result.items]
+        if len(values) == 1:
+            return f"From your saved memory: {values[0]}"
+        return "From your saved memories:\n" + "\n".join(f"- {value}" for value in values)
+
+    def _canonical_trusted_slots(self, lowered: str) -> tuple[str, ...]:
+        """Map explicit direct questions to stable taxonomy slots."""
+        if self._asks_name(lowered):
+            return ("identity:global:name",)
+        if self._asks_age(lowered):
+            return ("identity:global:age",)
+        if self._asks_location(lowered):
+            return ("identity:global:current_location",)
+        if self._asks_occupation(lowered):
+            return ("identity:global:occupation",)
+        if self._asks_education(lowered):
+            return ("identity:global:education",)
+        if self._asks_country(lowered):
+            return ("identity:global:country",)
+        if self._asks_nationality(lowered):
+            return ("identity:global:nationality",)
+        return ()
 
     def _memory_summary_answer(self, store: MemoryStore) -> str:
         memories = store.list_memories(limit=20)
@@ -429,7 +550,7 @@ class DirectMemoryAnswerService:
     def _asks_goals(self, lowered: str) -> bool:
         return bool(
             re.search(
-                r"\b(what are my goals|what goals do i have|"
+                r"\b(what are my (?:current )?goals|what goals do i have|"
                 r"(?:show|list|tell me|remind me of) my (?:active )?goals)\b",
                 lowered,
             )

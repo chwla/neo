@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 from app.core.config import get_settings
+from app.services.research.types import ResearchSource
 from app.services.search.content import WebPageFetcher
 from app.services.search.core import comprehensive_web_search
 from app.services.search.types import (
@@ -16,7 +17,6 @@ from app.services.search.types import (
     SearchOptions,
     SearchResult,
 )
-from app.services.research.types import ResearchSource
 
 logger = logging.getLogger(__name__)
 

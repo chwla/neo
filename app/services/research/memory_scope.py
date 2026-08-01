@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
-from app.db.session import SessionLocal
+from pydantic import BaseModel, ConfigDict
+
 from app.models.enums import GoalStatus, MemoryType, ProjectStatus
 from app.repositories.memory_store import MemoryStore
+from app.services.memory_v2.prompt import RecallPromptOrchestrator
+from app.services.memory_v2.queries import MemoryQueryContext, RecallQuery
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +36,99 @@ _PROJECT_PATTERNS = re.compile(
 )
 
 
-def retrieve_scoped_memory(query: str) -> tuple[str, list[str]]:
+class ResearchMemoryRecallResult(BaseModel):
+    """Bounded research-memory payload plus text-free structured diagnostics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    context_text: str = ""
+    canonical_ids: tuple[str, ...] = ()
+    diagnostic: dict[str, Any]
+
+
+def retrieve_scoped_memory_result(
+    query: str,
+    *,
+    v2_enabled: bool = False,
+    orchestrator: RecallPromptOrchestrator | None = None,
+    query_context: MemoryQueryContext | None = None,
+    usage_purpose: str = "research_plan",
+) -> ResearchMemoryRecallResult:
+    """Return scoped memory with a diagnostic that never contains recalled text."""
+    if v2_enabled:
+        if orchestrator is None or query_context is None:
+            return ResearchMemoryRecallResult(
+                diagnostic={
+                    "mode": "canonical",
+                    "reason_codes": ["missing_authenticated_owner_binding"],
+                    "final_injected_ids": [],
+                    "usage_event_ids": [],
+                }
+            )
+        selection = orchestrator.build(
+            RecallQuery(context=query_context, text=query),
+            purpose=usage_purpose,
+        )
+        serialized = selection.serialized
+        diagnostic = selection.recall.diagnostic.model_dump(mode="json")
+        diagnostic["usage_recorded"] = selection.usage_recorded
+        diagnostic["usage_failure_code"] = selection.usage_failure_code
+        return ResearchMemoryRecallResult(
+            context_text=serialized.content if serialized is not None else "",
+            canonical_ids=(
+                tuple(str(item) for item in serialized.canonical_ids)
+                if serialized is not None
+                else ()
+            ),
+            diagnostic=diagnostic,
+        )
+
+    if not _PERSONAL_PATTERNS.search(query):
+        return ResearchMemoryRecallResult(
+            diagnostic={"mode": "legacy", "reason_codes": ["not_personal"]}
+        )
+    try:
+        # Import is deliberately confined to the legacy compatibility path.
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            context, keys = _build_scoped_context(MemoryStore(db), query)
+            return ResearchMemoryRecallResult(
+                context_text=context,
+                canonical_ids=tuple(keys),
+                diagnostic={"mode": "legacy", "reason_codes": []},
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to retrieve scoped memory")
+        return ResearchMemoryRecallResult(
+            diagnostic={"mode": "legacy", "reason_codes": ["legacy_retrieval_failed"]}
+        )
+
+
+def retrieve_scoped_memory(
+    query: str,
+    *,
+    v2_enabled: bool = False,
+    orchestrator: RecallPromptOrchestrator | None = None,
+    query_context: MemoryQueryContext | None = None,
+    usage_purpose: str = "research_plan",
+) -> tuple[str, list[str]]:
     """Return (memory_context_text, list_of_memory_keys_used).
 
     Only retrieves memory categories relevant to the research query.
     Returns empty string if no personal context is needed.
     """
-    if not _PERSONAL_PATTERNS.search(query):
-        return "", []
-
-    try:
-        db = SessionLocal()
-        try:
-            store = MemoryStore(db)
-            return _build_scoped_context(store, query)
-        finally:
-            db.close()
-    except Exception:
-        logger.exception("Failed to retrieve scoped memory")
-        return "", []
+    result = retrieve_scoped_memory_result(
+        query,
+        v2_enabled=v2_enabled,
+        orchestrator=orchestrator,
+        query_context=query_context,
+        usage_purpose=usage_purpose,
+    )
+    return result.context_text, list(result.canonical_ids)
 
 
 def _build_scoped_context(store: MemoryStore, query: str) -> tuple[str, list[str]]:

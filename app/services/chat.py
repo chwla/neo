@@ -18,6 +18,13 @@ from app.models import ChatGeneration, ChatMessage
 from app.models.enums import CandidateStatus, MemoryType
 from app.repositories.memory_store import MemoryStore
 from app.services.agents.guidance import agent_run_guidance
+from app.services.canonical_memory import (
+    STABLE_MEMORY_POLICY,
+    MemoryQueryContext,
+    RecallPromptOrchestrator,
+    RecallPromptSelection,
+    RecallQuery,
+)
 from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
 from app.services.coding_agent.service import CodingAgentService
@@ -81,6 +88,9 @@ class NeoChatService:
         ollama: LLMClient | None = None,
         extractor: MemoryExtractionService | None = None,
         rule_result: dict[str, Any] | None = None,
+        memory_v2_orchestrator: RecallPromptOrchestrator | None = None,
+        memory_v2_context_factory: Callable[[str], MemoryQueryContext | None] | None = None,
+        memory_v2_enabled: bool | None = None,
     ) -> None:
         self.db = db
         self.store = MemoryStore(db)
@@ -95,9 +105,36 @@ class NeoChatService:
             "applied_profiles": [],
             "warnings": [],
         }
+        self.settings = get_settings()
+        self.memory_v2_enabled = (
+            self.settings.memory_v2_canonical_query_enabled
+            if memory_v2_enabled is None
+            else memory_v2_enabled
+        )
+        self.memory_v2_prompt_enabled = (
+            self.memory_v2_enabled and self.settings.memory_v2_secure_prompt_enabled
+            if memory_v2_enabled is None
+            else memory_v2_enabled
+        )
+        self.memory_v2_direct_answers_enabled = (
+            self.settings.memory_v2_direct_answer_reads_enabled
+            if memory_v2_enabled is None
+            else memory_v2_enabled
+        )
+        self.memory_v2_orchestrator = memory_v2_orchestrator
+        self.memory_v2_context_factory = memory_v2_context_factory
+        self.last_memory_v2_selection: RecallPromptSelection | None = None
+        self.store.set_memory_v2_recall_active(self.memory_v2_enabled)
         self.context_assembler = ContextAssemblyService()
         self.explainer = MemoryExplanationService()
-        self.direct_answers = DirectMemoryAnswerService()
+        self.direct_answers = DirectMemoryAnswerService(
+            canonical_recall=(
+                memory_v2_orchestrator.recall_service
+                if memory_v2_orchestrator is not None
+                else None
+            ),
+            memory_v2_enabled=(self.memory_v2_enabled and self.memory_v2_direct_answers_enabled),
+        )
         self.web_search = WebSearchService()
         self.project_context = ProjectContextService()
         self.recovery = RecoveryService()
@@ -109,13 +146,24 @@ class NeoChatService:
         self.test_runner = TestRunnerContextService()
         self.git_context = GitContextService()
         self.citation_formatter = CitationFormatter()
-        self.settings = get_settings()
         self.last_web_debug: dict[str, Any] = {}
         self.last_routing_debug: dict[str, Any] = {}
         self.last_search_intent: ResolvedSearchIntent | None = None
         self.search_intent_resolver = SearchIntentResolver()
 
     def build_context(self, prompt: str) -> ContextPackage:
+        if self.memory_v2_enabled:
+            # Canonical memory is selected once, immediately before final prompt
+            # serialization. Do not assemble parallel legacy collections here.
+            return ContextPackage(
+                profile=[],
+                preferences=[],
+                goals=[],
+                projects=[],
+                relevant_memories=[],
+                events=[],
+                archive_results=[],
+            )
         return self.context_assembler.assemble(
             self.store,
             RetrievalRequest(query=prompt, include_archives=False),
@@ -139,6 +187,16 @@ class NeoChatService:
             {"resolved_rules": {}, "applied_profiles": [], "warnings": []},
         )
         rule_section = RuleResolver.prompt_context(rule_result) or "No configured rules."
+        memory_policy = STABLE_MEMORY_POLICY if self.memory_v2_prompt_enabled else ""
+        legacy_memory_section = (
+            (
+                "Canonical personal memory is supplied separately as untrusted user context."
+                if self.memory_v2_prompt_enabled
+                else "Personal memory context is disabled for this request."
+            )
+            if self.memory_v2_enabled
+            else f"Memory context:\n{self._compact_context(context)}"
+        )
         system_prompt = (
             "You are Neo, a local personal AI assistant. Use the provided memory context "
             "when it is relevant. Do not claim memories that are not present. If memory "
@@ -183,19 +241,54 @@ class NeoChatService:
             "updated, stored, noted, remembered, removed, deleted, or forgot user information. "
             "If no deterministic memory-status response was returned before reaching you, "
             "then no user-visible memory mutation is confirmed.\n\n"
-            f"Memory context:\n{self._compact_context(context)}\n\n"
+            f"{memory_policy}\n\n"
+            f"{legacy_memory_section}\n\n"
             f"Project context:\n{project_section}\n\n"
             f"Task context:\n{task_section}\n\n"
             f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
             f"Web context:\n{web_section}"
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
+        selection = self._build_v2_memory_selection(prompt)
+        if selection is not None and selection.serialized is not None:
+            messages.append(LLMMessage(role="user", content=selection.serialized.content))
         messages.extend(
             LLMMessage(role=turn.role, content=turn.content)
             for turn in history[-self.settings.chat_history_turns :]
         )
         messages.append(LLMMessage(role="user", content=prompt))
         return messages
+
+    def _memory_v2_query_context(self, prompt: str) -> MemoryQueryContext | None:
+        if not self.memory_v2_enabled or self.memory_v2_context_factory is None:
+            return None
+        return self.memory_v2_context_factory(prompt)
+
+    def _build_v2_memory_selection(
+        self,
+        prompt: str,
+    ) -> RecallPromptSelection | None:
+        """The one canonical recall path shared by sync and stream."""
+        self.last_memory_v2_selection = None
+        if not self.memory_v2_prompt_enabled or self.memory_v2_orchestrator is None:
+            return None
+        context = self._memory_v2_query_context(prompt)
+        if context is None:
+            return None
+        selection = self.memory_v2_orchestrator.build(
+            RecallQuery(context=context, text=prompt),
+            purpose="chat_prompt",
+        )
+        self.last_memory_v2_selection = selection
+        return selection
+
+    def _finalize_memory_v2_usage(self) -> None:
+        """Persist same-session usage metadata before issuing the model request."""
+        selection = self.last_memory_v2_selection
+        if self.memory_v2_enabled and selection is not None and selection.usage_recorded:
+            self.db.commit()
+            return
+        self.db.rollback()
 
     def send_message(
         self,
@@ -507,7 +600,7 @@ class NeoChatService:
         messages = self.build_messages(
             prompt, history, context, web_context, project_context, task_context
         )
-        self.db.rollback()
+        self._finalize_memory_v2_usage()
 
         result = None
         finish_reason = None
@@ -1200,7 +1293,7 @@ class NeoChatService:
             response_source="provider_pending",
             final_status="streaming",
         )
-        self.db.rollback()
+        self._finalize_memory_v2_usage()
 
         raw_reply = ""
         streamed_thinking = ""
@@ -1462,21 +1555,13 @@ class NeoChatService:
             if candidate.status in {CandidateStatus.ACCEPTED, CandidateStatus.MERGED}
             and candidate.accepted_memory_id is not None
         ]
-        accepted_memory_ids = {
-            int(candidate.accepted_memory_id) for candidate in accepted
-        }
+        accepted_memory_ids = {int(candidate.accepted_memory_id) for candidate in accepted}
         active_memories = self.store.list_memories(active_only=True, limit=100000)
         active_by_id = {memory.id: memory for memory in active_memories}
         active_memory_ids = set(active_by_id)
-        memory_ids = sorted(
-            accepted_memory_ids & active_memory_ids
-        )
+        memory_ids = sorted(accepted_memory_ids & active_memory_ids)
         saved_ids = [memory_id for memory_id in memory_ids if memory_id not in before]
-        updated_ids = [
-            memory_id
-            for memory_id in memory_ids
-            if memory_id in before
-        ]
+        updated_ids = [memory_id for memory_id in memory_ids if memory_id in before]
         # An explicit correction normally creates a new auditable row. Count it as an
         # update only when it actually supersedes a row that was active before this turn;
         # an unrelated insertion must remain visible as a save instead of being masked.
@@ -1491,9 +1576,7 @@ class NeoChatService:
                 )
             }
             updated_ids = sorted({*updated_ids, *replacement_ids})
-            saved_ids = [
-                memory_id for memory_id in saved_ids if memory_id not in replacement_ids
-            ]
+            saved_ids = [memory_id for memory_id in saved_ids if memory_id not in replacement_ids]
         all_candidates = [*repaired_candidates, *candidates]
         report_status = self.extractor.is_pure_personal_declaration(request, extraction)
         persistence_status = (
@@ -1713,6 +1796,15 @@ class NeoChatService:
         )
 
     def _direct_reply(self, prompt: str) -> str | None:
+        if self.memory_v2_enabled:
+            if not self.memory_v2_direct_answers_enabled:
+                return None
+            context = self._memory_v2_query_context(prompt)
+            return self.direct_answers.answer(
+                self.store,
+                prompt,
+                query_context=context,
+            )
         if not self.explainer.should_handle(prompt):
             return self.direct_answers.answer(self.store, prompt)
         return self.explainer.answer(self.store, prompt)

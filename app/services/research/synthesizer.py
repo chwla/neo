@@ -1,25 +1,26 @@
-"""Report synthesizer: produces structured research reports from evidence with strict quality gates."""
+"""Produce structured research reports from evidence with strict quality gates."""
+
+# ruff: noqa: E501
 
 from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from app.services.llm import LLMClient, LLMMessage as OllamaMessage, get_llm_client
-from app.services.research.topic_intent import (
-    COMPARISON_TABLE_DIMENSIONS,
-    TOPIC_AI_CODING_TOOLS,
-    classify_topic_intent,
-    is_low_quality_ai_coding_source,
-    is_preferred_ai_coding_source,
-)
+from app.services.llm import LLMClient, get_llm_client
+from app.services.llm import LLMMessage as OllamaMessage
 from app.services.research.product_intent import (
-    TOPIC_PRODUCT_COMPARISON,
     PRODUCT_COMPARISON_TABLE_DIMENSIONS,
+    TOPIC_PRODUCT_COMPARISON,
+    intent_from_topic,
     is_preferred_product_source,
     product_has_source_pollution,
-    intent_from_topic,
+)
+from app.services.research.topic_intent import (
+    TOPIC_AI_CODING_TOOLS,
+    is_low_quality_ai_coding_source,
+    is_preferred_ai_coding_source,
 )
 from app.services.research.types import (
     DepthMode,
@@ -177,7 +178,7 @@ def synthesize_report(
     ollama: LLMClient | None = None,
     depth: DepthMode = DepthMode.STANDARD,
 ) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     stats = _compute_stats(sources, evidence)
 
     if not evidence:
@@ -357,13 +358,13 @@ def _normalize_report_format(report: str) -> str:
     for num, name in section_names:
         report = re.sub(
             rf"(##\s*(?:{num}\.\s*)?{re.escape(name)})\s*(?=[^\n])",
-            rf"\1\n\n",
+            r"\1\n\n",
             report,
             flags=re.IGNORECASE,
         )
         report = re.sub(
             rf"(?<!\n)(##\s*(?:{num}\.\s*)?{re.escape(name)})",
-            rf"\n\n\1",
+            r"\n\n\1",
             report,
             flags=re.IGNORECASE,
         )
@@ -1191,7 +1192,7 @@ def _strict_partial_fallback_report(
         "",
         f"**Query:** {user_query}  ",
         f"**Mode:** {depth.value}  ",
-        f"**Report type:** Partial Report  ",
+        "**Report type:** Partial Report  ",
         f"**Generated:** {now}  ",
         f"**Confidence:** {confidence}",
         "",
@@ -1219,7 +1220,7 @@ def _strict_partial_fallback_report(
             "",
             "## 3. Evidence Quality",
             "",
-            f"* **Search queries generated:** (see metadata)",
+            "* **Search queries generated:** (see metadata)",
             f"* **Sources found:** {stats['total']}",
             f"* **Sources fetched:** {stats['fetched']}",
             f"* **Sources rejected:** {stats['rejected']}",
@@ -1574,7 +1575,7 @@ def _insufficient_evidence_report(
         "",
         f"**Query:** {user_query}  ",
         f"**Mode:** {depth.value}  ",
-        f"**Report type:** Insufficient Evidence  ",
+        "**Report type:** Insufficient Evidence  ",
         f"**Generated:** {now}  ",
         "**Confidence:** Low",
         "",
@@ -1705,13 +1706,13 @@ def _insufficient_evidence_report(
     return "\n".join(strict_lines)
 
     lines = [
-        f"# Insufficient Evidence",
+        "# Insufficient Evidence",
         "",
         f"**Query:** {user_query}  ",
         f"**Mode:** {depth.value}  ",
-        f"**Report type:** Insufficient Evidence  ",
+        "**Report type:** Insufficient Evidence  ",
         f"**Generated:** {now}  ",
-        f"**Confidence:** Low",
+        "**Confidence:** Low",
         "",
         "---",
         "",
@@ -1721,7 +1722,7 @@ def _insufficient_evidence_report(
         "",
         "## Evidence collected",
         "",
-        f"* **Search queries generated:** (see metadata)",
+        "* **Search queries generated:** (see metadata)",
         f"* **Sources found:** {stats['total']}",
         f"* **Sources fetched:** {stats['fetched']}",
         f"* **Relevant evidence chunks:** {stats['evidence']}",
@@ -1790,7 +1791,7 @@ def _fallback_report(
         "",
         f"**Query:** {user_query}  ",
         f"**Mode:** {depth.value}  ",
-        f"**Report type:** Partial Report  ",
+        "**Report type:** Partial Report  ",
         f"**Generated:** {now}  ",
         f"**Confidence:** {confidence}",
         "",
@@ -1804,7 +1805,7 @@ def _fallback_report(
         f"* {stats['fetched']} sources were fetched with {stats['evidence']} evidence chunks.",
         "* Below is a summary of the evidence gathered.",
         "",
-        f"## 3. Evidence Quality",
+        "## 3. Evidence Quality",
         "",
         f"* **Sources found:** {stats['total']}",
         f"* **Sources fetched:** {stats['fetched']}",
@@ -1836,7 +1837,7 @@ def _fallback_report(
         lines.append("")
         for g in gaps:
             lines.append(f"* **Gap:** {g}")
-            lines.append(f"  * **Why it matters:** May leave the research incomplete")
+            lines.append("  * **Why it matters:** May leave the research incomplete")
         lines.append("")
 
     lines.append("## 8. Suggested Follow-Up Research")

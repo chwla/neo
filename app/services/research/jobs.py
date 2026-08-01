@@ -5,16 +5,35 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import get_settings
+from app.db.session import build_engine
+from app.repositories.memory_v2 import MemoryV2Repository
 from app.services.llm import get_llm_client
+from app.services.memory_v2.feature_flags import MemoryV2FeatureFlags
+from app.services.memory_v2.prompt import (
+    RecallPromptOrchestrator,
+    repository_usage_recorder,
+)
+from app.services.memory_v2.queries import MemoryQueryContext, RecallMode
+from app.services.memory_v2.recall import CanonicalRecallService
+from app.services.profile_accounts import database_url_for, profile_database
 from app.services.research.evidence import (
     extract_entity_terms,
     extract_evidence,
     filter_irrelevant_sources,
     identify_gaps,
 )
-from app.services.research.memory_scope import retrieve_scoped_memory
+from app.services.research.memory_scope import (
+    ResearchMemoryRecallResult,
+    retrieve_scoped_memory_result,
+)
 from app.services.research.planner import generate_followup_queries, generate_plan
 from app.services.research.product_intent import TOPIC_PRODUCT_COMPARISON, normalize_user_query
 from app.services.research.searcher import ResearchSearcher
@@ -36,6 +55,133 @@ logger = logging.getLogger(__name__)
 _active_jobs: dict[str, threading.Event] = {}
 _lock = threading.Lock()
 
+ResearchMemoryProvider = Callable[
+    [dict[str, Any]], tuple[RecallPromptOrchestrator, MemoryQueryContext]
+]
+_memory_v2_research_provider: ResearchMemoryProvider | None = None
+
+
+@dataclass
+class _OwnedResearchMemoryRuntime:
+    orchestrator: RecallPromptOrchestrator
+    query_context: MemoryQueryContext
+    session: Session
+    engine: Any
+
+    def finish(self, *, persist_usage: bool) -> None:
+        try:
+            if persist_usage:
+                self.session.commit()
+            else:
+                self.session.rollback()
+        finally:
+            self.session.close()
+            self.engine.dispose()
+
+
+def configure_memory_v2_research_provider(
+    provider: ResearchMemoryProvider | None,
+) -> None:
+    """Install trusted request-bound wiring; never a process-default DB session."""
+    global _memory_v2_research_provider
+    _memory_v2_research_provider = provider
+
+
+def _job_memory_binding(job_data: dict[str, Any]) -> tuple[str, str, str, bool] | None:
+    metadata = job_data.get("metadata") or {}
+    owner_id = job_data.get("owner_id") or metadata.get("memory_owner_id")
+    database_identity = job_data.get("database_identity") or metadata.get(
+        "memory_database_identity"
+    )
+    profile_id = job_data.get("profile_id") or metadata.get("memory_profile_id")
+    is_guest = bool(job_data.get("is_guest") or metadata.get("memory_is_guest"))
+    if not owner_id or not database_identity or not profile_id:
+        return None
+    return str(owner_id), str(database_identity), str(profile_id), is_guest
+
+
+def _default_research_memory_runtime(
+    job_data: dict[str, Any],
+) -> _OwnedResearchMemoryRuntime | None:
+    binding = _job_memory_binding(job_data)
+    if binding is None:
+        return None
+    owner_id, database_identity, profile_id, is_guest = binding
+    settings = get_settings()
+    flags = MemoryV2FeatureFlags.from_settings(settings)
+    engine = build_engine(database_url_for(profile_id, guest=is_guest))
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        repository = MemoryV2Repository(
+            session,
+            owner_id=owner_id,
+            database_identity=database_identity,
+        )
+        recall = CanonicalRecallService(repository, flags=flags)
+        orchestrator = RecallPromptOrchestrator(
+            recall,
+            usage_recorder=repository_usage_recorder(repository),
+        )
+        metadata = job_data.get("metadata") or {}
+        query_context = MemoryQueryContext(
+            owner_id=owner_id,
+            database_identity=database_identity,
+            profile_id=profile_id,
+            memory_enabled=bool(metadata.get("memory_enabled", True)),
+            incognito=bool(metadata.get("incognito", False)),
+            request_id=f"research:{job_data['id']}",
+            session_id=f"research-job:{job_data['id']}",
+            current_time=datetime.now(UTC),
+            maximum_records=flags.recall_max_records,
+            maximum_characters=flags.recall_max_chars,
+            mode=RecallMode.SCOPED_LEXICAL,
+            lexical_available=flags.lexical_recall_enabled,
+        )
+        return _OwnedResearchMemoryRuntime(orchestrator, query_context, session, engine)
+    except Exception:
+        session.close()
+        engine.dispose()
+        raise
+
+
+def _canonical_research_memory(
+    job_data: dict[str, Any],
+    user_query: str,
+) -> ResearchMemoryRecallResult:
+    runtime: _OwnedResearchMemoryRuntime | None = None
+    try:
+        if _memory_v2_research_provider is not None:
+            orchestrator, query_context = _memory_v2_research_provider(job_data)
+        else:
+            runtime = _default_research_memory_runtime(job_data)
+            if runtime is None:
+                return retrieve_scoped_memory_result(user_query, v2_enabled=True)
+            orchestrator, query_context = runtime.orchestrator, runtime.query_context
+        result = retrieve_scoped_memory_result(
+            user_query,
+            v2_enabled=True,
+            orchestrator=orchestrator,
+            query_context=query_context,
+            usage_purpose=f"research_plan:{job_data['id']}",
+        )
+        if runtime is not None:
+            runtime.finish(persist_usage=bool(result.diagnostic.get("usage_recorded")))
+            runtime = None
+        return result
+    except Exception:
+        logger.exception("Canonical research memory failed closed")
+        return ResearchMemoryRecallResult(
+            diagnostic={
+                "mode": "canonical",
+                "reason_codes": ["canonical_research_unavailable"],
+                "final_injected_ids": [],
+                "usage_event_ids": [],
+            }
+        )
+    finally:
+        if runtime is not None:
+            runtime.finish(persist_usage=False)
+
 
 def create_job(
     user_query: str,
@@ -45,9 +191,15 @@ def create_job(
     project_id: str | None = None,
     task_id: str | None = None,
     repo_id: str | None = None,
+    owner_id: str | None = None,
+    database_identity: str | None = None,
+    profile_id: str | None = None,
+    is_guest: bool = False,
+    memory_enabled: bool = True,
+    incognito: bool = False,
 ) -> ResearchJob:
     config = DEPTH_CONFIG[depth]
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     rule_result = RuleResolver().resolve(
         RuleResolveRequest(
             context_type="research",
@@ -66,10 +218,20 @@ def create_job(
         created_at=now,
         updated_at=now,
         current_step="Queued",
+        owner_id=owner_id,
+        database_identity=database_identity,
+        profile_id=profile_id,
+        is_guest=is_guest,
         metadata={
             "project_id": project_id,
             "task_id": task_id,
             "repo_id": repo_id,
+            "memory_owner_id": owner_id,
+            "memory_database_identity": database_identity,
+            "memory_profile_id": profile_id,
+            "memory_is_guest": is_guest,
+            "memory_enabled": memory_enabled,
+            "incognito": incognito,
             "resolved_rules": rule_result["resolved_rules"],
             "applied_profiles": rule_result["applied_profiles"],
             "rule_warnings": rule_result["warnings"],
@@ -90,14 +252,33 @@ def start_job(job_id: str) -> bool:
     with _lock:
         _active_jobs[job_id] = cancel_event
 
+    metadata = job_data.get("metadata") or {}
     thread = threading.Thread(
-        target=_run_research_pipeline,
-        args=(job_id, cancel_event),
+        target=_run_research_pipeline_bound,
+        args=(
+            job_id,
+            cancel_event,
+            metadata.get("memory_profile_id"),
+            bool(metadata.get("memory_is_guest")),
+        ),
         daemon=True,
         name=f"research-{job_id}",
     )
     thread.start()
     return True
+
+
+def _run_research_pipeline_bound(
+    job_id: str,
+    cancel: threading.Event,
+    profile_id: str | None,
+    is_guest: bool,
+) -> None:
+    if profile_id:
+        with profile_database(profile_id, guest=is_guest):
+            _run_research_pipeline(job_id, cancel)
+        return
+    _run_research_pipeline(job_id, cancel)
 
 
 def cancel_job(job_id: str) -> bool:
@@ -126,6 +307,11 @@ def _dict_to_job(data: dict) -> ResearchJob:
         data["depth"] = DepthMode(data["depth"])
     if isinstance(data.get("status"), str):
         data["status"] = JobStatus(data["status"])
+    metadata = data.get("metadata") or {}
+    data.setdefault("owner_id", metadata.get("memory_owner_id"))
+    data.setdefault("database_identity", metadata.get("memory_database_identity"))
+    data.setdefault("profile_id", metadata.get("memory_profile_id"))
+    data.setdefault("is_guest", bool(metadata.get("memory_is_guest")))
     return ResearchJob(**data)
 
 
@@ -148,7 +334,18 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         effective_query = query_norm.effective_query
 
         # --- SCOPED MEMORY ---
-        memory_context, memory_keys = retrieve_scoped_memory(user_query)
+        settings = get_settings()
+        v2_research = settings.memory_v2_research_recall_enabled
+        if v2_research:
+            memory_result = _canonical_research_memory(job_data, user_query)
+        else:
+            memory_result = retrieve_scoped_memory_result(user_query)
+        memory_context = memory_result.context_text
+        memory_keys = list(memory_result.canonical_ids)
+        metadata = dict(job_data.get("metadata") or {})
+        metadata["memory_recall_diagnostic"] = memory_result.diagnostic
+        job_data["metadata"] = metadata
+        save_job(job_data)
         if memory_context:
             _update(
                 job_id,
@@ -165,10 +362,13 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         }
         route_name = RuleResolver.route_name(rule_result, "research", "research")
         rule_context = RuleResolver.research_context(rule_result)
-        if rule_context:
+        untrusted_memory_context = memory_context if v2_research else ""
+        if rule_context and not v2_research:
             memory_context = (
                 f"{memory_context}\n\nResearch rules (guidance only):\n{rule_context}"
             ).strip()
+        elif v2_research:
+            memory_context = rule_context
         ollama = get_llm_client(num_predict=512, route_name=route_name)
 
         intent = classify_topic_intent(effective_query, original_query=user_query)
@@ -179,6 +379,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             ollama=ollama,
             topic_intent=intent,
             original_query=user_query,
+            untrusted_memory_context=untrusted_memory_context,
         )
         _save_plan(job_id, plan)
         _update(
@@ -252,7 +453,10 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             JobStatus.EXTRACTING,
             55,
             "Extracting evidence",
-            f"Fetched {fetched_count} pages ({failed_count} failed, {rejected_count} rejected), extracting evidence...",
+            (
+                f"Fetched {fetched_count} pages ({failed_count} failed, "
+                f"{rejected_count} rejected), extracting evidence..."
+            ),
         )
 
         evidence = extract_evidence(
@@ -379,7 +583,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
 
 def _update(job_id: str, status: JobStatus, pct: int, step: str, message: str) -> None:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     job_data = load_job(job_id)
     if not job_data:
         return

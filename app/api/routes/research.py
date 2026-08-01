@@ -6,12 +6,15 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.api.routes.accounts import session_for
+from app.core.config import get_settings
 from app.services.notes import Note, NotesService
 from app.services.notes.service import NotesValidationError
+from app.services.profile_accounts import database_identity_for_profile
 from app.services.research import (
     DEPTH_CONFIG,
     JobStatus,
@@ -149,13 +152,18 @@ class SaveToNoteResponse(BaseModel):
 
 
 @router.post("/start", response_model=StartResponse)
-def start_research(req: StartResearchRequest):
+def start_research(req: StartResearchRequest, request: Request):
     if not req.query or not req.query.strip():
         raise HTTPException(400, "Query cannot be empty.")
 
     config = DEPTH_CONFIG[req.depth]
     max_sources = req.max_sources or config["max_sources"]
     max_rounds = req.max_rounds or config["max_rounds"]
+    profile = session_for(request)
+    if get_settings().memory_v2_research_recall_enabled and profile is None:
+        raise HTTPException(401, "Choose an authenticated profile for memory-aware research.")
+    profile_id = str(profile["id"]) if profile is not None else None
+    is_guest = bool(profile and profile.get("is_guest"))
 
     job = create_job(
         user_query=req.query.strip(),
@@ -165,6 +173,14 @@ def start_research(req: StartResearchRequest):
         project_id=req.project_id,
         task_id=req.task_id,
         repo_id=req.repo_id,
+        owner_id=str(profile["owner_id"]) if profile is not None else None,
+        database_identity=(
+            database_identity_for_profile(profile_id, guest=is_guest)
+            if profile_id is not None
+            else None
+        ),
+        profile_id=profile_id,
+        is_guest=is_guest,
     )
     started = start_job(job.id)
     if not started:

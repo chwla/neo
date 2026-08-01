@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import enum
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class DepthMode(str, enum.Enum):
+class DepthMode(StrEnum):
     QUICK = "quick"
     STANDARD = "standard"
     DEEP = "deep"
@@ -20,7 +20,7 @@ DEPTH_CONFIG: dict[DepthMode, dict[str, int]] = {
 }
 
 
-class JobStatus(str, enum.Enum):
+class JobStatus(StrEnum):
     QUEUED = "queued"
     PLANNING = "planning"
     SEARCHING = "searching"
@@ -113,6 +113,10 @@ class ResearchJob(BaseModel):
     evidence_chunks: list[ResearchEvidenceChunk] = Field(default_factory=list)
     report: str = ""
     error: str | None = None
+    owner_id: str | None = None
+    database_identity: str | None = None
+    profile_id: str | None = None
+    is_guest: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
     progress_log: list[ProgressEvent] = Field(default_factory=list)
 
@@ -126,7 +130,7 @@ class ResearchJob(BaseModel):
             sources_found=len(self.sources),
             sources_fetched=sum(1 for s in self.sources if s.fetched),
             evidence_chunks=len(self.evidence_chunks),
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
 
 

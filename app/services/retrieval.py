@@ -18,6 +18,8 @@ from app.schemas.memory_objects import (
 )
 from app.services.archives import ArchiveSearchResult, QdrantArchiveService
 from app.services.memory_scope import domains_for_text, memory_text, scoped_items
+from app.services.memory_v2.queries import MemoryQueryContext, RecallQuery, RecallResult
+from app.services.memory_v2.recall import CanonicalRecallService
 
 
 class RetrievalRequest(BaseModel):
@@ -35,6 +37,7 @@ class RetrievalResult(BaseModel):
     events: list[EventRead]
     archive_results: list[ArchiveSearchResult]
     archive_error: str | None = None
+    canonical_recall: RecallResult | None = None
 
 
 class RetrievalService:
@@ -44,11 +47,32 @@ class RetrievalService:
         self,
         archive_service: QdrantArchiveService | None = None,
         enable_default_archives: bool = False,
+        *,
+        canonical_recall: CanonicalRecallService | None = None,
+        memory_v2_enabled: bool = False,
     ) -> None:
         self.archive_service = archive_service
         self.enable_default_archives = enable_default_archives
+        self.canonical_recall = canonical_recall
+        self.memory_v2_enabled = memory_v2_enabled
 
-    def retrieve(self, store: MemoryStore, request: RetrievalRequest) -> RetrievalResult:
+    def retrieve(
+        self,
+        store: MemoryStore,
+        request: RetrievalRequest,
+        *,
+        query_context: MemoryQueryContext | None = None,
+    ) -> RetrievalResult:
+        if self.memory_v2_enabled:
+            # An authenticated context is created by the request boundary, never
+            # from a request-body owner. Missing context fails memory closed.
+            if self.canonical_recall is None or query_context is None:
+                return self._empty_canonical_result()
+            result = self.canonical_recall.recall(
+                RecallQuery(context=query_context, text=request.query)
+            )
+            return self._empty_canonical_result(canonical_recall=result)
+
         query = request.query
         personal_intent = self._personal_intent(query)
         advice_intent = self._advice_intent(query)
@@ -132,6 +156,20 @@ class RetrievalService:
         )
 
     @staticmethod
+    def _empty_canonical_result(*, canonical_recall: RecallResult | None = None) -> RetrievalResult:
+        """Preserve the public shape without reading parallel legacy truth."""
+        return RetrievalResult(
+            profile=[],
+            preferences=[],
+            goals=[],
+            projects=[],
+            relevant_memories=[],
+            events=[],
+            archive_results=[],
+            canonical_recall=canonical_recall,
+        )
+
+    @staticmethod
     def _goals_for_domains(
         store: MemoryStore,
         requested_domains: frozenset[str],
@@ -144,13 +182,8 @@ class RetrievalService:
             requested_domains,
             memory_text,
         )
-        fingerprints = {
-            memory.fingerprint for memory in goal_memories if memory.fingerprint
-        }
-        goal_texts = {
-            " ".join(memory.memory_text.casefold().split())
-            for memory in goal_memories
-        }
+        fingerprints = {memory.fingerprint for memory in goal_memories if memory.fingerprint}
+        goal_texts = {" ".join(memory.memory_text.casefold().split()) for memory in goal_memories}
         return [
             goal
             for goal in store.list_goals(GoalStatus.ACTIVE)
@@ -160,7 +193,28 @@ class RetrievalService:
             )
         ][:limit]
 
-    def search_all(self, store: MemoryStore, query: str, limit: int = 10) -> dict[str, list[Any]]:
+    def search_all(
+        self,
+        store: MemoryStore,
+        query: str,
+        limit: int = 10,
+        *,
+        query_context: MemoryQueryContext | None = None,
+    ) -> dict[str, list[Any]]:
+        if self.memory_v2_enabled:
+            if self.canonical_recall is None or query_context is None:
+                canonical_memories = []
+            else:
+                result = self.canonical_recall.recall(
+                    RecallQuery(context=query_context, text=query)
+                )
+                canonical_memories = [item.memory.model_dump() for item in result.items]
+            return {
+                "goals": [],
+                "projects": [],
+                "events": [],
+                "memories": canonical_memories,
+            }
         return {
             "goals": [GoalRead.model_validate(item) for item in store.search_goals(query, limit)],
             "projects": [

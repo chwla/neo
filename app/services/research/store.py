@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 from app.core.config import get_settings
 
@@ -67,7 +66,7 @@ def initialize_research_tables() -> None:
 def save_job(job_dict: dict) -> None:
     conn = _connect()
     try:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         conn.execute(
             """
             INSERT INTO research_jobs (
@@ -156,7 +155,7 @@ def list_jobs(limit: int = 20, offset: int = 0) -> list[dict]:
 def update_job_status(job_id: str, status: str, **kwargs) -> None:
     conn = _connect()
     try:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         sets = ["status = ?", "updated_at = ?"]
         vals: list = [status, now]
         for key, val in kwargs.items():

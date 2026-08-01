@@ -1,7 +1,7 @@
-"""Narrow owner-bound persistence primitives for memory v2 Phase 1.
+"""Owner-bound persistence and canonical serving primitives for memory v2.
 
-This repository deliberately contains no lifecycle, duplicate, replacement,
-restoration, resurrection, extraction, recall, indexing, or commit decisions.
+Lifecycle and extraction decisions remain in their services. Phase 5 adds only
+SQL-level eligibility, source tracing, and usage metadata operations here.
 """
 
 from __future__ import annotations
@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection
+from datetime import datetime
 from typing import Any, TypeVar
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -201,6 +202,196 @@ class MemoryV2Repository:
                 MemoryRecordV2.status.in_(values),
             )
         )
+
+    def eligible_records_statement(
+        self,
+        *,
+        now: datetime,
+        memory_types: Collection[MemoryType | str] = (),
+        domain_keys: Collection[str] = (),
+    ) -> Select[tuple[MemoryRecordV2]]:
+        """Build the authoritative normal-serving query with SQL-level eligibility."""
+        statement = select(MemoryRecordV2).where(
+            MemoryRecordV2.owner_id == self.owner_id,
+            MemoryRecordV2.status == MemoryLifecycleState.ACTIVE.value,
+            or_(MemoryRecordV2.expires_at.is_(None), MemoryRecordV2.expires_at > now),
+        )
+        if memory_types:
+            values = tuple(
+                item.value if isinstance(item, MemoryType) else MemoryType(item).value
+                for item in memory_types
+            )
+            statement = statement.where(MemoryRecordV2.memory_type.in_(values))
+        if domain_keys:
+            statement = statement.where(MemoryRecordV2.domain_key.in_(tuple(domain_keys)))
+        return statement
+
+    def recall_filter_counts(
+        self,
+        *,
+        now: datetime,
+        memory_id: str | None = None,
+        memory_types: Collection[MemoryType | str] = (),
+        domain_keys: Collection[str] = (),
+        slot_keys: Collection[str] = (),
+    ) -> tuple[int, int]:
+        """Count owner-bound inactive and expired rows excluded by serving SQL."""
+        conditions = [MemoryRecordV2.owner_id == self.owner_id]
+        if memory_id is not None:
+            conditions.append(MemoryRecordV2.id == canonical_uuid(memory_id))
+        if memory_types:
+            values = tuple(
+                item.value if isinstance(item, MemoryType) else MemoryType(item).value
+                for item in memory_types
+            )
+            conditions.append(MemoryRecordV2.memory_type.in_(values))
+        if domain_keys:
+            conditions.append(MemoryRecordV2.domain_key.in_(tuple(domain_keys)))
+        normalized_slots = tuple(item.strip() for item in slot_keys if item.strip())
+        if normalized_slots:
+            conditions.append(MemoryRecordV2.slot_key.in_(normalized_slots))
+        inactive = self._session.scalar(
+            select(func.count()).select_from(MemoryRecordV2).where(
+                *conditions,
+                MemoryRecordV2.status != MemoryLifecycleState.ACTIVE.value,
+            )
+        )
+        expired = self._session.scalar(
+            select(func.count()).select_from(MemoryRecordV2).where(
+                *conditions,
+                MemoryRecordV2.status == MemoryLifecycleState.ACTIVE.value,
+                MemoryRecordV2.expires_at.is_not(None),
+                MemoryRecordV2.expires_at <= now,
+            )
+        )
+        return int(inactive or 0), int(expired or 0)
+
+    def list_recall_eligible(
+        self,
+        *,
+        now: datetime,
+        memory_types: Collection[MemoryType | str] = (),
+        domain_keys: Collection[str] = (),
+        limit: int = 500,
+    ) -> list[MemoryRecordV2]:
+        if not 1 <= limit <= 500:
+            raise ValueError("recall_candidate_limit_out_of_range")
+        statement = self.eligible_records_statement(
+            now=now,
+            memory_types=memory_types,
+            domain_keys=domain_keys,
+        ).order_by(
+            MemoryRecordV2.last_confirmed_at.desc(),
+            MemoryRecordV2.updated_at.desc(),
+            MemoryRecordV2.id.asc(),
+        )
+        return list(self._session.scalars(statement.limit(limit)))
+
+    def get_recall_eligible_by_id(
+        self,
+        memory_id: str,
+        *,
+        now: datetime,
+    ) -> MemoryRecordV2 | None:
+        identifier = canonical_uuid(memory_id)
+        return self._session.scalar(
+            self.eligible_records_statement(now=now).where(MemoryRecordV2.id == identifier)
+        )
+
+    def find_recall_eligible_slot(
+        self,
+        *,
+        now: datetime,
+        memory_type: MemoryType,
+        domain_key: str,
+        slot_key: str,
+    ) -> MemoryRecordV2 | None:
+        statement = self.eligible_records_statement(
+            now=now,
+            memory_types=(memory_type,),
+            domain_keys=(domain_key,),
+        ).where(MemoryRecordV2.slot_key == slot_key)
+        return self._session.scalar(
+            statement.order_by(
+                MemoryRecordV2.last_confirmed_at.desc(),
+                MemoryRecordV2.id.asc(),
+            ).limit(1)
+        )
+
+    def list_recall_eligible_for_slots(
+        self,
+        slot_keys: Collection[str],
+        *,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[MemoryRecordV2]:
+        slots = tuple(dict.fromkeys(item.strip() for item in slot_keys if item.strip()))
+        if not slots:
+            return []
+        if len(slots) > 50 or not 1 <= limit <= 100:
+            raise ValueError("trusted_slot_query_out_of_range")
+        statement = self.eligible_records_statement(now=now).where(
+            MemoryRecordV2.slot_key.in_(slots)
+        )
+        return list(
+            self._session.scalars(
+                statement.order_by(
+                    MemoryRecordV2.last_confirmed_at.desc(),
+                    MemoryRecordV2.id.asc(),
+                ).limit(limit)
+            )
+        )
+
+    def active_source_ids_for_records(
+        self,
+        memory_ids: Collection[str],
+    ) -> dict[str, tuple[str, ...]]:
+        identifiers = tuple(dict.fromkeys(canonical_uuid(item) for item in memory_ids))
+        if not identifiers:
+            return {}
+        rows = self._session.execute(
+            select(MemorySourceV2.memory_id, MemorySourceV2.id).where(
+                MemorySourceV2.owner_id == self.owner_id,
+                MemorySourceV2.memory_id.in_(identifiers),
+                MemorySourceV2.is_active.is_(True),
+            )
+        ).all()
+        grouped: dict[str, list[str]] = {identifier: [] for identifier in identifiers}
+        for memory_id, source_id in rows:
+            grouped[memory_id].append(source_id)
+        return {memory_id: tuple(sorted(source_ids)) for memory_id, source_ids in grouped.items()}
+
+    def record_recall_usage(
+        self,
+        memory_ids: Collection[str],
+        *,
+        used_at: datetime,
+    ) -> tuple[str, ...]:
+        identifiers = tuple(dict.fromkeys(canonical_uuid(item) for item in memory_ids))
+        if not identifiers:
+            return ()
+        with self._session.begin_nested() as savepoint:
+            result = self._session.execute(
+                update(MemoryRecordV2)
+                .where(
+                    MemoryRecordV2.owner_id == self.owner_id,
+                    MemoryRecordV2.id.in_(identifiers),
+                    MemoryRecordV2.status == MemoryLifecycleState.ACTIVE.value,
+                    or_(
+                        MemoryRecordV2.expires_at.is_(None),
+                        MemoryRecordV2.expires_at > used_at,
+                    ),
+                )
+                .values(
+                    usage_count=MemoryRecordV2.usage_count + 1,
+                    last_used_at=used_at,
+                )
+            )
+            if result.rowcount != len(identifiers):
+                savepoint.rollback()
+                raise MemoryV2NotFoundError("usage_selection_not_fully_eligible")
+        self._session.flush()
+        return identifiers
 
     def list_records(
         self,

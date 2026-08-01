@@ -41,6 +41,15 @@ class MemoryV2FeatureFlags:
     extraction_warmup_timeout_seconds: int = 300
     ollama_request_mode: str = "auto"
     extraction_max_input_chars: int = 12_000
+    canonical_query_enabled: bool = False
+    lexical_recall_enabled: bool = False
+    secure_prompt_enabled: bool = False
+    direct_answer_reads_enabled: bool = False
+    research_recall_enabled: bool = False
+    legacy_read_compatibility: bool = True
+    recall_max_records: int = 5
+    recall_max_chars: int = 2_400
+    recall_min_score: float = 0.18
 
     def __post_init__(self) -> None:
         owners = frozenset(canonical_uuid(owner) for owner in self.enabled_owner_ids)
@@ -83,6 +92,28 @@ class MemoryV2FeatureFlags:
             raise MemoryV2RolloutError("memory_v2_ollama_request_mode_invalid")
         if not 500 <= self.extraction_max_input_chars <= 50_000:
             raise MemoryV2RolloutError("memory_v2_extraction_input_limit_out_of_range")
+        phase5_subfeature = any(
+            (
+                self.lexical_recall_enabled,
+                self.secure_prompt_enabled,
+                self.direct_answer_reads_enabled,
+                self.research_recall_enabled,
+            )
+        )
+        if phase5_subfeature and not self.canonical_query_enabled:
+            raise MemoryV2RolloutError("memory_v2_recall_subfeatures_require_canonical_queries")
+        if self.research_recall_enabled and not self.secure_prompt_enabled:
+            raise MemoryV2RolloutError("memory_v2_research_recall_requires_secure_prompt")
+        if self.canonical_query_enabled and not self.schema_enabled:
+            raise MemoryV2RolloutError("memory_v2_canonical_queries_require_schema")
+        if self.canonical_query_enabled and not owners:
+            raise MemoryV2RolloutError("memory_v2_canonical_queries_require_owner_allowlist")
+        if not 1 <= self.recall_max_records <= 20:
+            raise MemoryV2RolloutError("memory_v2_recall_record_limit_out_of_range")
+        if not 200 <= self.recall_max_chars <= 12_000:
+            raise MemoryV2RolloutError("memory_v2_recall_char_limit_out_of_range")
+        if not 0 <= self.recall_min_score <= 1:
+            raise MemoryV2RolloutError("memory_v2_recall_score_out_of_range")
 
     @classmethod
     def from_settings(cls, settings: Settings) -> MemoryV2FeatureFlags:
@@ -115,6 +146,15 @@ class MemoryV2FeatureFlags:
             ),
             ollama_request_mode=settings.memory_v2_ollama_request_mode,
             extraction_max_input_chars=settings.memory_v2_extraction_max_input_chars,
+            canonical_query_enabled=settings.memory_v2_canonical_query_enabled,
+            lexical_recall_enabled=settings.memory_v2_lexical_recall_enabled,
+            secure_prompt_enabled=settings.memory_v2_secure_prompt_enabled,
+            direct_answer_reads_enabled=settings.memory_v2_direct_answer_reads_enabled,
+            research_recall_enabled=settings.memory_v2_research_recall_enabled,
+            legacy_read_compatibility=settings.memory_v2_legacy_read_compatibility,
+            recall_max_records=settings.memory_v2_recall_max_records,
+            recall_max_chars=settings.memory_v2_recall_max_chars,
+            recall_min_score=settings.memory_v2_recall_min_score,
         )
 
     def mode_for(self, owner_id: str) -> MemoryV2WriteMode:

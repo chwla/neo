@@ -32,6 +32,7 @@ from app.schemas.memory_objects import (
     ProjectRead,
 )
 from app.services.archives import QdrantArchiveService
+from app.services.canonical_memory import build_chat_canonical_memory_runtime
 from app.services.chat import NeoChatService
 from app.services.context import ContextAssemblyService, ContextPackage
 from app.services.explanation import MemoryExplanation, MemoryExplanationService
@@ -39,7 +40,7 @@ from app.services.extraction import ExtractionRequest, ExtractionResult, MemoryE
 from app.services.lifecycle import AgingPolicy, MemoryLifecycleService
 from app.services.lifecycle_maintenance import MemoryLifecycleMaintenance
 from app.services.llm import LLMClient, LLMRegistry, get_llm_client
-from app.services.profile_accounts import profile_database
+from app.services.profile_accounts import database_identity_for_profile, profile_database
 from app.services.reflection import ReflectionRunRequest, ReflectionRunResult, ReflectionService
 from app.services.retrieval import RetrievalRequest
 from app.services.review import MemoryReviewRequest, MemoryReviewResult, MemoryReviewService
@@ -430,7 +431,42 @@ def _generation_service(db, chat: Chat, llm_id: str | None) -> NeoChatService:
         )
     )
     route_name = RuleResolver.route_name(rule_result, "chat", "chat")
-    return NeoChatService(db, ollama=_llm_client(llm_id, route_name), rule_result=rule_result)
+    return _chat_service(
+        db,
+        db.info.get("neo_authenticated_profile"),
+        request_id=f"generation:{chat.id}",
+        ollama=_llm_client(llm_id, route_name),
+        rule_result=rule_result,
+    )
+
+
+def _chat_service(
+    db,
+    profile: dict | None,
+    *,
+    request_id: str,
+    ollama: LLMClient,
+    rule_result: dict,
+) -> NeoChatService:
+    runtime = None
+    if profile is not None:
+        profile_id = str(profile["id"])
+        is_guest = bool(profile.get("is_guest"))
+        runtime = build_chat_canonical_memory_runtime(
+            db,
+            owner_id=str(profile["owner_id"]),
+            database_identity=database_identity_for_profile(profile_id, guest=is_guest),
+            profile_id=profile_id,
+            request_id=request_id,
+            session_id=f"profile:{profile_id}",
+        )
+    return NeoChatService(
+        db,
+        ollama=ollama,
+        rule_result=rule_result,
+        memory_v2_orchestrator=runtime.orchestrator if runtime is not None else None,
+        memory_v2_context_factory=runtime.context_factory if runtime is not None else None,
+    )
 
 
 def _lease_cutoff(now: datetime | None = None) -> datetime:
@@ -546,6 +582,7 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 )
                 return
 
+            db.info["neo_authenticated_profile"] = profile
             service = _generation_service(db, chat, generation.llm_id)
             partial_response = ""
             thinking = ""
@@ -889,6 +926,7 @@ def get_chat(chat_id: int, store: StoreDependency) -> ChatThreadRead:
 def send_chat_message(
     chat_id: int,
     request: ChatSendRequest,
+    http_request: Request,
     store: StoreDependency,
 ) -> ChatSendResponse:
     chat = _get_required_chat(store, chat_id)
@@ -900,8 +938,10 @@ def send_chat_message(
         )
     )
     route_name = RuleResolver.route_name(rule_result, "chat", "chat")
-    service = NeoChatService(
+    service = _chat_service(
         store.db,
+        session_for(http_request),
+        request_id=f"chat:{chat_id}:{uuid.uuid4()}",
         ollama=_llm_client(request.llm_id, route_name),
         rule_result=rule_result,
     )
@@ -984,6 +1024,7 @@ def get_chat_generation(
 def stream_chat_message(
     chat_id: int,
     request: ChatSendRequest,
+    http_request: Request,
     store: StoreDependency,
 ) -> StreamingResponse:
     chat = _get_required_chat(store, chat_id)
@@ -995,8 +1036,10 @@ def stream_chat_message(
         )
     )
     route_name = RuleResolver.route_name(rule_result, "chat", "chat")
-    service = NeoChatService(
+    service = _chat_service(
         store.db,
+        session_for(http_request),
+        request_id=f"chat-stream:{chat_id}:{uuid.uuid4()}",
         ollama=_llm_client(request.llm_id, route_name),
         rule_result=rule_result,
     )

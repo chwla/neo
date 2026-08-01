@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.research.topic_intent import TopicIntent
+    from app.services.research.types import ResearchSource
 
 TOPIC_PRODUCT_COMPARISON = "product_comparison"
 
@@ -213,7 +218,7 @@ def normalize_user_query(user_query: str) -> QueryNormalization:
     if _AI_WORKLOAD_EXPLICIT.search(original):
         # Explicit AI workload — never rewrite ai → air
         if _MACBOOK_AI_TYPO.search(original) or _MACBOOK_PRO_AI_TYPO.search(original):
-            # "macbook pro for local AI vs macbook air" — already has air, or comparison with AI focus
+            # This already has Air, or a comparison with an explicit AI focus.
             effective = re.sub(r"macbook\s+ai\b", "macbook air", original, flags=re.IGNORECASE)
             if effective.lower() != original.lower():
                 return QueryNormalization(
@@ -319,7 +324,7 @@ def build_product_plan(intent: ProductIntent, user_query: str) -> dict:
 
 
 def _macbook_air_pro_plan(intent: ProductIntent, user_query: str) -> dict:
-    entities = list(intent.normalized_entities.values())
+    list(intent.normalized_entities.values())
     air = intent.normalized_entities.get("macbook air", "MacBook Air")
     pro = intent.normalized_entities.get("macbook pro", "MacBook Pro")
 
@@ -327,7 +332,7 @@ def _macbook_air_pro_plan(intent: ProductIntent, user_query: str) -> dict:
         f"What are the official specs and product role of the {air}?",
         f"What are the official specs and product role of the {pro}?",
         f"How do {air} and {pro} compare on performance, battery life, display, and ports?",
-        f"Which is better for portability vs sustained performance?",
+        "Which is better for portability vs sustained performance?",
         "What are the current RAM/storage and pricing options?",
     ]
     if intent.ai_workload_focus:
@@ -434,11 +439,9 @@ def product_entity_terms(intent: ProductIntent) -> list[str]:
 
 def classify_product_evidence_category(
     text: str,
-    source: "ResearchSource",
+    source: ResearchSource,
     intent: ProductIntent,
 ) -> str:
-    from app.services.research.types import ResearchSource  # noqa: F401
-
     url = (source.url or "").lower()
     combined = f"{source.title} {url} {text}".lower()
 
@@ -499,13 +502,12 @@ def _is_macbook_ai_pollution(text: str, intent: ProductIntent, url: str = "") ->
     return False
 
 
-def source_is_offtopic_for_product(source: "ResearchSource", intent: ProductIntent) -> str | None:
-    from app.services.research.types import ResearchSource  # noqa: F401
-
+def source_is_offtopic_for_product(source: ResearchSource, intent: ProductIntent) -> str | None:
     title = (source.title or "").lower()
     url = (source.url or "").lower()
     sample = (source.text or "")[:5000].lower()
     combined = f"{title} {url} {sample}"
+    domain = (source.domain or "").lower()
 
     if intent.ai_workload_focus:
         return None
@@ -528,7 +530,7 @@ def source_is_offtopic_for_product(source: "ResearchSource", intent: ProductInte
     return None
 
 
-def is_preferred_product_source(source: "ResearchSource", intent: ProductIntent) -> bool:
+def is_preferred_product_source(source: ResearchSource, intent: ProductIntent) -> bool:
     domain = (source.domain or "").lower()
     url = (source.url or "").lower()
     if "apple.com" in domain and ("macbook-air" in url or "macbook-pro" in url or "macbook" in url):
@@ -536,15 +538,13 @@ def is_preferred_product_source(source: "ResearchSource", intent: ProductIntent)
     return any(d in domain for d in _PREFERRED_DOMAINS)
 
 
-def is_low_quality_product_source(source: "ResearchSource") -> bool:
+def is_low_quality_product_source(source: ResearchSource) -> bool:
     domain = (source.domain or "").lower()
     return any(d in domain for d in _LOW_QUALITY_DOMAINS)
 
 
-def intent_from_topic(intent: "TopicIntent") -> ProductIntent:
+def intent_from_topic(intent: TopicIntent) -> ProductIntent:
     """Convert unified TopicIntent back to ProductIntent for product-specific helpers."""
-    from app.services.research.topic_intent import TopicIntent  # noqa: F401
-
     return ProductIntent(
         topic_intent=intent.topic_intent,
         entities=intent.tools,
