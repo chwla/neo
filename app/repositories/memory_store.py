@@ -5,10 +5,11 @@ import re
 from datetime import UTC, date, datetime
 
 from sqlalchemy import Select, case, exists, or_, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.identifiers import canonical_uuid
 from app.models import (
     Activity,
     Chat,
@@ -91,6 +92,8 @@ class MemoryStore:
         self.auto_embed = auto_embed if auto_embed is not None else settings.auto_embed_memories
         self.embedding_provider = embedding_provider
         self._memory_v2_recall_active = False
+        self._memory_v2_indexing_policy_active = self._v2_indexing_enabled_for_bound_owner(settings)
+        self._memory_v2_indexing_active = self._memory_v2_indexing_policy_active
         self.embedding_service = (
             MemoryEmbeddingService(embedding_provider)
             if embedding_provider is not None or self.semantic_enabled or self.auto_embed
@@ -100,6 +103,34 @@ class MemoryStore:
     def set_memory_v2_recall_active(self, active: bool) -> None:
         """Prevent legacy generic/FTS/vector memory serving during v2 recall."""
         self._memory_v2_recall_active = bool(active)
+
+    def set_memory_v2_indexing_active(self, active: bool) -> None:
+        """Disable legacy lazy derived writes while the v2 worker owns indexing."""
+        self._memory_v2_indexing_active = self._memory_v2_indexing_policy_active or bool(active)
+
+    def _v2_indexing_enabled_for_bound_owner(self, settings) -> bool:
+        if not settings.memory_v2_outbox_worker_enabled:
+            return False
+        owners: set[str] = set()
+        authenticated_owner: str | None = None
+        try:
+            owners = {
+                canonical_uuid(item.strip())
+                for item in settings.memory_v2_enabled_owner_ids.split(",")
+                if item.strip()
+            }
+            profile = self.db.info.get("neo_authenticated_profile") or {}
+            if profile.get("owner_id") is not None:
+                authenticated_owner = canonical_uuid(str(profile["owner_id"]))
+            from app.db.memory_v2_migrations import memory_v2_migration_state
+
+            state = memory_v2_migration_state(self.db.get_bind())
+            bound_owner = canonical_uuid(state.owner_id) if state.owner_id is not None else None
+            if authenticated_owner is not None and bound_owner not in {None, authenticated_owner}:
+                return True
+            return (bound_owner or authenticated_owner) in owners
+        except (RuntimeError, ValueError, SQLAlchemyError):
+            return authenticated_owner in owners
 
     def add(self, entity):
         self.db.add(entity)
@@ -1380,6 +1411,8 @@ class MemoryStore:
         return scored[:limit]
 
     def _ensure_memory_fts(self) -> bool:
+        if self._memory_v2_indexing_active:
+            return False
         if self._memory_fts_available is False:
             return False
         try:
@@ -1427,7 +1460,7 @@ class MemoryStore:
         self.db.execute(text("DELETE FROM memory_fts WHERE rowid = :id"), {"id": memory_id})
 
     def _sync_memory_embedding(self, memory: Memory) -> None:
-        if not self.auto_embed or self.embedding_service is None:
+        if self._memory_v2_indexing_active or not self.auto_embed or self.embedding_service is None:
             return
         existing = self.db.get(MemoryEmbedding, memory.id)
         if not self.embedding_service.needs_embedding(memory, existing):
@@ -1438,6 +1471,8 @@ class MemoryStore:
         self.db.flush()
 
     def _mark_embedding_stale(self, memory: Memory) -> None:
+        if self._memory_v2_indexing_active:
+            return
         embedding = self.db.get(MemoryEmbedding, memory.id)
         if embedding is None:
             return
@@ -1447,6 +1482,8 @@ class MemoryStore:
             self.db.flush()
 
     def upsert_memory_embedding(self, memory: Memory, dry_run: bool = False) -> str:
+        if self._memory_v2_indexing_active:
+            return "disabled_memory_v2_indexing"
         if self.embedding_service is None:
             return "skipped"
         existing = self.db.get(MemoryEmbedding, memory.id)
@@ -1461,6 +1498,8 @@ class MemoryStore:
     def list_embedding_backfill_targets(
         self, active_only: bool = True, limit: int | None = None
     ) -> list[Memory]:
+        if self._memory_v2_indexing_active:
+            return []
         stmt = select(Memory).order_by(Memory.id)
         if active_only:
             stmt = stmt.where(Memory.is_active.is_(True), Memory.status == "active")

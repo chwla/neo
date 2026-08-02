@@ -68,3 +68,5 @@ Thumbs.db
 !/scripts/manual_memory_v2_phase3.py
 !/scripts/manual_memory_v2_phase4.py
 !/scripts/manual_memory_v2_phase5.py
+!/scripts/manual_memory_v2_phase6.py
+!/scripts/memory_v2_index_worker.py

@@ -16,6 +16,7 @@ from app.services.memory_v2.versions import (
     LEXICAL_SCORING_VERSION,
     PROMPT_SERIALIZER_VERSION,
     RECALL_CONTRACT_VERSION,
+    SEMANTIC_SCORING_VERSION,
 )
 
 
@@ -45,6 +46,7 @@ class RecallReasonCode(StrEnum):
     CURRENT_TURN_SUPPRESSED = "current_turn_suppressed"
     LEXICAL_UNAVAILABLE = "lexical_unavailable"
     NO_RELIABLE_MATCH = "no_reliable_match"
+    SEMANTIC_UNAVAILABLE = "semantic_unavailable"
 
 
 class MemoryQueryContext(RecallContractModel):
@@ -118,6 +120,7 @@ class RecallScoreBreakdown(RecallContractModel):
     scoring_policy_version: Literal[LEXICAL_SCORING_VERSION] = LEXICAL_SCORING_VERSION
     domain_fit: float = Field(ge=0, le=1)
     lexical: float = Field(ge=0, le=1)
+    semantic: float = Field(default=0, ge=0, le=1)
     importance: float = Field(ge=0, le=1)
     confidence: float = Field(ge=0, le=1)
     confirmation_freshness: float = Field(ge=0, le=1)
@@ -139,6 +142,11 @@ class RecallItem(RecallContractModel):
     reason_code: RecallReasonCode = RecallReasonCode.SELECTED
 
 
+class RecallScoreDiagnostic(RecallContractModel):
+    canonical_id: UUID
+    score: RecallScoreBreakdown
+
+
 class RecallDiagnostic(RecallContractModel):
     owner_database_binding: str
     recall_mode: RecallMode
@@ -154,9 +162,19 @@ class RecallDiagnostic(RecallContractModel):
     final_injected_ids: tuple[UUID, ...] = ()
     usage_event_ids: tuple[UUID, ...] = ()
     degraded_lexical: bool = False
+    semantic_candidate_count: int = Field(default=0, ge=0)
+    semantic_validated_count: int = Field(default=0, ge=0)
+    semantic_stale_drop_count: int = Field(default=0, ge=0)
+    semantic_ghost_drop_count: int = Field(default=0, ge=0)
+    semantic_wrong_owner_drop_count: int = Field(default=0, ge=0)
+    semantic_inactive_drop_count: int = Field(default=0, ge=0)
+    semantic_repair_count: int = Field(default=0, ge=0)
+    degraded_semantic_reason: str | None = Field(default=None, max_length=80)
+    score_components: tuple[RecallScoreDiagnostic, ...] = ()
     latency_ms: int = Field(default=0, ge=0)
     scoring_policy_version: Literal[LEXICAL_SCORING_VERSION] = LEXICAL_SCORING_VERSION
     prompt_serializer_version: Literal[PROMPT_SERIALIZER_VERSION] = PROMPT_SERIALIZER_VERSION
+    semantic_scoring_version: Literal[SEMANTIC_SCORING_VERSION] = SEMANTIC_SCORING_VERSION
     reason_codes: tuple[RecallReasonCode, ...] = ()
 
 

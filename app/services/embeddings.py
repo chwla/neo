@@ -23,6 +23,110 @@ class EmbeddingProvider(Protocol):
     def embed(self, text: str) -> list[float]: ...
 
 
+class MemoryV2EmbeddingProvider(Protocol):
+    provider_name: str
+    model_name: str
+    provider_version: str
+    dimension: int
+
+    def embed(self, text: str) -> list[float]: ...
+
+    def health(self) -> bool: ...
+
+
+class EmbeddingValidationError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class ValidatedMemoryV2EmbeddingProvider:
+    """Provider-only validation boundary; it has no canonical or index access."""
+
+    def __init__(
+        self,
+        provider: EmbeddingProvider,
+        *,
+        dimension: int,
+        provider_version: str = "1",
+        maximum_dimension: int = 65_536,
+        cooldown_seconds: int = 0,
+        clock=time.monotonic,
+    ) -> None:
+        if not 1 <= dimension <= maximum_dimension:
+            raise ValueError("embedding_dimension_out_of_range")
+        provider_name = str(getattr(provider, "provider_name", "")).strip()
+        model_name = str(getattr(provider, "model_name", "")).strip()
+        if not provider_name or len(provider_name) > 80:
+            raise ValueError("embedding_provider_identity_invalid")
+        if not model_name or len(model_name) > 160:
+            raise ValueError("embedding_model_identity_invalid")
+        if not provider_version.strip() or len(provider_version) > 80:
+            raise ValueError("embedding_provider_version_invalid")
+        self._provider = provider
+        self.provider_name = provider_name
+        self.model_name = model_name
+        self.provider_version = provider_version
+        self.dimension = dimension
+        self.maximum_dimension = maximum_dimension
+        self.cooldown_seconds = max(0, cooldown_seconds)
+        self.clock = clock
+        self.cooldown_until = 0.0
+        self.consecutive_failures = 0
+
+    def embed(self, text: str) -> list[float]:
+        if not text.strip() or len(text) > 12_000:
+            raise EmbeddingValidationError("embedding_invalid_input")
+        if self.clock() < self.cooldown_until:
+            raise EmbeddingValidationError("embedding_unavailable")
+        try:
+            raw = self._provider.embed(text)
+        except (TimeoutError, requests.Timeout) as exc:
+            self._record_failure()
+            raise EmbeddingValidationError("embedding_timeout") from exc
+        except Exception as exc:
+            self._record_failure()
+            raise EmbeddingValidationError("embedding_unavailable") from exc
+        if not isinstance(raw, list) or not raw:
+            self._record_failure()
+            raise EmbeddingValidationError("embedding_invalid_response")
+        try:
+            vector = [float(value) for value in raw]
+        except (TypeError, ValueError) as exc:
+            self._record_failure()
+            raise EmbeddingValidationError("embedding_invalid_response") from exc
+        if len(vector) != self.dimension:
+            self._record_failure()
+            raise EmbeddingValidationError("embedding_dimension_mismatch")
+        if len(vector) > self.maximum_dimension or any(
+            not math.isfinite(value) for value in vector
+        ):
+            self._record_failure()
+            raise EmbeddingValidationError("embedding_invalid_response")
+        self.consecutive_failures = 0
+        self.cooldown_until = 0
+        return vector
+
+    def health(self) -> bool:
+        if self.clock() < self.cooldown_until:
+            return False
+        health = getattr(self._provider, "health", None)
+        if health is None:
+            return True
+        try:
+            result = health()
+            if isinstance(result, bool):
+                return result
+            structured = getattr(result, "healthy", None)
+            return structured if isinstance(structured, bool) else False
+        except Exception:
+            return False
+
+    def _record_failure(self) -> None:
+        self.consecutive_failures += 1
+        self.cooldown_until = self.clock() + self.cooldown_seconds
+
+
 class OllamaEmbeddingProvider:
     provider_name = "ollama"
 
@@ -86,6 +190,28 @@ class OllamaEmbeddingProvider:
                     error=safe_error(exc, provider),
                 )
             raise
+
+    def health(self) -> bool:
+        """Check the configured Ollama endpoint and exact model without exposing its response."""
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/tags",
+                timeout=min(float(self.timeout), 5.0),
+            )
+            if not response.ok:
+                return False
+            payload = response.json()
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if not isinstance(models, list):
+                return False
+            names = {
+                str(item.get("name") or item.get("model") or "").strip()
+                for item in models
+                if isinstance(item, dict)
+            }
+            return self.model_name in names
+        except (TypeError, ValueError, requests.RequestException):
+            return False
 
 
 @dataclass(frozen=True)

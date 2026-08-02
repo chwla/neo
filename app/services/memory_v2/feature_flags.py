@@ -50,6 +50,12 @@ class MemoryV2FeatureFlags:
     recall_max_records: int = 5
     recall_max_chars: int = 2_400
     recall_min_score: float = 0.18
+    outbox_worker_enabled: bool = False
+    fts_index_enabled: bool = False
+    vector_index_enabled: bool = False
+    semantic_recall_enabled: bool = False
+    reconciliation_enabled: bool = False
+    derived_health_routes_enabled: bool = False
 
     def __post_init__(self) -> None:
         owners = frozenset(canonical_uuid(owner) for owner in self.enabled_owner_ids)
@@ -114,6 +120,32 @@ class MemoryV2FeatureFlags:
             raise MemoryV2RolloutError("memory_v2_recall_char_limit_out_of_range")
         if not 0 <= self.recall_min_score <= 1:
             raise MemoryV2RolloutError("memory_v2_recall_score_out_of_range")
+        phase6_subfeature = any(
+            (
+                self.outbox_worker_enabled,
+                self.fts_index_enabled,
+                self.vector_index_enabled,
+                self.semantic_recall_enabled,
+                self.reconciliation_enabled,
+                self.derived_health_routes_enabled,
+            )
+        )
+        if phase6_subfeature and not self.canonical_query_enabled:
+            raise MemoryV2RolloutError("memory_v2_phase6_requires_canonical_queries")
+        if self.semantic_recall_enabled and not self.vector_index_enabled:
+            raise MemoryV2RolloutError("memory_v2_semantic_recall_requires_vector_index")
+        if self.vector_index_enabled and not self.outbox_worker_enabled:
+            raise MemoryV2RolloutError("memory_v2_vector_index_requires_outbox_worker")
+        if self.fts_index_enabled and not self.outbox_worker_enabled:
+            raise MemoryV2RolloutError("memory_v2_fts_index_requires_outbox_worker")
+        if self.reconciliation_enabled and not self.outbox_worker_enabled:
+            raise MemoryV2RolloutError("memory_v2_reconciliation_requires_outbox_worker")
+        if self.reconciliation_enabled and not (
+            self.fts_index_enabled and self.vector_index_enabled
+        ):
+            raise MemoryV2RolloutError("memory_v2_reconciliation_requires_derived_indexes")
+        if self.derived_health_routes_enabled and not self.reconciliation_enabled:
+            raise MemoryV2RolloutError("memory_v2_health_routes_require_reconciliation")
 
     @classmethod
     def from_settings(cls, settings: Settings) -> MemoryV2FeatureFlags:
@@ -155,6 +187,12 @@ class MemoryV2FeatureFlags:
             recall_max_records=settings.memory_v2_recall_max_records,
             recall_max_chars=settings.memory_v2_recall_max_chars,
             recall_min_score=settings.memory_v2_recall_min_score,
+            outbox_worker_enabled=settings.memory_v2_outbox_worker_enabled,
+            fts_index_enabled=settings.memory_v2_fts_index_enabled,
+            vector_index_enabled=settings.memory_v2_vector_index_enabled,
+            semantic_recall_enabled=settings.memory_v2_semantic_recall_enabled,
+            reconciliation_enabled=settings.memory_v2_reconciliation_enabled,
+            derived_health_routes_enabled=settings.memory_v2_derived_health_routes_enabled,
         )
 
     def mode_for(self, owner_id: str) -> MemoryV2WriteMode:
@@ -168,3 +206,10 @@ class MemoryV2FeatureFlags:
         if self.shadow_mutations:
             return MemoryV2WriteMode.SHADOW
         return MemoryV2WriteMode.SCHEMA_ONLY
+
+    def owner_is_enabled(self, owner_id: str) -> bool:
+        """Fail closed unless the authenticated owner belongs to the configured cohort."""
+        try:
+            return canonical_uuid(owner_id) in self.enabled_owner_ids
+        except ValueError:
+            return False

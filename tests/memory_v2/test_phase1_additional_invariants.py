@@ -10,6 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from app.db.memory_v2_migrations import (
     MEMORY_V2_CURRENT_REVISION,
     MEMORY_V2_LEDGER_TABLE,
+    MEMORY_V2_REVISION_0001,
+    MEMORY_V2_REVISION_0002,
     MemoryV2MigrationError,
     memory_v2_migration_state,
     upgrade_memory_v2,
@@ -184,14 +186,20 @@ def test_migration_state_records_order_and_detects_missing_managed_schema(
 ) -> None:
     state = memory_v2_migration_state(memory_v2_engine)
     assert state.current_revision == MEMORY_V2_CURRENT_REVISION
-    assert state.applied_revisions == (MEMORY_V2_CURRENT_REVISION,)
+    assert state.applied_revisions == (
+        MEMORY_V2_REVISION_0001,
+        MEMORY_V2_REVISION_0002,
+    )
     with memory_v2_engine.connect() as connection:
         ledger = connection.execute(
             text(f"SELECT revision, revision_checksum, applied_at FROM {MEMORY_V2_LEDGER_TABLE}")
-        ).one()
-    assert ledger.revision == MEMORY_V2_CURRENT_REVISION
-    assert len(ledger.revision_checksum) == 64
-    assert ledger.applied_at is not None
+        ).all()
+    assert [row.revision for row in ledger] == [
+        MEMORY_V2_REVISION_0001,
+        MEMORY_V2_REVISION_0002,
+    ]
+    assert all(len(row.revision_checksum) == 64 for row in ledger)
+    assert all(row.applied_at is not None for row in ledger)
 
     with memory_v2_engine.begin() as connection:
         connection.execute(text("DROP TABLE memory_candidates_v2"))

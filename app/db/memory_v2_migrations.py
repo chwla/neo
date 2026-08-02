@@ -11,28 +11,40 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, MetaData, String, Table, inspect, select
+from sqlalchemy import Column, DateTime, MetaData, String, Table, inspect, select, text
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.core.identifiers import canonical_uuid
 from app.models.memory_v2 import (
     MemoryCandidateV2,
+    MemoryDerivedMetricV2,
+    MemoryDerivedStateV2,
+    MemoryFtsDocumentV2,
     MemoryLegacyMapV2,
     MemoryMigrationRunV2,
     MemoryOperationV2,
+    MemoryOutboxDeliveryV2,
     MemoryOutboxV2,
     MemoryOwnerBindingV2,
     MemoryRecordV2,
     MemoryRelationV2,
     MemorySourceV2,
     MemoryTombstoneV2,
+    MemoryVectorPointV2,
 )
 
 MEMORY_V2_REVISION_0001 = "0001_memory_v2_phase1"
-MEMORY_V2_CURRENT_REVISION = MEMORY_V2_REVISION_0001
+MEMORY_V2_REVISION_0002 = "0002_memory_v2_phase6_derived_indexes"
+MEMORY_V2_CURRENT_REVISION = MEMORY_V2_REVISION_0002
 MEMORY_V2_LEDGER_TABLE = "memory_schema_migrations_v2"
+MEMORY_V2_FTS5_TABLE = "memory_fts_index_v2"
+_FTS5_CREATE_SQL = (
+    f"CREATE VIRTUAL TABLE {MEMORY_V2_FTS5_TABLE} USING fts5("
+    "owner_id UNINDEXED, memory_id UNINDEXED, content_hash UNINDEXED, display_text)"
+)
 
 _ledger_metadata = MetaData()
 _ledger = Table(
@@ -43,7 +55,7 @@ _ledger = Table(
     Column("applied_at", DateTime(timezone=True), nullable=False),
 )
 
-_upgrade_tables = (
+_phase1_tables = (
     MemoryOwnerBindingV2.__table__,
     MemoryOperationV2.__table__,
     MemoryMigrationRunV2.__table__,
@@ -55,6 +67,14 @@ _upgrade_tables = (
     MemoryTombstoneV2.__table__,
     MemoryLegacyMapV2.__table__,
 )
+_phase6_tables = (
+    MemoryOutboxDeliveryV2.__table__,
+    MemoryDerivedStateV2.__table__,
+    MemoryDerivedMetricV2.__table__,
+    MemoryFtsDocumentV2.__table__,
+    MemoryVectorPointV2.__table__,
+)
+_upgrade_tables = (*_phase1_tables, *_phase6_tables)
 MEMORY_V2_TABLES = tuple(table.name for table in _upgrade_tables)
 
 
@@ -70,15 +90,18 @@ class MemoryV2MigrationState:
     database_identity: str | None
 
 
-def _revision_checksum() -> str:
+def _revision_checksum(revision: str) -> str:
     dialect = sqlite.dialect()
-    statements = [str(CreateTable(table).compile(dialect=dialect)) for table in _upgrade_tables]
-    for table in _upgrade_tables:
+    tables = _phase1_tables if revision == MEMORY_V2_REVISION_0001 else _phase6_tables
+    statements = [str(CreateTable(table).compile(dialect=dialect)) for table in tables]
+    if revision == MEMORY_V2_REVISION_0002:
+        statements.append(_FTS5_CREATE_SQL)
+    for table in tables:
         statements.extend(
             str(CreateIndex(index).compile(dialect=dialect))
             for index in sorted(table.indexes, key=lambda item: item.name or "")
         )
-    material = "\n".join((MEMORY_V2_REVISION_0001, *statements))
+    material = "\n".join((revision, *statements))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -94,25 +117,29 @@ def _read_applied(connection) -> dict[str, str]:
 
 
 def _validate_applied_revisions(applied: dict[str, str]) -> None:
-    unknown = set(applied) - {MEMORY_V2_REVISION_0001}
+    unknown = set(applied) - {MEMORY_V2_REVISION_0001, MEMORY_V2_REVISION_0002}
     if unknown:
         raise MemoryV2MigrationError(f"unsupported_memory_v2_revisions:{','.join(sorted(unknown))}")
-    expected = _revision_checksum()
-    actual = applied.get(MEMORY_V2_REVISION_0001)
-    if actual is not None and actual != expected:
-        raise MemoryV2MigrationError("memory_v2_revision_checksum_mismatch")
+    for revision in (MEMORY_V2_REVISION_0001, MEMORY_V2_REVISION_0002):
+        actual = applied.get(revision)
+        if actual is not None and actual != _revision_checksum(revision):
+            raise MemoryV2MigrationError("memory_v2_revision_checksum_mismatch")
 
 
-def _validate_managed_tables(connection, *, revision_applied: bool) -> None:
+def _validate_managed_tables(connection, *, applied: dict[str, str]) -> None:
     existing = _existing_table_names(connection)
-    managed = set(MEMORY_V2_TABLES)
-    present = existing & managed
-    if revision_applied and present != managed:
-        missing = ",".join(sorted(managed - present))
-        raise MemoryV2MigrationError(f"memory_v2_schema_missing_tables:{missing}")
-    if not revision_applied and present:
-        names = ",".join(sorted(present))
-        raise MemoryV2MigrationError(f"unmanaged_memory_v2_tables:{names}")
+    for revision, tables in (
+        (MEMORY_V2_REVISION_0001, _phase1_tables),
+        (MEMORY_V2_REVISION_0002, _phase6_tables),
+    ):
+        managed = {table.name for table in tables}
+        present = existing & managed
+        if revision in applied and present != managed:
+            missing = ",".join(sorted(managed - present))
+            raise MemoryV2MigrationError(f"memory_v2_schema_missing_tables:{missing}")
+        if revision not in applied and present:
+            names = ",".join(sorted(present))
+            raise MemoryV2MigrationError(f"unmanaged_memory_v2_tables:{names}")
 
 
 def _bind_owner(connection, *, owner_id: str, database_identity: str) -> None:
@@ -151,21 +178,38 @@ def upgrade_memory_v2(engine: Engine, *, owner_id: str, database_identity: str) 
 
         applied = _read_applied(connection)
         _validate_applied_revisions(applied)
-        revision_applied = MEMORY_V2_REVISION_0001 in applied
-        _validate_managed_tables(connection, revision_applied=revision_applied)
+        _validate_managed_tables(connection, applied=applied)
 
-        if not revision_applied:
-            for table in _upgrade_tables:
+        if MEMORY_V2_REVISION_0001 not in applied:
+            for table in _phase1_tables:
                 table.create(connection, checkfirst=False)
             connection.execute(
                 _ledger.insert().values(
                     revision=MEMORY_V2_REVISION_0001,
-                    revision_checksum=_revision_checksum(),
+                    revision_checksum=_revision_checksum(MEMORY_V2_REVISION_0001),
                     applied_at=datetime.now(UTC),
                 )
             )
+            applied[MEMORY_V2_REVISION_0001] = _revision_checksum(MEMORY_V2_REVISION_0001)
 
-        _validate_managed_tables(connection, revision_applied=True)
+        if MEMORY_V2_REVISION_0002 not in applied:
+            for table in _phase6_tables:
+                table.create(connection, checkfirst=False)
+            try:
+                connection.execute(text(_FTS5_CREATE_SQL))
+            except OperationalError as exc:
+                if "fts5" not in str(exc).casefold():
+                    raise
+            connection.execute(
+                _ledger.insert().values(
+                    revision=MEMORY_V2_REVISION_0002,
+                    revision_checksum=_revision_checksum(MEMORY_V2_REVISION_0002),
+                    applied_at=datetime.now(UTC),
+                )
+            )
+            applied[MEMORY_V2_REVISION_0002] = _revision_checksum(MEMORY_V2_REVISION_0002)
+
+        _validate_managed_tables(connection, applied=applied)
         _bind_owner(connection, owner_id=owner, database_identity=database_identity)
     return MEMORY_V2_CURRENT_REVISION
 
@@ -174,7 +218,11 @@ def memory_v2_migration_state(engine: Engine) -> MemoryV2MigrationState:
     with engine.connect() as connection:
         applied = _read_applied(connection)
         _validate_applied_revisions(applied)
-        ordered = tuple(revision for revision in (MEMORY_V2_REVISION_0001,) if revision in applied)
+        ordered = tuple(
+            revision
+            for revision in (MEMORY_V2_REVISION_0001, MEMORY_V2_REVISION_0002)
+            if revision in applied
+        )
         owner_id = None
         database_identity = None
         if MemoryOwnerBindingV2.__tablename__ in _existing_table_names(connection):
@@ -199,8 +247,9 @@ def downgrade_memory_v2(engine: Engine, *, owner_id: str, database_identity: str
         _validate_applied_revisions(applied)
         if MEMORY_V2_REVISION_0001 not in applied:
             return
-        _validate_managed_tables(connection, revision_applied=True)
+        _validate_managed_tables(connection, applied=applied)
         _bind_owner(connection, owner_id=owner, database_identity=database_identity)
+        connection.execute(text(f"DROP TABLE IF EXISTS {MEMORY_V2_FTS5_TABLE}"))
         for table in reversed(_upgrade_tables):
             table.drop(connection, checkfirst=False)
         _ledger.drop(connection, checkfirst=False)

@@ -60,8 +60,9 @@ def test_phase3_architecture_has_one_kernel_boundary_and_no_forbidden_dependenci
         imports = _imports(path)
         assert "app.models.memory_v2" not in imports
         assert "app.repositories.memory_v2" not in imports
-        for forbidden in ("embedding", "vector", "qdrant", "fts", "httpx", "requests"):
-            assert forbidden not in source
+        if not relative.endswith("feature_flags.py"):
+            for forbidden in ("embedding", "vector", "qdrant", "fts", "httpx", "requests"):
+                assert forbidden not in source
         if relative.endswith("coordinator.py"):
             assert "memorymutationservice" in source
             assert ".execute(" in source

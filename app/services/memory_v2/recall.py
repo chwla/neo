@@ -1,4 +1,4 @@
-"""Single canonical, lexical-only recall service for every Phase 5 consumer."""
+"""Canonical Phase 5 recall with optional, canonically validated Phase 6 semantics."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import math
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
+from itertools import islice
 from time import monotonic
 from uuid import UUID
 
@@ -15,6 +16,13 @@ from app.models.memory_v2 import MemoryRecordV2
 from app.repositories.memory_v2 import MemoryV2Repository
 from app.services.memory_v2.contracts import Sensitivity
 from app.services.memory_v2.feature_flags import MemoryV2FeatureFlags
+from app.services.memory_v2.indexes import DerivedDocumentBuilder
+from app.services.memory_v2.phase6_contracts import (
+    DerivedMetricCode,
+    DerivedTarget,
+    IndexRepairRequest,
+    VectorCandidate,
+)
 from app.services.memory_v2.queries import (
     CanonicalMemoryView,
     MemoryQueryContext,
@@ -26,8 +34,13 @@ from app.services.memory_v2.queries import (
     RecallReasonCode,
     RecallResult,
     RecallScoreBreakdown,
+    RecallScoreDiagnostic,
 )
 from app.services.memory_v2.taxonomy import MemoryType
+from app.services.memory_v2.versions import (
+    EMBEDDING_IDENTITY_VERSION,
+    VECTOR_METADATA_VERSION,
+)
 
 MAX_LEXICAL_CANDIDATES = 500
 TOKENIZER_VERSION = "neo.memory.tokenizer.unicode-word.v1"
@@ -58,6 +71,16 @@ class CanonicalRecallService:
         *,
         flags: MemoryV2FeatureFlags,
         minimum_scoped_score: float | None = None,
+        semantic_provider=None,
+        vector_index=None,
+        fts_index=None,
+        repair_scheduler: Callable[[IndexRepairRequest], None] | None = None,
+        metric_recorder: Callable[[dict[DerivedMetricCode, int]], None] | None = None,
+        semantic_weight: float = 0.35,
+        semantic_cap: float = 1.0,
+        semantic_threshold: float = 0.55,
+        vector_candidate_limit: int = 50,
+        fts_candidate_limit: int = 50,
     ) -> None:
         self.repository = repository
         self.flags = flags
@@ -66,6 +89,25 @@ class CanonicalRecallService:
         )
         if not 0 <= self.minimum_scoped_score <= 1:
             raise ValueError("recall_minimum_score_out_of_range")
+        if (
+            not 0 <= semantic_weight <= 1
+            or not 0 <= semantic_cap <= 1
+            or not 0 <= semantic_threshold <= 1
+        ):
+            raise ValueError("semantic_score_configuration_out_of_range")
+        if not 1 <= vector_candidate_limit <= 500 or not 1 <= fts_candidate_limit <= 500:
+            raise ValueError("derived_candidate_limit_out_of_range")
+        self.semantic_provider = semantic_provider
+        self.vector_index = vector_index
+        self.fts_index = fts_index
+        self.repair_scheduler = repair_scheduler
+        self.metric_recorder = metric_recorder
+        self.semantic_weight = semantic_weight
+        self.semantic_cap = semantic_cap
+        self.semantic_threshold = semantic_threshold
+        self.vector_candidate_limit = vector_candidate_limit
+        self.fts_candidate_limit = fts_candidate_limit
+        self.document_builder = DerivedDocumentBuilder()
 
     def recall(self, query: RecallQuery) -> RecallResult:
         started = monotonic()
@@ -73,8 +115,11 @@ class CanonicalRecallService:
         gate = self._gate(context)
         if gate is not None:
             return self._empty(context, gate, started)
-        if context.mode is RecallMode.SCOPED_LEXICAL and (
-            not self.flags.lexical_recall_enabled or not context.lexical_available
+        semantic_available = self._semantic_available(query)
+        if (
+            context.mode is RecallMode.SCOPED_LEXICAL
+            and (not self.flags.lexical_recall_enabled or not context.lexical_available)
+            and not semantic_available
         ):
             return self._empty(context, RecallReasonCode.LEXICAL_UNAVAILABLE, started)
 
@@ -82,7 +127,11 @@ class CanonicalRecallService:
             now=context.current_time,
             **self._filter_scope(query),
         )
-        records = self._fetch(query)
+        records, degraded_lexical = self._fetch(query)
+        semantic_scores, semantic_records, semantic_diagnostic = self._semantic(query)
+        by_id = {record.id: record for record in records}
+        by_id.update({record.id: record for record in semantic_records})
+        records = list(by_id.values())
         source_ids = self.repository.active_source_ids_for_records(
             [record.id for record in records]
         )
@@ -107,6 +156,7 @@ class CanonicalRecallService:
         candidates, domain_filtered, below_threshold = self._score(
             query,
             unsuppressed,
+            semantic_scores,
         )
         selected, diversity_dropped, budget_dropped = self._select(
             candidates,
@@ -124,7 +174,22 @@ class CanonicalRecallService:
             diversity_dropped_count=diversity_dropped,
             budget_dropped_count=budget_dropped,
             suppressed_ids=suppressed,
-            degraded_lexical=False,
+            degraded_lexical=degraded_lexical,
+            semantic_candidate_count=semantic_diagnostic["candidate_count"],
+            semantic_validated_count=semantic_diagnostic["validated_count"],
+            semantic_stale_drop_count=semantic_diagnostic["stale"],
+            semantic_ghost_drop_count=semantic_diagnostic["ghost"],
+            semantic_wrong_owner_drop_count=semantic_diagnostic["wrong_owner"],
+            semantic_inactive_drop_count=semantic_diagnostic["inactive"],
+            semantic_repair_count=semantic_diagnostic["repairs"],
+            degraded_semantic_reason=semantic_diagnostic["degraded"],
+            score_components=tuple(
+                RecallScoreDiagnostic(
+                    canonical_id=item.memory.canonical_id,
+                    score=item.score,
+                )
+                for item in selected
+            ),
             latency_ms=int((monotonic() - started) * 1000),
             reason_codes=(),
         )
@@ -172,19 +237,22 @@ class CanonicalRecallService:
             ),
         )
 
-    def _fetch(self, query: RecallQuery) -> list[MemoryRecordV2]:
+    def _fetch(self, query: RecallQuery) -> tuple[list[MemoryRecordV2], bool]:
         context = query.context
         if context.mode is RecallMode.DETERMINISTIC:
             if query.canonical_id is not None:
                 record = self.repository.get_recall_eligible_by_id(
                     str(query.canonical_id), now=context.current_time
                 )
-                return [record] if record is not None else []
+                return ([record] if record is not None else []), False
             if query.trusted_slot_keys:
-                return self.repository.list_recall_eligible_for_slots(
-                    query.trusted_slot_keys,
-                    now=context.current_time,
-                    limit=min(100, context.maximum_records * 10),
+                return (
+                    self.repository.list_recall_eligible_for_slots(
+                        query.trusted_slot_keys,
+                        now=context.current_time,
+                        limit=min(100, context.maximum_records * 10),
+                    ),
+                    False,
                 )
             if query.slot_key and query.memory_type and query.domain_key:
                 record = self.repository.find_recall_eligible_slot(
@@ -193,21 +261,222 @@ class CanonicalRecallService:
                     domain_key=query.domain_key,
                     slot_key=query.slot_key,
                 )
-                return [record] if record is not None else []
+                return ([record] if record is not None else []), False
         if context.mode is RecallMode.SCOPED_LEXICAL and not context.lexical_available:
-            return []
+            return [], False
         types: Collection[MemoryType] = context.allowed_memory_types
         domains: Collection[str] = context.allowed_domains
         if query.memory_type is not None:
             types = (query.memory_type,)
         if query.domain_key is not None:
             domains = (query.domain_key,)
-        return self.repository.list_recall_eligible(
+        canonical = self.repository.list_recall_eligible(
             now=context.current_time,
             memory_types=types,
             domain_keys=domains,
             limit=MAX_LEXICAL_CANDIDATES,
         )
+        if not (
+            context.mode is RecallMode.SCOPED_LEXICAL
+            and self.flags.fts_index_enabled
+            and self.fts_index is not None
+            and lexical_tokens(query.text)
+        ):
+            return canonical, False
+        try:
+            hits = tuple(
+                islice(
+                    iter(
+                        self.fts_index.search(
+                            str(context.owner_id), query.text, self.fts_candidate_limit
+                        )
+                    ),
+                    self.fts_candidate_limit,
+                )
+            )
+        except Exception:
+            return canonical, True
+        by_id = {item.id: item for item in canonical}
+        for hit in hits:
+            if not isinstance(hit, Mapping):
+                continue
+            if str(hit.get("owner_id")) != str(context.owner_id):
+                continue
+            record = self.repository.get_recall_eligible_by_id(
+                str(hit.get("memory_id")), now=context.current_time
+            )
+            if record is not None:
+                by_id[record.id] = record
+        return list(by_id.values()), False
+
+    def _semantic_available(self, query: RecallQuery) -> bool:
+        return bool(
+            query.context.mode is RecallMode.SCOPED_LEXICAL
+            and self.flags.semantic_recall_enabled
+            and self.semantic_provider is not None
+            and self.vector_index is not None
+            and len(lexical_tokens(query.text)) >= 2
+        )
+
+    def _semantic(self, query: RecallQuery):
+        diagnostic = {
+            "candidate_count": 0,
+            "validated_count": 0,
+            "stale": 0,
+            "ghost": 0,
+            "wrong_owner": 0,
+            "inactive": 0,
+            "repairs": 0,
+            "degraded": None,
+        }
+        if not self._semantic_available(query):
+            return {}, [], diagnostic
+        health = getattr(self.semantic_provider, "health", None)
+        if health is not None:
+            try:
+                healthy = health()
+            except Exception:
+                healthy = False
+            if not healthy:
+                diagnostic["degraded"] = "embedding_unhealthy"
+                return {}, [], diagnostic
+        try:
+            query_vector = self.semantic_provider.embed(query.text)
+            hits = tuple(
+                islice(
+                    iter(
+                        self.vector_index.search(
+                            query_vector,
+                            str(query.context.owner_id),
+                            self.vector_candidate_limit,
+                        )
+                    ),
+                    self.vector_candidate_limit,
+                )
+            )
+        except Exception:
+            diagnostic["degraded"] = "semantic_unavailable"
+            return {}, [], diagnostic
+        diagnostic["candidate_count"] = len(hits)
+        scores: dict[UUID, float] = {}
+        records: list[MemoryRecordV2] = []
+        for raw_hit in hits:
+            try:
+                hit = VectorCandidate.model_validate(raw_hit, from_attributes=True)
+            except Exception:
+                diagnostic["stale"] += 1
+                continue
+            if hit.owner_id is None or str(hit.owner_id) != str(query.context.owner_id):
+                diagnostic["wrong_owner"] += 1
+                diagnostic["repairs"] += self._schedule_repair(
+                    query,
+                    hit.memory_id,
+                    "delete",
+                    "wrong_owner_metadata",
+                    hit.content_hash,
+                )
+                continue
+            record = self.repository.get_recall_eligible_by_id(
+                str(hit.memory_id), now=query.context.current_time
+            )
+            if record is None:
+                historical = self.repository.get_owner_record_any_lifecycle(str(hit.memory_id))
+                key = "inactive" if historical is not None else "ghost"
+                diagnostic[key] += 1
+                diagnostic["repairs"] += self._schedule_repair(
+                    query,
+                    hit.memory_id,
+                    "delete",
+                    f"semantic_{key}",
+                    hit.content_hash,
+                )
+                continue
+            if (
+                query.context.allowed_memory_types
+                and MemoryType(record.memory_type) not in query.context.allowed_memory_types
+            ):
+                continue
+            if (
+                query.context.allowed_domains
+                and record.domain_key not in query.context.allowed_domains
+            ):
+                continue
+            document = self.document_builder.build(record, now=query.context.current_time)
+            if document is None:
+                diagnostic["inactive"] += 1
+                diagnostic["repairs"] += self._schedule_repair(
+                    query,
+                    hit.memory_id,
+                    "delete",
+                    "semantic_policy_ineligible",
+                    hit.content_hash,
+                )
+                continue
+            embedding_document = self.document_builder.build_embedding(document)
+            if (
+                hit.content_hash != document.content_hash
+                or hit.canonical_revision != record.revision
+                or hit.provider != self.semantic_provider.provider_name
+                or hit.model != self.semantic_provider.model_name
+                or hit.provider_version != self.semantic_provider.provider_version
+                or hit.dimension != self.semantic_provider.dimension
+                or hit.metadata_version != VECTOR_METADATA_VERSION
+                or hit.derived_schema_version != document.schema_version
+                or hit.embedding_document_version != embedding_document.version
+                or hit.embedding_content_hash != embedding_document.content_hash
+                or hit.embedding_identity_version != EMBEDDING_IDENTITY_VERSION
+            ):
+                diagnostic["stale"] += 1
+                diagnostic["repairs"] += self._schedule_repair(
+                    query,
+                    hit.memory_id,
+                    "upsert",
+                    "semantic_hash_or_model_stale",
+                    hit.content_hash,
+                )
+                continue
+            normalized = min(self.semantic_cap, max(0.0, (float(hit.score) + 1) / 2))
+            if normalized < self.semantic_threshold:
+                continue
+            prior = scores.get(hit.memory_id, 0)
+            scores[hit.memory_id] = max(prior, normalized)
+            records.append(record)
+            diagnostic["validated_count"] += 1
+        self._record_semantic_metrics(diagnostic)
+        return scores, records, diagnostic
+
+    def _record_semantic_metrics(self, diagnostic) -> None:
+        if self.metric_recorder is None:
+            return
+        try:
+            self.metric_recorder(
+                {
+                    DerivedMetricCode.SEMANTIC_WRONG_OWNER_HIT: diagnostic["wrong_owner"],
+                    DerivedMetricCode.SEMANTIC_STALE_HIT_DROP: diagnostic["stale"],
+                    DerivedMetricCode.SEMANTIC_GHOST_HIT_DROP: diagnostic["ghost"],
+                    DerivedMetricCode.SEMANTIC_INACTIVE_HIT_DROP: diagnostic["inactive"],
+                }
+            )
+        except Exception:
+            return
+
+    def _schedule_repair(self, query, memory_id, action, reason, expected_hash):
+        if self.repair_scheduler is None:
+            return 0
+        try:
+            self.repair_scheduler(
+                IndexRepairRequest(
+                    owner_id=query.context.owner_id,
+                    memory_id=memory_id,
+                    action=action,
+                    target=DerivedTarget.VECTOR,
+                    reason=reason,
+                    expected_hash=expected_hash,
+                )
+            )
+            return 1
+        except Exception:
+            return 0
 
     @staticmethod
     def _filter_scope(query: RecallQuery) -> dict[str, object]:
@@ -284,6 +553,7 @@ class CanonicalRecallService:
         self,
         query: RecallQuery,
         views: Sequence[CanonicalMemoryView],
+        semantic_scores: dict[UUID, float] | None = None,
     ) -> tuple[list[RecallCandidate], int, int]:
         context = query.context
         if not views:
@@ -295,7 +565,9 @@ class CanonicalRecallService:
         candidates: list[RecallCandidate] = []
         domain_filtered = 0
         below = 0
+        semantic_scores = semantic_scores or {}
         for view, lexical in zip(views, bm25, strict=True):
+            semantic = semantic_scores.get(view.canonical_id, 0)
             domain_fit = 1.0
             if context.allowed_domains:
                 domain_fit = 1.0 if view.domain_key in context.allowed_domains else 0.0
@@ -306,10 +578,17 @@ class CanonicalRecallService:
             # record, but they may never manufacture relevance. A scoped query
             # with no lexical overlap therefore fails closed even when a record
             # is recent, important, or pinned.
-            if context.mode is RecallMode.SCOPED_LEXICAL and lexical <= 0:
+            if context.mode is RecallMode.SCOPED_LEXICAL and lexical <= 0 and semantic <= 0:
                 below += 1
                 continue
-            score = self._breakdown(view, context.current_time, lexical, domain_fit)
+            score = self._breakdown(
+                view,
+                context.current_time,
+                lexical,
+                domain_fit,
+                semantic,
+                self.semantic_weight,
+            )
             if (
                 context.mode is RecallMode.SCOPED_LEXICAL
                 and score.total < self.minimum_scoped_score
@@ -359,6 +638,8 @@ class CanonicalRecallService:
         now: datetime,
         lexical: float,
         domain_fit: float,
+        semantic: float = 0,
+        semantic_weight: float = 0,
     ) -> RecallScoreBreakdown:
         importance = (view.importance - 1) / 9
         confidence = view.confidence
@@ -366,7 +647,7 @@ class CanonicalRecallService:
         recency = _freshness(view.updated_at, now, 365)
         usage = min(1.0, math.log1p(view.usage_count) / math.log(101))
         pin = 1.0 if view.pinned else 0.0
-        total = min(
+        lexical_total = min(
             1.0,
             0.25 * domain_fit
             + 0.45 * lexical
@@ -377,9 +658,11 @@ class CanonicalRecallService:
             + 0.03 * usage
             + 0.03 * pin,
         )
+        total = min(1.0, (1 - semantic_weight) * lexical_total + semantic_weight * semantic)
         return RecallScoreBreakdown(
             domain_fit=domain_fit,
             lexical=lexical,
+            semantic=semantic,
             importance=importance,
             confidence=confidence,
             confirmation_freshness=confirmation,

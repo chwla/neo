@@ -46,7 +46,8 @@ def test_upgrade_is_idempotent(memory_v2_engine) -> None:
     assert first == second
     with memory_v2_engine.connect() as connection:
         count = connection.scalar(text(f"SELECT count(*) FROM {MEMORY_V2_LEDGER_TABLE}"))
-    assert count == 1
+    # Phase 6 adds one explicit derived-state revision without rewriting Phase 1.
+    assert count == 2
 
 
 def test_upgrade_preserves_minimal_legacy_schema_and_data(tmp_path) -> None:

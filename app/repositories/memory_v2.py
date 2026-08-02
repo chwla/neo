@@ -251,13 +251,17 @@ class MemoryV2Repository:
         if normalized_slots:
             conditions.append(MemoryRecordV2.slot_key.in_(normalized_slots))
         inactive = self._session.scalar(
-            select(func.count()).select_from(MemoryRecordV2).where(
+            select(func.count())
+            .select_from(MemoryRecordV2)
+            .where(
                 *conditions,
                 MemoryRecordV2.status != MemoryLifecycleState.ACTIVE.value,
             )
         )
         expired = self._session.scalar(
-            select(func.count()).select_from(MemoryRecordV2).where(
+            select(func.count())
+            .select_from(MemoryRecordV2)
+            .where(
                 *conditions,
                 MemoryRecordV2.status == MemoryLifecycleState.ACTIVE.value,
                 MemoryRecordV2.expires_at.is_not(None),
@@ -297,6 +301,31 @@ class MemoryV2Repository:
         return self._session.scalar(
             self.eligible_records_statement(now=now).where(MemoryRecordV2.id == identifier)
         )
+
+    def get_owner_record_any_lifecycle(self, memory_id: str) -> MemoryRecordV2 | None:
+        """Owner-bound validation read used only to classify untrusted derived hits."""
+        identifier = canonical_uuid(memory_id)
+        return self._session.scalar(
+            select(MemoryRecordV2).where(
+                MemoryRecordV2.owner_id == self.owner_id,
+                MemoryRecordV2.id == identifier,
+            )
+        )
+
+    def list_index_candidates(
+        self,
+        *,
+        now: datetime,
+        after_memory_id: str | None = None,
+        limit: int = 500,
+    ) -> list[MemoryRecordV2]:
+        """Bounded owner-scoped canonical enumeration for derived maintenance."""
+        if not 1 <= limit <= 1_001:
+            raise ValueError("index_candidate_limit_out_of_range")
+        statement = self.eligible_records_statement(now=now).order_by(MemoryRecordV2.id)
+        if after_memory_id is not None:
+            statement = statement.where(MemoryRecordV2.id > canonical_uuid(after_memory_id))
+        return list(self._session.scalars(statement.limit(limit)))
 
     def find_recall_eligible_slot(
         self,

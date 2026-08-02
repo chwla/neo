@@ -24,6 +24,7 @@ from app.services.memory_v2.queries import (
     RecallQuery,
 )
 from app.services.memory_v2.recall import CanonicalRecallService
+from app.services.memory_v2.runtime import build_phase6_recall_dependencies
 
 _BROAD_MEMORY_QUERY = re.compile(
     r"\b(?:what do you remember|show (?:me )?(?:my )?saved memories|"
@@ -51,8 +52,9 @@ def build_chat_canonical_memory_runtime(
 ) -> ChatCanonicalMemoryRuntime | None:
     """Build request-owned Phase 5 chat wiring or fail closed without legacy fallback."""
     try:
-        flags = MemoryV2FeatureFlags.from_settings(get_settings())
-        if not flags.canonical_query_enabled:
+        settings = get_settings()
+        flags = MemoryV2FeatureFlags.from_settings(settings)
+        if not flags.canonical_query_enabled or not flags.owner_is_enabled(owner_id):
             return None
         repository = MemoryV2Repository(
             db,
@@ -61,7 +63,27 @@ def build_chat_canonical_memory_runtime(
         )
     except (MemoryV2RolloutError, MemoryV2RepositoryError, ValueError):
         return None
-    recall = CanonicalRecallService(repository, flags=flags)
+    phase6 = build_phase6_recall_dependencies(
+        db.get_bind(),
+        owner_id=owner_id,
+        database_identity=database_identity,
+        flags=flags,
+        settings=settings,
+    )
+    recall = CanonicalRecallService(
+        repository,
+        flags=flags,
+        fts_index=phase6.fts_index,
+        semantic_provider=phase6.semantic_provider,
+        vector_index=phase6.vector_index,
+        repair_scheduler=phase6.repair_scheduler,
+        metric_recorder=phase6.metric_recorder,
+        semantic_weight=settings.memory_v2_semantic_weight,
+        semantic_cap=settings.memory_v2_semantic_cap,
+        semantic_threshold=settings.semantic_similarity_threshold,
+        vector_candidate_limit=settings.memory_v2_vector_candidate_limit,
+        fts_candidate_limit=settings.memory_v2_fts_candidate_limit,
+    )
     orchestrator = RecallPromptOrchestrator(
         recall,
         usage_recorder=repository_usage_recorder(repository),

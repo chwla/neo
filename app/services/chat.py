@@ -107,7 +107,11 @@ class NeoChatService:
         }
         self.settings = get_settings()
         self.memory_v2_enabled = (
-            self.settings.memory_v2_canonical_query_enabled
+            bool(
+                self.settings.memory_v2_canonical_query_enabled
+                and memory_v2_orchestrator is not None
+                and memory_v2_context_factory is not None
+            )
             if memory_v2_enabled is None
             else memory_v2_enabled
         )
@@ -125,6 +129,9 @@ class NeoChatService:
         self.memory_v2_context_factory = memory_v2_context_factory
         self.last_memory_v2_selection: RecallPromptSelection | None = None
         self.store.set_memory_v2_recall_active(self.memory_v2_enabled)
+        self.store.set_memory_v2_indexing_active(
+            self.memory_v2_enabled and self.settings.memory_v2_outbox_worker_enabled
+        )
         self.context_assembler = ContextAssemblyService()
         self.explainer = MemoryExplanationService()
         self.direct_answers = DirectMemoryAnswerService(
