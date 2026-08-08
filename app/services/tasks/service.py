@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import app.services.projects.store as projects_store
 import app.services.tasks.store as store
@@ -266,7 +266,7 @@ class TaskContextService:
             filters["sort_mode"] = "completed_recent"
         elif intent == "due":
             filters["include_done"] = False
-            filters["due_before"] = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+            filters["due_before"] = (datetime.now(UTC) + timedelta(days=14)).isoformat()
             filters["sort_mode"] = "due_soon"
         elif intent == "critical":
             filters["priority"] = "critical"
@@ -435,3 +435,6 @@ def _format_next_tasks(tasks: list[TaskListItem]) -> str:
             ["Other open tasks:", *[_format_task_line(task, "next") for task in remaining[:5]]]
         )
     return "\n".join(lines)
+
+
+# ruff: noqa: E501

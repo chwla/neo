@@ -2,7 +2,6 @@ from sqlalchemy import CheckConstraint, Enum, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.models.associations import event_project_links, memory_project_links
 from app.models.enums import ProjectStatus, enum_values
 from app.models.mixins import TimestampMixin
 
@@ -26,14 +25,4 @@ class Project(TimestampMixin, Base):
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
 
-    memories = relationship(
-        "Memory",
-        secondary=memory_project_links,
-        back_populates="projects",
-    )
-    events = relationship(
-        "Event",
-        secondary=event_project_links,
-        back_populates="projects",
-    )
     chats = relationship("Chat", back_populates="project")

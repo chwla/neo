@@ -3,8 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
 
 const controls = ["general", "technical", "business", "market", "academic", "coding"];
+const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
 
-export default function Research({ onBack }) {
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+export default function Research({ onBack, memoryEnabled, memoryIncognito }) {
   const [question, setQuestion] = useState("");
   const [mode, setMode] = useState("technical");
   const [depth, setDepth] = useState("standard");
@@ -16,37 +21,71 @@ export default function Research({ onBack }) {
   const [error, setError] = useState("");
 
   const loadRuns = useCallback(async () => {
-    try { setRuns((await api.researchModeRuns()).runs || []); } catch (err) { setError(err.message); }
+    try {
+      setRuns((await api.researchList()).jobs || []);
+    } catch (err) {
+      setError(err.message);
+    }
   }, []);
   useEffect(() => { loadRuns(); }, [loadRuns]);
 
   async function preview() {
     if (!question.trim()) return;
     setBusy(true); setError("");
-    try { setPlan(await api.researchModePlan({ question, mode, freshness_required: fresh, depth })); }
-    catch (err) { setError(err.message || "Could not create research plan."); }
-    finally { setBusy(false); }
+    try {
+      setPlan(await api.researchModePlan({
+        question,
+        mode,
+        freshness_required: fresh,
+        depth,
+      }));
+    } catch (err) {
+      setError(err.message || "Could not create research plan.");
+    } finally {
+      setBusy(false);
+    }
   }
+
+  async function waitForRun(jobId) {
+    for (;;) {
+      const job = await api.researchJob(jobId);
+      setActive(job);
+      if (job.plan) setPlan(job.plan);
+      if (terminalStatuses.has(job.status)) return job;
+      await delay(750);
+    }
+  }
+
   async function run() {
     if (!question.trim()) return;
     setBusy(true); setError("");
     try {
-      const result = await api.researchModeRun({ question, mode, depth, freshness_required: fresh, max_search_runs: depth === "deep" ? 4 : 2, max_sources: depth === "deep" ? 20 : 12, include_memory: true, include_conflict_analysis: true });
-      setActive(result); setPlan(result.plan); await loadRuns();
-    } catch (err) { setError(err.message || "Research run failed."); }
-    finally { setBusy(false); }
+      const started = await api.researchStart({
+        query: question,
+        depth,
+        memory_enabled: memoryEnabled,
+        incognito: memoryIncognito,
+      });
+      await waitForRun(started.job_id);
+      await loadRuns();
+    } catch (err) {
+      setError(err.message || "Research run failed.");
+    } finally {
+      setBusy(false);
+    }
   }
-  async function select(run) {
-    setBusy(true); setError("");
-    try { setActive(await api.researchModeDetail(run.id)); } catch (err) { setError(err.message); } finally { setBusy(false); }
-  }
-  async function action(kind) {
-    if (!active) return;
+
+  async function select(runItem) {
     setBusy(true); setError("");
     try {
-      if (kind === "validate") { const validation = await api.researchModeValidate(active.id); setActive({ ...active, citation_validation: validation }); }
-      else { setActive(await (kind === "refresh" ? api.researchModeRefresh(active.id) : api.researchModeContinue(active.id))); await loadRuns(); }
-    } catch (err) { setError(err.message); } finally { setBusy(false); }
+      const job = await api.researchJob(runItem.id);
+      setActive(job);
+      if (job.plan) setPlan(job.plan);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return <div className="research-layout">
@@ -58,20 +97,18 @@ export default function Research({ onBack }) {
       </section>
       {error && <div className="research-error">{error}</div>}
       {plan && <section className="research-meta-bar"><h3>Research plan</h3><p>{plan.objective}</p><ul>{(plan.subquestions || []).map((item) => <li key={item}>{item}</li>)}</ul><small>Requirements: {(plan.required_sources || []).join(", ")}</small></section>}
-      {active && <Report run={active} busy={busy} onAction={action} />}
+      {active && <Report run={active} />}
     </main>
-    <aside className="research-sidebar"><div className="research-sidebar-header"><h3 className="research-sidebar-title">Research history</h3></div>{runs.length ? <div className="research-jobs-list">{runs.map((item) => <button type="button" onClick={() => select(item)} className={`research-job-item ${active?.id === item.id ? "active" : ""}`} key={item.id}><span className="research-job-query">{item.question}</span><span className="research-job-meta">{item.status} · {(item.confidence?.overall || 0).toFixed(0)}</span></button>)}</div> : <p className="research-sidebar-empty">No research runs yet.</p>}</aside>
+    <aside className="research-sidebar"><div className="research-sidebar-header"><h3 className="research-sidebar-title">Research history</h3></div>{runs.length ? <div className="research-jobs-list">{runs.map((item) => <button type="button" onClick={() => select(item)} className={`research-job-item ${active?.id === item.id ? "active" : ""}`} key={item.id}><span className="research-job-query">{item.user_query}</span><span className="research-job-meta">{item.status} · {item.progress_percent || 0}%</span></button>)}</div> : <p className="research-sidebar-empty">No research runs yet.</p>}</aside>
   </div>;
 }
 
-function Report({ run, busy, onAction }) {
-  const report = run.report?.content_text || run.report_text;
+function Report({ run }) {
   return <section className="research-report">
-    <div className="research-report-meta"><span className={`research-status-badge ${run.status}`}>{run.status}</span><span>Confidence: {Math.round((run.confidence?.overall || 0) * 100)}%</span><span>Citations: {run.citation_validation?.passed ? "validated" : "needs review"}</span></div>
-    <div className="research-report-actions"><button className="research-save-note-btn" disabled={busy} onClick={() => onAction("validate")}>Validate citations</button><button className="research-save-note-btn" disabled={busy} onClick={() => onAction("continue")}>Continue</button><button className="research-save-note-btn" disabled={busy} onClick={() => onAction("refresh")}>Refresh</button></div>
-    <h3>Evidence</h3><div className="research-meta-bar">{(run.evidence || []).map((item) => <p key={item.id}><strong>{item.citation_label || "Memory"}</strong> · quality {Math.round((item.quality_score || 0) * 100)}% · {item.evidence_text}<small>Score: {JSON.stringify(item.metadata?.score_breakdown || {})}</small></p>) || "No evidence recorded."}</div>
-    <h3>Claims</h3><div className="research-meta-bar">{(run.claims || []).map((item) => <p key={item.id}><strong>{item.status}</strong> · {item.claim} {(item.citation_ids || []).join(" ")}</p>) || "No claims recorded."}</div>
-    <h3>Conflicts</h3><div className="research-meta-bar">{(run.conflicts || []).length ? run.conflicts.map((item) => <p key={item.id || item.topic}><strong>{item.severity}</strong> · {item.topic}: {item.recommended_resolution}</p>) : "No material conflicts detected."}</div>
-    <article className="research-report-body">{report || "This run did not produce a final report."}</article>
+    <div className="research-report-meta"><span className={`research-status-badge ${run.status}`}>{run.status}</span><span>{run.progress_percent || 0}%</span><span>{run.current_step || "Queued"}</span></div>
+    {run.error && <div className="research-error">{run.error}</div>}
+    <h3>Evidence</h3><div className="research-meta-bar">{(run.evidence_chunks || []).length ? run.evidence_chunks.map((item, index) => <p key={item.id || index}><strong>{item.source_title || "Source evidence"}</strong> · {item.content || item.text || item.evidence_text}</p>) : "No evidence recorded yet."}</div>
+    <h3>Sources</h3><div className="research-meta-bar">{(run.sources || []).length ? run.sources.map((item, index) => <p key={item.id || index}><strong>{item.title || "Source"}</strong>{item.url ? <> · <a href={item.url} target="_blank" rel="noreferrer">Open</a></> : null}</p>) : "No sources recorded yet."}</div>
+    <article className="research-report-body">{run.report || "The report is still being prepared."}</article>
   </section>;
 }

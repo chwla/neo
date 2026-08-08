@@ -13,6 +13,7 @@ from app.api.routes.agentic import router as agentic_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.agents import task_router as agent_task_router
 from app.api.routes.bundles import router as bundles_router
+from app.api.routes.chat import router as chat_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.coding_agent import router as coding_agent_router
 from app.api.routes.command_sandbox import router as command_sandbox_router
@@ -28,8 +29,8 @@ from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
 from app.api.routes.lsp import router as lsp_router
 from app.api.routes.memory import router as memory_router
+from app.api.routes.memory_health import router as memory_health_router
 from app.api.routes.memory_retrieval import router as memory_retrieval_router
-from app.api.routes.memory_v2_derived import router as memory_v2_derived_router
 from app.api.routes.notes import router as notes_router
 from app.api.routes.patches import router as patches_router
 from app.api.routes.projects import router as projects_router
@@ -122,8 +123,9 @@ def create_app() -> FastAPI:
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(provider_runtime_router, prefix="/api")
     app.include_router(evaluation_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
+    app.include_router(memory_health_router, prefix="/api")
     app.include_router(memory_router, prefix="/api")
-    app.include_router(memory_v2_derived_router, prefix="/api")
     app.include_router(memory_retrieval_router, prefix="/api")
     app.include_router(search_router, prefix="/api")
     app.include_router(notes_router, prefix="/api")

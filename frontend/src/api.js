@@ -120,13 +120,13 @@ export const api = {
   webSearchRuns: () => request("/web-search/runs"),
   webSearchRunDetail: (id) => request(`/web-search/runs/${id}`),
   webSearchCache: () => request("/web-search/cache"),
-  memoryItems: () => request("/memory/items"),
-  memoryItem: (id) => request(`/memory/items/${id}`),
-  memoryScope: (scopeType, scopeId) => request(`/memory/scopes/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`),
-  indexMemory: (payload = {}) => request("/memory/index", { method: "POST", body: JSON.stringify(payload) }),
-  retrieveMemory: (payload) => request("/memory/retrieve", { method: "POST", body: JSON.stringify(payload) }),
-  memoryRetrievals: () => request("/memory/retrievals"),
-  memoryPrunePreview: (payload = {}) => request("/memory/prune/preview", { method: "POST", body: JSON.stringify(payload) }),
+  memoryItems: () => request("/workspace-memory/items"),
+  memoryItem: (id) => request(`/workspace-memory/items/${id}`),
+  memoryScope: (scopeType, scopeId) => request(`/workspace-memory/scopes/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`),
+  indexMemory: (payload = {}) => request("/workspace-memory/index", { method: "POST", body: JSON.stringify(payload) }),
+  retrieveMemory: (payload) => request("/workspace-memory/retrieve", { method: "POST", body: JSON.stringify(payload) }),
+  memoryRetrievals: () => request("/workspace-memory/retrievals"),
+  memoryPrunePreview: (payload = {}) => request("/workspace-memory/prune/preview", { method: "POST", body: JSON.stringify(payload) }),
   agenticRuns: () => request("/agentic/runs"),
   agenticRun: (id) => request(`/agentic/runs/${id}`),
   startAgenticRun: (payload) => request("/agentic/runs", { method: "POST", body: JSON.stringify(payload) }),
@@ -511,13 +511,23 @@ export const api = {
       body: JSON.stringify({ project_id: projectId }),
     }),
   getChat: (chatId) => request(`/chats/${chatId}`),
-  sendMessage: (chatId, prompt, llmId = null) =>
+  sendMessage: (chatId, prompt, llmId = null, context = {}) =>
     request(`/chats/${chatId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ prompt, llm_id: llmId }),
+      body: JSON.stringify({
+        prompt,
+        llm_id: llmId,
+        memory_enabled: context.memoryEnabled ?? true,
+        memory_incognito: context.memoryIncognito ?? false,
+      }),
     }),
-  streamMessage: (chatId, prompt, onEvent, llmId = null) =>
-    streamRequest(`/chats/${chatId}/messages/stream`, { prompt, llm_id: llmId }, onEvent),
+  streamMessage: (chatId, prompt, onEvent, llmId = null, context = {}) =>
+    streamRequest(`/chats/${chatId}/messages/stream`, {
+      prompt,
+      llm_id: llmId,
+      memory_enabled: context.memoryEnabled ?? true,
+      memory_incognito: context.memoryIncognito ?? false,
+    }, onEvent),
   startChatGeneration: (
     chatId,
     prompt,
@@ -533,6 +543,8 @@ export const api = {
         client_request_id: clientRequestId,
         timezone: context.timezone || null,
         locale: context.locale || null,
+        memory_enabled: context.memoryEnabled ?? true,
+        memory_incognito: context.memoryIncognito ?? false,
       }),
     }),
   activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
@@ -581,10 +593,14 @@ export const api = {
     method: "POST", body: JSON.stringify({ provider_id: providerId, model_id: modelId }),
   }),
   llmUsage: () => request("/llm/usage?limit=50"),
-  updateChatMessage: (chatId, messageId, content) =>
+  updateChatMessage: (chatId, messageId, content, context = {}) =>
     request(`/chats/${chatId}/messages/${messageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        memory_enabled: context.memoryEnabled ?? true,
+        memory_incognito: context.memoryIncognito ?? false,
+      }),
     }),
   rerunChatMessage: (
     chatId,
@@ -602,72 +618,34 @@ export const api = {
         client_request_id: clientRequestId,
         timezone: context.timezone || null,
         locale: context.locale || null,
+        memory_enabled: context.memoryEnabled ?? true,
+        memory_incognito: context.memoryIncognito ?? false,
       }),
     }),
-  deleteChat: (chatId) => request(`/chats/${chatId}`, { method: "DELETE" }),
+  deleteChat: (chatId, context = {}) => {
+    const params = new URLSearchParams({
+      memory_enabled: String(context.memoryEnabled ?? true),
+      memory_incognito: String(context.memoryIncognito ?? false),
+    });
+    return request(`/chats/${chatId}?${params}`, { method: "DELETE" });
+  },
   createProject: (name) =>
     request("/chat-projects", {
       method: "POST",
       body: JSON.stringify({ name }),
     }),
   deleteProject: (projectId) => request(`/chat-projects/${projectId}`, { method: "DELETE" }),
-  memory: () =>
-    Promise.all([
-      request("/profile"),
-      request("/education"),
-      request("/activities"),
-      request("/preferences"),
-      request("/goals"),
-      request("/chat-projects"),
-      request("/events"),
-      request("/memories"),
-    ]).then(([
-      profile,
-      education,
-      activities,
-      preferences,
-      goals,
-      projects,
-      events,
-      memories,
-    ]) => ({
-      profile,
-      education,
-      activities,
-      preferences,
-      goals,
-      projects,
-      events,
-      memories,
-    })),
-  updateProfile: (id, payload) =>
-    request(`/profile/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteProfile: (id) => request(`/profile/${id}`, { method: "DELETE" }),
-  updateEducation: (id, payload) =>
-    request(`/education/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteEducation: (id) => request(`/education/${id}`, { method: "DELETE" }),
-  updateActivity: (id, payload) =>
-    request(`/activities/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteActivity: (id) => request(`/activities/${id}`, { method: "DELETE" }),
-  updatePreference: (id, payload) =>
-    request(`/preferences/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deletePreference: (id) => request(`/preferences/${id}`, { method: "DELETE" }),
-  updateGoal: (id, payload) =>
-    request(`/goals/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteGoal: (id) => request(`/goals/${id}`, { method: "DELETE" }),
-  updateProjectMemory: (id, payload) =>
-    request(`/chat-projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteProjectMemory: (id) => request(`/chat-projects/${id}/memory`, { method: "DELETE" }),
-  updateEvent: (id, payload) =>
-    request(`/events/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteEvent: (id) => request(`/events/${id}`, { method: "DELETE" }),
+  memory: () => request("/memory"),
   createMemory: (payload) =>
-    request("/memories", { method: "POST", body: JSON.stringify(payload) }),
+    request("/memory", { method: "POST", body: JSON.stringify(payload) }),
   updateMemory: (id, payload) =>
-    request(`/memories/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  deleteMemory: (id) => request(`/memories/${id}`, { method: "DELETE" }),
-  runReflection: (payload = {}) =>
-    request("/reflection/run", { method: "POST", body: JSON.stringify(payload) }),
+    request(`/memory/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteMemory: (id) => request(`/memory/${id}`, { method: "DELETE" }),
+  memoryCandidates: () => request("/memory/candidates"),
+  acceptMemoryCandidate: (id, payload = {}) =>
+    request(`/memory/candidates/${id}/accept`, { method: "POST", body: JSON.stringify(payload) }),
+  rejectMemoryCandidate: (id, payload = {}) =>
+    request(`/memory/candidates/${id}/reject`, { method: "POST", body: JSON.stringify(payload) }),
   searchConfig: () => request("/search/config"),
   updateSearchConfig: (payload) =>
     request("/search/config", { method: "POST", body: JSON.stringify(payload) }),

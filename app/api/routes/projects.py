@@ -9,9 +9,9 @@ from app.services.projects import (
     ProjectLink,
     ProjectListItem,
     ProjectNote,
+    ProjectsService,
     ProjectTag,
     ProjectUpdate,
-    ProjectsService,
 )
 from app.services.projects.service import ProjectsValidationError
 from app.services.tasks import Task, TaskCreate, TaskListItem, TasksService

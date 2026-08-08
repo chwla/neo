@@ -66,3 +66,6 @@ def runner_system_prompt() -> str:
         "Do not propose shell, terminal, browser, email, purchase, or filesystem actions as completed work. "
         "Produce a concise, useful output and state what information is missing."
     )
+
+
+# ruff: noqa: E501

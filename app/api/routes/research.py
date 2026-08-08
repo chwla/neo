@@ -160,7 +160,14 @@ def start_research(req: StartResearchRequest, request: Request):
     max_sources = req.max_sources or config["max_sources"]
     max_rounds = req.max_rounds or config["max_rounds"]
     profile = session_for(request)
-    if get_settings().memory_v2_research_recall_enabled and profile is None:
+    settings = get_settings()
+    use_memory = bool(
+        settings.memory_enabled
+        and not settings.memory_incognito
+        and req.memory_enabled
+        and not req.incognito
+    )
+    if use_memory and profile is None:
         raise HTTPException(401, "Choose an authenticated profile for memory-aware research.")
     profile_id = str(profile["id"]) if profile is not None else None
     is_guest = bool(profile and profile.get("is_guest"))
@@ -181,6 +188,8 @@ def start_research(req: StartResearchRequest, request: Request):
         ),
         profile_id=profile_id,
         is_guest=is_guest,
+        memory_enabled=use_memory,
+        incognito=req.incognito,
     )
     started = start_job(job.id)
     if not started:

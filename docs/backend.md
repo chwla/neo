@@ -86,29 +86,25 @@ SQLite schemas. All are created inside the selected profile database unless expl
 
 | Table | Purpose and significant fields |
 | --- | --- |
-| `profile` | Typed identity facts: `key`, `value`, confidence, active flag, timestamps. Canonical singular facts are replaced/superseded by review logic. |
-| `education` | Institution, degree, field of study, optional explicit graduation date, description, SHA-256 fingerprint, active flag, timestamps. |
-| `preferences` | Category/value preferences, canonical slot, fingerprint, confidence, importance, active flag, timestamps. Additive interests can coexist; singular favorites use canonical slots. |
-| `goals` | Goal text, notes, priority, active/completed/abandoned status, optional target date, horizon in months, fingerprint, completion and audit timestamps. |
-| `activities` | Time-bounded current activity, category, description, fingerprint, start, expiry, archive time, active flag, timestamps. Current activities default to a 30-day lifetime. |
-| `projects` | Legacy conversational-memory project: name, description, status, priority, timestamps, and relationships to chats, memories, and events. This is distinct from `workspace_projects`. |
-| `events` | Timeline event, notes, optional explicit event date, fingerprint, importance, creation time, and project links. |
-| `memories` | Canonical durable record: text, enum type, importance, confidence, source label/sentence/conversation, canonical slot, fingerprint, expiry, lifecycle status, supersedes/superseded-by links, update reason, active flag, access time, timestamps, typed-source relationship, embedding relationship, and project links. |
-| `memory_sources` | Provenance edge from a durable memory to a user message: conversation ID, message ID, exact supporting sentence, source fingerprint, active flag, `replacement`/`deletion` detachment reason, and timestamps. The `(memory_id, source_fingerprint)` pair is unique. |
-| `memory_candidates` | Extraction review queue: text, candidate type, confidence, importance, serialized reasoning/attributes, pending/accepted/rejected status, review time, and accepted-memory link. |
-| `memory_embeddings` | One embedding record per memory: provider/model, dimensions, JSON vector, content hash, missing/ready/stale/error status, error, embedding time, timestamps. |
-| `memory_lifecycle_audit` | Immutable lifecycle entries for archive, supersede, restore, delete, or maintenance decisions, including previous/new status, reason, related memory, source sentence, and time. |
-| `reflections` | Persisted reflection text, importance, timestamps. |
-| `chats` | Conversation title, optional legacy memory-project ID, archived flag, timestamps. |
+| `memory_owner_bindings` | Owner/database identity binding for canonical personal memory. |
+| `memory_operations` | Idempotent canonical mutations and typed outcomes. |
+| `memory_records` | Authoritative active, superseded, archived, and forgotten records. |
+| `memory_candidates` | Structured review candidates; candidates are not confirmed memory. |
+| `memory_sources` | Owner-bound provenance edges with explicit active/detached state. |
+| `memory_relations` | Canonical supersession and lifecycle relations. |
+| `memory_usage_events` | Usage for the exact canonical IDs supplied to a consumer. |
+| `memory_outbox`, `memory_outbox_deliveries` | Post-commit derived-index protocol and delivery attempts. |
+| `memory_tombstones` | Removal markers used to reject stale derived content. |
+| `memory_health_state`, `memory_health_metrics` | Reconstructible index state and metrics. |
+| `memory_fts_documents`, `memory_fts_index` | Reconstructible lexical documents and SQLite FTS index. |
+| `memory_vector_points` | Reconstructible semantic acceleration points. |
+| `memory_schema_migrations` | Checksummed canonical schema ledger. |
+| `chats` | Conversation title, optional project association, archived flag, timestamps. |
 | `chat_messages` | User/assistant content plus prompt/completion/total tokens, duration, model thinking, response kind, provider, model, route, finish reason, trace ID, JSON metadata, optional unique generation ID, and creation time. The generation link permits an interrupted worker to update its one assistant row instead of appending another. |
 | `chat_generations` | Durable background generation: UUID, chat/prompt/model/client-request IDs, linked user and assistant messages, queued/running/completed/failed status, status detail, partial output, thinking, reply/error, timezone/locale, response metadata, usage/duration, worker ID, opaque lease token, attempt count, heartbeat, and lifecycle timestamps. `client_request_id` has a unique index for retry idempotency. |
-| `memory_project_links` | Many-to-many durable-memory to legacy-project association. |
-| `event_project_links` | Many-to-many event to legacy-project association. |
-
-Memory types include identity, preference, goal-related, project-related, life fact,
-instruction, relationship, knowledge, education, activity, and related lifecycle categories.
-Candidate types include identity, education, preference, goal, project, activity, event,
-memory, and none.
+Memory types include identity, preference, goal, project, activity, relationship, knowledge,
+instruction, and other taxonomy-defined durable categories. Exclusive slots permit one active
+canonical value; uncertain corrections remain candidates.
 
 ### Workspace and subsystem tables
 
@@ -134,24 +130,22 @@ typed service snapshots without making the public API depend on SQLite column la
 
 Neo currently uses startup migrations rather than Alembic:
 
-1. `Base.metadata.create_all()` creates missing core tables.
+1. `Base.metadata.create_all()` creates missing non-memory core tables.
 2. `ensure_chat_message_metadata_columns()` adds usage, thinking, response-kind, provider,
    model, route, finish-reason, trace, metadata, and generation-link columns to older
    `chat_messages`, then creates the unique generation index.
 3. `ensure_chat_generation_columns()` adds thinking, progress, browser context, response
    metadata, usage, worker, lease-token, attempt-count, and heartbeat columns to older
    generation tables.
-4. `ensure_memory_metadata_columns()` adds source, canonical-slot, lifecycle, and supersession
-   fields, then backfills source sentences.
-5. `ensure_typed_memory_columns()` adds memory/preference/goal/event fingerprints, memory
-   expiry, preference slots, goal horizon/target fields, and memory-source detachment reason,
-   then creates their indexes.
-6. `ensure_memory_embedding_table()` creates embedding storage when missing and backfills
-   legacy memory status and canonical slots.
-7. Every service initializer creates its tables and indexes idempotently.
+4. `upgrade_memory()` verifies the owner/database binding and applies checksummed canonical
+   memory schema revisions.
+5. Every unrelated workspace service initializer creates its own tables and indexes
+   idempotently.
 
-Migrations are additive. Operators must back up the exact profile directory before upgrading;
-the application does not provide a general down-migration.
+Personal-memory replacement is intentionally destructive. `scripts/reset_memory.py` requires
+the exact `ERASE_ALL_MEMORY` confirmation, refuses tables outside its allowlist, creates no
+backup or export, fingerprints unrelated tables, removes all retired personal-memory storage,
+and installs the empty canonical schema.
 
 ## 4. Chat routing and generation
 
@@ -238,57 +232,31 @@ Persisted assistant metadata includes, where applicable:
 Direct local responses use meaningful response-kind/provider/route/duration metadata instead
 of pretending to have model token counts.
 
-## 5. Typed memory pipeline
+## 5. Canonical memory pipeline
 
-Memory is extracted from the current **user** turn only. Assistant messages, quoted
-third-party claims, greetings, questions, and one-off commands are excluded.
+The authenticated chat path runs deterministic current-turn contradiction analysis before
+owner-bound recall. Recall selects active canonical records, suppresses contradicted IDs,
+serializes only bounded untrusted factual context, and records usage for the final serialized
+IDs. Direct answers, synchronous chat, streaming chat, and research planning use the same
+canonical IDs.
 
-### Extraction and acceptance
+After the assistant response, structured extraction processes the current user turn. Every
+proposal must be grounded in source spans and pass normalization, taxonomy, sensitivity, and
+policy checks. Confirmed writes flow through the one mutation coordinator; uncertain
+corrections remain review candidates. Extraction failure cannot corrupt or delay the response.
 
-1. Sentence and clause splitting preserves multiple declarations in one message.
-2. Deterministic extractors recognize profile/location/country/occupation, education and
-   graduation, additive interests, singular favorites, ordered language priorities, durable
-   goals, named projects, events, hardware, and current activities.
-3. A schema-constrained model fallback may inspect only ignored user text. Every proposed
-   value must be grounded in a source span. Model-only candidates remain pending
-   (`auto_accept=0`) and are never acknowledged as saved.
-4. High-confidence deterministic candidates are persisted and accepted through the common
-   review service.
-5. Typed records and their canonical durable memory are committed together.
-6. A pure declaration receives “saved” acknowledgement only after all its candidates were
-   accepted successfully.
+Exclusive slots allow one active value. An authoritative correction atomically supersedes the
+predecessor; ambiguous corrections do not. Repeated support adds a provenance edge rather than
+duplicating the record. Editing, rerunning, or deleting a chat detaches the relevant source.
+The record remains active while other support exists; final-source removal follows the typed
+source-change review contract. Forgetting clears recoverable payloads and emits post-commit
+canonical-removal work.
 
-Education stores institution, degree, field, and a graduation event. A graduation date is
-stored only if the user explicitly supplied it. Goal horizons are anchored to the source
-message timestamp. Current playing/reading/watching/learning activities expire after 30 days
-and are archived when expired or superseded.
-
-### Deduplication, slots, and provenance
-
-Normalized NFKC/case-folded values produce SHA-256 fingerprints. Repeated facts attach a new
-`memory_sources` edge rather than duplicate the canonical record. Canonical slots enforce
-singular facts such as `identity:occupation` or a favorite category; additive interests and
-independent goals retain distinct fingerprints.
-
-Editing or rerunning marks the old source edge with detachment reason `replacement`. The fact
-remains active while another source supports it. If no source remains, the exact canonical
-memory and its typed projection are archived/deactivated; re-extracting the same fact from
-the replacement message reactivates that archived record instead of creating a duplicate.
-
-Deleting a source chat marks its edges with reason `deletion`. When the final source is
-deleted, the canonical record becomes a durable deleted tombstone and its typed projection is
-deactivated. A later identical statement is rejected rather than silently reviving an
-explicitly deleted fact; restoration must use the lifecycle restore operation. Manual memory
-deletion has the same durable-tombstone protection. Every transition is recorded in
-`memory_lifecycle_audit`.
-
-### Recall and retrieval
-
-Direct recall covers profile identity, education, occupation, interests, favorites, goals,
-language priorities, location/country, projects, and current activity. Context assembly can
-combine structured lookup, SQLite FTS, optional semantic embeddings, canonical-slot boosts,
-importance, and recency. Retrieval does not allow memory text to override current
-instructions, rules, or safety policy.
+SQLite FTS and vector points are reconstructible derived state processed from the outbox.
+Semantic failure degrades to lexical recall. Stored memory is always untrusted context and
+cannot override the current user message, rules, permissions, or safety policy. Disabled and
+incognito requests construct no personal-memory components and perform zero personal-memory
+reads, writes, extraction, usage accounting, or indexing calls.
 
 ## 6. Search and live-data behavior
 
@@ -450,15 +418,12 @@ repository’s Markdown `docs/` directory.
 
 | Area | Endpoints |
 | --- | --- |
-| Extraction/context | `POST /conversation`; `POST /extract-memory`; `POST /retrieve-context`; `POST /memory/review`; `POST /reflection/run` |
 | Chat navigation | `GET /sidebar`; `POST /chats`; `GET /chats/{chat_id}`; `DELETE /chats/{chat_id}` |
 | Chat response paths | `POST /chats/{chat_id}/messages` (synchronous); `POST /chats/{chat_id}/messages/stream` (newline-delimited JSON); `POST /chats/{chat_id}/generations`; `GET /chats/{chat_id}/generations/active`; `GET /chats/{chat_id}/generations/{generation_id}` |
 | Edit/rerun | `PATCH /chats/{chat_id}/messages/{message_id}`; `POST /chats/{chat_id}/messages/{message_id}/rerun` |
-| Typed memory reads | `GET /profile`; `GET /education`; `GET /activities`; `GET /preferences`; `GET /goals`; `GET /events`; `GET /memory` and `GET /memories` |
-| Typed memory edits | `PATCH/DELETE /profile/{profile_id}`; `PATCH/DELETE /preferences/{preference_id}`; `PATCH/DELETE /goals/{goal_id}`; `PATCH/DELETE /events/{event_id}`; `PATCH /memories/{memory_id}`; `DELETE /memories/{memory_id}` |
-| Lifecycle | `POST /memories/{memory_id}/archive`; `POST /memories/{memory_id}/supersede`; `POST /memories/{memory_id}/restore`; `GET /memories/{memory_id}/lifecycle`; `POST /memory/lifecycle/age`; `POST /memory/lifecycle/maintenance`; `GET /memory/candidates`; `POST /memory/explain` |
+| Canonical memory | `GET/POST /memory`; `GET/PATCH/DELETE /memory/{memory_id}`; `GET /memory/candidates`; `POST /memory/candidates/{candidate_id}/accept`; `POST /memory/candidates/{candidate_id}/reject`; `GET /memory/health` |
+| Derived-state operations | `POST /memory/derived/reconcile`; `POST /memory/derived/rebuild` |
 | Conversational projects | `GET/POST /chat-projects`; `PATCH/DELETE /chat-projects/{project_id}`; `DELETE /chat-projects/{project_id}/memory` |
-| Legacy project aliases | `GET/POST /projects`; `PATCH/DELETE /projects/{project_id}`; `DELETE /projects/{project_id}/memory` are defined by the memory router, but the separately registered workspace-project routes occupy the same public prefix. New clients must use `/chat-projects` for conversational projects and the workspace project contract below for `/projects`. |
 
 ### Notes, workspace projects, tasks, files, and repositories
 
@@ -496,7 +461,7 @@ repository’s Markdown `docs/` directory.
 
 | Group | Endpoints |
 | --- | --- |
-| Retrieval index | `POST /memory/index`; `POST /memory/retrieve`; `GET/POST /memory/items`; `GET/PATCH/DELETE /memory/items/{item_id}`; `GET /memory/scopes/{scope_type}/{scope_id}`; `GET /memory/retrievals`; `GET /memory/retrievals/{retrieval_id}`; `POST /memory/prune/preview`; `POST /memory/prune/apply` |
+| Workspace artifact retrieval | `POST /workspace-memory/index`; `POST /workspace-memory/retrieve`; `GET/POST /workspace-memory/items`; `GET/PATCH/DELETE /workspace-memory/items/{item_id}`; `GET /workspace-memory/scopes/{scope_type}/{scope_id}`; `GET /workspace-memory/retrievals`; `GET /workspace-memory/retrievals/{retrieval_id}`; `POST /workspace-memory/prune/preview`; `POST /workspace-memory/prune/apply` |
 | Context memory | `GET /context-memory/summaries`; `GET /context-memory/summaries/{summary_id}`; `POST /context-memory/preview`; `POST /context-memory/compact`; `GET /context-memory/scopes/{scope_type}/{scope_id}`; `GET/POST /context-memory/scopes/{scope_type}/{scope_id}/events` |
 
 ### Agents, coding, recovery, and evaluation
@@ -572,7 +537,9 @@ Pydantic Settings loads `.env`, accepts `NEO_*`, and ignores unknown fields. Not
 | `NEO_WEB_CACHE_ENABLED` | `false` | Safe source cache. |
 | `NEO_WORKSPACE_FILE_MAX_BYTES`, `NEO_WORKSPACE_EXTRACTED_TEXT_MAX_CHARS` | 5 MiB, 500,000 | Upload/extraction limits. |
 | `NEO_WORKSPACE_REPO_MAX_FILES`, `NEO_WORKSPACE_REPO_MAX_TOTAL_BYTES`, `NEO_WORKSPACE_REPO_MAX_FILE_BYTES` | `500`, 25 MiB, 1 MiB | Managed repository import limits. |
-| `NEO_SEMANTIC_RETRIEVAL_ENABLED`, `NEO_AUTO_EMBED_MEMORIES` | `false`, `false` | Optional semantic memory features. |
+| `NEO_MEMORY_ENABLED`, `NEO_MEMORY_EXTRACTION_ENABLED` | `true`, `true` | Canonical personal-memory and structured-extraction gates. |
+| `NEO_MEMORY_INDEX_WORKER_ENABLED`, `NEO_MEMORY_SEMANTIC_RECALL_ENABLED` | `true`, `true` | Derived indexing and optional semantic acceleration. |
+| `NEO_MEMORY_INCOGNITO` | `false` | Global zero-personal-memory-call gate. |
 | `NEO_EMBEDDING_PROVIDER`, `NEO_EMBEDDING_MODEL`, `NEO_EMBEDDING_TIMEOUT_SECONDS` | `ollama`, `nomic-embed-text:latest`, `10` | Embedding configuration. |
 | `NEO_CONNECTOR_MASTER_KEY`, `NEO_CONNECTOR_MASTER_KEY_FILE` | development-generated local file | Stable AES-GCM vault key. Production requires an inline key or an existing `0600` file; the Docker image points the file setting at `/app/data/secrets/connector-master-key`. |
 
@@ -631,9 +598,9 @@ docker build -t neo:local .
 
 The regression suite must cover:
 
-- multi-fact extraction, typos/spelling variants, deduplication, corrections, negation,
-  source edit/delete, expiry, and restart persistence;
-- zero external calls for personal declarations and zero assistant-message extraction;
+- deterministic and model-backed extraction, grounding, deduplication, corrections,
+  current-turn suppression, source edit/delete, lifecycle, and restart persistence;
+- disabled/incognito zero personal-memory component calls and zero assistant-message extraction;
 - false-positive internal routing for Recovery and other feature names;
 - explicit internal commands still reaching their intended service;
 - currency/weather/date typed intent and contextual follow-ups;
@@ -656,23 +623,14 @@ Use a fresh test profile and record every result.
 3. Create/unlock a profile, create a chat, restart the container, unlock again, and reopen the
    chat. Expect the transcript to persist once and no guest/account cross-contamination.
 
-### B. Typed memory
+### B. Canonical memory
 
-1. Send one message containing education, occupation, two interests, a favorite, New
-   Delhi/India, two goals, Python/C++/C priority, and a current game. Expect a saved
-   acknowledgement only after persistence.
-2. Inspect `/profile`, `/education`, `/preferences`, `/goals`, `/events`, `/activities`, and
-   `/memories`. Expect every stated fact, one deduplicated graduation event, no invented date,
-   goal horizon anchored to message time, and activity expiry 30 days later.
-3. Repeat a fact. Expect one canonical memory with an additional provenance edge.
-4. Edit one supporting message. Expect only that source contribution marked `replacement`; a
-   multiply sourced fact remains. Replacing it with the same statement must reactivate/reuse
-   the exact record with no rejected candidate or duplicate.
-5. Delete the final supporting chat. Expect a `deletion` source detachment, a durable deleted
-   tombstone, an inactive typed projection, and a lifecycle audit entry. Repeating the same
-   statement must not bypass the deletion; use explicit restore when revival is intended.
-6. Ask direct recall questions. Expect only stored facts; unstated name/age must not appear.
-7. Restart and repeat recall. Expect identical active facts with no duplicates.
+Use `docs/manual-memory-live-testing.md` for the authoritative human worksheet. Begin from an
+empty Memories screen, save one durable preference, verify it in another conversation, then
+exercise critical replacement, ambiguous correction, temporary-fact rejection, mixed-message
+extraction, UI forget, incognito, disabled mode, and restart persistence. Correlate each chat
+with `scripts/inspect_memory.py conversation --id <conversation-id>` and verify recalled,
+current-turn-suppressed, final serialized, usage, operation, candidate, and outbox IDs.
 
 ### C. Routing and chat generation
 

@@ -6,7 +6,12 @@ from typing import Any
 
 import requests
 
-from app.services.llm import BaseLLMClient, LLMChatResult, LLMMessage
+from app.services.llm import (
+    BaseLLMClient,
+    LLMChatResult,
+    LLMMessage,
+    ProviderUsagePersistenceError,
+)
 from app.services.llm_registry.providers import build_client
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.usage import record_call, safe_error
@@ -45,7 +50,7 @@ class RoutedLLMClient(BaseLLMClient):
                 provider, model, timeout=self.timeout, num_predict=self.num_predict
             )
         except Exception as exc:
-            record_call(
+            self._record_call(
                 route_name=self.route_name,
                 provider_id=provider["id"],
                 model_id=model["id"],
@@ -55,6 +60,13 @@ class RoutedLLMClient(BaseLLMClient):
             )
             raise
         return provider, model, client
+
+    @staticmethod
+    def _record_call(**kwargs) -> None:
+        try:
+            record_call(**kwargs)
+        except Exception as exc:
+            raise ProviderUsagePersistenceError(str(exc)) from exc
 
     @staticmethod
     def _retryable(exc: Exception) -> bool:
@@ -90,7 +102,7 @@ class RoutedLLMClient(BaseLLMClient):
             result = primary[2].chat_with_metadata(messages, temperature, output_limit)
             return self._success(result, primary[0], primary[1], False)
         except Exception as exc:
-            record_call(
+            self._record_call(
                 route_name=self.route_name,
                 provider_id=primary[0]["id"],
                 model_id=primary[1]["id"],
@@ -105,7 +117,7 @@ class RoutedLLMClient(BaseLLMClient):
                 result = fallback[2].chat_with_metadata(messages, temperature, output_limit)
                 return self._success(result, fallback[0], fallback[1], True)
             except Exception as fallback_exc:
-                record_call(
+                self._record_call(
                     route_name=self.route_name,
                     provider_id=fallback[0]["id"],
                     model_id=fallback[1]["id"],
@@ -124,7 +136,7 @@ class RoutedLLMClient(BaseLLMClient):
                 "fallback_used": fallback_used,
             }
         )
-        record_call(
+        self._record_call(
             route_name=self.route_name,
             provider_id=provider["id"],
             model_id=model["id"],
@@ -170,7 +182,7 @@ class RoutedLLMClient(BaseLLMClient):
                             )
                         },
                     )
-                    record_call(
+                    self._record_call(
                         route_name=self.route_name,
                         provider_id=primary[0]["id"],
                         model_id=primary[1]["id"],
@@ -186,7 +198,7 @@ class RoutedLLMClient(BaseLLMClient):
                 yield event
             return
         except Exception as exc:
-            record_call(
+            self._record_call(
                 route_name=self.route_name,
                 provider_id=primary[0]["id"],
                 model_id=primary[1]["id"],
@@ -213,7 +225,7 @@ class RoutedLLMClient(BaseLLMClient):
                             )
                         },
                     )
-                    record_call(
+                    self._record_call(
                         route_name=self.route_name,
                         provider_id=fallback[0]["id"],
                         model_id=fallback[1]["id"],
@@ -229,7 +241,7 @@ class RoutedLLMClient(BaseLLMClient):
                     )
                 yield event
         except Exception as exc:
-            record_call(
+            self._record_call(
                 route_name=self.route_name,
                 provider_id=fallback[0]["id"],
                 model_id=fallback[1]["id"],

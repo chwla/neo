@@ -160,3 +160,6 @@ class RecoveryScanner:
                     )
             count += 1
         return count
+
+
+# ruff: noqa: E501

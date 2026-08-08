@@ -518,3 +518,6 @@ class RecoveryService:
                 "Run appears active; scanner can mark it recoverable after restart.",
             )
         return "unknown", f"{run_type} run status is {status}."
+
+
+# ruff: noqa: E501

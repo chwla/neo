@@ -14,16 +14,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.db.session import build_engine
-from app.repositories.memory_v2 import MemoryV2Repository
+from app.repositories.memory import MemoryRepository
 from app.services.llm import get_llm_client
-from app.services.memory_v2.feature_flags import MemoryV2FeatureFlags
-from app.services.memory_v2.prompt import (
+from app.services.memory.prompt import (
     RecallPromptOrchestrator,
     repository_usage_recorder,
 )
-from app.services.memory_v2.queries import MemoryQueryContext, RecallMode
-from app.services.memory_v2.recall import CanonicalRecallService
-from app.services.memory_v2.runtime import build_phase6_recall_dependencies
+from app.services.memory.queries import MemoryQueryContext, RecallMode
+from app.services.memory.recall import CanonicalRecallService
+from app.services.memory.runtime import build_memory_recall_dependencies
+from app.services.memory.settings import MemorySettings
 from app.services.profile_accounts import database_url_for, profile_database
 from app.services.research.evidence import (
     extract_entity_terms,
@@ -59,7 +59,7 @@ _lock = threading.Lock()
 ResearchMemoryProvider = Callable[
     [dict[str, Any]], tuple[RecallPromptOrchestrator, MemoryQueryContext]
 ]
-_memory_v2_research_provider: ResearchMemoryProvider | None = None
+_memory_research_provider: ResearchMemoryProvider | None = None
 
 
 @dataclass
@@ -80,12 +80,12 @@ class _OwnedResearchMemoryRuntime:
             self.engine.dispose()
 
 
-def configure_memory_v2_research_provider(
+def configure_memory_research_provider(
     provider: ResearchMemoryProvider | None,
 ) -> None:
     """Install trusted request-bound wiring; never a process-default DB session."""
-    global _memory_v2_research_provider
-    _memory_v2_research_provider = provider
+    global _memory_research_provider
+    _memory_research_provider = provider
 
 
 def _job_memory_binding(job_data: dict[str, Any]) -> tuple[str, str, str, bool] | None:
@@ -109,18 +109,18 @@ def _default_research_memory_runtime(
         return None
     owner_id, database_identity, profile_id, is_guest = binding
     settings = get_settings()
-    flags = MemoryV2FeatureFlags.from_settings(settings)
+    flags = MemorySettings.from_settings(settings)
     if not flags.research_recall_enabled or not flags.owner_is_enabled(owner_id):
         return None
     engine = build_engine(database_url_for(profile_id, guest=is_guest))
     session = sessionmaker(bind=engine, expire_on_commit=False)()
     try:
-        repository = MemoryV2Repository(
+        repository = MemoryRepository(
             session,
             owner_id=owner_id,
             database_identity=database_identity,
         )
-        phase6 = build_phase6_recall_dependencies(
+        recall_dependencies = build_memory_recall_dependencies(
             engine,
             owner_id=owner_id,
             database_identity=database_identity,
@@ -130,16 +130,16 @@ def _default_research_memory_runtime(
         recall = CanonicalRecallService(
             repository,
             flags=flags,
-            fts_index=phase6.fts_index,
-            semantic_provider=phase6.semantic_provider,
-            vector_index=phase6.vector_index,
-            repair_scheduler=phase6.repair_scheduler,
-            metric_recorder=phase6.metric_recorder,
-            semantic_weight=settings.memory_v2_semantic_weight,
-            semantic_cap=settings.memory_v2_semantic_cap,
+            fts_index=recall_dependencies.fts_index,
+            semantic_provider=recall_dependencies.semantic_provider,
+            vector_index=recall_dependencies.vector_index,
+            repair_scheduler=recall_dependencies.repair_scheduler,
+            metric_recorder=recall_dependencies.metric_recorder,
+            semantic_weight=settings.memory_semantic_weight,
+            semantic_cap=settings.memory_semantic_cap,
             semantic_threshold=settings.semantic_similarity_threshold,
-            vector_candidate_limit=settings.memory_v2_vector_candidate_limit,
-            fts_candidate_limit=settings.memory_v2_fts_candidate_limit,
+            vector_candidate_limit=settings.memory_vector_candidate_limit,
+            fts_candidate_limit=settings.memory_fts_candidate_limit,
         )
         orchestrator = RecallPromptOrchestrator(
             recall,
@@ -173,16 +173,16 @@ def _canonical_research_memory(
 ) -> ResearchMemoryRecallResult:
     runtime: _OwnedResearchMemoryRuntime | None = None
     try:
-        if _memory_v2_research_provider is not None:
-            orchestrator, query_context = _memory_v2_research_provider(job_data)
+        if _memory_research_provider is not None:
+            orchestrator, query_context = _memory_research_provider(job_data)
         else:
             runtime = _default_research_memory_runtime(job_data)
             if runtime is None:
-                return retrieve_scoped_memory_result(user_query, v2_enabled=True)
+                return retrieve_scoped_memory_result(user_query, enabled=True)
             orchestrator, query_context = runtime.orchestrator, runtime.query_context
         result = retrieve_scoped_memory_result(
             user_query,
-            v2_enabled=True,
+            enabled=True,
             orchestrator=orchestrator,
             query_context=query_context,
             usage_purpose=f"research_plan:{job_data['id']}",
@@ -358,14 +358,19 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
 
         # --- SCOPED MEMORY ---
         settings = get_settings()
-        v2_research = settings.memory_v2_research_recall_enabled
-        if v2_research:
+        metadata = dict(job_data.get("metadata") or {})
+        research = bool(
+            settings.memory_enabled
+            and not settings.memory_incognito
+            and metadata.get("memory_enabled", True)
+            and not metadata.get("incognito", False)
+        )
+        if research:
             memory_result = _canonical_research_memory(job_data, user_query)
         else:
             memory_result = retrieve_scoped_memory_result(user_query)
         memory_context = memory_result.context_text
         memory_keys = list(memory_result.canonical_ids)
-        metadata = dict(job_data.get("metadata") or {})
         metadata["memory_recall_diagnostic"] = memory_result.diagnostic
         job_data["metadata"] = metadata
         save_job(job_data)
@@ -385,12 +390,12 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
         }
         route_name = RuleResolver.route_name(rule_result, "research", "research")
         rule_context = RuleResolver.research_context(rule_result)
-        untrusted_memory_context = memory_context if v2_research else ""
-        if rule_context and not v2_research:
+        untrusted_memory_context = memory_context if research else ""
+        if rule_context and not research:
             memory_context = (
                 f"{memory_context}\n\nResearch rules (guidance only):\n{rule_context}"
             ).strip()
-        elif v2_research:
+        elif research:
             memory_context = rule_context
         ollama = get_llm_client(num_predict=512, route_name=route_name)
 

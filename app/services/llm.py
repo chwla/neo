@@ -66,6 +66,10 @@ class LLMClient(Protocol):
     def extract_thinking(self, content: str) -> str | None: ...
 
 
+class ProviderUsagePersistenceError(RuntimeError):
+    """Neo could not persist provider usage after a model operation."""
+
+
 class LLMConfig(BaseModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$")
     name: str = Field(min_length=1, max_length=120)

@@ -501,3 +501,6 @@ def _row_to_link(row: sqlite3.Row) -> dict:
     raw_metadata = data.pop("metadata_json", None)
     data["metadata"] = json.loads(raw_metadata) if raw_metadata else {}
     return data
+
+
+# ruff: noqa: E501

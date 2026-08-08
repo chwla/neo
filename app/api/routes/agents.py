@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.services.agentic_core import AgenticCoreService
+from app.services.agentic_core import store as agentic_store
 from app.services.agents import (
     AgentArtifact,
     AgentRun,
@@ -20,8 +22,6 @@ from app.services.agents.types import (
     PlanTasksResult,
     RunFromObjectiveRequest,
 )
-from app.services.agentic_core import AgenticCoreService
-from app.services.agentic_core import store as agentic_store
 from app.services.notes.types import Note
 from app.services.tasks.service import TasksValidationError
 from app.services.tasks.types import Task

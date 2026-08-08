@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.core.config import get_settings
 
@@ -26,7 +26,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def initialize_agent_tables() -> None:
@@ -376,3 +376,6 @@ def _row_to_artifact(row: sqlite3.Row) -> dict:
     raw = data.pop("metadata_json", None)
     data["metadata"] = json.loads(raw) if raw else {}
     return data
+
+
+# ruff: noqa: E501

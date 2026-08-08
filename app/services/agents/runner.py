@@ -583,3 +583,6 @@ def get_agent_runner() -> AgentRunner:
     if _runner is None:
         _runner = AgentRunner()
     return _runner
+
+
+# ruff: noqa: E501

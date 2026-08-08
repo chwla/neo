@@ -7,45 +7,43 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from threading import Thread
 from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy import update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.models import ChatGeneration, ChatMessage
-from app.models.enums import CandidateStatus, MemoryType
-from app.repositories.memory_store import MemoryStore
+from app.repositories.app_store import AppStore
 from app.services.agents.guidance import agent_run_guidance
-from app.services.canonical_memory import (
+from app.services.chat_intent import resolve_internal_chat_intent
+from app.services.code_index.service import CodeIndexService
+from app.services.coding_agent.service import CodingAgentService
+from app.services.context import ContextPackage
+from app.services.files.service import WorkspaceFilesService
+from app.services.git.service import GitContextService
+from app.services.llm import ChatTurn, LLMClient, LLMMessage
+from app.services.memory.contracts import SourceKind
+from app.services.memory.direct_answer import DirectMemoryAnswerService
+from app.services.memory.extraction_contracts import (
+    ConversationRole,
+    CurrentTurnOverride,
+    ExtractionMode,
+    ExtractionRequest,
+    TrustedConversationMessage,
+)
+from app.services.memory.factory import MemoryRuntime
+from app.services.memory_chat import (
     STABLE_MEMORY_POLICY,
     MemoryQueryContext,
     RecallPromptOrchestrator,
     RecallPromptSelection,
     RecallQuery,
 )
-from app.services.chat_intent import resolve_internal_chat_intent
-from app.services.code_index.service import CodeIndexService
-from app.services.coding_agent.service import CodingAgentService
-from app.services.context import ContextAssemblyService, ContextPackage
-from app.services.direct_answer import DirectMemoryAnswerService
-from app.services.explanation import MemoryExplanationService
-from app.services.extraction import ExtractionRequest, MemoryExtractionService
-from app.services.files.service import WorkspaceFilesService
-from app.services.git.service import GitContextService
-from app.services.identity_facts import is_durable_identity_fact
-from app.services.llm import ChatTurn, LLMClient, LLMMessage
-from app.services.memory_intent import (
-    MemoryIntentKind,
-    MemoryMutationResult,
-    ResolvedMemoryIntent,
-    extract_memory_removal_target,
-    resolve_memory_intent,
-)
 from app.services.projects import ProjectContextService
 from app.services.recovery.service import RecoveryService
-from app.services.retrieval import RetrievalRequest
 from app.services.rules.resolver import RuleResolver
 from app.services.search.citations import validate_citation_markers
 from app.services.search.content import FactResult, extract_release_date, run_extractors
@@ -71,6 +69,9 @@ from app.services.web_search import (
 )
 
 _ROUTING_LOG = logging.getLogger("neo.chat.routing")
+_MEMORY_SAVE_OUTCOMES = frozenset(
+    {"created", "reconfirmed", "refined", "replaced", "merged", "restored"}
+)
 _CONNECTOR_INFORMATIONAL_REQUEST = re.compile(
     r"^\s*(?:please\s+)?(?:explain|describe|document|write\s+(?:documentation|docs)|"
     r"compare|define|summari[sz]e|teach|tell\s+me\s+about|"
@@ -86,61 +87,44 @@ class NeoChatService:
         self,
         db: Session,
         ollama: LLMClient | None = None,
-        extractor: MemoryExtractionService | None = None,
         rule_result: dict[str, Any] | None = None,
-        memory_v2_orchestrator: RecallPromptOrchestrator | None = None,
-        memory_v2_context_factory: Callable[[str], MemoryQueryContext | None] | None = None,
-        memory_v2_enabled: bool | None = None,
+        memory_orchestrator: RecallPromptOrchestrator | None = None,
+        memory_context_factory: Callable[[str], MemoryQueryContext | None] | None = None,
+        memory_enabled: bool | None = None,
+        memory_runtime: MemoryRuntime | None = None,
     ) -> None:
         self.db = db
-        self.store = MemoryStore(db)
+        self.store = AppStore(db)
         if ollama is None:
             from app.services.llm import get_llm_client
 
             ollama = get_llm_client(route_name="chat")
         self.ollama = ollama
-        self.extractor = extractor or MemoryExtractionService()
+        self.memory_runtime = memory_runtime
         self.rule_result = rule_result or {
             "resolved_rules": {},
             "applied_profiles": [],
             "warnings": [],
         }
         self.settings = get_settings()
-        self.memory_v2_enabled = (
+        self.memory_enabled = (
             bool(
-                self.settings.memory_v2_canonical_query_enabled
-                and memory_v2_orchestrator is not None
-                and memory_v2_context_factory is not None
+                self.settings.memory_enabled
+                and memory_orchestrator is not None
+                and memory_context_factory is not None
             )
-            if memory_v2_enabled is None
-            else memory_v2_enabled
+            if memory_enabled is None
+            else memory_enabled
         )
-        self.memory_v2_prompt_enabled = (
-            self.memory_v2_enabled and self.settings.memory_v2_secure_prompt_enabled
-            if memory_v2_enabled is None
-            else memory_v2_enabled
-        )
-        self.memory_v2_direct_answers_enabled = (
-            self.settings.memory_v2_direct_answer_reads_enabled
-            if memory_v2_enabled is None
-            else memory_v2_enabled
-        )
-        self.memory_v2_orchestrator = memory_v2_orchestrator
-        self.memory_v2_context_factory = memory_v2_context_factory
-        self.last_memory_v2_selection: RecallPromptSelection | None = None
-        self.store.set_memory_v2_recall_active(self.memory_v2_enabled)
-        self.store.set_memory_v2_indexing_active(
-            self.memory_v2_enabled and self.settings.memory_v2_outbox_worker_enabled
-        )
-        self.context_assembler = ContextAssemblyService()
-        self.explainer = MemoryExplanationService()
+        self.memory_prompt_enabled = self.memory_enabled
+        self.memory_direct_answers_enabled = self.memory_enabled
+        self.memory_orchestrator = memory_orchestrator
+        self.memory_context_factory = memory_context_factory
+        self.last_memory_selection: RecallPromptSelection | None = None
+        self.current_turn_override: CurrentTurnOverride | None = None
         self.direct_answers = DirectMemoryAnswerService(
-            canonical_recall=(
-                memory_v2_orchestrator.recall_service
-                if memory_v2_orchestrator is not None
-                else None
-            ),
-            memory_v2_enabled=(self.memory_v2_enabled and self.memory_v2_direct_answers_enabled),
+            memory_orchestrator,
+            enabled=(self.memory_enabled and self.memory_direct_answers_enabled),
         )
         self.web_search = WebSearchService()
         self.project_context = ProjectContextService()
@@ -159,21 +143,14 @@ class NeoChatService:
         self.search_intent_resolver = SearchIntentResolver()
 
     def build_context(self, prompt: str) -> ContextPackage:
-        if self.memory_v2_enabled:
-            # Canonical memory is selected once, immediately before final prompt
-            # serialization. Do not assemble parallel legacy collections here.
-            return ContextPackage(
-                profile=[],
-                preferences=[],
-                goals=[],
-                projects=[],
-                relevant_memories=[],
-                events=[],
-                archive_results=[],
-            )
-        return self.context_assembler.assemble(
-            self.store,
-            RetrievalRequest(query=prompt, include_archives=False),
+        return ContextPackage(
+            profile=[],
+            preferences=[],
+            goals=[],
+            projects=[],
+            relevant_memories=[],
+            events=[],
+            archive_results=[],
         )
 
     def build_messages(
@@ -194,14 +171,14 @@ class NeoChatService:
             {"resolved_rules": {}, "applied_profiles": [], "warnings": []},
         )
         rule_section = RuleResolver.prompt_context(rule_result) or "No configured rules."
-        memory_policy = STABLE_MEMORY_POLICY if self.memory_v2_prompt_enabled else ""
-        legacy_memory_section = (
+        memory_policy = STABLE_MEMORY_POLICY if self.memory_prompt_enabled else ""
+        memory_section = (
             (
                 "Canonical personal memory is supplied separately as untrusted user context."
-                if self.memory_v2_prompt_enabled
+                if self.memory_prompt_enabled
                 else "Personal memory context is disabled for this request."
             )
-            if self.memory_v2_enabled
+            if self.memory_enabled
             else f"Memory context:\n{self._compact_context(context)}"
         )
         system_prompt = (
@@ -249,14 +226,14 @@ class NeoChatService:
             "If no deterministic memory-status response was returned before reaching you, "
             "then no user-visible memory mutation is confirmed.\n\n"
             f"{memory_policy}\n\n"
-            f"{legacy_memory_section}\n\n"
+            f"{memory_section}\n\n"
             f"Project context:\n{project_section}\n\n"
             f"Task context:\n{task_section}\n\n"
             f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
             f"Web context:\n{web_section}"
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
-        selection = self._build_v2_memory_selection(prompt)
+        selection = self._build_memory_selection(prompt)
         if selection is not None and selection.serialized is not None:
             messages.append(LLMMessage(role="user", content=selection.serialized.content))
         messages.extend(
@@ -266,36 +243,82 @@ class NeoChatService:
         messages.append(LLMMessage(role="user", content=prompt))
         return messages
 
-    def _memory_v2_query_context(self, prompt: str) -> MemoryQueryContext | None:
-        if not self.memory_v2_enabled or self.memory_v2_context_factory is None:
+    def _memory_query_context(self, prompt: str) -> MemoryQueryContext | None:
+        if not self.memory_enabled or self.memory_context_factory is None:
             return None
-        return self.memory_v2_context_factory(prompt)
+        context = self.memory_context_factory(prompt)
+        if context is not None and self.current_turn_override is not None:
+            context = context.model_copy(
+                update={"current_turn_override": self.current_turn_override}
+            )
+        return context
 
-    def _build_v2_memory_selection(
+    def _build_memory_selection(
         self,
         prompt: str,
     ) -> RecallPromptSelection | None:
         """The one canonical recall path shared by sync and stream."""
-        self.last_memory_v2_selection = None
-        if not self.memory_v2_prompt_enabled or self.memory_v2_orchestrator is None:
+        self.last_memory_selection = None
+        if not self.memory_prompt_enabled or self.memory_orchestrator is None:
             return None
-        context = self._memory_v2_query_context(prompt)
+        context = self._memory_query_context(prompt)
         if context is None:
             return None
-        selection = self.memory_v2_orchestrator.build(
+        selection = self.memory_orchestrator.build(
             RecallQuery(context=context, text=prompt),
             purpose="chat_prompt",
         )
-        self.last_memory_v2_selection = selection
+        self.last_memory_selection = selection
         return selection
 
-    def _finalize_memory_v2_usage(self) -> None:
+    def _finalize_memory_usage(self) -> None:
         """Persist same-session usage metadata before issuing the model request."""
-        selection = self.last_memory_v2_selection
-        if self.memory_v2_enabled and selection is not None and selection.usage_recorded:
+        selection = self.last_memory_selection
+        if self.memory_enabled and selection is not None and selection.usage_recorded:
             self.db.commit()
             return
         self.db.rollback()
+
+    def _persist_memory_diagnostic(self, message_id: int) -> None:
+        """Persist text-free recall facts for the read-only conversation inspector."""
+
+        if not self.memory_enabled:
+            return
+        selection = self.last_memory_selection
+        override = self.current_turn_override
+        if selection is None and override is None:
+            return
+        message = self.db.get(ChatMessage, message_id)
+        if message is None or message.role != "user":
+            return
+        try:
+            metadata = json.loads(message.metadata_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        recalled_ids = (
+            [str(item) for item in selection.recall.canonical_ids] if selection is not None else []
+        )
+        suppressed_ids = (
+            [str(item) for item in selection.recall.diagnostic.suppressed_ids]
+            if selection is not None
+            else [str(item) for item in override.suppressed_memory_ids]
+            if override is not None
+            else []
+        )
+        final_ids = (
+            [str(item) for item in selection.serialized.canonical_ids]
+            if selection is not None and selection.serialized is not None
+            else []
+        )
+        metadata["memory_diagnostic"] = {
+            "recalled_ids": recalled_ids,
+            "current_turn_suppressed_ids": suppressed_ids,
+            "final_serialized_ids": final_ids,
+        }
+        message.metadata_json = json.dumps(metadata, sort_keys=True)
+        self.db.flush()
 
     def send_message(
         self,
@@ -315,14 +338,12 @@ class NeoChatService:
             timezone=timezone,
             locale=locale,
         )
-        memory_intent = resolve_memory_intent(prompt)
         user_message = self.store.add_chat_message(
             chat_id,
             "user",
             prompt,
             metadata={
                 "search_intent": search_intent.model_dump(mode="json"),
-                "memory_intent": memory_intent.model_dump(mode="json"),
             },
         )
         self.store.rename_chat_from_prompt(chat_id, prompt)
@@ -335,31 +356,6 @@ class NeoChatService:
             component="chat_submission",
             final_status="received",
         )
-
-        memory_action = self._handle_memory_action(
-            prompt,
-            persisted_messages,
-            memory_intent,
-        )
-        if memory_action is not None:
-            memory_action_reply, memory_result = memory_action
-            self.store.add_chat_message(
-                chat_id,
-                "assistant",
-                memory_action_reply,
-                response_kind=memory_intent.kind.value,
-                provider_name="Neo memory",
-                route_name=memory_intent.kind.value,
-                finish_reason="stop",
-                duration_ms=0,
-                metadata={"memory_mutation": memory_result.model_dump(mode="json")},
-            )
-            self.db.commit()
-            self.last_web_debug = {
-                "web_search_needed": False,
-                "memory_mutation": memory_result.model_dump(mode="json"),
-            }
-            return memory_action_reply
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -381,45 +377,12 @@ class NeoChatService:
                 "web_search_needed": False,
             }
             return agent_guidance
-        memory_started = time.perf_counter()
-        try:
-            memory_result = self.persist_user_memory(
-                prompt,
-                chat_id,
-                source_message_id=user_message.id,
-                source_timestamp=user_message.created_at,
-                memory_intent=memory_intent,
-            )
-        except Exception as exc:
-            self.db.rollback()
-            memory_result = self._failed_memory_mutation(memory_intent, exc)
-        memory_ack = memory_result.acknowledgement()
-        if not memory_result.succeeded and memory_intent.kind in {
-            MemoryIntentKind.STORE,
-            MemoryIntentKind.UPDATE,
-        }:
-            memory_ack = memory_result.acknowledgement()
-        if memory_ack is not None:
-            self.store.add_chat_message(
-                chat_id,
-                "assistant",
-                memory_ack,
-                response_kind="direct_memory",
-                provider_name="Neo memory",
-                route_name="memory_write",
-                finish_reason="stop",
-                duration_ms=int((time.perf_counter() - memory_started) * 1000),
-                metadata={
-                    "memory_mutation": memory_result.model_dump(mode="json"),
-                    "search_intent": search_intent.model_dump(mode="json"),
-                },
-            )
-            self.db.commit()
-            self.last_web_debug = {
-                "web_search_needed": False,
-                "memory_mutation": memory_result.model_dump(mode="json"),
-            }
-            return memory_ack
+        self.current_turn_override = self._analyze_current_turn(
+            prompt,
+            chat_id=chat_id,
+            message_id=user_message.id,
+            history=persisted_messages,
+        )
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
         task_context = self.task_context.context_for_prompt(prompt)
@@ -537,6 +500,8 @@ class NeoChatService:
             web_context = WebContext(query=prompt, needed=False)
         direct_reply = None if web_context.needed else self._direct_reply(prompt)
         if direct_reply is not None:
+            self._finalize_memory_usage()
+            self._persist_memory_diagnostic(user_message.id)
             self.store.add_chat_message(
                 chat_id,
                 "assistant",
@@ -607,7 +572,8 @@ class NeoChatService:
         messages = self.build_messages(
             prompt, history, context, web_context, project_context, task_context
         )
-        self._finalize_memory_v2_usage()
+        self._finalize_memory_usage()
+        self._persist_memory_diagnostic(user_message.id)
 
         result = None
         finish_reason = None
@@ -657,8 +623,8 @@ class NeoChatService:
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                 )
                 raise
-        reply = self._enforce_memory_truthfulness(reply, prompt, memory_result)
-        self.store.add_chat_message(
+        memory_extraction = {"status": "scheduled", "source_message_id": str(user_message.id)}
+        assistant = self.store.add_chat_message(
             chat_id,
             "assistant",
             reply,
@@ -675,7 +641,7 @@ class NeoChatService:
             trace_id=trace_id,
             metadata={
                 "search_intent": search_intent.model_dump(mode="json"),
-                "memory_mutation": memory_result.model_dump(mode="json"),
+                "memory_extraction": memory_extraction,
                 "web_debug": self._web_debug(
                     web_context,
                     context=context,
@@ -685,6 +651,14 @@ class NeoChatService:
             },
         )
         self.db.commit()
+        self._extract_after_response(
+            prompt,
+            chat_id=chat_id,
+            message_id=user_message.id,
+            assistant_message_id=assistant.id,
+            history=persisted_messages,
+            transport="sync",
+        )
         self.last_web_debug = self._web_debug(
             web_context,
             context=context,
@@ -753,7 +727,6 @@ class NeoChatService:
         history = [
             ChatTurn(role=message.role, content=message.content) for message in persisted_messages
         ]
-        memory_intent = resolve_memory_intent(prompt)
         if existing_user_message_id is not None:
             try:
                 message_index = next(
@@ -780,7 +753,6 @@ class NeoChatService:
                 prompt,
                 metadata={
                     "search_intent": search_intent.model_dump(mode="json"),
-                    "memory_intent": memory_intent.model_dump(mode="json"),
                 },
             )
             self.store.rename_chat_from_prompt(chat_id, prompt)
@@ -802,7 +774,6 @@ class NeoChatService:
                 if not isinstance(source_metadata, dict):
                     source_metadata = {}
                 source_metadata["search_intent"] = search_intent.model_dump(mode="json")
-                source_metadata["memory_intent"] = memory_intent.model_dump(mode="json")
                 if generation_id is not None:
                     source_metadata["generation_id"] = generation_id
                 source_message.metadata_json = json.dumps(source_metadata, sort_keys=True)
@@ -815,39 +786,6 @@ class NeoChatService:
             component="chat_submission",
             final_status="received",
         )
-
-        memory_action = self._handle_memory_action(
-            prompt,
-            search_history,
-            memory_intent,
-        )
-        if memory_action is not None:
-            memory_action_reply, memory_result = memory_action
-            action_metadata = {
-                "response_kind": memory_intent.kind.value,
-                "provider_name": "Neo memory",
-                "route_name": memory_intent.kind.value,
-                "finish_reason": "stop",
-                "duration_ms": 0,
-                "metadata": {"memory_mutation": memory_result.model_dump(mode="json")},
-            }
-            assistant = persist_assistant(memory_action_reply, **action_metadata)
-            self.db.commit()
-            self.db.refresh(assistant)
-            self.last_web_debug = {
-                "web_search_needed": False,
-                "memory_mutation": memory_result.model_dump(mode="json"),
-            }
-            yield {"type": "chunk", "content": memory_action_reply}
-            yield {
-                "type": "done",
-                "message_id": assistant.id,
-                "reply": memory_action_reply,
-                "thinking": None,
-                "web_debug": self.last_web_debug,
-                **{key: value for key, value in action_metadata.items() if key != "metadata"},
-            }
-            return
 
         active_rules_reply = self._active_rules_reply(prompt)
         if active_rules_reply is not None:
@@ -890,54 +828,12 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        memory_started = time.perf_counter()
-        try:
-            source_message = self.db.get(ChatMessage, routing_message_id)
-            memory_result = self.persist_user_memory(
-                prompt,
-                chat_id,
-                source_message_id=routing_message_id,
-                source_timestamp=(
-                    source_message.created_at if source_message is not None else None
-                ),
-                memory_intent=memory_intent,
-            )
-        except Exception as exc:
-            self.db.rollback()
-            memory_result = self._failed_memory_mutation(memory_intent, exc)
-        memory_ack = memory_result.acknowledgement()
-        if memory_ack is not None:
-            memory_metadata = {
-                "response_kind": "direct_memory",
-                "provider_name": "Neo memory",
-                "route_name": "memory_write",
-                "finish_reason": "stop",
-                "duration_ms": int((time.perf_counter() - memory_started) * 1000),
-                "metadata": {
-                    "memory_mutation": memory_result.model_dump(mode="json"),
-                    "search_intent": search_intent.model_dump(mode="json"),
-                },
-            }
-            assistant = persist_assistant(
-                memory_ack,
-                **memory_metadata,
-            )
-            self.db.commit()
-            self.db.refresh(assistant)
-            self.last_web_debug = {
-                "web_search_needed": False,
-                "memory_mutation": memory_result.model_dump(mode="json"),
-            }
-            yield {"type": "chunk", "content": memory_ack}
-            yield {
-                "type": "done",
-                "message_id": assistant.id,
-                "reply": memory_ack,
-                "thinking": None,
-                "web_debug": self.last_web_debug,
-                **{key: value for key, value in memory_metadata.items() if key != "metadata"},
-            }
-            return
+        self.current_turn_override = self._analyze_current_turn(
+            prompt,
+            chat_id=chat_id,
+            message_id=routing_message_id,
+            history=search_history,
+        )
         context = self.build_context(prompt)
         project_context = self.project_context.context_for_prompt(prompt)
         task_context = self.task_context.context_for_prompt(prompt)
@@ -1162,6 +1058,8 @@ class NeoChatService:
             web_context = WebContext(query=prompt, needed=False)
         direct_reply = None if web_context.needed else self._direct_reply(prompt)
         if direct_reply is not None:
+            self._finalize_memory_usage()
+            self._persist_memory_diagnostic(routing_message_id)
             direct_metadata = {
                 "response_kind": "direct_memory",
                 "provider_name": "Neo memory",
@@ -1300,7 +1198,8 @@ class NeoChatService:
             response_source="provider_pending",
             final_status="streaming",
         )
-        self._finalize_memory_v2_usage()
+        self._finalize_memory_usage()
+        self._persist_memory_diagnostic(routing_message_id)
 
         raw_reply = ""
         streamed_thinking = ""
@@ -1311,10 +1210,7 @@ class NeoChatService:
             "duration_ms": None,
             "finish_reason": None,
         }
-        buffer_for_validation = bool(
-            web_context.needed
-            or self._requires_memory_truthfulness_validation(prompt, memory_intent)
-        )
+        buffer_for_validation = bool(web_context.needed)
         if buffer_for_validation:
             yield {"type": "status", "content": "Reading and validating evidence"}
         try:
@@ -1442,7 +1338,7 @@ class NeoChatService:
             )
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
-        reply = self._enforce_memory_truthfulness(reply, prompt, memory_result)
+        memory_extraction = {"status": "scheduled", "source_message_id": str(routing_message_id)}
         if buffer_for_validation or reply != raw_reply:
             yield {"type": "replace", "content": reply}
         thinking = (
@@ -1465,7 +1361,7 @@ class NeoChatService:
             trace_id=final_metadata.get("provider_request_id"),
             metadata={
                 "search_intent": search_intent.model_dump(mode="json"),
-                "memory_mutation": memory_result.model_dump(mode="json"),
+                "memory_extraction": memory_extraction,
                 "web_debug": self._web_debug(
                     web_context,
                     context=context,
@@ -1476,6 +1372,14 @@ class NeoChatService:
         )
         self.db.commit()
         self.db.refresh(assistant)
+        self._extract_after_response(
+            prompt,
+            chat_id=chat_id,
+            message_id=routing_message_id,
+            assistant_message_id=assistant.id,
+            history=search_history,
+            transport="stream",
+        )
         if after_reply is not None:
             after_reply(prompt, reply)
         self.last_web_debug = self._web_debug(
@@ -1523,137 +1427,6 @@ class NeoChatService:
             "web_debug": self.last_web_debug,
         }
 
-    def persist_user_memory(
-        self,
-        prompt: str,
-        chat_id: int | None = None,
-        *,
-        source_message_id: int | None = None,
-        source_timestamp: datetime | None = None,
-        memory_intent: ResolvedMemoryIntent | None = None,
-    ) -> MemoryMutationResult:
-        memory_intent = memory_intent or resolve_memory_intent(prompt)
-        before = {
-            memory.id: (
-                memory.memory_text,
-                memory.fingerprint,
-                memory.status,
-                memory.is_active,
-            )
-            for memory in self.store.list_memories(active_only=False, limit=100000)
-        }
-        repaired_candidates = self._repair_invalid_identity_sources(chat_id)
-        request = ExtractionRequest(
-            text=prompt,
-            persist=True,
-            source_conversation_id=chat_id,
-            source_message_id=source_message_id,
-            source_timestamp=source_timestamp,
-        )
-        extraction = self.extractor.extract_with_llm(
-            request,
-            getattr(self, "ollama", None),
-        )
-        candidates = self.extractor.persist_and_accept(self.store, extraction)
-        self.db.commit()
-        accepted = [
-            candidate
-            for candidate in candidates
-            if candidate.status in {CandidateStatus.ACCEPTED, CandidateStatus.MERGED}
-            and candidate.accepted_memory_id is not None
-        ]
-        accepted_memory_ids = {int(candidate.accepted_memory_id) for candidate in accepted}
-        active_memories = self.store.list_memories(active_only=True, limit=100000)
-        active_by_id = {memory.id: memory for memory in active_memories}
-        active_memory_ids = set(active_by_id)
-        memory_ids = sorted(accepted_memory_ids & active_memory_ids)
-        saved_ids = [memory_id for memory_id in memory_ids if memory_id not in before]
-        updated_ids = [memory_id for memory_id in memory_ids if memory_id in before]
-        # An explicit correction normally creates a new auditable row. Count it as an
-        # update only when it actually supersedes a row that was active before this turn;
-        # an unrelated insertion must remain visible as a save instead of being masked.
-        if memory_intent.kind == MemoryIntentKind.UPDATE and saved_ids:
-            replacement_ids = {
-                memory_id
-                for memory_id in saved_ids
-                if (
-                    (supersedes_id := active_by_id[memory_id].supersedes_id) is not None
-                    and supersedes_id in before
-                    and before[supersedes_id][3]
-                )
-            }
-            updated_ids = sorted({*updated_ids, *replacement_ids})
-            saved_ids = [memory_id for memory_id in saved_ids if memory_id not in replacement_ids]
-        all_candidates = [*repaired_candidates, *candidates]
-        report_status = self.extractor.is_pure_personal_declaration(request, extraction)
-        persistence_status = (
-            "committed"
-            if saved_ids or updated_ids
-            else "pending_review"
-            if candidates
-            else "no_change"
-        )
-        return MemoryMutationResult(
-            intent=memory_intent.kind,
-            attempted=bool(candidates),
-            succeeded=True,
-            saved_count=len(saved_ids),
-            updated_count=len(updated_ids),
-            candidate_count=len(candidates),
-            candidate_ids=[candidate.id for candidate in all_candidates],
-            memory_ids=memory_ids,
-            review_decisions=[candidate.status.value for candidate in candidates],
-            persistence_status=persistence_status,
-            report_status=report_status,
-        )
-
-    def extract_user_prompt(
-        self,
-        prompt: str,
-        chat_id: int | None = None,
-        *,
-        source_message_id: int | None = None,
-        source_timestamp: datetime | None = None,
-    ) -> list[int]:
-        result = self.persist_user_memory(
-            prompt,
-            chat_id,
-            source_message_id=source_message_id,
-            source_timestamp=source_timestamp,
-        )
-        return result.candidate_ids
-
-    def _repair_invalid_identity_sources(
-        self,
-        chat_id: int | None,
-    ) -> list[Any]:
-        """Reclassify source text from legacy invalid identity rows before retiring them."""
-
-        repair_sources: list[str] = []
-        for memory in self.store.active_memories_by_type(MemoryType.IDENTITY):
-            key, separator, value = memory.memory_text.partition("=")
-            if (
-                separator
-                and not is_durable_identity_fact(key.strip(), value.strip())
-                and memory.source_sentence
-            ):
-                repair_sources.append(memory.source_sentence)
-        if not repair_sources:
-            return []
-
-        self.store.retire_invalid_profile_facts()
-        repaired_candidates: list[Any] = []
-        for source in dict.fromkeys(repair_sources):
-            extraction = self.extractor.extract(
-                ExtractionRequest(
-                    text=source,
-                    persist=True,
-                    source_conversation_id=chat_id,
-                )
-            )
-            repaired_candidates.extend(self.extractor.persist_and_accept(self.store, extraction))
-        return repaired_candidates
-
     def _active_rules_reply(self, prompt: str) -> str | None:
         if not re.search(
             r"\b(which|what|show|list).{0,30}\b(active |applied )?rules\b", prompt, re.I
@@ -1680,141 +1453,192 @@ class NeoChatService:
         lines.append("Rules are guidance only and cannot grant permissions or disable safety.")
         return "\n".join(lines)
 
-    def _handle_memory_action(
+    def _extraction_request(
         self,
         prompt: str,
-        prior_messages: list[ChatMessage],
-        memory_intent: ResolvedMemoryIntent,
-    ) -> tuple[str, MemoryMutationResult] | None:
-        if memory_intent.kind == MemoryIntentKind.EXCLUDE:
-            result = MemoryMutationResult(
-                intent=MemoryIntentKind.EXCLUDE,
-                attempted=False,
-                succeeded=True,
-                excluded_count=1,
-                persistence_status="excluded",
-                report_status=True,
+        *,
+        chat_id: int,
+        message_id: int,
+        history: list[ChatMessage],
+        transport: str,
+        mode: ExtractionMode,
+    ) -> ExtractionRequest:
+        supporting = tuple(
+            TrustedConversationMessage(
+                message_id=str(item.id),
+                role=ConversationRole(item.role),
+                content=item.content,
             )
-            acknowledgement = result.acknowledgement()
-            if acknowledgement is None:
-                raise RuntimeError("Memory exclusion did not produce a status response.")
-            return acknowledgement, result
-        if memory_intent.kind != MemoryIntentKind.REMOVE:
+            for item in history[-12:]
+            if item.role in {"user", "assistant"} and item.id != message_id
+        )
+        total = len(prompt)
+        bounded: list[TrustedConversationMessage] = []
+        for item in reversed(supporting):
+            if total + len(item.content) > 12_000:
+                continue
+            bounded.append(item)
+            total += len(item.content)
+        bounded.reverse()
+        return ExtractionRequest(
+            request_id=f"chat:{chat_id}:{message_id}:{mode.value}",
+            owner_id=self.memory_runtime.execution.owner_id,
+            conversation_id=str(chat_id),
+            session_id=f"profile:{self.memory_runtime.execution.profile_id}",
+            message_id=str(message_id),
+            user_message=prompt,
+            supporting_window=tuple(bounded),
+            explicit_memory_intent=bool(
+                re.search(r"\b(?:remember|save|forget|correct|changed my mind)\b", prompt, re.I)
+            ),
+            incognito=self.memory_runtime.execution.is_incognito,
+            memory_enabled=self.memory_enabled,
+            mode=mode,
+            source_content_hash=ExtractionRequest.content_hash(prompt),
+        )
+
+    def _run_extraction(
+        self,
+        prompt: str,
+        *,
+        chat_id: int,
+        message_id: int,
+        history: list[ChatMessage],
+        mode: ExtractionMode,
+        transport: str,
+    ):
+        if not self.memory_enabled or self.memory_runtime is None:
+            return None
+        request = self._extraction_request(
+            prompt,
+            chat_id=chat_id,
+            message_id=message_id,
+            history=history,
+            mode=mode,
+        )
+        context = self.memory_runtime.context(
+            source_kind=SourceKind.CHAT_MESSAGE,
+            source_id="chat",
+            request_id=request.request_id,
+            session_id=request.session_id,
+            conversation_id=request.conversation_id,
+            message_id=request.message_id,
+        )
+        return self.memory_runtime.extraction.process(request, context, transport=transport)
+
+    def _analyze_current_turn(
+        self,
+        prompt: str,
+        *,
+        chat_id: int,
+        message_id: int,
+        history: list[ChatMessage],
+    ) -> CurrentTurnOverride | None:
+        if not re.search(
+            r"\b(?:changed my mind|instead|no longer|not anymore|forget|remove|correct)\b",
+            prompt,
+            re.I,
+        ):
+            return None
+        try:
+            result = self._run_extraction(
+                prompt,
+                chat_id=chat_id,
+                message_id=message_id,
+                history=history,
+                mode=ExtractionMode.FOREGROUND_DETERMINISTIC,
+                transport="sync",
+            )
+            return result.current_turn_override if result is not None else None
+        except Exception:
             return None
 
-        try:
-            target_text = memory_intent.target_text or extract_memory_removal_target(prompt)
-            deleted = (
-                self.store.delete_memories_matching_explicit_removal(target_text)
-                if target_text
-                else []
-            )
-            target = next(
-                (message for message in reversed(prior_messages) if message.role == "user"),
-                None,
-            )
-            affected = (
-                self.store.detach_memory_sources_for_message(target.id, reason="deletion")
-                if not deleted
-                and target is not None
-                and re.search(r"\b(?:that|this)\b", prompt, re.IGNORECASE)
-                else []
-            )
-            self.db.commit()
-        except Exception as exc:
-            self.db.rollback()
-            failed = self._failed_memory_mutation(memory_intent, exc)
-            failed.report_status = True
-            acknowledgement = failed.acknowledgement()
-            if acknowledgement is None:
-                raise RuntimeError("Failed memory removal did not produce a status.") from exc
-            return acknowledgement, failed
-        removed_ids = sorted({*deleted, *affected})
-        result = MemoryMutationResult(
-            intent=MemoryIntentKind.REMOVE,
-            attempted=True,
-            succeeded=True,
-            removed_count=len(removed_ids),
-            memory_ids=removed_ids,
-            persistence_status="committed" if removed_ids else "no_match",
-            report_status=True,
-        )
-        acknowledgement = result.acknowledgement()
-        if acknowledgement is not None:
-            return acknowledgement, result
-        return (
-            "I could not find an active saved memory matching that removal request.",
-            result,
-        )
-
-    @staticmethod
-    def _failed_memory_mutation(
-        memory_intent: ResolvedMemoryIntent,
-        error: Exception,
-    ) -> MemoryMutationResult:
-        return MemoryMutationResult(
-            intent=memory_intent.kind,
-            attempted=True,
-            succeeded=False,
-            persistence_status="failed",
-            report_status=memory_intent.kind
-            in {
-                MemoryIntentKind.STORE,
-                MemoryIntentKind.UPDATE,
-                MemoryIntentKind.REMOVE,
-            },
-            error=type(error).__name__,
-        )
-
-    @staticmethod
-    def _requires_memory_truthfulness_validation(
+    def _extract_after_response(
+        self,
         prompt: str,
-        memory_intent: ResolvedMemoryIntent,
-    ) -> bool:
-        return memory_intent.kind != MemoryIntentKind.NONE or bool(
-            re.search(r"\b(?:i|i'm|i am|my|me)\b", prompt, flags=re.IGNORECASE)
-        )
+        *,
+        chat_id: int,
+        message_id: int,
+        assistant_message_id: int,
+        history: list[ChatMessage],
+        transport: str,
+    ) -> dict[str, object]:
+        if not self.memory_enabled or self.memory_runtime is None:
+            return {"status": "disabled"}
+        database = self.db.get_bind()
+
+        def run() -> None:
+            try:
+                result = self._run_extraction(
+                    prompt,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    history=history,
+                    mode=ExtractionMode.POST_TURN_AUTOMATIC,
+                    transport=transport,
+                )
+                self._record_memory_extraction_result(
+                    database,
+                    assistant_message_id=assistant_message_id,
+                    result=result,
+                )
+            except Exception:
+                return
+
+        Thread(
+            target=run,
+            name=f"memory-extraction-{chat_id}-{message_id}",
+            daemon=True,
+        ).start()
+        return {"status": "scheduled", "source_message_id": str(message_id)}
 
     @staticmethod
-    def _enforce_memory_truthfulness(
-        reply: str,
-        prompt: str,
-        mutation: MemoryMutationResult,
-    ) -> str:
-        if mutation.durable_mutation_succeeded:
-            return reply
-        unsupported_claim = re.search(
-            r"\bi(?:'ve|\s+have|'ll|\s+will)?\s+"
-            r"(?:saved|updated|stored|added|recorded|noted|remembered|removed|"
-            r"deleted|forgotten|keep)\b",
-            reply,
-            flags=re.IGNORECASE,
+    def _record_memory_extraction_result(
+        database,
+        *,
+        assistant_message_id: int,
+        result,
+    ) -> None:
+        """Attach completed extraction status to View Thinking, never to the reply."""
+
+        decisions = tuple(getattr(result, "decisions", ()) or ())
+        saved = sum(
+            getattr(decision, "outcome", None) in _MEMORY_SAVE_OUTCOMES
+            for decision in decisions
         )
-        if unsupported_claim is None:
-            return reply
-        if resolve_memory_intent(prompt).kind == MemoryIntentKind.EXCLUDE:
-            return (
-                "Understood — I’ll keep that in this conversation only. "
-                "It was not added to durable memory."
-            )
-        return (
-            "Understood. I treated that as conversation context and did not add or "
-            "change durable memory."
-        )
+        factory = sessionmaker(bind=database, autoflush=False, expire_on_commit=False, future=True)
+        with factory.begin() as database_session:
+            message = database_session.get(ChatMessage, assistant_message_id)
+            if message is None or message.role != "assistant":
+                return
+            try:
+                metadata = json.loads(message.metadata_json or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata["memory_extraction"] = {
+                "status": "completed",
+                "saved_durable_memories": saved,
+            }
+            message.metadata_json = json.dumps(metadata, sort_keys=True)
+            if saved:
+                summary = (
+                    f"Saved {saved} durable memor{'y' if saved == 1 else 'ies'} "
+                    "after extraction and review."
+                )
+                current = (message.thinking or "").strip()
+                message.thinking = f"{current}\n\n{summary}" if current else summary
 
     def _direct_reply(self, prompt: str) -> str | None:
-        if self.memory_v2_enabled:
-            if not self.memory_v2_direct_answers_enabled:
-                return None
-            context = self._memory_v2_query_context(prompt)
-            return self.direct_answers.answer(
-                self.store,
-                prompt,
-                query_context=context,
-            )
-        if not self.explainer.should_handle(prompt):
-            return self.direct_answers.answer(self.store, prompt)
-        return self.explainer.answer(self.store, prompt)
+        if not self.memory_enabled or not self.memory_direct_answers_enabled:
+            return None
+        reply = self.direct_answers.answer(
+            prompt,
+            context=self._memory_query_context(prompt),
+        )
+        self.last_memory_selection = self.direct_answers.last_selection
+        return reply
 
     def _resolve_search_intent(
         self,
@@ -1854,14 +1678,7 @@ class NeoChatService:
         return None
 
     def _profile_timezone(self) -> str | None:
-        try:
-            values = self.store.active_profile_by_key("timezone")
-        except Exception:
-            return None
-        return next(
-            (str(item.value).strip() for item in values if str(getattr(item, "value", "")).strip()),
-            None,
-        )
+        return None
 
     def _structured_live_answer(
         self,
@@ -2263,7 +2080,7 @@ class NeoChatService:
             return query
         if self._target_region(query) is not None:
             return query
-        country = self._country_from_memory(context) or self._country_from_profile_store()
+        country = self._country_from_memory(context)
         if country is None:
             return query
         return f"{query} in {country}"
@@ -2280,21 +2097,6 @@ class NeoChatService:
             country = self._country_from_text(value)
             if country is not None:
                 return country
-        return None
-
-    def _country_from_profile_store(self) -> str | None:
-        store = getattr(self, "store", None)
-        if store is None or not hasattr(store, "active_profile_by_key"):
-            return None
-        for key in ("country", "location", "nationality"):
-            try:
-                facts = store.active_profile_by_key(key)
-            except Exception:
-                continue
-            for fact in facts:
-                country = self._country_from_text(str(getattr(fact, "value", "")))
-                if country is not None:
-                    return country
         return None
 
     def _country_from_text(self, text: str) -> str | None:
@@ -2752,16 +2554,6 @@ class NeoChatService:
         ):
             return self.settings.chat_num_predict
         return max(self.settings.simple_chat_num_predict, self.settings.chat_num_predict)
-
-    def extract_after_turn(self, user_prompt: str, assistant_reply: str) -> list[int]:
-        if not self.settings.extraction_after_turn_enabled:
-            return []
-        # Only user-authored text is authoritative user memory. Assistant text may
-        # paraphrase or misunderstand it and must never create profile facts.
-        extraction = self.extractor.extract(ExtractionRequest(text=user_prompt, persist=True))
-        candidates = self.extractor.persist_and_accept(self.store, extraction)
-        self.db.commit()
-        return [candidate.id for candidate in candidates]
 
 
 def _append_without_overlap(existing: str, continuation: str) -> str:

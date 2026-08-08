@@ -371,6 +371,27 @@ def database_identity_for_profile(profile_id: str, *, guest: bool = False) -> st
     return f"{prefix}:{profile_id}"
 
 
+def memory_key_material_for_profile(profile_id: str, *, guest: bool = False) -> bytes:
+    """Derive stable local key material without adding a second secret store."""
+
+    if guest:
+        material = owner_id_for_profile(profile_id, guest=True)
+    else:
+        initialize_profile_registry()
+        conn = _connect_registry()
+        try:
+            row = conn.execute(
+                "SELECT owner_id, password_hash FROM account_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise RuntimeError("profile_memory_key_material_not_found")
+        material = f"{row['owner_id']}:{row['password_hash']}"
+    return hashlib.sha256(f"neo-memory:{material}".encode()).digest()
+
+
 def delete_guest(profile_id: str) -> None:
     if profile_id.startswith("guest-"):
         shutil.rmtree(_profile_directory(profile_id, guest=True), ignore_errors=True)

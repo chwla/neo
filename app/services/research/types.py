@@ -142,3 +142,5 @@ class StartResearchRequest(BaseModel):
     project_id: str | None = None
     task_id: str | None = None
     repo_id: str | None = None
+    memory_enabled: bool = True
+    incognito: bool = False

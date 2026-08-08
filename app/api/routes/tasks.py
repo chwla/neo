@@ -10,9 +10,9 @@ from app.services.tasks import (
     TaskLink,
     TaskListItem,
     TaskNote,
+    TasksService,
     TaskTag,
     TaskUpdate,
-    TasksService,
 )
 from app.services.tasks.service import TasksValidationError
 

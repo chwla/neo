@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services.notes import Note, NoteCreate, NoteListItem, NoteTag, NoteUpdate, NotesService
+from app.services.notes import Note, NoteCreate, NoteListItem, NotesService, NoteTag, NoteUpdate
 from app.services.notes.service import NotesValidationError
 
 router = APIRouter(prefix="/notes", tags=["notes"])

@@ -1,71 +1,942 @@
+"""ORM schema for Neo's canonical personal-memory system.
+
+The dedicated metadata object keeps memory schema installation explicit and
+owner-bound instead of coupling it to the application's general metadata.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
-    Enum,
     Float,
-    ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
+    UniqueConstraint,
+    func,
+    text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.db.base import Base
-from app.models.associations import memory_project_links
-from app.models.enums import MemoryType, enum_values
-from app.models.mixins import TimestampMixin
+from app.services.memory.contracts import (
+    ActorKind,
+    CandidateIntent,
+    CandidateLifecycleState,
+    MemoryErrorCode,
+    MemoryLifecycleState,
+    MemoryOperationKind,
+    MemoryOutcome,
+    MemoryRejectionCode,
+    Sensitivity,
+    SourceKind,
+)
+from app.services.memory.taxonomy import Cardinality, MemoryType
+
+UUID_LENGTH = 36
+FINGERPRINT_LENGTH = 128
+RECORD_SCHEMA_VERSION = 1
+CANDIDATE_SCHEMA_VERSION = 1
+SOURCE_SCHEMA_VERSION = 1
+RELATION_SCHEMA_VERSION = 1
+OPERATION_SCHEMA_VERSION = 1
+OUTBOX_SCHEMA_VERSION = 1
+TOMBSTONE_SCHEMA_VERSION = 1
+
+RELATION_TYPES = ("supersedes", "refines", "merged_from", "duplicate_of")
+OPERATION_STATUSES = ("started", "committed", "rejected", "failed")
+OUTBOX_EVENT_KINDS = (
+    "canonical_upsert",
+    "canonical_remove",
+    "usage",
+    "tombstone_expiry",
+    "reconciliation_request",
+)
+OUTBOX_STATES = ("pending", "processing", "done", "failed")
+DERIVED_TARGETS = ("fts", "vector")
+DERIVED_TARGET_STATES = (
+    "not_applicable",
+    "pending",
+    "processing",
+    "current",
+    "stale",
+    "failed",
+    "dead_letter",
+    "deleting",
+    "deleted",
+)
+DERIVED_METRIC_CODES = (
+    "semantic_wrong_owner_hit",
+    "semantic_stale_hit_drop",
+    "semantic_ghost_hit_drop",
+    "semantic_inactive_hit_drop",
+)
+SOURCE_ASSERTION_ROLES = ("supports", "retracts_predecessor", "restores", "edits_source")
 
 
-class Memory(TimestampMixin, Base):
-    """Durable accepted memory. Conversation transcripts do not belong here."""
+class MemoryBase(DeclarativeBase):
+    """Dedicated declarative base used only by explicit memory migrations."""
 
-    __tablename__ = "memories"
+
+def _quoted(values: tuple[str, ...] | list[str]) -> str:
+    return ", ".join(f"'{value}'" for value in values)
+
+
+def _enum_check(column: str, values: tuple[str, ...] | list[str], name: str) -> CheckConstraint:
+    return CheckConstraint(f"{column} IN ({_quoted(values)})", name=name)
+
+
+def _nullable_enum_check(
+    column: str,
+    values: tuple[str, ...] | list[str],
+    name: str,
+) -> CheckConstraint:
+    return CheckConstraint(
+        f"{column} IS NULL OR {column} IN ({_quoted(values)})",
+        name=name,
+    )
+
+
+def _uuid_check(column: str, name: str) -> CheckConstraint:
+    compact = f"replace({column}, '-', '')"
+    return CheckConstraint(
+        f"length({column}) = 36 AND {column} = lower({column}) "
+        f"AND substr({column}, 9, 1) = '-' AND substr({column}, 14, 1) = '-' "
+        f"AND substr({column}, 19, 1) = '-' AND substr({column}, 24, 1) = '-' "
+        f"AND length({compact}) = 32 AND {compact} NOT GLOB '*[^0-9a-f]*'",
+        name=name,
+    )
+
+
+def _sha256_check(column: str, name: str, *, nullable: bool = False) -> CheckConstraint:
+    body = (
+        f"length({column}) = 64 AND {column} = lower({column}) AND {column} NOT GLOB '*[^0-9a-f]*'"
+    )
+    expression = f"{column} IS NULL OR ({body})" if nullable else body
+    return CheckConstraint(
+        expression,
+        name=name,
+    )
+
+
+def _payload_shape_check(prefix: str, name: str) -> CheckConstraint:
+    canonical = f"{prefix}canonical_payload"
+    display = f"{prefix}display_text"
+    encrypted_canonical = f"{prefix}encrypted_canonical_payload"
+    encrypted_display = f"{prefix}encrypted_display_payload"
+    algorithm = f"{prefix}encryption_algorithm"
+    key_version = f"{prefix}encryption_key_version"
+    canonical_nonce = f"{prefix}canonical_nonce"
+    display_nonce = f"{prefix}display_nonce"
+    aad = f"{prefix}encryption_aad"
+    return CheckConstraint(
+        "((sensitivity = 'normal' "
+        f"AND {canonical} IS NOT NULL AND {display} IS NOT NULL "
+        f"AND length(trim({display})) > 0 "
+        f"AND {encrypted_canonical} IS NULL AND {encrypted_display} IS NULL "
+        f"AND {algorithm} IS NULL AND {key_version} IS NULL "
+        f"AND {canonical_nonce} IS NULL AND {display_nonce} IS NULL AND {aad} IS NULL) "
+        "OR (sensitivity = 'sensitive' "
+        f"AND {canonical} IS NULL AND {display} IS NULL "
+        f"AND {encrypted_canonical} IS NOT NULL AND {encrypted_display} IS NOT NULL "
+        f"AND {algorithm} IS NOT NULL AND length(trim({algorithm})) > 0 "
+        f"AND {key_version} IS NOT NULL AND length(trim({key_version})) > 0 "
+        f"AND {canonical_nonce} IS NOT NULL AND {display_nonce} IS NOT NULL "
+        f"AND {aad} IS NOT NULL))",
+        name=name,
+    )
+
+
+class MemoryOwnerBinding(MemoryBase):
+    __tablename__ = "memory_owner_bindings"
     __table_args__ = (
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_memories_confidence"),
-        CheckConstraint("importance >= 1 AND importance <= 10", name="ck_memories_importance"),
-        Index("ix_memories_type_active", "memory_type", "is_active"),
-        Index("ix_memories_importance", "importance"),
+        _uuid_check("owner_id", "ck_memory_owner_bindings_owner_uuid"),
+        CheckConstraint(
+            "length(trim(database_identity)) > 0",
+            name="ck_memory_owner_bindings_database_identity",
+        ),
+        UniqueConstraint("database_identity", name="uq_memory_owner_bindings_database"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    memory_text: Mapped[str] = mapped_column(Text, nullable=False)
-    memory_type: Mapped[MemoryType] = mapped_column(
-        Enum(MemoryType, native_enum=False, values_callable=enum_values),
-        nullable=False,
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    database_identity: Mapped[str] = mapped_column(String(512), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    bound_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
-    source: Mapped[str | None] = mapped_column(String(255))
-    source_sentence: Mapped[str | None] = mapped_column(Text)
-    source_conversation_id: Mapped[int | None] = mapped_column(Integer)
-    canonical_slot: Mapped[str | None] = mapped_column(String(120))
-    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+
+
+class MemoryOperation(MemoryBase):
+    __tablename__ = "memory_operations"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_operations_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_operations_owner_uuid"),
+        _enum_check(
+            "operation_kind",
+            [value.value for value in MemoryOperationKind],
+            "ck_memory_operations_kind",
+        ),
+        _enum_check(
+            "actor_kind",
+            [value.value for value in ActorKind],
+            "ck_memory_operations_actor_kind",
+        ),
+        _enum_check(
+            "source_kind",
+            [value.value for value in SourceKind],
+            "ck_memory_operations_source_kind",
+        ),
+        _enum_check("status", list(OPERATION_STATUSES), "ck_memory_operations_status"),
+        _nullable_enum_check(
+            "outcome",
+            [value.value for value in MemoryOutcome],
+            "ck_memory_operations_outcome",
+        ),
+        _nullable_enum_check(
+            "rejection_code",
+            [value.value for value in MemoryRejectionCode],
+            "ck_memory_operations_rejection",
+        ),
+        _nullable_enum_check(
+            "error_code",
+            [value.value for value in MemoryErrorCode],
+            "ck_memory_operations_error",
+        ),
+        _enum_check(
+            "sensitivity",
+            [Sensitivity.NORMAL.value, Sensitivity.SENSITIVE.value],
+            "ck_memory_operations_sensitivity",
+        ),
+        CheckConstraint(
+            "((sensitivity = 'normal' AND normalized_command_json IS NOT NULL "
+            "AND encrypted_command_payload IS NULL AND encryption_algorithm IS NULL "
+            "AND encryption_key_version IS NULL AND encryption_nonce IS NULL "
+            "AND encryption_aad IS NULL) OR "
+            "(sensitivity = 'sensitive' AND normalized_command_json IS NULL "
+            "AND encrypted_command_payload IS NOT NULL AND encryption_algorithm IS NOT NULL "
+            "AND encryption_key_version IS NOT NULL AND encryption_nonce IS NOT NULL "
+            "AND encryption_aad IS NOT NULL))",
+            name="ck_memory_operations_payload_shape",
+        ),
+        CheckConstraint("schema_version > 0", name="ck_memory_operations_schema_version"),
+        UniqueConstraint("owner_id", "id", name="uq_memory_operations_owner_id"),
+        UniqueConstraint(
+            "owner_id", "idempotency_key", name="uq_memory_operations_owner_idempotency"
+        ),
+        Index("ix_memory_operations_owner_status", "owner_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    operation_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(16), nullable=False)
+    normalized_command_json: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
+    encrypted_command_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_algorithm: Mapped[str | None] = mapped_column(String(80))
+    encryption_key_version: Mapped[str | None] = mapped_column(String(80))
+    encryption_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_aad: Mapped[bytes | None] = mapped_column(LargeBinary)
+    request_hash: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(40))
+    rejection_code: Mapped[str | None] = mapped_column(String(80))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    result_record_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    error_detail: Mapped[str | None] = mapped_column(String(500))
+    contract_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=OPERATION_SCHEMA_VERSION
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryRecord(MemoryBase):
+    __tablename__ = "memory_records"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_records_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_records_owner_uuid"),
+        _enum_check(
+            "memory_type",
+            [value.value for value in MemoryType],
+            "ck_memory_records_type",
+        ),
+        _enum_check(
+            "cardinality",
+            [value.value for value in Cardinality],
+            "ck_memory_records_cardinality",
+        ),
+        _enum_check(
+            "sensitivity",
+            [Sensitivity.NORMAL.value, Sensitivity.SENSITIVE.value],
+            "ck_memory_records_sensitivity",
+        ),
+        _enum_check(
+            "status",
+            [value.value for value in MemoryLifecycleState],
+            "ck_memory_records_status",
+        ),
+        _payload_shape_check("", "ck_memory_records_payload_shape"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_memory_records_confidence"),
+        CheckConstraint(
+            "importance >= 1 AND importance <= 10", name="ck_memory_records_importance"
+        ),
+        CheckConstraint("usage_count >= 0", name="ck_memory_records_usage_count"),
+        CheckConstraint("revision > 0", name="ck_memory_records_revision"),
+        CheckConstraint(
+            "value_schema_version > 0 AND record_schema_version > 0",
+            name="ck_memory_records_schema_versions",
+        ),
+        ForeignKeyConstraint(
+            ["owner_id", "created_by_operation_id"],
+            ["memory_operations.owner_id", "memory_operations.id"],
+            name="fk_memory_records_creating_operation",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_records_owner_id"),
+        Index(
+            "uq_memory_records_active_exclusive_slot",
+            "owner_id",
+            "subject_key",
+            "memory_type",
+            "domain_key",
+            "slot_key",
+            unique=True,
+            sqlite_where=text("status = 'active' AND cardinality = 'exclusive'"),
+            postgresql_where=text("status = 'active' AND cardinality = 'exclusive'"),
+        ),
+        Index(
+            "uq_memory_records_active_fingerprint",
+            "owner_id",
+            "canonical_fingerprint",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+        Index("ix_memory_records_owner_status_type", "owner_id", "status", "memory_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    subject_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    domain_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    slot_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    cardinality: Mapped[str] = mapped_column(String(16), nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(16), nullable=False)
+    canonical_payload: Mapped[Any | None] = mapped_column(JSON(none_as_null=True))
+    display_text: Mapped[str | None] = mapped_column(Text)
+    encrypted_canonical_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encrypted_display_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_algorithm: Mapped[str | None] = mapped_column(String(80))
+    encryption_key_version: Mapped[str | None] = mapped_column(String(80))
+    canonical_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    display_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_aad: Mapped[bytes | None] = mapped_column(LargeBinary)
+    canonical_fingerprint: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    last_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
-    supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("memories.id"))
-    update_reason: Mapped[str | None] = mapped_column(Text)
-    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
-    last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("memories.id"))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by_operation_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    contract_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    value_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    record_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=RECORD_SCHEMA_VERSION
+    )
 
-    supersedes = relationship("Memory", remote_side=[id], foreign_keys=[supersedes_id])
-    superseded_by = relationship("Memory", remote_side=[id], foreign_keys=[superseded_by_id])
-    embedding = relationship(
-        "MemoryEmbedding",
-        back_populates="memory",
-        cascade="all, delete-orphan",
-        uselist=False,
+
+class MemoryCandidate(MemoryBase):
+    __tablename__ = "memory_candidates"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_candidates_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_candidates_owner_uuid"),
+        _enum_check(
+            "memory_type",
+            [value.value for value in MemoryType],
+            "ck_memory_candidates_type",
+        ),
+        _enum_check(
+            "cardinality",
+            [value.value for value in Cardinality],
+            "ck_memory_candidates_cardinality",
+        ),
+        _enum_check(
+            "sensitivity",
+            [Sensitivity.NORMAL.value, Sensitivity.SENSITIVE.value],
+            "ck_memory_candidates_sensitivity",
+        ),
+        _enum_check(
+            "intent",
+            [value.value for value in CandidateIntent],
+            "ck_memory_candidates_intent",
+        ),
+        _enum_check(
+            "state",
+            [value.value for value in CandidateLifecycleState],
+            "ck_memory_candidates_state",
+        ),
+        _nullable_enum_check(
+            "decision_outcome",
+            [value.value for value in MemoryOutcome],
+            "ck_memory_candidates_outcome",
+        ),
+        _nullable_enum_check(
+            "decision_rejection_code",
+            [value.value for value in MemoryRejectionCode],
+            "ck_memory_candidates_rejection",
+        ),
+        _nullable_enum_check(
+            "decision_error_code",
+            [value.value for value in MemoryErrorCode],
+            "ck_memory_candidates_error",
+        ),
+        _payload_shape_check("", "ck_memory_candidates_payload_shape"),
+        CheckConstraint(
+            "sensitivity = 'normal' OR explicit_user_request = 1",
+            name="ck_memory_candidates_sensitive_explicit",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1", name="ck_memory_candidates_confidence"
+        ),
+        CheckConstraint(
+            "importance >= 1 AND importance <= 10", name="ck_memory_candidates_importance"
+        ),
+        CheckConstraint("revision > 0", name="ck_memory_candidates_revision"),
+        CheckConstraint(
+            "value_schema_version > 0 AND candidate_schema_version > 0",
+            name="ck_memory_candidates_schema_versions",
+        ),
+        ForeignKeyConstraint(
+            ["owner_id", "applied_operation_id"],
+            ["memory_operations.owner_id", "memory_operations.id"],
+            name="fk_memory_candidates_applied_operation",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_candidates_owner_id"),
+        Index("ix_memory_candidates_owner_state", "owner_id", "state"),
     )
-    projects = relationship(
-        "Project",
-        secondary=memory_project_links,
-        back_populates="memories",
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    subject_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    domain_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    slot_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    cardinality: Mapped[str] = mapped_column(String(16), nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(16), nullable=False)
+    canonical_payload: Mapped[Any | None] = mapped_column(JSON(none_as_null=True))
+    display_text: Mapped[str | None] = mapped_column(Text)
+    encrypted_canonical_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encrypted_display_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_algorithm: Mapped[str | None] = mapped_column(String(80))
+    encryption_key_version: Mapped[str | None] = mapped_column(String(80))
+    canonical_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    display_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_aad: Mapped[bytes | None] = mapped_column(LargeBinary)
+    intent: Mapped[str] = mapped_column(String(24), nullable=False)
+    target_hints_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    trusted_target_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    predecessor_evidence_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
     )
-    sources = relationship(
-        "MemorySource",
-        back_populates="memory",
-        cascade="all, delete-orphan",
+    source_spans_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    grounding_evidence_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False)
+    explicit_user_request: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    extractor_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    extractor_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    raw_output_hash: Mapped[str | None] = mapped_column(String(FINGERPRINT_LENGTH))
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    decision_outcome: Mapped[str | None] = mapped_column(String(40))
+    decision_rejection_code: Mapped[str | None] = mapped_column(String(80))
+    decision_error_code: Mapped[str | None] = mapped_column(String(80))
+    decision_reason: Mapped[str | None] = mapped_column(String(500))
+    applied_operation_id: Mapped[str | None] = mapped_column(String(UUID_LENGTH))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    contract_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    value_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=CANDIDATE_SCHEMA_VERSION
+    )
+
+
+class MemorySource(MemoryBase):
+    __tablename__ = "memory_sources"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_sources_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_sources_owner_uuid"),
+        _enum_check(
+            "source_kind",
+            [value.value for value in SourceKind],
+            "ck_memory_sources_kind",
+        ),
+        _enum_check(
+            "assertion_role",
+            list(SOURCE_ASSERTION_ROLES),
+            "ck_memory_sources_assertion_role",
+        ),
+        CheckConstraint(
+            "((redacted_excerpt IS NULL AND encrypted_excerpt IS NULL "
+            "AND excerpt_encryption_algorithm IS NULL AND excerpt_key_version IS NULL "
+            "AND excerpt_nonce IS NULL AND excerpt_aad IS NULL) OR "
+            "(redacted_excerpt IS NOT NULL AND encrypted_excerpt IS NULL "
+            "AND excerpt_encryption_algorithm IS NULL AND excerpt_key_version IS NULL "
+            "AND excerpt_nonce IS NULL AND excerpt_aad IS NULL) OR "
+            "(redacted_excerpt IS NULL AND encrypted_excerpt IS NOT NULL "
+            "AND excerpt_encryption_algorithm IS NOT NULL AND excerpt_key_version IS NOT NULL "
+            "AND excerpt_nonce IS NOT NULL AND excerpt_aad IS NOT NULL))",
+            name="ck_memory_sources_excerpt_shape",
+        ),
+        CheckConstraint("schema_version > 0", name="ck_memory_sources_schema_version"),
+        ForeignKeyConstraint(
+            ["owner_id", "memory_id"],
+            ["memory_records.owner_id", "memory_records.id"],
+            name="fk_memory_sources_record",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["owner_id", "operation_id"],
+            ["memory_operations.owner_id", "memory_operations.id"],
+            name="fk_memory_sources_operation",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_sources_owner_id"),
+        UniqueConstraint(
+            "owner_id",
+            "memory_id",
+            "source_content_hash",
+            name="uq_memory_sources_record_hash",
+        ),
+        Index("ix_memory_sources_owner_message", "owner_id", "message_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(200))
+    conversation_id: Mapped[str | None] = mapped_column(String(200))
+    session_id: Mapped[str | None] = mapped_column(String(200))
+    message_id: Mapped[str | None] = mapped_column(String(200))
+    source_span_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    redacted_excerpt: Mapped[str | None] = mapped_column(String(1000))
+    encrypted_excerpt: Mapped[bytes | None] = mapped_column(LargeBinary)
+    excerpt_encryption_algorithm: Mapped[str | None] = mapped_column(String(80))
+    excerpt_key_version: Mapped[str | None] = mapped_column(String(80))
+    excerpt_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    excerpt_aad: Mapped[bytes | None] = mapped_column(LargeBinary)
+    source_content_hash: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    source_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    extractor_version: Mapped[str | None] = mapped_column(String(120))
+    assertion_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    detachment_reason: Mapped[str | None] = mapped_column(String(120))
+    operation_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=SOURCE_SCHEMA_VERSION
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemoryRelation(MemoryBase):
+    __tablename__ = "memory_relations"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_relations_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_relations_owner_uuid"),
+        _enum_check("relation_type", list(RELATION_TYPES), "ck_memory_relations_relation_type"),
+        CheckConstraint("from_memory_id <> to_memory_id", name="ck_memory_relations_not_self"),
+        CheckConstraint("schema_version > 0", name="ck_memory_relations_schema_version"),
+        ForeignKeyConstraint(
+            ["owner_id", "from_memory_id"],
+            ["memory_records.owner_id", "memory_records.id"],
+            name="fk_memory_relations_from",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["owner_id", "to_memory_id"],
+            ["memory_records.owner_id", "memory_records.id"],
+            name="fk_memory_relations_to",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["owner_id", "operation_id"],
+            ["memory_operations.owner_id", "memory_operations.id"],
+            name="fk_memory_relations_operation",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_relations_owner_id"),
+        UniqueConstraint(
+            "owner_id",
+            "from_memory_id",
+            "relation_type",
+            "to_memory_id",
+            name="uq_memory_relations_identity",
+        ),
+        Index("ix_memory_relations_owner_from", "owner_id", "from_memory_id"),
+        Index("ix_memory_relations_owner_to", "owner_id", "to_memory_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    from_memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    operation_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=RELATION_SCHEMA_VERSION
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MemoryUsageEvent(MemoryBase):
+    __tablename__ = "memory_usage_events"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_usage_events_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_usage_events_owner_uuid"),
+        _uuid_check("memory_id", "ck_memory_usage_events_memory_uuid"),
+        ForeignKeyConstraint(
+            ["owner_id", "memory_id"],
+            ["memory_records.owner_id", "memory_records.id"],
+            name="fk_memory_usage_events_record",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_usage_events_owner_id"),
+        UniqueConstraint(
+            "owner_id",
+            "request_id",
+            "memory_id",
+            "purpose",
+            name="uq_memory_usage_events_selection",
+        ),
+        Index("ix_memory_usage_events_owner_used", "owner_id", "used_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(200), nullable=False)
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MemoryOutbox(MemoryBase):
+    __tablename__ = "memory_outbox"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_outbox_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_outbox_owner_uuid"),
+        _enum_check("event_kind", list(OUTBOX_EVENT_KINDS), "ck_memory_outbox_event_kind"),
+        _enum_check("state", list(OUTBOX_STATES), "ck_memory_outbox_state"),
+        CheckConstraint("attempts >= 0", name="ck_memory_outbox_attempts"),
+        CheckConstraint(
+            "canonical_revision IS NULL OR canonical_revision > 0",
+            name="ck_memory_outbox_revision",
+        ),
+        CheckConstraint(
+            "event_kind NOT IN ('canonical_upsert', 'canonical_remove', 'usage') "
+            "OR memory_id IS NOT NULL",
+            name="ck_memory_outbox_memory_required",
+        ),
+        CheckConstraint("schema_version > 0", name="ck_memory_outbox_schema_version"),
+        ForeignKeyConstraint(
+            ["owner_id", "memory_id"],
+            ["memory_records.owner_id", "memory_records.id"],
+            name="fk_memory_outbox_record",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_outbox_owner_id"),
+        UniqueConstraint("owner_id", "event_idempotency_key", name="uq_memory_outbox_idempotency"),
+        Index("ix_memory_outbox_owner_state_retry", "owner_id", "state", "next_retry_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    memory_id: Mapped[str | None] = mapped_column(String(UUID_LENGTH))
+    canonical_revision: Mapped[int | None] = mapped_column(Integer)
+    content_hash: Mapped[str | None] = mapped_column(String(FINGERPRINT_LENGTH))
+    event_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    event_idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=OUTBOX_SCHEMA_VERSION
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryOutboxDelivery(MemoryBase):
+    """Per-derived-target delivery and lease state for the existing outbox event."""
+
+    __tablename__ = "memory_outbox_deliveries"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_outbox_deliveries_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_outbox_deliveries_owner_uuid"),
+        _uuid_check("event_id", "ck_memory_outbox_deliveries_event_uuid"),
+        _enum_check("target", list(DERIVED_TARGETS), "ck_memory_outbox_deliveries_target"),
+        _enum_check("state", list(DERIVED_TARGET_STATES), "ck_memory_outbox_deliveries_state"),
+        CheckConstraint("attempts >= 0", name="ck_memory_outbox_deliveries_attempts"),
+        ForeignKeyConstraint(
+            ["owner_id", "event_id"],
+            ["memory_outbox.owner_id", "memory_outbox.id"],
+            name="fk_memory_outbox_deliveries_event",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "owner_id", "event_id", "target", name="uq_memory_outbox_deliveries_target"
+        ),
+        Index(
+            "ix_memory_outbox_deliveries_lease",
+            "owner_id",
+            "state",
+            "next_attempt_at",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    target: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(120))
+    leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemoryDerivedState(MemoryBase):
+    __tablename__ = "memory_health_state"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_health_state_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_health_state_owner_uuid"),
+        _uuid_check("memory_id", "ck_memory_health_state_memory_uuid"),
+        _enum_check("target", list(DERIVED_TARGETS), "ck_memory_health_state_target"),
+        _enum_check("state", list(DERIVED_TARGET_STATES), "ck_memory_health_state_state"),
+        CheckConstraint(
+            "canonical_revision IS NULL OR canonical_revision > 0",
+            name="ck_memory_health_state_revision",
+        ),
+        _sha256_check(
+            "content_hash",
+            "ck_memory_health_state_content_hash",
+            nullable=True,
+        ),
+        UniqueConstraint("owner_id", "memory_id", "target", name="uq_memory_health_state_target"),
+        Index("ix_memory_health_state_owner_target", "owner_id", "target", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    target: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(FINGERPRINT_LENGTH))
+    canonical_revision: Mapped[int | None] = mapped_column(Integer)
+    provider: Mapped[str | None] = mapped_column(String(80))
+    model: Mapped[str | None] = mapped_column(String(160))
+    provider_version: Mapped[str | None] = mapped_column(String(80))
+    dimension: Mapped[int | None] = mapped_column(Integer)
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemoryDerivedMetric(MemoryBase):
+    __tablename__ = "memory_health_metrics"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_health_metrics_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_health_metrics_owner_uuid"),
+        _enum_check(
+            "metric_code",
+            list(DERIVED_METRIC_CODES),
+            "ck_memory_health_metrics_code",
+        ),
+        CheckConstraint("count >= 0", name="ck_memory_health_metrics_count"),
+        UniqueConstraint("owner_id", "metric_code", name="uq_memory_health_metrics_owner_code"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    metric_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemoryFtsDocument(MemoryBase):
+    __tablename__ = "memory_fts_documents"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_fts_documents_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_fts_documents_owner_uuid"),
+        _uuid_check("memory_id", "ck_memory_fts_documents_memory_uuid"),
+        _sha256_check("content_hash", "ck_memory_fts_documents_content_hash"),
+        UniqueConstraint("owner_id", "memory_id", name="uq_memory_fts_documents_memory"),
+        Index("ix_memory_fts_documents_owner", "owner_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    canonical_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    domain_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    slot_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    display_text: Mapped[str] = mapped_column(Text, nullable=False)
+    derived_schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemoryVectorPoint(MemoryBase):
+    __tablename__ = "memory_vector_points"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_vector_points_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_vector_points_owner_uuid"),
+        _uuid_check("memory_id", "ck_memory_vector_points_memory_uuid"),
+        _sha256_check("content_hash", "ck_memory_vector_points_content_hash"),
+        _sha256_check(
+            "embedding_content_hash",
+            "ck_memory_vector_points_embedding_content_hash",
+        ),
+        CheckConstraint("dimension > 0", name="ck_memory_vector_points_dimension"),
+        UniqueConstraint("owner_id", "memory_id", name="uq_memory_vector_points_memory"),
+        Index("ix_memory_vector_points_owner", "owner_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    memory_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    canonical_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    provider_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    vector_json: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    derived_schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    embedding_document_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    embedding_content_hash: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    embedding_identity_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemoryTombstone(MemoryBase):
+    __tablename__ = "memory_tombstones"
+    __table_args__ = (
+        _uuid_check("id", "ck_memory_tombstones_id_uuid"),
+        _uuid_check("owner_id", "ck_memory_tombstones_owner_uuid"),
+        _enum_check(
+            "memory_type",
+            [value.value for value in MemoryType],
+            "ck_memory_tombstones_type",
+        ),
+        CheckConstraint("expires_at > created_at", name="ck_memory_tombstones_expiration"),
+        CheckConstraint("schema_version > 0", name="ck_memory_tombstones_schema_version"),
+        ForeignKeyConstraint(
+            ["owner_id", "originating_operation_id"],
+            ["memory_operations.owner_id", "memory_operations.id"],
+            name="fk_memory_tombstones_operation",
+        ),
+        UniqueConstraint("owner_id", "id", name="uq_memory_tombstones_owner_id"),
+        UniqueConstraint(
+            "owner_id",
+            "fingerprint_digest",
+            "fingerprint_key_version",
+            name="uq_memory_tombstones_fingerprint",
+        ),
+        Index("ix_memory_tombstones_owner_expiry", "owner_id", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(UUID_LENGTH), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    fingerprint_digest: Mapped[str] = mapped_column(String(FINGERPRINT_LENGTH), nullable=False)
+    fingerprint_key_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    domain_key: Mapped[str | None] = mapped_column(String(200))
+    slot_key: Mapped[str | None] = mapped_column(String(400))
+    originating_operation_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    explicitly_reconfirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reconfirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=TOMBSTONE_SCHEMA_VERSION
     )

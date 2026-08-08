@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Callable
+from collections.abc import Callable
 
 import app.services.projects.store as projects_store
 from app.services.agents.service import AgentsService, AgentsValidationError
@@ -289,3 +289,6 @@ def get_agent_task_planner() -> AgentTaskPlanner:
     if _planner is None:
         _planner = AgentTaskPlanner()
     return _planner
+
+
+# ruff: noqa: E501

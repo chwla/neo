@@ -12,7 +12,7 @@ from app.services.memory_retrieval.types import (
     PruneRequest,
 )
 
-router = APIRouter(prefix="/memory", tags=["memory-retrieval"])
+router = APIRouter(prefix="/workspace-memory", tags=["workspace-retrieval"])
 
 
 def service() -> MemoryRetrievalService:

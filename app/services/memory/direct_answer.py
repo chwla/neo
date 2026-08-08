@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import re
+from uuid import UUID
+
+from app.services.memory.prompt import RecallPromptOrchestrator
+from app.services.memory.queries import (
+    MemoryQueryContext,
+    RecallMode,
+    RecallPromptSelection,
+    RecallQuery,
+)
+from app.services.memory.taxonomy import MemoryType
+
+
+class DirectMemoryAnswerService:
+    """Answer explicit personal-memory questions from canonical recall only."""
+
+    def __init__(
+        self,
+        orchestrator: RecallPromptOrchestrator | None,
+        *,
+        enabled: bool = True,
+    ) -> None:
+        self.orchestrator = orchestrator
+        self.enabled = enabled
+        self.last_canonical_ids: tuple[UUID, ...] = ()
+        self.last_selection: RecallPromptSelection | None = None
+
+    def answer(self, query: str, *, context: MemoryQueryContext | None) -> str | None:
+        self.last_canonical_ids = ()
+        self.last_selection = None
+        if not self.enabled or self.orchestrator is None or context is None:
+            return None
+        if not context.memory_enabled or context.incognito:
+            return None
+        lowered = query.casefold()
+        broad = bool(re.search(r"\b(?:what do you remember|show|list|summari[sz]e)\b", lowered))
+        memory_type = self._memory_type(lowered)
+        if memory_type is None and not broad:
+            return None
+        mode = RecallMode.BROAD if broad else RecallMode.DETERMINISTIC
+        selection = self.orchestrator.build(
+            RecallQuery(
+                context=context.model_copy(update={"mode": mode}),
+                text=query,
+                memory_type=memory_type,
+                trusted_slot_keys=self._trusted_slots(lowered),
+            ),
+            purpose="direct_answer",
+        )
+        self.last_selection = selection
+        final_ids = selection.serialized.canonical_ids if selection.serialized is not None else ()
+        self.last_canonical_ids = final_ids
+        items = tuple(
+            item for item in selection.recall.items if item.memory.canonical_id in final_ids
+        )
+        if not items:
+            return "I do not have an active saved memory that answers that yet."
+        values = [item.memory.display_text.strip() for item in items]
+        if len(values) == 1:
+            return f"From your saved memory: {values[0]}"
+        return "From your saved memories:\n" + "\n".join(f"- {value}" for value in values)
+
+    @staticmethod
+    def _memory_type(text: str) -> MemoryType | None:
+        if re.search(r"\bgoals?|trying to|want to create\b", text):
+            return MemoryType.GOAL
+        if re.search(r"\bpreferences?|prefer|like\b", text):
+            return MemoryType.PREFERENCE
+        if re.search(r"\bprojects?|working on\b", text):
+            return MemoryType.PROJECT
+        if re.search(r"\bname|age|live|location|city|country|occupation|education\b", text):
+            return MemoryType.IDENTITY
+        if re.search(r"\bactivities?|doing currently\b", text):
+            return MemoryType.ACTIVITY
+        return None
+
+    @staticmethod
+    def _trusted_slots(text: str) -> tuple[str, ...]:
+        if re.search(r"\bname\b", text):
+            return ("identity:global:name",)
+        if re.search(r"\bage\b", text):
+            return ("identity:global:age",)
+        if re.search(r"\b(?:live|location|city)\b", text):
+            return ("identity:global:current_location",)
+        return ()
