@@ -242,7 +242,7 @@ class CanonicalRecallService:
         if context.mode is RecallMode.DETERMINISTIC:
             if query.canonical_id is not None:
                 record = self.repository.get_recall_eligible_by_id(
-                    str(query.canonical_id), now=context.current_time
+                    str(query.canonical_id), now=context.current_time, project_id=context.active_project_id
                 )
                 return ([record] if record is not None else []), False
             if query.trusted_slot_keys:
@@ -250,6 +250,7 @@ class CanonicalRecallService:
                     self.repository.list_recall_eligible_for_slots(
                         query.trusted_slot_keys,
                         now=context.current_time,
+                        project_id=context.active_project_id,
                         limit=min(100, context.maximum_records * 10),
                     ),
                     False,
@@ -260,6 +261,7 @@ class CanonicalRecallService:
                     memory_type=query.memory_type,
                     domain_key=query.domain_key,
                     slot_key=query.slot_key,
+                    project_id=context.active_project_id,
                 )
                 return ([record] if record is not None else []), False
         if context.mode is RecallMode.SCOPED_LEXICAL and not context.lexical_available:
@@ -274,6 +276,7 @@ class CanonicalRecallService:
             now=context.current_time,
             memory_types=types,
             domain_keys=domains,
+            project_id=context.active_project_id,
             limit=MAX_LEXICAL_CANDIDATES,
         )
         if not (
@@ -303,7 +306,7 @@ class CanonicalRecallService:
             if str(hit.get("owner_id")) != str(context.owner_id):
                 continue
             record = self.repository.get_recall_eligible_by_id(
-                str(hit.get("memory_id")), now=context.current_time
+                str(hit.get("memory_id")), now=context.current_time, project_id=context.active_project_id
             )
             if record is not None:
                 by_id[record.id] = record
@@ -377,7 +380,7 @@ class CanonicalRecallService:
                 )
                 continue
             record = self.repository.get_recall_eligible_by_id(
-                str(hit.memory_id), now=query.context.current_time
+                str(hit.memory_id), now=query.context.current_time, project_id=query.context.active_project_id
             )
             if record is None:
                 historical = self.repository.get_owner_record_any_lifecycle(str(hit.memory_id))
@@ -497,6 +500,7 @@ class CanonicalRecallService:
             "memory_types": memory_types,
             "domain_keys": domains,
             "slot_keys": slots,
+            "project_id": context.active_project_id,
         }
 
     @staticmethod
@@ -523,6 +527,8 @@ class CanonicalRecallService:
                     canonical_id=UUID(record.id),
                     owner_id=UUID(record.owner_id),
                     memory_type=MemoryType(record.memory_type),
+                    scope_type=record.scope_type,
+                    scope_project_id=record.scope_project_id,
                     domain_key=record.domain_key,
                     slot_key=record.slot_key,
                     display_text=display,

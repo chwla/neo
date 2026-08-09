@@ -220,6 +220,8 @@ def build_candidate(
         intent=CandidateIntent.REPLACE if group_retractions else CandidateIntent.ASSERT,
         subject_key="user",
         memory_type=proposal.memory_type_hint,
+        scope_type=("project" if request.active_project_id and proposal.memory_type_hint is MemoryType.PROJECT else "global"),
+        scope_project_id=(request.active_project_id if request.active_project_id and proposal.memory_type_hint is MemoryType.PROJECT else None),
         domain_key=domain,
         slot_key=slot_key,
         cardinality=cardinality,

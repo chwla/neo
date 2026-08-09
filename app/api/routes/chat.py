@@ -18,7 +18,7 @@ from app.api.deps import get_store
 from app.api.routes.accounts import session_for
 from app.core.config import get_settings
 from app.db.session import SessionLocal
-from app.models import Chat, ChatGeneration, ChatMessage
+from app.models import Chat, ChatGeneration, ChatMessage, Project
 from app.models.enums import ProjectStatus
 from app.models.memory import MemoryRecord, MemorySource
 from app.repositories.app_store import AppStore
@@ -371,6 +371,7 @@ def _generation_service(
         rule_result=rule_result,
         memory_enabled=memory_enabled,
         memory_incognito=memory_incognito,
+        active_project_id=str(chat.project_id) if chat.project_id is not None else None,
     )
 
 
@@ -383,6 +384,7 @@ def _chat_service(
     rule_result: dict,
     memory_enabled: bool = True,
     memory_incognito: bool = False,
+    active_project_id: str | None = None,
 ) -> NeoChatService:
     runtime = None
     mutation_runtime = None
@@ -407,6 +409,7 @@ def _chat_service(
             session_id=(request_id.split(":", 2)[1] if ":" in request_id else request_id),
             memory_enabled=True,
             incognito=False,
+            active_project_id=active_project_id,
         )
     return NeoChatService(
         db,
@@ -415,6 +418,12 @@ def _chat_service(
         memory_orchestrator=runtime.orchestrator if runtime is not None else None,
         memory_context_factory=runtime.context_factory if runtime is not None else None,
         memory_runtime=mutation_runtime,
+        active_project_id=active_project_id,
+        active_project_name=(
+            db.scalar(select(Project.name).where(Project.id == int(active_project_id)))
+            if active_project_id is not None
+            else None
+        ),
     )
 
 
@@ -840,6 +849,7 @@ def send_chat_message(
         rule_result=rule_result,
         memory_enabled=request.memory_enabled,
         memory_incognito=request.memory_incognito,
+        active_project_id=str(chat.project_id) if chat.project_id is not None else None,
     )
     try:
         reply = service.send_message(
@@ -933,6 +943,7 @@ def stream_chat_message(
         rule_result=rule_result,
         memory_enabled=request.memory_enabled,
         memory_incognito=request.memory_incognito,
+        active_project_id=str(chat.project_id) if chat.project_id is not None else None,
     )
 
     def events():

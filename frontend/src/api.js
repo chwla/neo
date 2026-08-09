@@ -635,6 +635,7 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   deleteProject: (projectId) => request(`/chat-projects/${projectId}`, { method: "DELETE" }),
+  chatProjects: () => request("/chat-projects"),
   memory: () => request("/memory"),
   createMemory: (payload) =>
     request("/memory", { method: "POST", body: JSON.stringify(payload) }),

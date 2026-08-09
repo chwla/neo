@@ -32,7 +32,12 @@ from app.models.memory import (
 
 MEMORY_REVISION_0001 = "0001_memory_core"
 MEMORY_REVISION_0002 = "0002_memory_derived_indexes"
-MEMORY_CURRENT_REVISION = MEMORY_REVISION_0002
+MEMORY_REVISION_0003 = "0003_memory_scopes"
+MEMORY_CURRENT_REVISION = MEMORY_REVISION_0003
+# Revision checksums describe the schema at the time a revision shipped.  Keep
+# this value fixed: compiling the current ORM model would otherwise make every
+# existing 0001 ledger entry appear corrupt after a later column is added.
+_MEMORY_REVISION_0001_CHECKSUM = "c1808b6cacd6090fea76df53bd6d07903efb532f7b47bb0e64063e88cf7bf6db"
 MEMORY_LEDGER_TABLE = "memory_schema_migrations"
 MEMORY_FTS5_TABLE = "memory_fts_index"
 _FTS5_CREATE_SQL = (
@@ -84,6 +89,20 @@ class MemoryMigrationState:
 
 
 def _revision_checksum(revision: str) -> str:
+    if revision == MEMORY_REVISION_0001:
+        return _MEMORY_REVISION_0001_CHECKSUM
+    if revision == MEMORY_REVISION_0003:
+        material = "\n".join((
+            revision,
+            "ALTER TABLE memory_records ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+            "ALTER TABLE memory_records ADD COLUMN scope_project_id VARCHAR(80)",
+            "ALTER TABLE memory_candidates ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+            "ALTER TABLE memory_candidates ADD COLUMN scope_project_id VARCHAR(80)",
+            "DROP INDEX uq_memory_records_active_exclusive_slot",
+            "CREATE UNIQUE INDEX uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'",
+            "CREATE INDEX ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)",
+        ))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
     dialect = sqlite.dialect()
     tables = _core_tables if revision == MEMORY_REVISION_0001 else _derived_tables
     statements = [str(CreateTable(table).compile(dialect=dialect)) for table in tables]
@@ -110,10 +129,10 @@ def _read_applied(connection) -> dict[str, str]:
 
 
 def _validate_applied_revisions(applied: dict[str, str]) -> None:
-    unknown = set(applied) - {MEMORY_REVISION_0001, MEMORY_REVISION_0002}
+    unknown = set(applied) - {MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003}
     if unknown:
         raise MemoryMigrationError(f"unsupported_memory_revisions:{','.join(sorted(unknown))}")
-    for revision in (MEMORY_REVISION_0001, MEMORY_REVISION_0002):
+    for revision in (MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003):
         actual = applied.get(revision)
         if actual is not None and actual != _revision_checksum(revision):
             raise MemoryMigrationError("memory_revision_checksum_mismatch")
@@ -192,6 +211,13 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
     ledger_exists = MEMORY_LEDGER_TABLE in existing
     if not ledger_exists:
         unmanaged = set(MEMORY_TABLES) & existing
+        # Earlier Neo releases used these names for a different, pre-ledger
+        # memory prototype.  Preserve the rows for later import, but free the
+        # canonical table names so the current schema can be installed.
+        for name in ("memory_candidates", "memory_sources"):
+            if name in unmanaged:
+                connection.execute(text(f"ALTER TABLE {name} RENAME TO legacy_{name}"))
+                unmanaged.remove(name)
         if unmanaged:
             names = ",".join(sorted(unmanaged))
             raise MemoryMigrationError(f"unmanaged_memory_tables:{names}")
@@ -230,6 +256,19 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
         )
         applied[MEMORY_REVISION_0002] = _revision_checksum(MEMORY_REVISION_0002)
 
+    if MEMORY_REVISION_0003 not in applied:
+        for table_name in ("memory_records", "memory_candidates"):
+            columns = {column["name"] for column in inspect(connection).get_columns(table_name)}
+            if "scope_type" not in columns:
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'"))
+            if "scope_project_id" not in columns:
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN scope_project_id VARCHAR(80)"))
+        connection.execute(text("DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)"))
+        connection.execute(_ledger.insert().values(revision=MEMORY_REVISION_0003, revision_checksum=_revision_checksum(MEMORY_REVISION_0003), applied_at=datetime.now(UTC)))
+        applied[MEMORY_REVISION_0003] = _revision_checksum(MEMORY_REVISION_0003)
+
     _validate_managed_tables(connection, applied=applied)
     _bind_owner(connection, owner_id=owner_id, database_identity=database_identity)
 
@@ -240,7 +279,7 @@ def memory_migration_state(engine: Engine) -> MemoryMigrationState:
         _validate_applied_revisions(applied)
         ordered = tuple(
             revision
-            for revision in (MEMORY_REVISION_0001, MEMORY_REVISION_0002)
+            for revision in (MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003)
             if revision in applied
         )
         owner_id = None

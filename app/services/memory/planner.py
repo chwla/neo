@@ -60,6 +60,8 @@ class RecordSnapshot:
     pinned: bool
     metadata: dict[str, Any]
     value_schema_version: int
+    scope_type: str = "global"
+    scope_project_id: str | None = None
 
     @property
     def identity(self) -> MemoryIdentity:

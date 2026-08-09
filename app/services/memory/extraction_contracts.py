@@ -96,6 +96,8 @@ class ExtractionRequest(ExtractionContractModel):
     request_id: str = Field(min_length=1, max_length=200)
     owner_id: OwnerId
     conversation_id: str = Field(min_length=1, max_length=200)
+    active_project_id: str | None = Field(default=None, max_length=80)
+    active_project_name: str | None = Field(default=None, max_length=255)
     session_id: str = Field(min_length=1, max_length=200)
     message_id: str = Field(min_length=1, max_length=200)
     user_message: str = Field(min_length=1, max_length=12_000)
@@ -152,6 +154,8 @@ class ModelExtractionInput(ExtractionContractModel):
     schema_version: Literal[MODEL_SCHEMA_VERSION] = MODEL_SCHEMA_VERSION
     request_id: str = Field(min_length=1, max_length=200)
     conversation_id: str = Field(min_length=1, max_length=200)
+    active_project_id: str | None = Field(default=None, max_length=80)
+    active_project_name: str | None = Field(default=None, max_length=255)
     session_id: str = Field(min_length=1, max_length=200)
     message_id: str = Field(min_length=1, max_length=200)
     user_message: str = Field(min_length=1, max_length=12_000)
@@ -165,6 +169,8 @@ class ModelExtractionInput(ExtractionContractModel):
         return cls(
             request_id=request.request_id,
             conversation_id=request.conversation_id,
+            active_project_id=request.active_project_id,
+            active_project_name=request.active_project_name,
             session_id=request.session_id,
             message_id=request.message_id,
             user_message=request.user_message,

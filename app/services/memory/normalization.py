@@ -72,6 +72,8 @@ class NormalizedCandidate:
     owner_id: str
     subject_key: str
     memory_type: MemoryType
+    scope_type: str
+    scope_project_id: str | None
     domain_key: str
     slot_key: str
     cardinality: Cardinality
@@ -140,6 +142,8 @@ def _fingerprint_material(
     *,
     subject_key: str,
     memory_type: MemoryType,
+    scope_type: str,
+    scope_project_id: str | None,
     domain_key: str,
     slot_key: str,
     canonical_value: JsonValue,
@@ -158,6 +162,8 @@ def _fingerprint_material(
     material = {
         "domain_key": domain_key,
         "memory_type": memory_type.value,
+        "scope_type": scope_type,
+        "scope_project_id": scope_project_id,
         "slot_key": slot_key,
         "subject_key": subject_key.casefold(),
         "value": identity_fold(normalized_value),
@@ -176,10 +182,14 @@ def canonical_fingerprint(
     canonical_value: JsonValue,
     sensitivity: Sensitivity,
     keyed_provider: KeyedFingerprintProvider,
+    scope_type: str = "global",
+    scope_project_id: str | None = None,
 ) -> str:
     material = _fingerprint_material(
         subject_key=subject_key,
         memory_type=memory_type,
+        scope_type=scope_type,
+        scope_project_id=scope_project_id,
         domain_key=domain_key,
         slot_key=slot_key,
         canonical_value=canonical_value,
@@ -305,6 +315,10 @@ def normalize_candidate(
     owner = canonical_uuid(owner_id)
     if proposal.value_schema_version not in SUPPORTED_VALUE_SCHEMA_VERSIONS:
         raise MemoryNormalizationError("unsupported_value_schema_version")
+    if proposal.scope_type not in {"global", "project"} or (
+        proposal.scope_type == "global" and proposal.scope_project_id is not None
+    ) or (proposal.scope_type == "project" and not proposal.scope_project_id):
+        raise MemoryNormalizationError("invalid_memory_scope")
     try:
         proposed_domain = validate_domain_key(proposal.domain_key)
     except ValueError as exc:
@@ -351,6 +365,8 @@ def normalize_candidate(
         owner_id=owner,
         subject_key=normalize_text(proposal.subject_key, code="subject_required", limit=160),
         memory_type=identity.memory_type,
+        scope_type=proposal.scope_type,
+        scope_project_id=proposal.scope_project_id,
         domain_key=identity.domain_key,
         slot_key=identity.slot_key,
         canonical_value=canonical_value,
@@ -378,6 +394,8 @@ def normalize_candidate(
         owner_id=owner,
         subject_key=normalize_text(proposal.subject_key, code="subject_required", limit=160),
         memory_type=identity.memory_type,
+        scope_type=proposal.scope_type,
+        scope_project_id=proposal.scope_project_id,
         domain_key=identity.domain_key,
         slot_key=identity.slot_key,
         cardinality=identity.cardinality,
@@ -409,6 +427,8 @@ def normalize_record_value(
     sensitivity: Sensitivity,
     value_schema_version: int,
     keyed_provider: KeyedFingerprintProvider,
+    scope_type: str = "global",
+    scope_project_id: str | None = None,
 ) -> NormalizedRecordValue:
     if value_schema_version not in SUPPORTED_VALUE_SCHEMA_VERSIONS:
         raise MemoryNormalizationError("unsupported_value_schema_version")
@@ -429,6 +449,8 @@ def normalize_record_value(
         owner_id=canonical_uuid(owner_id),
         subject_key=subject_key,
         memory_type=memory_type,
+        scope_type=scope_type,
+        scope_project_id=scope_project_id,
         domain_key=domain_key,
         slot_key=slot_key,
         canonical_value=normalized_value,

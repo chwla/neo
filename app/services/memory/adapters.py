@@ -93,6 +93,8 @@ class StructuredMemoryInput:
     cardinality: Cardinality
     canonical_value: JsonValue
     display_text: str
+    scope_type: str = "global"
+    scope_project_id: str | None = None
     sensitivity: Sensitivity = Sensitivity.NORMAL
     confidence: float = 1.0
     importance: int = 7
@@ -118,6 +120,8 @@ class StructuredMemoryInput:
             intent=intent,
             subject_key=self.subject_key,
             memory_type=self.memory_type,
+            scope_type=self.scope_type,
+            scope_project_id=self.scope_project_id,
             domain_key=self.domain_key,
             slot_key=self.slot_key,
             cardinality=self.cardinality,

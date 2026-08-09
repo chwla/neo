@@ -187,6 +187,37 @@ function FolderIcon() {
   );
 }
 
+function NeoLogo() {
+  return (
+    <span className="neo-logo-mark" aria-hidden="true">
+      <span className="neo-logo-inner">
+        <span className="neo-logo-stem" />
+        <span className="neo-logo-dot neo-logo-dot-top" />
+        <span className="neo-logo-dot neo-logo-dot-bottom" />
+      </span>
+    </span>
+  );
+}
+
+function NavIcon({ name }) {
+  const paths = {
+    chat: ["M4 5h16v11H8l-4 4V5Z"],
+    memory: ["M4 6c0-1.66 3.58-3 8-3s8 1.34 8 3", "M4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6", "M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"],
+    research: ["M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z", "m21 21-4.3-4.3"],
+    notes: ["M5 3h14v18H5z", "M8 8h8", "M8 12h8", "M8 16h5"],
+    projects: ["M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2", "M3 8h18v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+    tasks: ["M5 4h14v16H5z", "m8 12 2 2 5-5"],
+    files: ["M6 2h8l4 4v16H6z", "M14 2v5h5"],
+    repos: ["M4 4h6l2 3h8v13H4z", "M8 12h8", "M8 16h5"],
+    settings: ["M4 6h16", "M4 12h16", "M4 18h16"],
+  };
+  return (
+    <svg className="system-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {(paths[name] || paths.chat).map((path) => <path d={path} key={path} />)}
+    </svg>
+  );
+}
+
 function NeoButton({ children, className = "", type = "button", ...props }) {
   return (
     <button type={type} className={`neo-button ${className}`.trim()} {...props}>
@@ -228,9 +259,21 @@ function Sidebar({
   onDeleteChat,
   onDeleteProject,
   onOpenSettings,
+  onOpenChatHome,
+  onOpenMemory,
+  onOpenResearch,
+  onOpenNotes,
+  onOpenProjects,
+  onOpenTasks,
+  onOpenFiles,
+  onOpenRepos,
+  activeView,
+  profile,
+  onSwitchProfile,
 }) {
   const [projectName, setProjectName] = useState("");
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
+  const [search, setSearch] = useState("");
 
   function submitProject(event) {
     event.preventDefault();
@@ -242,15 +285,39 @@ function Sidebar({
     setProjectName("");
   }
 
+  const query = search.trim().toLowerCase();
+  const filteredProjects = sidebar.projects
+    .map((project) => ({
+      ...project,
+      chats: project.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query)),
+    }))
+    .filter((project) => !query || project.name.toLowerCase().includes(query) || project.chats.length);
+  const filteredChats = sidebar.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
+  const systemItems = [
+    ["memory", "Memory", onOpenMemory],
+    ["research", "Research", onOpenResearch],
+    ["notes", "Notes", onOpenNotes],
+    ["projects", "Projects", onOpenProjects],
+    ["tasks", "Tasks", onOpenTasks],
+    ["files", "Files", onOpenFiles],
+    ["repos", "Repositories", onOpenRepos],
+  ];
+
   return (
     <aside className="neo-sidebar">
-      <div className="sidebar-title">Neo</div>
-      <NeoButton className="w-full justify-start" onClick={() => onNewChat(selectedProjectId)}>
-        + New Chat
-      </NeoButton>
-      <NeoButton className="mt-2 w-full justify-start" onClick={onToggleProjectForm}>
-        + New Project
-      </NeoButton>
+      <button className="sidebar-brand" type="button" onClick={onOpenChatHome} aria-label="Open chat home">
+        <NeoLogo />
+        <span>neo</span>
+      </button>
+      <div className="sidebar-primary-action">
+        <NeoButton className="w-full" onClick={() => onNewChat(selectedProjectId)}>
+          + NEW CONVERSATION
+        </NeoButton>
+      </div>
+      <label className="sidebar-search">
+        <NavIcon name="research" />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search..." aria-label="Search conversations" />
+      </label>
 
       {showNewProjectForm && (
         <form className="sidebar-form" onSubmit={submitProject}>
@@ -269,21 +336,16 @@ function Sidebar({
       )}
 
       <div className="sidebar-section sidebar-section-row">
-        <span>Projects</span>
-        <button
-          className="sidebar-section-toggle"
-          type="button"
-          aria-label={projectsCollapsed ? "Show projects" : "Hide projects"}
-          title={projectsCollapsed ? "Show projects" : "Hide projects"}
-          onClick={() => setProjectsCollapsed((collapsed) => !collapsed)}
-        >
-          {projectsCollapsed ? "+" : "-"}
-        </button>
+        <span>RECENT</span>
+        <span className="sidebar-section-actions">
+          <button className="sidebar-section-toggle" type="button" aria-label="Create project" title="Create project" onClick={onToggleProjectForm}>+</button>
+          <button className="sidebar-section-toggle" type="button" aria-label={projectsCollapsed ? "Show projects" : "Hide projects"} title={projectsCollapsed ? "Show projects" : "Hide projects"} onClick={() => setProjectsCollapsed((collapsed) => !collapsed)}>{projectsCollapsed ? "+" : "−"}</button>
+        </span>
       </div>
-      {projectsCollapsed ? null : sidebar.projects.length === 0 ? (
+      {projectsCollapsed ? null : filteredProjects.length === 0 ? (
         <p className="sidebar-caption">No projects yet.</p>
       ) : (
-        sidebar.projects.map((project) => (
+        filteredProjects.map((project) => (
           <details
             className="project-folder"
             key={project.id}
@@ -339,11 +401,11 @@ function Sidebar({
         ))
       )}
 
-      <div className="sidebar-section">Chats</div>
-      {sidebar.chats.length === 0 ? (
+      <div className="sidebar-section">CHATS</div>
+      {filteredChats.length === 0 ? (
         <p className="sidebar-caption">No chats yet.</p>
       ) : (
-        sidebar.chats.map((chat) => (
+        filteredChats.map((chat) => (
           <div
             className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
             key={chat.id}
@@ -370,12 +432,23 @@ function Sidebar({
       )}
 
       <div className="sidebar-spacer" />
-      <div className="sidebar-settings-bar">
-        <div className="sidebar-settings-button">
-          <NeoButton onClick={onOpenSettings} title="Settings" aria-label="Settings">
-            {"\u2699"}
-          </NeoButton>
-        </div>
+      <div className="sidebar-section">SYSTEM</div>
+      <nav className="system-nav" aria-label="Neo system">
+        {systemItems.map(([id, label, onClick]) => (
+          <button className={activeView === id ? "active" : ""} type="button" onClick={onClick} key={id}>
+            <NavIcon name={id} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <button className={activeView === "settings" ? "sidebar-settings active" : "sidebar-settings"} type="button" onClick={onOpenSettings}>
+          <NavIcon name="settings" />
+          <span>Settings</span>
+        </button>
+        <button className="sidebar-profile" type="button" onClick={onSwitchProfile} title="Log out and choose another profile" aria-label="Log out and choose another profile">
+          {profile.avatar_data ? <img src={profile.avatar_data} alt="" /> : profile.username.slice(0, 1).toUpperCase()}
+        </button>
       </div>
     </aside>
   );
@@ -1331,7 +1404,6 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
 function NeoApp({ profile, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
-  const [chatReady, setChatReady] = useState(false);
   const [messages, setMessages] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
@@ -1367,7 +1439,6 @@ function NeoApp({ profile, onSwitchProfile }) {
   const [activeGenerationId, setActiveGenerationId] = useState(null);
   const [generationStartedAt, setGenerationStartedAt] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [statusError, setStatusError] = useState("");
   const [llms, setLlms] = useState([]);
   const [selectedLlmId, setSelectedLlmId] = useState("");
@@ -1580,7 +1651,6 @@ function NeoApp({ profile, onSwitchProfile }) {
 
     async function bootstrap() {
       setStatusError("");
-      setChatReady(false);
       try {
         const nextSidebar = await refreshSidebar();
         try {
@@ -1673,8 +1743,6 @@ function NeoApp({ profile, onSwitchProfile }) {
         clearSidebarQueryActions();
       } catch (error) {
         setStatusError(errorMessage(error));
-      } finally {
-        setChatReady(true);
       }
     }
 
@@ -1891,7 +1959,7 @@ function NeoApp({ profile, onSwitchProfile }) {
   }
 
   async function sendPrompt(prompt) {
-    if (!prompt || sending || !chatReady) {
+    if (!prompt || sending) {
       return;
     }
 
@@ -2116,43 +2184,17 @@ function NeoApp({ profile, onSwitchProfile }) {
   }
 
   const showEmptyState = messages.length === 0 && !sending;
+  const activeView = showSettings ? "settings"
+    : showMemory ? "memory"
+      : showResearch ? "research"
+        : showNotes ? "notes"
+          : showProjects ? "projects"
+            : showTasks ? "tasks"
+              : showFiles ? "files"
+                : showRepos ? "repos"
+                  : "chat";
   return (
-    <div className={`neo-app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <header className="neo-topbar">
-        <div className="neo-wordmark" aria-label="Neo local intelligence system">
-          <span className="neo-wordmark-mark">N</span>
-          <span>NEO</span>
-          <small>LOCAL INTELLIGENCE SYSTEM</small>
-        </div>
-        <div className="neo-topbar-status" aria-label="System online">
-          <span className="status-lamp" />
-          <span>CORE ONLINE</span>
-          <span className="topbar-divider">//</span>
-          <span>PRIVATE MODE</span>
-        </div>
-      </header>
-      <button
-        className="profile-session-button"
-        type="button"
-        onClick={onSwitchProfile}
-        title="Log out and choose another profile"
-        aria-label="Log out and choose another profile"
-      >
-        {profile.avatar_data ? <img src={profile.avatar_data} alt="" /> : <span>{profile.username.slice(0, 1).toUpperCase()}</span>}
-        <span>{profile.is_guest ? "Guest session" : profile.username}</span>
-        <span className="profile-session-action">Log out</span>
-      </button>
-      <button
-        className="sidebar-toggle"
-        type="button"
-        aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-        aria-expanded={!sidebarCollapsed}
-        onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-      >
-        <span />
-        <span />
-        <span />
-      </button>
+    <div className="neo-app">
       <Sidebar
         sidebar={sidebar}
         activeChatId={activeChat?.id ?? null}
@@ -2187,6 +2229,9 @@ function NeoApp({ profile, onSwitchProfile }) {
         onOpenRepos={() => {
           setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(true);
         }}
+        activeView={activeView}
+        profile={profile}
+        onSwitchProfile={onSwitchProfile}
       />
 
       {showProjects ? (
@@ -2253,6 +2298,10 @@ function NeoApp({ profile, onSwitchProfile }) {
         />
       ) : (
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
+        <header className="neo-view-header">
+          <span>{activeChat?.title || "New conversation"}</span>
+          <span className="neo-view-context">{chatMode === "agent" ? "AGENT MODE" : "LOCAL · PRIVATE"}</span>
+        </header>
         <section className="neo-shell">
           {showEmptyState && (
             <div className="neo-empty-state">
@@ -2303,7 +2352,7 @@ function NeoApp({ profile, onSwitchProfile }) {
           onChange={setComposerValue}
           onSubmit={handleComposerSubmit}
           disabled={chatMode === "chatbot"
-            ? sending || !chatReady || !activeChat?.id
+            ? sending || !activeChat?.id
             : chatAgentBusy || agentPlanning || ACTIVE_AGENT_RUN_STATUSES.has(chatAgentRun?.run?.status)}
           llms={llms}
           llmId={selectedLlmId}

@@ -243,6 +243,8 @@ class CandidateProposal(ContractModel):
     intent: CandidateIntent = CandidateIntent.ASSERT
     subject_key: NonEmptyText = "user"
     memory_type: MemoryType
+    scope_type: Literal["global", "project"] = "global"
+    scope_project_id: str | None = Field(default=None, max_length=80)
     domain_key: NonEmptyText
     slot_key: NonEmptyText
     cardinality: Cardinality
@@ -290,6 +292,8 @@ class CanonicalMemorySnapshot(ContractModel):
     owner_id: OwnerId
     subject_key: NonEmptyText
     memory_type: MemoryType
+    scope_type: Literal["global", "project"] = "global"
+    scope_project_id: str | None = None
     domain_key: NonEmptyText
     slot_key: NonEmptyText
     cardinality: Cardinality

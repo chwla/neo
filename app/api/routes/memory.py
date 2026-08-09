@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.routes.accounts import session_for
 from app.db.session import get_db
 from app.models.memory import MemoryCandidate, MemoryRecord
+from app.models.project import Project
 from app.services.memory.adapters import StructuredMemoryInput
 from app.services.memory.contracts import (
     CandidateIntent,
@@ -35,6 +36,10 @@ class MemoryCreateRequest(BaseModel):
     value: Any
     display_text: str = Field(min_length=1, max_length=12_000)
     memory_type: MemoryType = MemoryType.KNOWLEDGE
+    scope_type: str = Field(default="global", pattern="^(global|project)$")
+    project_id: str | None = Field(default=None, max_length=80)
+    # Kept as a compatibility-only taxonomy hint for existing API callers.  Scope
+    # is authoritative; the redesigned UI never exposes this free-text field.
     domain: str = Field(default="global", min_length=1, max_length=200)
     slot: str | None = Field(default=None, max_length=400)
     cardinality: Cardinality = Cardinality.ADDITIVE
@@ -80,6 +85,26 @@ def _context(runtime: MemoryRuntime, request_id: str):
     )
 
 
+def _scope(payload: MemoryCreateRequest, db: Session) -> tuple[str, str | None, str | None]:
+    if payload.scope_type == "global":
+        if payload.project_id is not None:
+            raise HTTPException(status_code=422, detail="global_scope_cannot_have_project")
+        return "global", None, None
+    if not payload.project_id:
+        raise HTTPException(status_code=422, detail="project_scope_requires_project")
+    project = db.scalar(select(Project).where(Project.id == int(payload.project_id))) if payload.project_id.isdigit() else None
+    if project is None:
+        raise HTTPException(status_code=422, detail="project_scope_project_not_found")
+    return "project", str(project.id), project.name
+
+
+def _scope_response(row: MemoryRecord | MemoryCandidate | None, db: Session) -> dict[str, Any]:
+    if row is None or row.scope_type != "project" or not row.scope_project_id:
+        return {"type": "global"}
+    project = db.scalar(select(Project).where(Project.id == int(row.scope_project_id))) if row.scope_project_id.isdigit() else None
+    return {"type": "project", "project_id": row.scope_project_id, "project_name": project.name if project else "Deleted project"}
+
+
 def _default_slot(payload: MemoryCreateRequest, mutation_id: str) -> str:
     entity_id = uuid5(NAMESPACE_URL, f"neo.memory.manual:{mutation_id}")
     memory_type = payload.memory_type.value
@@ -121,6 +146,7 @@ def _records(runtime: MemoryRuntime, db: Session) -> list[dict[str, Any]]:
                 "id": str(item.memory_id),
                 "memory_type": item.memory_type.value,
                 "domain": item.domain_key,
+                "scope": _scope_response(row, db),
                 "slot": item.slot_key,
                 "cardinality": item.cardinality.value,
                 "canonical_value": item.canonical_value,
@@ -172,6 +198,7 @@ def list_memories(request: Request, db: Database) -> list[dict[str, Any]]:
 def create_memory(payload: MemoryCreateRequest, request: Request, db: Database) -> dict[str, Any]:
     runtime = _runtime(request)
     mutation_id = payload.client_mutation_id or str(uuid4())
+    scope_type, project_id, _project_name = _scope(payload, db)
     slot = payload.slot or _default_slot(payload, mutation_id)
     result = runtime.adapter.create(
         _context(runtime, f"create:{mutation_id}"),
@@ -182,6 +209,8 @@ def create_memory(payload: MemoryCreateRequest, request: Request, db: Database) 
             cardinality=payload.cardinality,
             canonical_value=payload.value,
             display_text=payload.display_text,
+            scope_type=scope_type,
+            scope_project_id=project_id,
             confidence=payload.confidence,
             importance=payload.importance,
             explicit_user_request=True,
@@ -211,6 +240,7 @@ def list_candidates(request: Request, db: Database) -> list[dict[str, Any]]:
             "id": row.id,
             "memory_type": row.memory_type,
             "domain": row.domain_key,
+            "scope": _scope_response(row, db),
             "slot": row.slot_key,
             "display_text": row.display_text
             if row.sensitivity == "normal"
@@ -252,6 +282,8 @@ def accept_candidate(
         cardinality=Cardinality(candidate.cardinality),
         canonical_value=candidate.canonical_payload,
         display_text=candidate.display_text,
+        scope_type=candidate.scope_type,
+        scope_project_id=candidate.scope_project_id,
         sensitivity=Sensitivity(candidate.sensitivity),
         confidence=candidate.confidence,
         importance=candidate.importance,
@@ -366,6 +398,8 @@ def update_memory(
                 cardinality=Cardinality(current["cardinality"]),
                 canonical_value=changes["canonical_value"],
                 display_text=changes.get("display_text", current["display_text"]),
+                scope_type=current["scope"]["type"],
+                scope_project_id=current["scope"].get("project_id"),
                 sensitivity=Sensitivity(current["sensitivity"]),
                 confidence=record.confidence,
                 importance=record.importance,

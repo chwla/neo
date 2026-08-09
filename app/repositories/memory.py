@@ -196,6 +196,7 @@ class MemoryRepository:
         now: datetime,
         memory_types: Collection[MemoryType | str] = (),
         domain_keys: Collection[str] = (),
+        project_id: str | None = None,
     ) -> Select[tuple[MemoryRecord]]:
         """Build the authoritative normal-serving query with SQL-level eligibility."""
         statement = select(MemoryRecord).where(
@@ -211,6 +212,13 @@ class MemoryRepository:
             statement = statement.where(MemoryRecord.memory_type.in_(values))
         if domain_keys:
             statement = statement.where(MemoryRecord.domain_key.in_(tuple(domain_keys)))
+        if project_id is None:
+            statement = statement.where(MemoryRecord.scope_type == "global")
+        else:
+            statement = statement.where(
+                (MemoryRecord.scope_type == "global")
+                | ((MemoryRecord.scope_type == "project") & (MemoryRecord.scope_project_id == project_id))
+            )
         return statement
 
     def recall_filter_counts(
@@ -221,6 +229,7 @@ class MemoryRepository:
         memory_types: Collection[MemoryType | str] = (),
         domain_keys: Collection[str] = (),
         slot_keys: Collection[str] = (),
+        project_id: str | None = None,
     ) -> tuple[int, int]:
         """Count owner-bound inactive and expired rows excluded by serving SQL."""
         conditions = [MemoryRecord.owner_id == self.owner_id]
@@ -237,6 +246,10 @@ class MemoryRepository:
         normalized_slots = tuple(item.strip() for item in slot_keys if item.strip())
         if normalized_slots:
             conditions.append(MemoryRecord.slot_key.in_(normalized_slots))
+        if project_id is None:
+            conditions.append(MemoryRecord.scope_type == "global")
+        else:
+            conditions.append((MemoryRecord.scope_type == "global") | ((MemoryRecord.scope_type == "project") & (MemoryRecord.scope_project_id == project_id)))
         inactive = self._session.scalar(
             select(func.count())
             .select_from(MemoryRecord)
@@ -263,6 +276,7 @@ class MemoryRepository:
         now: datetime,
         memory_types: Collection[MemoryType | str] = (),
         domain_keys: Collection[str] = (),
+        project_id: str | None = None,
         limit: int = 500,
     ) -> list[MemoryRecord]:
         if not 1 <= limit <= 500:
@@ -271,6 +285,7 @@ class MemoryRepository:
             now=now,
             memory_types=memory_types,
             domain_keys=domain_keys,
+            project_id=project_id,
         ).order_by(
             MemoryRecord.last_confirmed_at.desc(),
             MemoryRecord.updated_at.desc(),
@@ -283,10 +298,11 @@ class MemoryRepository:
         memory_id: str,
         *,
         now: datetime,
+        project_id: str | None = None,
     ) -> MemoryRecord | None:
         identifier = canonical_uuid(memory_id)
         return self._session.scalar(
-            self.eligible_records_statement(now=now).where(MemoryRecord.id == identifier)
+            self.eligible_records_statement(now=now, project_id=project_id).where(MemoryRecord.id == identifier)
         )
 
     def get_owner_record_any_lifecycle(self, memory_id: str) -> MemoryRecord | None:
@@ -321,11 +337,13 @@ class MemoryRepository:
         memory_type: MemoryType,
         domain_key: str,
         slot_key: str,
+        project_id: str | None = None,
     ) -> MemoryRecord | None:
         statement = self.eligible_records_statement(
             now=now,
             memory_types=(memory_type,),
             domain_keys=(domain_key,),
+            project_id=project_id,
         ).where(MemoryRecord.slot_key == slot_key)
         return self._session.scalar(
             statement.order_by(
@@ -340,13 +358,14 @@ class MemoryRepository:
         *,
         now: datetime,
         limit: int = 100,
+        project_id: str | None = None,
     ) -> list[MemoryRecord]:
         slots = tuple(dict.fromkeys(item.strip() for item in slot_keys if item.strip()))
         if not slots:
             return []
         if len(slots) > 50 or not 1 <= limit <= 100:
             raise ValueError("trusted_slot_query_out_of_range")
-        statement = self.eligible_records_statement(now=now).where(MemoryRecord.slot_key.in_(slots))
+        statement = self.eligible_records_statement(now=now, project_id=project_id).where(MemoryRecord.slot_key.in_(slots))
         return list(
             self._session.scalars(
                 statement.order_by(

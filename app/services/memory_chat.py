@@ -47,6 +47,7 @@ def build_chat_memory_runtime(
     profile_id: str,
     request_id: str,
     session_id: str | None = None,
+    active_project_id: str | None = None,
     memory_enabled: bool = True,
     incognito: bool = False,
 ) -> ChatMemoryRuntime | None:
@@ -99,6 +100,7 @@ def build_chat_memory_runtime(
             incognito=incognito,
             request_id=request_id,
             session_id=session_id,
+            active_project_id=active_project_id,
             current_time=datetime.now(UTC),
             maximum_records=flags.recall_max_records,
             maximum_characters=flags.recall_max_chars,

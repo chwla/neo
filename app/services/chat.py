@@ -92,6 +92,8 @@ class NeoChatService:
         memory_context_factory: Callable[[str], MemoryQueryContext | None] | None = None,
         memory_enabled: bool | None = None,
         memory_runtime: MemoryRuntime | None = None,
+        active_project_id: str | None = None,
+        active_project_name: str | None = None,
     ) -> None:
         self.db = db
         self.store = AppStore(db)
@@ -101,6 +103,8 @@ class NeoChatService:
             ollama = get_llm_client(route_name="chat")
         self.ollama = ollama
         self.memory_runtime = memory_runtime
+        self.active_project_id = active_project_id
+        self.active_project_name = active_project_name
         self.rule_result = rule_result or {
             "resolved_rules": {},
             "applied_profiles": [],
@@ -1484,6 +1488,8 @@ class NeoChatService:
             request_id=f"chat:{chat_id}:{message_id}:{mode.value}",
             owner_id=self.memory_runtime.execution.owner_id,
             conversation_id=str(chat_id),
+            active_project_id=self.active_project_id,
+            active_project_name=self.active_project_name,
             session_id=f"profile:{self.memory_runtime.execution.profile_id}",
             message_id=str(message_id),
             user_message=prompt,

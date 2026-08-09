@@ -314,6 +314,8 @@ class MemoryRecord(MemoryBase):
         Index(
             "uq_memory_records_active_exclusive_slot",
             "owner_id",
+            "scope_type",
+            "scope_project_id",
             "subject_key",
             "memory_type",
             "domain_key",
@@ -337,6 +339,8 @@ class MemoryRecord(MemoryBase):
     owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
     subject_key: Mapped[str] = mapped_column(String(160), nullable=False)
     memory_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
+    scope_project_id: Mapped[str | None] = mapped_column(String(80))
     domain_key: Mapped[str] = mapped_column(String(200), nullable=False)
     slot_key: Mapped[str] = mapped_column(String(400), nullable=False)
     cardinality: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -451,6 +455,8 @@ class MemoryCandidate(MemoryBase):
     owner_id: Mapped[str] = mapped_column(String(UUID_LENGTH), nullable=False)
     subject_key: Mapped[str] = mapped_column(String(160), nullable=False)
     memory_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
+    scope_project_id: Mapped[str | None] = mapped_column(String(80))
     domain_key: Mapped[str] = mapped_column(String(200), nullable=False)
     slot_key: Mapped[str] = mapped_column(String(400), nullable=False)
     cardinality: Mapped[str] = mapped_column(String(16), nullable=False)

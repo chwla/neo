@@ -58,6 +58,7 @@ class MemoryQueryContext(RecallContractModel):
     incognito: bool = False
     request_id: str = Field(min_length=1, max_length=200)
     session_id: str | None = Field(default=None, max_length=200)
+    active_project_id: str | None = Field(default=None, max_length=80)
     current_time: datetime
     allowed_memory_types: frozenset[MemoryType] = frozenset()
     allowed_domains: frozenset[str] = frozenset()
@@ -83,6 +84,8 @@ class CanonicalMemoryView(RecallContractModel):
     canonical_id: UUID
     owner_id: UUID
     memory_type: MemoryType
+    scope_type: str = "global"
+    scope_project_id: str | None = None
     domain_key: str
     slot_key: str
     display_text: str

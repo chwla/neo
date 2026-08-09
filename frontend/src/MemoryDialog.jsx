@@ -29,10 +29,10 @@ const MEMORY_TABS = [
 ];
 
 const TAB_MEMORY_TYPES = {
-  profile: new Set(["identity", "employment"]),
+  profile: new Set(["identity", "education", "employment", "activity", "knowledge"]),
   preferences: new Set(["preference"]),
   goals: new Set(["goal"]),
-  projects: new Set(["project"]),
+  projects: new Set(),
   events: new Set(["event"]),
 };
 
@@ -110,7 +110,7 @@ function MemoryRecord({ record, refresh, reportError }) {
           <p className="memory-card-summary">{record.display_text}</p>
           <div className="memory-provenance">
             <span>Type: {label(record.memory_type)}</span>
-            <span>Domain: {label(record.domain)}</span>
+            <span>{record.scope?.type === "project" ? `Project: ${record.scope.project_name}` : "Global memory"}</span>
           </div>
         </div>
         <button
@@ -149,10 +149,11 @@ function MemoryRecord({ record, refresh, reportError }) {
   );
 }
 
-function ManualMemory({ refresh, reportError }) {
+function ManualMemory({ refresh, reportError, projects }) {
   const [value, setValue] = useState("");
   const [memoryType, setMemoryType] = useState("knowledge");
-  const [domain, setDomain] = useState("global");
+  const [scopeType, setScopeType] = useState("global");
+  const [projectId, setProjectId] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function save(event) {
@@ -166,7 +167,8 @@ function ManualMemory({ refresh, reportError }) {
         value: cleaned,
         display_text: cleaned,
         memory_type: memoryType,
-        domain: domain.trim() || "global",
+        scope_type: scopeType,
+        project_id: scopeType === "project" ? projectId : null,
       });
       setValue("");
       await refresh();
@@ -192,10 +194,18 @@ function ManualMemory({ refresh, reportError }) {
               {MEMORY_TYPES.map((item) => <option key={item} value={item}>{label(item)}</option>)}
             </select>
           </label>
-          <label className="memory-field">
-            <span>Domain</span>
-            <input value={domain} onChange={(event) => setDomain(event.target.value)} />
+          <label className="memory-field"><span>Scope</span>
+            <select value={scopeType} onChange={(event) => setScopeType(event.target.value)}>
+              <option value="global">Global — available everywhere</option>
+              <option value="project">Project — available only in that project</option>
+            </select>
           </label>
+          {scopeType === "project" && <label className="memory-field"><span>Project</span>
+            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} required>
+              <option value="">Choose a project</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>}
           <div className="memory-actions">
             <button className="neo-button" type="submit" disabled={saving || !value.trim()}>
               {saving ? "Saving…" : "Add memory"}
@@ -209,12 +219,9 @@ function ManualMemory({ refresh, reportError }) {
 
 export default function MemoryDialog({
   onClose,
-  memoryEnabled,
-  memoryIncognito,
-  onMemoryEnabledChange,
-  onMemoryIncognitoChange,
 }) {
   const [records, setRecords] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [activeTab, setActiveTab] = useState("profile");
   const [sortOrder, setSortOrder] = useState("newest");
   const [loading, setLoading] = useState(true);
@@ -224,7 +231,9 @@ export default function MemoryDialog({
     setLoading(true);
     setError("");
     try {
-      setRecords(await api.memory());
+      const [memoryRecords, chatProjects] = await Promise.all([api.memory(), api.chatProjects()]);
+      setRecords(memoryRecords);
+      setProjects(chatProjects);
     } catch (requestError) {
       setError(requestError.message || String(requestError));
     } finally {
@@ -235,7 +244,9 @@ export default function MemoryDialog({
   useEffect(() => { refresh(); }, [refresh]);
   const visibleRecords = useMemo(
     () => sortRecords(
-      records.filter((record) => TAB_MEMORY_TYPES[activeTab].has(record.memory_type)),
+      records.filter((record) => activeTab === "projects"
+        ? record.scope?.type === "project"
+        : record.scope?.type !== "project" && TAB_MEMORY_TYPES[activeTab].has(record.memory_type)),
       sortOrder,
     ),
     [activeTab, records, sortOrder],
@@ -269,24 +280,6 @@ export default function MemoryDialog({
           ))}
         </div>
         {error && <div className="neo-error">{error}</div>}
-        <div className="memory-sort-bar" aria-label="Memory settings">
-          <label>
-            <input
-              type="checkbox"
-              checked={memoryEnabled}
-              onChange={(event) => onMemoryEnabledChange(event.target.checked)}
-            />
-            <span>Use personal memory</span>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={memoryIncognito}
-              onChange={(event) => onMemoryIncognitoChange(event.target.checked)}
-            />
-            <span>Incognito (no memory calls)</span>
-          </label>
-        </div>
         <div className="memory-sort-bar">
           <label>
             <span>Sort</span>
@@ -297,12 +290,15 @@ export default function MemoryDialog({
           <button className="neo-button" type="button" onClick={refresh} disabled={loading}>Refresh</button>
         </div>
         <div className="memory-scroll">
-          <ManualMemory refresh={refresh} reportError={setError} />
+          <ManualMemory refresh={refresh} reportError={setError} projects={projects} />
           {loading ? (
             <p className="dialog-caption">Loading memories…</p>
           ) : visibleRecords.length === 0 ? (
             <p className="dialog-caption">No saved memories</p>
-          ) : visibleRecords.map((record) => (
+          ) : activeTab === "projects" ? projects.map((project) => {
+            const projectRecords = visibleRecords.filter((record) => record.scope?.project_id === String(project.id));
+            return <section className="memory-project-group" key={project.id}><h3>{project.name}</h3>{projectRecords.length ? projectRecords.map((record) => <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />) : <p className="dialog-caption">No private memories yet.</p>}</section>;
+          }) : visibleRecords.map((record) => (
             <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />
           ))}
         </div>
