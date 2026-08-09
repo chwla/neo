@@ -223,9 +223,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .agent-submit-actions button { height: 40px; white-space: nowrap; }
 .agent-mode-hint, .agent-mode-message { margin: 6px 0 0 20px; color: #555; font: 10px "JetBrains Mono", monospace; }
 .agent-mode-message { color: var(--neo-green); }
-.agent-workbench-trigger { display: flex; width: 100%; align-items: center; gap: 10px; margin-top: 8px; border: 1px solid var(--neo-line); background: transparent; padding: 8px 10px; color: #666; font-size: 11px; text-align: left; }
-.agent-workbench-trigger span { color: var(--neo-green); font: 9px "JetBrains Mono", monospace; }
-.agent-workbench-trigger small { margin-left: auto; color: #333; }
+.agent-workbench-trigger { display:grid; grid-template-columns:auto minmax(0,1fr) auto; width:100%; align-items:center; gap:14px; margin-top:10px; border:1px solid var(--neo-line-bright); border-left:2px solid var(--neo-green); background:linear-gradient(90deg,rgba(57,255,20,.06),transparent 48%); padding:12px 14px; color:#c9c9c9; font-size:12px; text-align:left; }
+.agent-workbench-trigger:hover { border-color:var(--neo-green); background:linear-gradient(90deg,rgba(57,255,20,.11),transparent 58%); }
+.agent-workbench-trigger span { color:var(--neo-green); font:600 9px "JetBrains Mono", monospace; letter-spacing:.08em; }
+.agent-workbench-trigger small { color:#555; font:9px "JetBrains Mono", monospace; }
 .agent-plan-preview, .agent-created-tasks, .chat-agent-status { margin-top: 8px; border: 1px solid var(--neo-line); border-left: 2px solid var(--neo-green); background: var(--neo-panel); padding: 10px; color: #aaa; font-size: 11px; }
 .agent-plan-preview-head, .agent-plan-actions, .chat-agent-status-main, .chat-agent-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .agent-plan-preview-head > div, .agent-created-tasks { display: grid; gap: 3px; }
@@ -236,6 +237,25 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .agent-plan-actions button, .chat-agent-actions button, .agent-plan-preview-head button { border: 0; background: transparent; color: #555; font: 9px "JetBrains Mono", monospace; }
 .agent-plan-actions button:hover, .chat-agent-actions button:hover { color: var(--neo-green); }
 .chat-agent-details { display: grid; gap: 6px; margin-top: 8px; border-top: 1px solid var(--neo-line); padding-top: 8px; }
+
+/* Advanced agent workbench */
+.coding-workbench-modal { width:min(1180px,100%) !important; padding:0 28px 28px; }
+.coding-agent { display:grid; gap:18px; padding:20px 0 4px; color:#b7b7b7; }
+.coding-agent-title { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; border-bottom:1px solid var(--neo-line); padding-bottom:18px; }
+.coding-agent-title h3 { margin:4px 0 6px; color:var(--neo-text); font-size:22px; font-weight:600; }
+.coding-agent-title p { max-width:640px; margin:0; color:#777; font-size:13px; line-height:1.55; }
+.coding-kicker { color:var(--neo-green); font:600 10px "JetBrains Mono", monospace; letter-spacing:.12em; text-transform:uppercase; }
+.coding-agent-form { display:grid; gap:16px; border:1px solid var(--neo-line-bright); background:var(--neo-panel); padding:20px; }
+.coding-objective { display:grid; gap:7px; }
+.coding-objective > span, .coding-agent-selectors label { color:#717171; font:600 10px "JetBrains Mono", monospace; letter-spacing:.06em; text-transform:uppercase; }
+.coding-objective textarea { min-height:116px; border:1px solid #2a2a2a; background:#090909; padding:13px; color:var(--neo-text); font:14px/1.55 inherit; resize:vertical; }
+.coding-objective textarea:focus { outline:0; border-color:var(--neo-green); }
+.coding-agent-selectors { display:grid; grid-template-columns:1fr 1.15fr 1fr 130px; gap:12px; }
+.coding-agent-selectors label { display:grid; gap:7px; }
+.coding-agent-selectors select, .coding-agent-selectors input { min-height:38px; border:1px solid #292929; background:#0a0a0a; padding:8px 10px; color:#c8c8c8; font:12px inherit; }
+.coding-agent-form > .neo-button { justify-self:start; min-width:210px; min-height:40px; }
+.coding-agent-form .task-help { margin:0; border-top:1px solid var(--neo-line); padding-top:12px; color:#5d5d5d; font-size:11px; }
+@media (max-width: 800px) { .coding-agent-selectors { grid-template-columns:1fr 1fr; } .agent-workbench-trigger { grid-template-columns:1fr; gap:5px; } .agent-workbench-trigger small { margin:0; } }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: auto; background: rgba(0,0,0,.78); padding: 28px; backdrop-filter: blur(3px); }
 .neo-dialog { width: min(620px, 100%); max-height: calc(100vh - 56px); overflow: auto; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-bg); box-shadow: 0 24px 80px rgba(0,0,0,.7); padding: 0 24px 24px; }

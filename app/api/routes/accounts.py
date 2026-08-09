@@ -12,13 +12,18 @@ from app.services.profile_accounts import (
     authenticate,
     create_guest,
     create_profile,
+    create_profile_session,
     delete_guest,
     delete_profile,
+    profile_for_session,
+    revoke_profile_session,
+    revoke_profile_sessions,
     list_profiles,
 )
 
 router = APIRouter(prefix="/account-profiles", tags=["account profiles"])
 SESSION_COOKIE = "neo_profile_session"
+PERSISTENT_SESSION_MAX_AGE = 60 * 60 * 24 * 365 * 5
 _sessions: dict[str, dict] = {}
 _session_lock = Lock()
 
@@ -42,14 +47,29 @@ def session_for(request: Request) -> dict | None:
     if not token:
         return None
     with _session_lock:
-        return _sessions.get(token)
+        guest = _sessions.get(token)
+    if guest is not None:
+        return guest
+    return profile_for_session(token)
 
 
 def _start_session(response: Response, profile: dict) -> None:
-    token = secrets.token_urlsafe(32)
-    with _session_lock:
-        _sessions[token] = profile
-    response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False)
+    if profile.get("is_guest"):
+        token = secrets.token_urlsafe(32)
+        with _session_lock:
+            _sessions[token] = profile
+        response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False, path="/")
+        return
+    token = create_profile_session(profile)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=PERSISTENT_SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
 
 
 def _end_sessions_for_profile(profile_id: str) -> None:
@@ -57,6 +77,7 @@ def _end_sessions_for_profile(profile_id: str) -> None:
         for token, profile in list(_sessions.items()):
             if profile.get("id") == profile_id:
                 _sessions.pop(token, None)
+    revoke_profile_sessions(profile_id)
 
 
 @router.get("")
@@ -94,7 +115,7 @@ def remove_profile(
 ) -> Response:
     delete_profile(profile_id, payload.password)
     _end_sessions_for_profile(profile_id)
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE, path="/")
     response.status_code = 204
     return response
 
@@ -114,8 +135,10 @@ def end_session(request: Request, response: Response) -> Response:
     if token:
         with _session_lock:
             profile = _sessions.pop(token, None)
+        if profile is None:
+            revoke_profile_session(token)
     if profile and profile.get("is_guest"):
         delete_guest(profile["id"])
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE, path="/")
     response.status_code = 204
     return response

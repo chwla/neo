@@ -298,7 +298,6 @@ function Sidebar({
     ["research", "Research", onOpenResearch],
     ["notes", "Notes", onOpenNotes],
     ["projects", "Projects", onOpenProjects],
-    ["tasks", "Tasks", onOpenTasks],
     ["files", "Files", onOpenFiles],
     ["repos", "Repositories", onOpenRepos],
   ];
@@ -614,10 +613,6 @@ function ChatComposer({
   onLlmChange,
   mode,
   onModeChange,
-  tasks,
-  tasksLoading,
-  selectedTaskId,
-  onTaskChange,
   projects,
   selectedProjectId,
   onProjectChange,
@@ -635,7 +630,6 @@ function ChatComposer({
   agentMessage,
   agentDetailsOpen,
   onToggleAgentDetails,
-  onOpenAgentTask,
   onSaveAgentRun,
   onRefreshAgentRun,
 }) {
@@ -698,23 +692,15 @@ function ChatComposer({
               <label className="agent-task-picker">
                 <span>Project</span>
                 <select value={selectedProjectId} onChange={(event) => onProjectChange(event.target.value)}
-                  disabled={disabled || tasksLoading} aria-label="Select optional project for agent">
+                  disabled={disabled} aria-label="Select optional project for agent">
                   <option value="">Optional project</option>
                   {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
                 </select>
               </label>
               <label className="agent-task-picker">
-                <span>Task</span>
-                <select value={selectedTaskId} onChange={(event) => onTaskChange(event.target.value)}
-                  disabled={disabled || tasksLoading} aria-label="Select optional existing task for agent">
-                  <option value="">{tasksLoading ? "Loading tasks…" : "Optional existing task"}</option>
-                  {tasks.map((task) => <option key={task.id} value={task.id}>{task.title} · {task.status}</option>)}
-                </select>
-              </label>
-              <label className="agent-task-picker">
                 <span>Agent</span>
                 <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
-                  disabled={disabled || tasksLoading} aria-label="Select agent definition">
+                  disabled={disabled} aria-label="Select agent definition">
                   <option value="general">General</option>
                   {agentDefinitions.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
                 </select>
@@ -744,18 +730,18 @@ function ChatComposer({
           {mode === "agent" ? (
             <div className="agent-submit-actions">
               <button type="button" className="neo-button secondary" onClick={onPlanAgentTasks}
-                disabled={disabled || planningTasks || !value.trim()}>Plan Tasks</button>
+                disabled={disabled || planningTasks || !value.trim()}>Plan</button>
               <NeoButton type="submit" className="agent-run-button"
-                disabled={disabled || (!selectedTaskId && !value.trim())}
-                aria-label="Run Agent" title="Run Agent">Run Agent</NeoButton>
+                disabled={disabled || !value.trim()}
+                aria-label="Start Agent" title="Start Agent">Start</NeoButton>
             </div>
           ) : (
             <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
               aria-label="Send message" title="Send message">{"\u2191"}</NeoButton>
           )}
         </form>
-        {mode === "agent" && !selectedTaskId && !value.trim() && !tasksLoading ? (
-          <div className="agent-mode-hint">Select an existing task or enter an objective.</div>
+        {mode === "agent" && !value.trim() ? (
+          <div className="agent-mode-hint">Give Neo an objective or paste a plan. It will create and complete its own checklist.</div>
         ) : null}
         {mode === "agent" && agentMessage ? <div className="agent-mode-message">{agentMessage}</div> : null}
         {mode === "agent" ? (
@@ -764,28 +750,28 @@ function ChatComposer({
             type="button"
             onClick={() => setShowCodingWorkbench(true)}
           >
-            <span>ADVANCED</span>
-            Open coding workbench
-            <small>repository, patch, test &amp; checkpoint controls</small>
+            <span>ADVANCED WORKBENCH</span>
+            Plan, patch, test, and checkpoint a coding change
+            <small>explicit approvals remain required</small>
           </button>
         ) : null}
         {mode === "agent" && proposedPlan ? (
           <div className="agent-plan-preview">
             <div className="agent-plan-preview-head">
-              <div><strong>{proposedPlan.parent_task.title}</strong><span>{proposedPlan.subtasks.length} proposed subtasks</span></div>
+              <div><strong>{proposedPlan.parent_task.title}</strong><span>{proposedPlan.subtasks.length} checklist items</span></div>
               <button type="button" onClick={onCancelPlan}>Cancel</button>
             </div>
             <ol>{proposedPlan.subtasks.map((task) => <li key={task.order}><strong>{task.title}</strong><span>{task.description}</span></li>)}</ol>
             <div className="agent-plan-actions">
-              <button type="button" onClick={onCreatePlannedTasks} disabled={disabled}>Create Tasks</button>
-              <button type="button" onClick={onCreatePlannedTasksAndRun} disabled={disabled}>Create Tasks &amp; Run Agent</button>
+              <button type="button" onClick={onCreatePlannedTasks} disabled={disabled}>Save checklist</button>
+              <button type="button" onClick={onCreatePlannedTasksAndRun} disabled={disabled}>Start with checklist</button>
             </div>
           </div>
         ) : null}
         {mode === "agent" && createdTasks?.length ? (
           <div className="agent-created-tasks">
-            <strong>Created {createdTasks.length} tasks</strong>
-            <span>{createdTasks[0].title} with {Math.max(0, createdTasks.length - 1)} subtasks.</span>
+            <strong>Checklist created</strong>
+            <span>{createdTasks[0].title} with {Math.max(0, createdTasks.length - 1)} steps.</span>
           </div>
         ) : null}
         {mode === "agent" && agentRun ? (
@@ -798,7 +784,6 @@ function ChatComposer({
               <span className={`agent-status ${agentRun.run.status}`}>{formatAgentStatus(agentRun.run.status)}</span>
             </div>
             <div className="chat-agent-actions">
-              <button type="button" onClick={() => onOpenAgentTask(agentRun.run.task_id)}>Open Task</button>
               <button type="button" onClick={onToggleAgentDetails}>{agentDetailsOpen ? "Hide Run" : "Open Run"}</button>
               {agentRun.run.status === "completed" ? (
                 <button type="button" onClick={onSaveAgentRun} disabled={disabled}>Save Output to Note</button>
@@ -830,12 +815,12 @@ function ChatComposer({
       </div>
       {mode === "agent" && showCodingWorkbench ? (
         <Modal
-          title="Coding Workbench"
+          title="Advanced Coding Workbench"
           onClose={() => setShowCodingWorkbench(false)}
           wide
           className="coding-workbench-modal"
         >
-          <CodingAgent initialTaskId={selectedTaskId} initialProjectId={selectedProjectId} />
+          <CodingAgent initialProjectId={selectedProjectId} />
         </Modal>
       ) : null}
     </div>
@@ -1336,7 +1321,6 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
       description: "Projects, work tracking, and portability.",
       items: [
         ["Projects", "Organize related chats and work", onOpenProjects],
-        ["Tasks", "Plan and track execution", onOpenTasks],
         ["Bundles", "Export and import sanitized archives", onOpenBundles],
         ["GitHub", "Issue and pull request workflow", onOpenGitHub],
       ],

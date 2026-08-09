@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 import shutil
 import sqlite3
 import uuid
@@ -31,6 +32,7 @@ from app.db.session import initialize_database
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 PASSWORD_ITERATIONS = 390_000
 PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
+PROFILE_SESSION_TOKEN_BYTES = 32
 
 
 def _root() -> Path:
@@ -81,6 +83,20 @@ def initialize_profile_registry() -> None:
             """
         )
         _apply_profile_owner_migration(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS profile_sessions (
+                token_hash TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL REFERENCES account_profiles(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_profile_sessions_profile_id "
+            "ON profile_sessions(profile_id)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -321,6 +337,77 @@ def authenticate(profile_id: str, password: str) -> dict:
     return public_profile(row)
 
 
+def _session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_profile_session(profile: dict) -> str:
+    """Create a durable opaque session for a password-protected local profile."""
+    if profile.get("is_guest"):
+        raise ValueError("guest_sessions_are_not_durable")
+    initialize_profile_registry()
+    token = secrets.token_urlsafe(PROFILE_SESSION_TOKEN_BYTES)
+    conn = _connect_registry()
+    try:
+        conn.execute(
+            "INSERT INTO profile_sessions (token_hash, profile_id) VALUES (?, ?)",
+            (_session_token_hash(token), str(profile["id"])),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return token
+
+
+def profile_for_session(token: str) -> dict | None:
+    if not token or len(token) > 512:
+        return None
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        row = conn.execute(
+            """
+            SELECT p.id, p.owner_id, p.username, p.avatar_data
+            FROM profile_sessions AS s
+            JOIN account_profiles AS p ON p.id = s.profile_id
+            WHERE s.token_hash = ?
+            """,
+            (_session_token_hash(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE profile_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?",
+            (_session_token_hash(token),),
+        )
+        conn.commit()
+        return public_profile(row)
+    finally:
+        conn.close()
+
+
+def revoke_profile_session(token: str) -> None:
+    if not token:
+        return
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        conn.execute("DELETE FROM profile_sessions WHERE token_hash = ?", (_session_token_hash(token),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def revoke_profile_sessions(profile_id: str) -> None:
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        conn.execute("DELETE FROM profile_sessions WHERE profile_id = ?", (profile_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def create_guest() -> dict:
     profile_id = f"guest-{uuid.uuid4()}"
     owner_id = str(uuid.uuid4())
@@ -426,6 +513,7 @@ def delete_profile(profile_id: str, password: str) -> dict:
                     detail="Neo could not remove this profile's local data. The account was kept.",
                 ) from exc
 
+        conn.execute("DELETE FROM profile_sessions WHERE profile_id = ?", (row["id"],))
         conn.execute("DELETE FROM account_profiles WHERE id = ?", (row["id"],))
         conn.commit()
         return public_profile(row)

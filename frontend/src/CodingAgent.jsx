@@ -14,11 +14,10 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
   const [objective, setObjective] = useState("");
   const [projectId, setProjectId] = useState(initialProjectId || "");
   const [repoId, setRepoId] = useState("");
-  const [taskId, setTaskId] = useState(initialTaskId || "");
+  const [taskId] = useState(initialTaskId || "");
   const [maxIterations, setMaxIterations] = useState(3);
   const [projects, setProjects] = useState([]);
   const [repos, setRepos] = useState([]);
-  const [tasks, setTasks] = useState([]);
   const [agentDefinitions, setAgentDefinitions] = useState([]);
   const [agentDefinitionId, setAgentDefinitionId] = useState("general");
   const [runs, setRuns] = useState([]);
@@ -39,18 +38,15 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
     } catch (error) { setMessage(`Export error: ${error.message}`); } finally { setBusy(false); }
   }
 
-  useEffect(() => { setTaskId(initialTaskId || ""); }, [initialTaskId]);
   useEffect(() => { setProjectId(initialProjectId || ""); }, [initialProjectId]);
   useEffect(() => {
     Promise.all([
       api.projectsList({ limit: 100 }),
-      api.tasksList({ limit: 100 }),
       api.reposList({ limit: 100 }),
       api.agentDefinitions(false),
     ])
-      .then(([projectData, taskData, repoData, agentData]) => {
+      .then(([projectData, repoData, agentData]) => {
         setProjects(projectData.projects || []);
-        setTasks(taskData.tasks || []);
         setRepos(repoData.repos || []);
         setAgentDefinitions(agentData.definitions || []);
       })
@@ -66,10 +62,6 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
   const availableRepos = useMemo(
     () => repos.filter((repo) => !projectId || repo.project_id === projectId),
     [repos, projectId],
-  );
-  const availableTasks = useMemo(
-    () => tasks.filter((task) => !projectId || task.project_id === projectId),
-    [tasks, projectId],
   );
   const action = detail?.current_action_request;
 
@@ -137,19 +129,18 @@ export default function CodingAgent({ initialTaskId = "", initialProjectId = "",
   }
 
   return <section className={`coding-agent ${compact ? "compact" : ""}`}>
-    <div className="coding-agent-title"><div><h3>Multi-Step Coding Agent</h3><p>Objective → reviewed patch → approved test → approved local checkpoint.</p></div>{detail && !TERMINAL.has(detail.coding_run.status) ? <button type="button" disabled={busy} onClick={() => perform(() => api.cancelCodingRun(detail.coding_run.id), "Coding run cancelled; logs were preserved.")}>Cancel Run</button> : null}</div>
+    <div className="coding-agent-title"><div><span className="coding-kicker">Advanced mode</span><h3>Engineering workbench</h3><p>Neo drafts the checklist, proposes a patch, then waits for your approval at every protected step.</p></div>{detail && !TERMINAL.has(detail.coding_run.status) ? <button type="button" disabled={busy} onClick={() => perform(() => api.cancelCodingRun(detail.coding_run.id), "Coding run cancelled; logs were preserved.")}>Cancel run</button> : null}</div>
     {runs.length ? <div className="coding-agent-runs"><strong>Coding Runs</strong>{runs.map((run) => <button type="button" key={run.id} onClick={() => perform(() => api.codingRun(run.id))}><span>{run.objective}</span><small>{label(run.status)} · iteration {run.current_iteration}/{run.max_iterations}</small></button>)}</div> : null}
     {!detail ? <form className="coding-agent-form" onSubmit={start}>
-      <textarea value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="Implement, fix, or refactor…" rows={compact ? 2 : 3} />
+      <label className="coding-objective"><span>Objective</span><textarea value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="Describe the feature, fix, or plan you want Neo to complete…" rows={compact ? 2 : 4} /></label>
       <div className="coding-agent-selectors">
         <label>Project<select value={projectId} onChange={(event) => { setProjectId(event.target.value); setRepoId(""); }}><option value="">Optional project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
         <label>Repository<select value={repoId} onChange={(event) => setRepoId(event.target.value)}><option value="">Select or infer sole repo</option>{availableRepos.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label>Task<select value={taskId} onChange={(event) => setTaskId(event.target.value)}><option value="">Create planned task</option>{availableTasks.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
         <label>Agent<select value={agentDefinitionId} onChange={(event) => setAgentDefinitionId(event.target.value)}><option value="general">General</option>{agentDefinitions.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name} · {label(agent.agent_type)}</option>)}</select></label>
         <label>Max iterations<input type="number" min="1" max="10" value={maxIterations} onChange={(event) => setMaxIterations(event.target.value)} /></label>
       </div>
-      <button className="neo-button" type="submit" disabled={busy}>Run Coding Agent</button>
-      <p className="task-help">Starting creates a plan and proposal only. Apply, tests, and checkpoints each require approval.</p>
+      <button className="neo-button" type="submit" disabled={busy}>Create checklist &amp; start</button>
+      <p className="task-help">Neo creates its own checklist from your objective. Applying patches, running tests, and creating checkpoints always require approval.</p>
     </form> : <div className="coding-agent-detail">
       <div className="coding-agent-status"><strong>{detail.coding_run.objective}</strong><span className={`agent-status ${detail.coding_run.status}`}>{label(detail.coding_run.status)}</span><small>Iteration {detail.coding_run.current_iteration}/{detail.coding_run.max_iterations}</small></div>
       {detail.agentic ? <details open className="agent-run-card agentic-coding-summary">
