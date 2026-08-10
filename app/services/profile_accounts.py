@@ -17,6 +17,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 
 from fastapi import HTTPException
 
@@ -33,6 +34,8 @@ MAX_AVATAR_BYTES = 2 * 1024 * 1024
 PASSWORD_ITERATIONS = 390_000
 PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
 PROFILE_SESSION_TOKEN_BYTES = 32
+_registry_initialization_lock = Lock()
+_initialized_registry_paths: set[Path] = set()
 
 
 def _root() -> Path:
@@ -56,50 +59,60 @@ def _connect_registry() -> sqlite3.Connection:
     conn = sqlite3.connect(_registry_path(), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
 def initialize_profile_registry() -> None:
-    conn = _connect_registry()
-    try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS account_profiles (
-                id TEXT PRIMARY KEY,
-                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                password_salt TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                avatar_data TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    # Session resolution runs for every authenticated API request.  SQLite DDL is
+    # a write operation, so repeatedly running setup here can contend with the
+    # actual chat and memory writes.  Initialise each registry database once per
+    # process instead.
+    registry_path = _registry_path()
+    with _registry_initialization_lock:
+        if registry_path in _initialized_registry_paths:
+            return
+        conn = _connect_registry()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_profiles (
+                    id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_salt TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    avatar_data TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS profile_registry_migrations (
-                revision TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profile_registry_migrations (
+                    revision TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        _apply_profile_owner_migration(conn)
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS profile_sessions (
-                token_hash TEXT PRIMARY KEY,
-                profile_id TEXT NOT NULL REFERENCES account_profiles(id) ON DELETE CASCADE,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            _apply_profile_owner_migration(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profile_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL REFERENCES account_profiles(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS ix_profile_sessions_profile_id "
-            "ON profile_sessions(profile_id)"
-        )
-        conn.commit()
-    finally:
-        conn.close()
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_profile_sessions_profile_id "
+                "ON profile_sessions(profile_id)"
+            )
+            conn.commit()
+            _initialized_registry_paths.add(registry_path)
+        finally:
+            conn.close()
 
 
 def _profile_owner_check_sql(column: str = "owner_id") -> str:
@@ -374,14 +387,7 @@ def profile_for_session(token: str) -> dict | None:
             """,
             (_session_token_hash(token),),
         ).fetchone()
-        if row is None:
-            return None
-        conn.execute(
-            "UPDATE profile_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?",
-            (_session_token_hash(token),),
-        )
-        conn.commit()
-        return public_profile(row)
+        return public_profile(row) if row is not None else None
     finally:
         conn.close()
 
@@ -543,6 +549,7 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
         from app.services.git.store import initialize_git_tables
         from app.services.github import initialize_github_tables
         from app.services.llm_registry.store import initialize_llm_registry_tables
+        from app.services.llm_registry.service import LLMRegistryService
         from app.services.lsp import initialize_lsp_tables
         from app.services.memory_retrieval import initialize_memory_retrieval_tables
         from app.services.notes.store import initialize_notes_tables
@@ -587,3 +594,7 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
             initialize_continuity_tables,
         ):
             initializer()
+        # Seed/reconcile provider defaults while profile storage is being
+        # initialized, before any chat worker opens a transaction. Runtime
+        # provider selection is deliberately read-only.
+        LLMRegistryService(initialize=False).ensure_defaults()

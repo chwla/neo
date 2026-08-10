@@ -19,7 +19,7 @@ from app.services.memory.model_schema import ModelProposalResponse
 
 MAX_PROVIDER_RESPONSE_BYTES = 128_000
 MAX_SANITIZED_ERROR_CHARS = 240
-PROMPT_VERSION = "memory-extraction-schema-v1"
+PROMPT_VERSION = "memory-extraction-schema-v2-fields"
 SYNTHETIC_PROBE_INPUT = "PHASE4_OLLAMA_SYNTHETIC_CAPABILITY_PROBE"
 
 OLLAMA_SYSTEM_INSTRUCTION = """You are a bounded memory proposal extractor.
@@ -28,7 +28,24 @@ markdown, analysis, or reasoning. Use only user-authored spans supplied in the i
 Never invent owner IDs, canonical memory IDs, lifecycle state, database operations,
 or trusted predecessor IDs. A proposal is untrusted until deterministic grounding,
 taxonomy, sensitivity, and correction policy accept it. Exclude temporary,
-hypothetical, third-party, assistant-authored, and unsupported claims."""
+hypothetical, third-party, assistant-authored, and unsupported claims.
+
+Every memory belongs to exactly one of six fields. Choose memory_type_hint so the
+fact lands in the right field:
+- Profile: who the user is. Use "identity" for name, age, origin, location;
+  "education" for schools and degrees; "employment" for employer and role.
+- Preferences: how the user wants things done. Use "preference".
+- Goals: what the user intends to achieve. Use "goal".
+- Projects: a named body of work the user is building. Use "project".
+- Events: something that happened or is scheduled. Use "event", or "activity"
+  for what the user is currently doing.
+- Miscellaneous: any other durable fact. Use "knowledge".
+
+Use "project" only for a fact that is specific to the named piece of work being
+discussed, because those memories are readable only inside that project. A fact
+that stays true for the user everywhere is never a "project" fact: preferences,
+goals, profile details and events belong to their own field even when the user
+happens to mention them while working on a project."""
 
 OLLAMA_JSON_MODE_CONTRACT = """JSON mode response contract:
 Return exactly these top-level keys: schema_version, assertions, retractions, exclusions.

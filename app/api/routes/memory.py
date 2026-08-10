@@ -24,7 +24,7 @@ from app.services.memory.contracts import (
     TargetRevision,
 )
 from app.services.memory.factory import MemoryRuntime, build_memory_runtime
-from app.services.memory.taxonomy import Cardinality, MemoryType
+from app.services.memory.taxonomy import Cardinality, MemoryType, memory_field_for_type
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 Database = Annotated[Session, Depends(get_db)]
@@ -105,24 +105,34 @@ def _scope_response(row: MemoryRecord | MemoryCandidate | None, db: Session) -> 
     return {"type": "project", "project_id": row.scope_project_id, "project_name": project.name if project else "Deleted project"}
 
 
-def _default_slot(payload: MemoryCreateRequest, mutation_id: str) -> str:
+def _default_slot(payload: MemoryCreateRequest, mutation_id: str) -> tuple[str, Cardinality]:
+    """Choose a slot and the cardinality that slot requires.
+
+    The two must agree or normalization rejects the write as an invalid command.
+    Identity and preference slots are always single-valued, so a caller that
+    omits ``cardinality`` and takes the additive default would otherwise be
+    refused.  Their manual slot is also made unique per memory: a shared slot is
+    exclusive, so a second manually added profile fact would silently replace
+    the first instead of being stored alongside it.
+    """
+
     entity_id = uuid5(NAMESPACE_URL, f"neo.memory.manual:{mutation_id}")
     memory_type = payload.memory_type.value
     domain = payload.domain
     if payload.memory_type is MemoryType.PREFERENCE:
-        return f"preference:{domain}:manual"
+        return f"preference:{domain}:manual_{entity_id.hex}", Cardinality.EXCLUSIVE
     if payload.memory_type is MemoryType.IDENTITY:
-        return "identity:global:manual_fact"
+        return f"identity:global:manual_{entity_id.hex}", Cardinality.EXCLUSIVE
     if payload.memory_type is MemoryType.GOAL:
         if payload.cardinality is Cardinality.EXCLUSIVE:
-            return f"goal:{domain}:current_primary_goal"
-        return f"goal:{domain}:independent:{entity_id}"
+            return f"goal:{domain}:current_primary_goal", Cardinality.EXCLUSIVE
+        return f"goal:{domain}:independent:{entity_id}", Cardinality.ADDITIVE
     if payload.cardinality is Cardinality.EXCLUSIVE and payload.memory_type in {
         MemoryType.EDUCATION,
         MemoryType.EMPLOYMENT,
     }:
-        return f"{memory_type}:{domain}:current_status"
-    return f"{memory_type}:{domain}:item:{entity_id}"
+        return f"{memory_type}:{domain}:current_status", Cardinality.EXCLUSIVE
+    return f"{memory_type}:{domain}:item:{entity_id}", Cardinality.ADDITIVE
 
 
 def _records(runtime: MemoryRuntime, db: Session) -> list[dict[str, Any]]:
@@ -145,6 +155,9 @@ def _records(runtime: MemoryRuntime, db: Session) -> list[dict[str, Any]]:
             {
                 "id": str(item.memory_id),
                 "memory_type": item.memory_type.value,
+                # The user-facing grouping. Derived from the storage type so it
+                # stays consistent for records written before fields existed.
+                "field": memory_field_for_type(item.memory_type).value,
                 "domain": item.domain_key,
                 "scope": _scope_response(row, db),
                 "slot": item.slot_key,
@@ -199,14 +212,19 @@ def create_memory(payload: MemoryCreateRequest, request: Request, db: Database) 
     runtime = _runtime(request)
     mutation_id = payload.client_mutation_id or str(uuid4())
     scope_type, project_id, _project_name = _scope(payload, db)
-    slot = payload.slot or _default_slot(payload, mutation_id)
+    # An explicit slot from an API caller keeps the cardinality it was sent with;
+    # a server-chosen slot brings the cardinality that slot demands.
+    if payload.slot:
+        slot, cardinality = payload.slot, payload.cardinality
+    else:
+        slot, cardinality = _default_slot(payload, mutation_id)
     result = runtime.adapter.create(
         _context(runtime, f"create:{mutation_id}"),
         StructuredMemoryInput(
             memory_type=payload.memory_type,
             domain_key=payload.domain,
             slot_key=slot,
-            cardinality=payload.cardinality,
+            cardinality=cardinality,
             canonical_value=payload.value,
             display_text=payload.display_text,
             scope_type=scope_type,

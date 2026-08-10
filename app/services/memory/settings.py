@@ -71,7 +71,13 @@ class MemorySettings:
             live_extraction_model_enabled=settings.memory_extraction_enabled,
             extraction_provider=provider,
             extraction_endpoint=endpoint,
-            extraction_model=settings.memory_extraction_model or settings.chat_model,
+            # ``default_model`` is the configured model in both deployments: it
+            # mirrors ``chat_model`` when only that is set, and it is what
+            # NEO_DEFAULT_MODEL populates in the container.  Falling back to
+            # ``chat_model`` alone left the image pointing extraction at the
+            # uninstalled built-in default and every model-backed extraction
+            # failed with "model not found".
+            extraction_model=settings.memory_extraction_model or settings.default_model,
             extraction_connect_timeout_seconds=settings.memory_extraction_connect_timeout_seconds,
             extraction_response_timeout_seconds=settings.memory_extraction_response_timeout_seconds,
             extraction_warmup_timeout_seconds=settings.memory_extraction_warmup_timeout_seconds,
@@ -79,7 +85,7 @@ class MemorySettings:
             extraction_max_input_chars=settings.memory_extraction_max_input_chars,
             lexical_recall_enabled=True,
             secure_prompt_enabled=True,
-            direct_answer_reads_enabled=True,
+            direct_answer_reads_enabled=settings.memory_direct_answer_enabled,
             research_recall_enabled=True,
             recall_max_records=settings.memory_recall_max_records,
             recall_max_chars=settings.memory_recall_max_chars,

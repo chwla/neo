@@ -178,6 +178,19 @@ def upgrade_memory(engine: Engine, *, owner_id: str, database_identity: str) -> 
     """Upgrade a profile database to the current explicit memory revision."""
 
     owner = canonical_uuid(owner_id)
+    # This function is reached when every chat generation and memory operation
+    # starts.  Most calls are already on the current revision, so do not take a
+    # SQLite write reservation merely to inspect a stable schema.  In particular,
+    # ``BEGIN IMMEDIATE`` here used to contend with the chat worker's own status
+    # writes and could make an otherwise ordinary message fail with "database is
+    # locked".  Only a genuinely pending migration needs writer serialization.
+    with engine.connect() as connection:
+        if _memory_schema_is_current(
+            connection,
+            owner_id=owner,
+            database_identity=database_identity,
+        ):
+            return MEMORY_CURRENT_REVISION
     # Schema inspection and DDL must be one writer-serialized unit.  A deferred
     # SQLite transaction lets two first requests both observe a missing ledger,
     # then one fails creating it with ``table ... already exists``.  Taking the
@@ -196,6 +209,42 @@ def upgrade_memory(engine: Engine, *, owner_id: str, database_identity: str) -> 
             connection.rollback()
             raise
     return MEMORY_CURRENT_REVISION
+
+
+def _memory_schema_is_current(
+    connection,
+    *,
+    owner_id: str,
+    database_identity: str,
+) -> bool:
+    """Return whether the canonical memory schema is already ready to use.
+
+    The check intentionally performs no DDL or mutation.  If any invariant is
+    invalid, retain the existing migration error behaviour instead of silently
+    accepting a database bound to another profile.
+    """
+
+    existing = _existing_table_names(connection)
+    if MEMORY_LEDGER_TABLE not in existing:
+        return False
+    applied = _read_applied(connection)
+    _validate_applied_revisions(applied)
+    _validate_managed_tables(connection, applied=applied)
+    if {
+        MEMORY_REVISION_0001,
+        MEMORY_REVISION_0002,
+        MEMORY_REVISION_0003,
+    } - set(applied):
+        return False
+    rows = connection.execute(select(MemoryOwnerBinding.__table__)).mappings().all()
+    if not rows:
+        return False
+    if len(rows) != 1:
+        raise MemoryMigrationError("memory_database_has_multiple_owner_bindings")
+    row = rows[0]
+    if row["owner_id"] != owner_id or row["database_identity"] != database_identity:
+        raise MemoryMigrationError("memory_owner_database_binding_mismatch")
+    return True
 
 
 def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identity: str) -> None:

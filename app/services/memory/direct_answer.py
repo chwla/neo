@@ -36,6 +36,8 @@ class DirectMemoryAnswerService:
             return None
         lowered = query.casefold()
         broad = bool(re.search(r"\b(?:what do you remember|show|list|summari[sz]e)\b", lowered))
+        if not broad and not self._is_personal_memory_question(lowered):
+            return None
         memory_type = self._memory_type(lowered)
         if memory_type is None and not broad:
             return None
@@ -63,16 +65,40 @@ class DirectMemoryAnswerService:
         return "From your saved memories:\n" + "\n".join(f"- {value}" for value in values)
 
     @staticmethod
+    def _is_personal_memory_question(text: str) -> bool:
+        """Keep durable first-person assertions out of the recall-only path."""
+
+        if not re.search(r"\b(?:my|mine|me|i)\b", text):
+            return False
+        return bool(
+            text.rstrip().endswith("?")
+            or re.match(
+                r"^\s*(?:what(?:'s|s)?|who(?:'s|s)?|where(?:'s|s)?|which|how|"
+                r"do|did|have|can|could|would|"
+                r"tell me|remind me)\b",
+                text,
+            )
+        )
+
+    @staticmethod
     def _memory_type(text: str) -> MemoryType | None:
-        if re.search(r"\bgoals?|trying to|want to create\b", text):
+        # Each alternation is grouped so the word boundaries apply to every
+        # branch.  Without the group, "age" matched inside words such as
+        # "manage" and mis-routed unrelated questions to identity recall.
+        if re.search(r"\b(?:goals?|trying to|want to create)\b", text):
             return MemoryType.GOAL
-        if re.search(r"\bpreferences?|prefer|like\b", text):
+        if re.search(r"\b(?:preferences?|prefer|like)\b", text):
             return MemoryType.PREFERENCE
-        if re.search(r"\bprojects?|working on\b", text):
+        if re.search(r"\b(?:projects?|working on)\b", text):
             return MemoryType.PROJECT
-        if re.search(r"\bname|age|live|location|city|country|occupation|education\b", text):
+        if re.search(
+            r"\b(?:name|age|old|born|live|living|location|city|country|from|"
+            r"hometown|occupation|profession|job|employer|company|work|"
+            r"education|study|studied)\b",
+            text,
+        ):
             return MemoryType.IDENTITY
-        if re.search(r"\bactivities?|doing currently\b", text):
+        if re.search(r"\b(?:activities?|doing currently)\b", text):
             return MemoryType.ACTIVITY
         return None
 
@@ -80,8 +106,14 @@ class DirectMemoryAnswerService:
     def _trusted_slots(text: str) -> tuple[str, ...]:
         if re.search(r"\bname\b", text):
             return ("identity:global:name",)
-        if re.search(r"\bage\b", text):
+        if re.search(r"\b(?:age|old|born)\b", text):
             return ("identity:global:age",)
-        if re.search(r"\b(?:live|location|city)\b", text):
+        if re.search(r"\b(?:hometown|from)\b", text):
+            return ("identity:global:origin",)
+        if re.search(r"\b(?:employer|company|work|job)\b", text):
+            return ("identity:global:employer", "identity:global:occupation")
+        if re.search(r"\b(?:occupation|profession)\b", text):
+            return ("identity:global:occupation", "identity:global:employer")
+        if re.search(r"\b(?:live|living|location|city)\b", text):
             return ("identity:global:current_location",)
         return ()

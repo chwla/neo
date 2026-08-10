@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     memory_recall_max_records: int = Field(default=5, ge=1, le=20)
     memory_recall_max_chars: int = Field(default=2400, ge=200, le=12000)
     memory_recall_min_score: float = Field(default=0.18, ge=0, le=1)
+    # When enabled, a recognised personal question is answered from memory with a
+    # fixed sentence and the model never runs.  It is off by default so recalled
+    # memory is given to the model as context and the model decides whether to
+    # use it, search, or answer from its own knowledge.
+    memory_direct_answer_enabled: bool = Field(default=False)
     memory_worker_lease_seconds: int = Field(default=60, ge=5, le=3600)
     memory_worker_batch_size: int = Field(default=25, ge=1, le=500)
     memory_worker_poll_seconds: float = Field(default=2, ge=0.1, le=300)

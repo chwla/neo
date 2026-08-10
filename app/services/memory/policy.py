@@ -133,9 +133,17 @@ _PROHIBITED_PATTERNS = (
 )
 
 _SENSITIVE_PATTERNS = (
+    # The "i have" branch is a health disclosure, so it must be followed by
+    # something medical.  Left bare it matched every ordinary "I have ..."
+    # sentence ("I have two cats"), classifying routine facts as sensitive and
+    # silently refusing to store them without an explicit request.
     re.compile(
-        r"\b(?:my diagnosis|i (?:have|was diagnosed with)|my medical condition|"
-        r"my medication|i take medication|my mental health)\b",
+        r"\b(?:my diagnosis|i was diagnosed with|my medical condition|"
+        r"my medication|i take medication|my mental health|"
+        r"i have\s+(?:\w+\s+){0,3}?(?:cancer|diabetes|asthma|adhd|autism|"
+        r"depression|anxiety|epilepsy|hiv|aids|migraines?|arthritis|"
+        r"disorder|disease|syndrome|condition|illness|allerg(?:y|ies)|"
+        r"\w+(?:itis|osis|emia|opathy)))\b",
         re.IGNORECASE,
     ),
     re.compile(

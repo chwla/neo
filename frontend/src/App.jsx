@@ -670,7 +670,7 @@ function ChatComposer({
         <div className="chat-mode-row">
           <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
             <button type="button" role="tab" aria-selected={mode === "chatbot"}
-              className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chatbot</button>
+              className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
             <button type="button" role="tab" aria-selected={mode === "agent"}
               className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
           </div>

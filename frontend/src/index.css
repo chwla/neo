@@ -197,7 +197,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .message-actions button { border: 0; background: transparent; padding: 0; color: #3b3b3b; font: 9px "JetBrains Mono", monospace; letter-spacing: .04em; }
 .message-actions button:hover { color: var(--neo-green); }
 .thinking-panel { margin: 12px 0 0; border-left: 1px solid rgba(57,255,20,.2); background: transparent; padding: 4px 0 4px 12px; color: #666; font-size: 13px; line-height: 1.6; }
-.pending-message-header { display: flex; align-items: center; justify-content: flex-end; color: var(--neo-green); font: 10px "JetBrains Mono", monospace; }
+.pending-message-header { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--neo-green); font: 10px "JetBrains Mono", monospace; }
 .pending-message-bubble::before { animation: neo-pulse 1.5s ease infinite; }
 .message-edit-form { display: grid; gap: 8px; }
 .message-edit-form textarea { min-height: 90px; padding: 10px; resize: vertical; }
@@ -306,6 +306,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .memory-card, .memory-item { border:1px solid var(--neo-line); background:var(--neo-panel); padding:14px; }
 .memory-card.is-open { border-left:2px solid var(--neo-green); }
 .memory-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.memory-add-toggle { margin-left:auto; }
+.memory-add-card { margin-bottom:16px; border-left:2px solid var(--neo-green); }
 .memory-card-summary { margin:0; color:var(--neo-text); font-size:13px; line-height:1.5; }
 .memory-provenance { display:flex; flex-wrap:wrap; gap:10px; margin-top:7px; color:#606060; font:10px "JetBrains Mono", monospace; }
 .memory-card-edit { border:1px solid var(--neo-line-bright); background:transparent; padding:5px 8px; color:#aaa; font:10px "JetBrains Mono", monospace; }

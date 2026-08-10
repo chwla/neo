@@ -45,12 +45,50 @@ from app.services.memory.versions import (
 MAX_LEXICAL_CANDIDATES = 500
 TOKENIZER_VERSION = "neo.memory.tokenizer.unicode-word.v1"
 
+# Who the user is cannot be found by matching words.  "who am i" shares no token
+# with "Soham Chawla", and "how old am i" shares none with "21", so a purely
+# lexical gate hides exactly the facts a personal assistant most needs.  These
+# few durable, single-valued identity slots are therefore always eligible for
+# recall; they still compete on score, so a genuinely relevant memory outranks
+# them.  The set is deliberately small and enumerated rather than derived, so
+# ordinary memories can never enter through it.
+CORE_IDENTITY_SLOT_KEYS = frozenset(
+    {
+        "identity:global:name",
+        "identity:global:age",
+        "identity:global:origin",
+        "identity:global:employer",
+        "identity:global:occupation",
+        "identity:global:current_location",
+    }
+)
+
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _stem(token: str) -> str:
+    """Fold the common English inflections onto a shared stem.
+
+    Recall matched raw tokens, so "podcasting" did not match a memory that said
+    "podcasts" and a scoped question returned nothing at all.  This is a
+    deliberately small rule set rather than a full stemmer: it only has to make
+    the singular, plural and participle forms of the same word agree, and any
+    word it does not recognise is left exactly as written.
+    """
+
+    if len(token) <= 4 or token.isdigit():
+        return token
+    if token.endswith("ies"):
+        return token[:-3] + "y"
+    for suffix in ("ing", "ed", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
 
 
 def lexical_tokens(value: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", value).casefold()
-    return tuple(_TOKEN_RE.findall(normalized))
+    return tuple(_stem(token) for token in _TOKEN_RE.findall(normalized))
 
 
 def _aware(value: datetime) -> datetime:
@@ -583,8 +621,16 @@ class CanonicalRecallService:
             # Freshness, confidence, importance and pinning may rank a relevant
             # record, but they may never manufacture relevance. A scoped query
             # with no lexical overlap therefore fails closed even when a record
-            # is recent, important, or pinned.
-            if context.mode is RecallMode.SCOPED_LEXICAL and lexical <= 0 and semantic <= 0:
+            # is recent, important, or pinned.  The one enumerated exception is
+            # a core identity slot, which is who the user is rather than a topic
+            # they mentioned and so cannot be reached by word overlap.
+            core_identity = view.slot_key in CORE_IDENTITY_SLOT_KEYS
+            if (
+                context.mode is RecallMode.SCOPED_LEXICAL
+                and lexical <= 0
+                and semantic <= 0
+                and not core_identity
+            ):
                 below += 1
                 continue
             score = self._breakdown(
@@ -598,6 +644,7 @@ class CanonicalRecallService:
             if (
                 context.mode is RecallMode.SCOPED_LEXICAL
                 and score.total < self.minimum_scoped_score
+                and not core_identity
             ):
                 below += 1
                 continue

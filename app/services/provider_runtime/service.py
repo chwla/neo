@@ -22,8 +22,9 @@ from app.services.provider_runtime.usage import summary
 
 
 class ProviderRuntimeService:
-    def __init__(self) -> None:
-        store.initialize_provider_runtime_tables()
+    def __init__(self, *, initialize: bool = True) -> None:
+        if initialize:
+            store.initialize_provider_runtime_tables()
 
     def status(self) -> dict:
         return {
@@ -163,7 +164,7 @@ class ProviderRuntimeService:
         if raw.get("fallback_provider_id") and raw.get("fallback_model_id"):
             from app.services.llm_registry.service import LLMRegistryService
 
-            registry = LLMRegistryService()
+            registry = LLMRegistryService(initialize=False)
             provider, model = (
                 registry.get_provider(raw["fallback_provider_id"]),
                 registry.get_model(raw["fallback_model_id"]),

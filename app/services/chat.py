@@ -121,7 +121,12 @@ class NeoChatService:
             else memory_enabled
         )
         self.memory_prompt_enabled = self.memory_enabled
-        self.memory_direct_answers_enabled = self.memory_enabled
+        # Answering straight from memory bypasses the model entirely, so the
+        # model never gets to weigh saved memory against search or its own
+        # knowledge.  Recall still runs and is injected as context either way.
+        self.memory_direct_answers_enabled = bool(
+            self.memory_enabled and self.settings.memory_direct_answer_enabled
+        )
         self.memory_orchestrator = memory_orchestrator
         self.memory_context_factory = memory_context_factory
         self.last_memory_selection: RecallPromptSelection | None = None
@@ -578,6 +583,13 @@ class NeoChatService:
         )
         self._finalize_memory_usage()
         self._persist_memory_diagnostic(user_message.id)
+        # Release this session's write reservation before calling the provider.
+        # The provider runtime records its request audit through a separate
+        # SQLite connection to the same database, so holding the transaction
+        # open here makes that second writer wait out its busy timeout and fail
+        # the whole turn with "database is locked".  The streaming path performs
+        # the same commit for the same reason.
+        self.db.commit()
 
         result = None
         finish_reason = None
@@ -1204,6 +1216,12 @@ class NeoChatService:
         )
         self._finalize_memory_usage()
         self._persist_memory_diagnostic(routing_message_id)
+        # The provider runtime records request/stream audit state through its
+        # own short-lived SQLite connection.  Persisting the diagnostic above
+        # performs a flush and therefore opens a write transaction on this
+        # session; leaving it open while starting the provider makes the second
+        # writer wait until SQLite's timeout and fail with "database is locked".
+        self.db.commit()
 
         raw_reply = ""
         streamed_thinking = ""
@@ -1520,6 +1538,7 @@ class NeoChatService:
             chat_id=chat_id,
             message_id=message_id,
             history=history,
+            transport=transport,
             mode=mode,
         )
         context = self.memory_runtime.context(
@@ -1572,15 +1591,44 @@ class NeoChatService:
         if not self.memory_enabled or self.memory_runtime is None:
             return {"status": "disabled"}
         database = self.db.get_bind()
+        # Snapshot every ORM-backed input while the chat session is still owned
+        # by this worker. Background threads must never dereference ChatMessage
+        # instances while the parent session is committing/closing.
+        try:
+            request = self._extraction_request(
+                prompt,
+                chat_id=chat_id,
+                message_id=message_id,
+                history=history,
+                transport=transport,
+                mode=ExtractionMode.POST_TURN_AUTOMATIC,
+            )
+            context = self.memory_runtime.context(
+                source_kind=SourceKind.CHAT_MESSAGE,
+                source_id="chat",
+                request_id=request.request_id,
+                session_id=request.session_id,
+                conversation_id=request.conversation_id,
+                message_id=request.message_id,
+            )
+        except Exception as exc:
+            _ROUTING_LOG.exception(
+                "memory_extraction_snapshot_failed chat_id=%s message_id=%s",
+                chat_id,
+                message_id,
+            )
+            self._record_memory_extraction_failure(
+                database,
+                assistant_message_id=assistant_message_id,
+                error=exc,
+            )
+            return {"status": "failed", "source_message_id": str(message_id)}
 
         def run() -> None:
             try:
-                result = self._run_extraction(
-                    prompt,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    history=history,
-                    mode=ExtractionMode.POST_TURN_AUTOMATIC,
+                result = self.memory_runtime.extraction.process(
+                    request,
+                    context,
                     transport=transport,
                 )
                 self._record_memory_extraction_result(
@@ -1588,8 +1636,25 @@ class NeoChatService:
                     assistant_message_id=assistant_message_id,
                     result=result,
                 )
-            except Exception:
-                return
+            except Exception as exc:
+                _ROUTING_LOG.exception(
+                    "memory_extraction_failed chat_id=%s message_id=%s",
+                    chat_id,
+                    message_id,
+                )
+                try:
+                    self._record_memory_extraction_failure(
+                        database,
+                        assistant_message_id=assistant_message_id,
+                        error=exc,
+                    )
+                except Exception:
+                    _ROUTING_LOG.exception(
+                        "memory_extraction_failure_status_write_failed "
+                        "chat_id=%s message_id=%s",
+                        chat_id,
+                        message_id,
+                    )
 
         Thread(
             target=run,
@@ -1635,6 +1700,32 @@ class NeoChatService:
                 )
                 current = (message.thinking or "").strip()
                 message.thinking = f"{current}\n\n{summary}" if current else summary
+
+    @staticmethod
+    def _record_memory_extraction_failure(
+        database,
+        *,
+        assistant_message_id: int,
+        error: Exception,
+    ) -> None:
+        """Persist a safe failure code so extraction never remains 'scheduled'."""
+
+        factory = sessionmaker(bind=database, autoflush=False, expire_on_commit=False, future=True)
+        with factory.begin() as database_session:
+            message = database_session.get(ChatMessage, assistant_message_id)
+            if message is None or message.role != "assistant":
+                return
+            try:
+                metadata = json.loads(message.metadata_json or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata["memory_extraction"] = {
+                "status": "failed",
+                "error_code": type(error).__name__,
+            }
+            message.metadata_json = json.dumps(metadata, sort_keys=True)
 
     def _direct_reply(self, prompt: str) -> str | None:
         if not self.memory_enabled or not self.memory_direct_answers_enabled:

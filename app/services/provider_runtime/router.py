@@ -15,7 +15,11 @@ _ROUTES = {
 
 def select(request_type: str, route_name: str | None = None) -> dict:
     name = route_name or _ROUTES.get(request_type, "chat")
-    service = LLMRegistryService()
+    # Provider selection is a hot, read-only path. Profile setup creates and
+    # seeds the registry before chats are allowed to run; doing DDL/default
+    # reconciliation here can collide with the chat worker's active SQLite
+    # transaction and fail the request with "database is locked".
+    service = LLMRegistryService(initialize=False)
     route = service.resolve(name)
     provider, model = (
         service.get_provider(route["provider_id"]),

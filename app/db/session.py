@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from threading import Lock
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -32,15 +33,25 @@ def configure_sqlite(created_engine) -> None:
 
 engine = build_engine()
 _sessionmakers: dict[str, sessionmaker] = {}
+# Chat generation workers, memory extraction threads, and API requests all
+# resolve session factories concurrently.  Without this lock two threads can
+# each build an engine for the same URL; the loser is dropped without
+# ``dispose()``, leaking its SQLite connection pool for the process lifetime.
+_sessionmakers_lock = Lock()
 
 
 def _sessionmaker_for_current_database() -> sessionmaker:
     url = active_profile_database_url.get() or get_settings().database_url
-    if url == str(engine.url):
-        return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-    if url not in _sessionmakers:
+    cached = _sessionmakers.get(url)
+    if cached is not None:
+        return cached
+    with _sessionmakers_lock:
+        existing = _sessionmakers.get(url)
+        if existing is not None:
+            return existing
+        bind = engine if url == str(engine.url) else build_engine(url)
         _sessionmakers[url] = sessionmaker(
-            bind=build_engine(url), autoflush=False, autocommit=False, future=True
+            bind=bind, autoflush=False, autocommit=False, future=True
         )
     return _sessionmakers[url]
 

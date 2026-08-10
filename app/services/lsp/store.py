@@ -13,8 +13,10 @@ from app.core.config import get_settings
 def _c():
     u = get_settings().database_url
     c = sqlite3.connect(
-        u.replace("sqlite:///", "", 1) if u.startswith("sqlite:///") else "neo_memory.db"
+        u.replace("sqlite:///", "", 1) if u.startswith("sqlite:///") else "neo_memory.db",
+        timeout=30,
     )
+    c.execute("PRAGMA busy_timeout=30000")
     c.row_factory = sqlite3.Row
     return c
 

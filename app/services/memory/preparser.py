@@ -30,8 +30,12 @@ _IMPLICIT_GOAL_CORRECTION = re.compile(
     r"I\s+want\s+(?:to\s+)?(?P<new>[^.]+)\.?$",
     re.IGNORECASE,
 )
+# Both halves are confined to a single statement.  Allowing ".+?" let this
+# grammar swallow a whole multi-sentence correction by latching onto an
+# unrelated "with" several sentences later, producing a retraction target that
+# matched no stored memory, so the correction was dropped instead of applied.
 _EXPLICIT_REPLACE = re.compile(
-    r"^Correction:\s*replace\s+(?P<old>.+?)\s+with\s+(?P<new>.+?)\.?$",
+    r"^Correction:\s*replace\s+(?P<old>[^.?!]+?)\s+with\s+(?P<new>[^.?!]+?)\.?$",
     re.IGNORECASE,
 )
 _PREFERENCE_CORRECTION = re.compile(
@@ -58,6 +62,54 @@ _CURRENT_LOCATION = re.compile(
     r"(?P<value>[^.?!]+)\.?$",
     re.IGNORECASE,
 )
+_DIRECT_NAME = re.compile(
+    r"^(?:My\s+(?:full\s+)?name\s+is|I\s+am\s+called)\s+(?P<value>[^.?!]+)\.?$",
+    re.IGNORECASE,
+)
+_DIRECT_AGE = re.compile(
+    r"^I\s*(?:'m|’m|\s+am)\s+(?P<value>\d{1,3})\s+years?\s+old\.?$",
+    re.IGNORECASE,
+)
+_DIRECT_ORIGIN = re.compile(
+    r"^I\s*(?:'m|’m|\s+am)\s+from\s+(?P<value>[^.?!]+)\.?$",
+    re.IGNORECASE,
+)
+# The optional ``-ly`` adverb keeps ordinary hedges such as "currently" (and the
+# common misspellings of it) from defeating an otherwise unambiguous statement.
+_DIRECT_EMPLOYER = re.compile(
+    r"^I\s+(?:[a-z]+ly\s+)?work\s+(?:at|for)\s+(?P<value>[^.?!]+)\.?$",
+    re.IGNORECASE,
+)
+_DIRECT_OCCUPATION = re.compile(
+    r"^I\s+(?:[a-z]+ly\s+)?work\s+as\s+(?:an?\s+)?(?P<value>[^.?!]+)\.?$",
+    re.IGNORECASE,
+)
+# Ordered so the more specific "work as" wins over the "work at/for" employer
+# rule, and evaluated per sentence so one message may carry several facts.
+_IDENTITY_SENTENCE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_DIRECT_NAME, "name"),
+    (_DIRECT_AGE, "age"),
+    (_DIRECT_ORIGIN, "origin"),
+    (_DIRECT_OCCUPATION, "occupation"),
+    (_DIRECT_EMPLOYER, "employer"),
+    (_CURRENT_LOCATION, "current_location"),
+)
+_SENTENCE = re.compile(r"[^.!?]+[.!?]*")
+# A named body of work.  Kept deterministic because the projects field controls
+# which chats can read the memory, so it must not depend on a model's judgement.
+_DIRECT_PROJECT = re.compile(
+    r"^(?:I\s+(?:am|'m)\s+(?:currently\s+)?(?:working\s+on|building)|"
+    r"My\s+project\s+is(?:\s+called)?|"
+    r"This\s+project\s+is(?:\s+called)?)\s+"
+    r"(?:a\s+project\s+called\s+|the\s+project\s+called\s+|a\s+project\s+named\s+)?"
+    # "I am working on my fitness" is a personal pursuit, not a named piece of
+    # work.  Possessive phrasing is ambiguous, so it is left to the model rather
+    # than forced into the projects field, which controls who can read it.
+    r"(?!(?:my|our|your|his|her|their|the)\s)"
+    r"(?P<value>[^.?!]+)\.?$",
+    re.IGNORECASE,
+)
+
 _TRANSIENT_LOCATION = re.compile(
     r"^I\s+am\s+(?:visiting\s+[^.?!]+|in\s+[^.?!]+\s+right\s+now)\.?$",
     re.IGNORECASE,
@@ -278,6 +330,65 @@ def _compound_corrections(request: ExtractionRequest) -> PreparseResult | None:
     )
 
 
+def _identity_facts(request: ExtractionRequest, text: str) -> PreparseResult | None:
+    """Extract durable first-person identity facts sentence by sentence.
+
+    The single-statement grammars above use ``fullmatch``, so an ordinary message
+    that states several facts at once ("i am 21 years old. I am from new delhi.
+    i currently work at ey gds") matched nothing and fell through to the model.
+    Each fact here is unambiguous on its own, so parse them directly and give
+    each one a stable ``identity:global:<slot>`` home that recall can target.
+    Every sentence must be recognised; a single unknown sentence hands the whole
+    message back to the model path rather than silently keeping only part of it.
+    """
+
+    base = request.user_message.find(text)
+    if base < 0:
+        return None
+    sentences = [
+        (match.start(), match.group())
+        for match in _SENTENCE.finditer(text)
+        if match.group().strip()
+    ]
+    if len(sentences) < 2:
+        return None
+
+    assertions: list[PreparsedSpan] = []
+    for offset, raw_sentence in sentences:
+        stripped = raw_sentence.strip()
+        lead = offset + (len(raw_sentence) - len(raw_sentence.lstrip()))
+        for pattern, slot in _IDENTITY_SENTENCE_RULES:
+            match = pattern.fullmatch(stripped)
+            if match is None:
+                continue
+            start, end = match.span("value")
+            absolute = base + lead
+            assertions.append(
+                PreparsedSpan(
+                    message_id=request.message_id,
+                    start=absolute + start,
+                    end=absolute + end,
+                    quoted_text=request.user_message[absolute + start : absolute + end],
+                    normalized_value=_clean(match.group("value")),
+                    memory_type_hint=MemoryType.IDENTITY.value,
+                    domain_hint="global",
+                    slot_hint=slot,
+                )
+            )
+            break
+        else:
+            return None
+
+    if not assertions:
+        return None
+    return PreparseResult(
+        kind=PreparseKind.DETERMINISTIC_ASSERTION,
+        reason="durable_first_person_identity_facts",
+        assertions=tuple(assertions),
+        deterministic=True,
+    )
+
+
 def preparse(request: ExtractionRequest) -> PreparseResult:
     text = request.user_message.strip()
     if _THIRD_PARTY.search(text):
@@ -364,6 +475,47 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
                     memory_type=MemoryType.IDENTITY,
                     domain="global",
                     slot="current_location",
+                ),
+            ),
+            deterministic=True,
+        )
+
+    for pattern, slot in _IDENTITY_SENTENCE_RULES:
+        single_fact = pattern.fullmatch(text)
+        if single_fact is None:
+            continue
+        return PreparseResult(
+            kind=PreparseKind.DETERMINISTIC_ASSERTION,
+            reason=f"durable_first_person_{slot}",
+            assertions=(
+                _span(
+                    request,
+                    single_fact,
+                    "value",
+                    memory_type=MemoryType.IDENTITY,
+                    domain="global",
+                    slot=slot,
+                ),
+            ),
+            deterministic=True,
+        )
+
+    identity_facts = _identity_facts(request, text)
+    if identity_facts is not None:
+        return identity_facts
+
+    direct_project = _DIRECT_PROJECT.fullmatch(text)
+    if direct_project:
+        return PreparseResult(
+            kind=PreparseKind.DETERMINISTIC_ASSERTION,
+            reason="durable_named_project",
+            assertions=(
+                _span(
+                    request,
+                    direct_project,
+                    "value",
+                    memory_type=MemoryType.PROJECT,
+                    domain="global",
                 ),
             ),
             deterministic=True,

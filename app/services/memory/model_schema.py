@@ -143,6 +143,49 @@ def _schema_error_codes(exc: ValidationError) -> tuple[str, ...]:
     )
 
 
+def _repair_proposal_ids(material: object) -> object:
+    """Give every proposal a unique local id without discarding the batch.
+
+    ``proposal_id`` is only a correlation handle used to match a proposal to its
+    grounding decision and candidate record; it carries no authority and is never
+    trusted for identity.  Models routinely reuse a single id (commonly echoing
+    the message id) for every proposal in a turn, which failed the uniqueness
+    validator and threw away an entire turn's worth of otherwise valid facts.
+    Re-key only the duplicates and blanks, so ids the model did supply uniquely
+    keep working as exclusion references.  Assertion/retraction pairing uses
+    ``correction_group``, which is deliberately left untouched.
+    """
+
+    if not isinstance(material, dict):
+        return material
+    seen: set[str] = set()
+    repaired = dict(material)
+    for section in ("assertions", "retractions"):
+        items = repaired.get(section)
+        if not isinstance(items, list):
+            continue
+        rebuilt = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                rebuilt.append(item)
+                continue
+            raw_id = item.get("proposal_id")
+            identifier = raw_id.strip() if isinstance(raw_id, str) else ""
+            if not identifier or identifier in seen:
+                base = identifier or section[:-1]
+                candidate = f"{base}-{section[0]}{index}"
+                suffix = 0
+                while candidate in seen:
+                    suffix += 1
+                    candidate = f"{base}-{section[0]}{index}-{suffix}"
+                identifier = candidate[:160]
+                item = {**item, "proposal_id": identifier}
+            seen.add(identifier)
+            rebuilt.append(item)
+        repaired[section] = rebuilt
+    return repaired
+
+
 def parse_model_output(raw: str | bytes | dict) -> ModelProposalResponse:
     if isinstance(raw, bytes):
         if len(raw) > MAX_MODEL_OUTPUT_BYTES:
@@ -167,6 +210,7 @@ def parse_model_output(raw: str | bytes | dict) -> ModelProposalResponse:
             material = json.loads(material)
         except (TypeError, ValueError):
             raise ModelOutputError("malformed_model_json") from None
+    material = _repair_proposal_ids(material)
     try:
         return ModelProposalResponse.model_validate(material)
     except ValidationError as exc:

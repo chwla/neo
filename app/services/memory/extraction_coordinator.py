@@ -949,6 +949,12 @@ class MemoryExtractionCoordinator:
             cardinality=proposal.cardinality,
             canonical_value=proposal.canonical_value,
             display_text=proposal.display_text,
+            # Carry the resolved scope through to the stored record.  Omitting
+            # it silently fell back to the "global" default, so a project
+            # memory was written as readable from every chat even though the
+            # candidate row had already recorded the correct project scope.
+            scope_type=proposal.scope_type,
+            scope_project_id=proposal.scope_project_id,
             sensitivity=proposal.sensitivity,
             confidence=proposal.confidence,
             importance=proposal.importance,

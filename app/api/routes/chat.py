@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from threading import Lock, Thread
@@ -39,6 +40,7 @@ PROCESS_WORKER_ID = str(uuid.uuid4())
 GENERATION_LEASE_SECONDS = 120
 _GENERATION_THREADS: set[str] = set()
 _GENERATION_THREADS_LOCK = Lock()
+_GENERATION_LOG = logging.getLogger("neo.chat.generation")
 
 
 def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMClient:
@@ -50,7 +52,18 @@ def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMCl
 
 def _chat_failure(exc: Exception, config_id: str | None = None) -> tuple[int, str, str]:
     if isinstance(exc, (requests.RequestException, ProviderConfigurationError)):
-        config = LLMRegistry().get(config_id)
+        # This runs on the failure path, so it must never raise on its own.
+        # ``get`` rejects an unknown or disabled configuration, which would
+        # otherwise mask the real provider error and leave the generation row
+        # stuck without a terminal status.
+        try:
+            config = LLMRegistry().get(config_id)
+        except Exception:
+            return (
+                502,
+                "Provider failed",
+                f"The provider did not finish the response. Details: {exc}",
+            )
         return (
             502,
             "Provider failed",
@@ -523,10 +536,15 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
     with profile_database(profile["id"], guest=bool(profile.get("is_guest"))):
         db = SessionLocal()
         lease_token = str(uuid.uuid4())
+        # Captured as a plain value so the failure handler below never has to
+        # touch an ORM instance that may be unbound (the claim itself raised),
+        # rebound to ``None``, or expired by the rollback it performs first.
+        llm_id: str | None = None
         try:
             generation = _claim_generation(db, generation_id, lease_token)
             if generation is None:
                 return
+            llm_id = generation.llm_id
             chat = db.get(Chat, generation.chat_id)
             if chat is None or chat.archived:
                 _update_leased_generation(
@@ -626,7 +644,12 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 )
         except Exception as exc:
             db.rollback()
-            _status_code, status_detail, error = _chat_failure(exc, generation.llm_id)
+            _GENERATION_LOG.exception(
+                "Chat generation %s failed for profile %s",
+                generation_id,
+                profile.get("id"),
+            )
+            _status_code, status_detail, error = _chat_failure(exc, llm_id)
             _update_leased_generation(
                 db,
                 generation_id,

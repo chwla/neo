@@ -31,6 +31,7 @@ from app.services.memory.model_schema import (
 from app.services.memory.policy import classify_sensitivity
 from app.services.memory.taxonomy import (
     Cardinality,
+    InitialDomain,
     MemoryType,
     TaxonomyError,
     build_slot,
@@ -123,7 +124,20 @@ def _domain_for(proposal: ModelAssertionProposal, source_text: str) -> str:
         and not global_style
     ):
         explicit_domain = "video_creation"
-    return resolve_domain(source_text, explicit_domain=explicit_domain).key
+    try:
+        return resolve_domain(source_text, explicit_domain=explicit_domain).key
+    except TaxonomyError:
+        pass
+    # The model named a domain that is neither a known alias nor a phrase present
+    # in the message (for example "demographics" for "i am 21 years old").  A
+    # domain is only an organising facet, so fall back to what the message itself
+    # supports rather than discarding a durable fact over the label.  The value
+    # still has to be grounded in the user's own words; that check is enforced
+    # separately by ``ground_assertion``.
+    try:
+        return resolve_domain(source_text).key
+    except TaxonomyError:
+        return InitialDomain.GLOBAL.value
 
 
 def _slot_for(

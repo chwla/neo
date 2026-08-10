@@ -15,7 +15,7 @@ def check(
     if not route and provider_id and model_id:
         from app.services.llm_registry.service import LLMRegistryService
 
-        service = LLMRegistryService()
+        service = LLMRegistryService(initialize=False)
         provider, model = service.get_provider(provider_id), service.get_model(model_id)
         if not provider or not model:
             raise LookupError("Configured provider/model was not found.")

@@ -27,6 +27,51 @@ class MemoryType(StrEnum):
     KNOWLEDGE = "knowledge"
 
 
+class MemoryField(StrEnum):
+    """The six fields memory is organised into for the user.
+
+    ``MemoryType`` stays the finer-grained storage type because it determines
+    slot identity and cardinality.  A field is the durable user-facing grouping
+    those types roll up into, so the set of fields can stay stable and small
+    while types remain free to describe a fact precisely.
+    """
+
+    PROFILE = "profile"
+    PREFERENCES = "preferences"
+    GOALS = "goals"
+    PROJECTS = "projects"
+    EVENTS = "events"
+    MISCELLANEOUS = "miscellaneous"
+
+
+MEMORY_FIELD_FOR_TYPE: dict[MemoryType, MemoryField] = {
+    MemoryType.IDENTITY: MemoryField.PROFILE,
+    MemoryType.EDUCATION: MemoryField.PROFILE,
+    MemoryType.EMPLOYMENT: MemoryField.PROFILE,
+    MemoryType.PREFERENCE: MemoryField.PREFERENCES,
+    MemoryType.GOAL: MemoryField.GOALS,
+    MemoryType.PROJECT: MemoryField.PROJECTS,
+    MemoryType.EVENT: MemoryField.EVENTS,
+    MemoryType.ACTIVITY: MemoryField.EVENTS,
+    MemoryType.KNOWLEDGE: MemoryField.MISCELLANEOUS,
+}
+
+# Only the projects field is bound to a single project.  Every other field is
+# personal to the user rather than to a body of work, so it stays readable from
+# any chat, inside or outside a project.
+PROJECT_SCOPED_FIELD = MemoryField.PROJECTS
+
+
+def memory_field_for_type(memory_type: MemoryType | str) -> MemoryField:
+    """Return the user-facing field a storage type belongs to."""
+
+    try:
+        resolved = MemoryType(memory_type)
+    except ValueError:
+        return MemoryField.MISCELLANEOUS
+    return MEMORY_FIELD_FOR_TYPE.get(resolved, MemoryField.MISCELLANEOUS)
+
+
 class InitialDomain(StrEnum):
     GLOBAL = "global"
     COMMUNICATION = "communication"
