@@ -22,6 +22,7 @@ from app.services.memory.extraction import (
 )
 from app.services.memory.extraction_coordinator import MemoryExtractionCoordinator
 from app.services.memory.local_crypto import LocalMemoryCrypto
+from app.services.memory.runtime import build_semantic_duplicate_finder
 from app.services.memory.settings import MemorySettings
 from app.services.profile_accounts import (
     database_identity_for_profile,
@@ -208,5 +209,16 @@ def build_memory_runtime(profile: dict) -> MemoryRuntime:
             ollama_request_mode=request_mode,
             ollama_capabilities=capabilities,
         )
-    extraction = MemoryExtractionCoordinator(chat, model=model)
+    extraction = MemoryExtractionCoordinator(
+        chat,
+        model=model,
+        duplicate_finder=build_semantic_duplicate_finder(
+            database_url=database_url,
+            owner_id=owner_id,
+            database_identity=database_identity,
+            flags=settings,
+            settings=get_settings(),
+        ),
+        duplicate_threshold=get_settings().memory_semantic_duplicate_threshold,
+    )
     return MemoryRuntime(profile, settings, coordinator, generic, chat, extraction)

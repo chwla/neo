@@ -23,6 +23,7 @@ from app.services.memory.extraction_contracts import (
     GroundingDecision,
     NormalizedExtractionCandidate,
 )
+from app.services.memory.grounding import value_supported
 from app.services.memory.model_schema import (
     DurabilityHint,
     ModelAssertionProposal,
@@ -67,7 +68,12 @@ def _fold(value: object) -> str:
     if not isinstance(value, str):
         value = json.dumps(value, ensure_ascii=False, sort_keys=True)
     normalized = unicodedata.normalize("NFKC", value).casefold()
-    words = re.findall(r"[\w]+", normalized, flags=re.UNICODE)
+    # Underscores separate words rather than joining them.  A model asked for a
+    # canonical value answers "improve at urban sketching" on one turn and
+    # "improve_at_urban_sketching" on the next; with ``\w`` the slug folds to a
+    # single opaque token, so the two never compare equal and the same fact is
+    # stored twice and can never be found again by a delete.
+    words = re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
     if words and words[0] in {"make", "making"}:
         words[0] = "create"
     # Global-style assertions are often stored as an imperative ("answer me
@@ -82,6 +88,14 @@ def _fold(value: object) -> str:
     if words[:1] == ["with"]:
         words.pop(0)
     return " ".join(words)
+
+
+def _contains_phrase(haystack: str, needle: str) -> bool:
+    """Return whether the folded needle appears in the haystack on word bounds."""
+
+    if not needle or not haystack:
+        return False
+    return f" {needle} " in f" {haystack} "
 
 
 def _candidate_uuid(request: ExtractionRequest, proposal_id: str) -> UUID:
@@ -140,6 +154,52 @@ def _domain_for(proposal: ModelAssertionProposal, source_text: str) -> str:
         return InitialDomain.GLOBAL.value
 
 
+_SLOT_TOKEN_ALPHABET = "abcdefghijklmnop"
+
+
+def _entity_token(value: UUID) -> str:
+    """Encode an identifier as letters only, for embedding inside a slot key.
+
+    A raw hex identifier occasionally contains a Luhn-valid run of 13 or more
+    digits, which the repository's content guard reads as a card number and
+    refuses to persist.  Mapping each nibble onto a letter keeps the token
+    unique and stable while making that false positive impossible.
+    """
+
+    return "".join(_SLOT_TOKEN_ALPHABET[int(char, 16)] for char in value.hex)
+
+
+def _value_entity_id(
+    proposal: ModelAssertionProposal,
+    *,
+    domain: str,
+    candidate_id: UUID,
+) -> UUID:
+    """Derive an additive slot's entity component from the remembered value.
+
+    An additive slot needs a component saying *which* item it holds.  That
+    component used to be the candidate id, which mixes in the message id, so the
+    same fact restated on a later turn produced a different slot, therefore a
+    different canonical fingerprint, and therefore a brand new record instead of
+    a reconfirmation of the existing one.  Every re-extraction of an earlier
+    message — including the ones triggered by merely asking what is remembered —
+    appended another copy, and a delete could then never resolve to a single
+    target.
+
+    Deriving the entity from the folded value makes the slot stable across
+    turns: one fact, one slot.  A value that folds to nothing keeps the
+    candidate id, so unrelated empty values cannot collapse onto one slot.
+    """
+
+    material = _fold(proposal.typed_value) or _fold(proposal.display_hint)
+    if not material:
+        return candidate_id
+    return uuid5(
+        NAMESPACE_URL,
+        f"neo.memory.entity:{proposal.memory_type_hint.value}:{domain}:{material}",
+    )
+
+
 def _slot_for(
     proposal: ModelAssertionProposal,
     *,
@@ -148,6 +208,7 @@ def _slot_for(
     source_text: str,
 ) -> tuple[str, Cardinality]:
     memory_type = proposal.memory_type_hint
+    entity_id = _value_entity_id(proposal, domain=domain, candidate_id=candidate_id)
     if memory_type is MemoryType.GOAL:
         role = proposal.slot_hint
         if role in {"current_primary_goal", "primary_output"}:
@@ -155,7 +216,7 @@ def _slot_for(
         elif proposal.correction_group and not proposal.additive:
             return_tuple = build_slot(memory_type, domain, goal_role="current_primary_goal")
         else:
-            return_tuple = build_slot(memory_type, domain, entity_id=candidate_id)
+            return_tuple = build_slot(memory_type, domain, entity_id=entity_id)
         return return_tuple.slot_key, return_tuple.cardinality
     if memory_type is MemoryType.PREFERENCE:
         dimension = proposal.slot_hint
@@ -165,14 +226,59 @@ def _slot_for(
             dimension = "practice_advice_format"
         if not dimension and domain == "learning":
             dimension = "learning_format"
+        if not dimension:
+            # Preference slots are single-valued and must name a dimension, but
+            # only these few dimensions were ever recognised.  Every other
+            # preference failed slot construction with
+            # "preference_dimension_required" and was dropped into review
+            # instead of being stored.  Fall back to a dimension derived from
+            # this candidate so an unrecognised preference is still saved, and
+            # so two different preferences do not overwrite one another by
+            # sharing a single generic slot.  The dimension is derived from the
+            # value rather than the message, so restating the same preference
+            # reconfirms the existing record instead of adding another copy.
+            dimension = f"item_{_entity_token(entity_id)}"
         definition = build_slot(memory_type, domain, preference_dimension=dimension)
         return definition.slot_key, definition.cardinality
     if memory_type is MemoryType.IDENTITY:
         identity_key = proposal.slot_hint or "profile_fact"
         definition = build_slot(memory_type, "global", identity_key=identity_key)
         return definition.slot_key, definition.cardinality
-    definition = build_slot(memory_type, domain, entity_id=candidate_id)
+    definition = build_slot(memory_type, domain, entity_id=entity_id)
     return definition.slot_key, definition.cardinality
+
+
+def _display_text_for(
+    request: ExtractionRequest,
+    proposal: ModelAssertionProposal,
+    evidence_text: str,
+) -> str:
+    """Return display text the user actually said, preferring the model's phrasing.
+
+    A proposal is accepted when either its value or its display hint is grounded,
+    but only the display hint was ever stored — so a model that grounded the
+    value and then summarised it in its own words ("preference for structured
+    sketching practice sessions", where the user never wrote "structured") had
+    that summary saved.  The invention is what the memory list shows the user and
+    what the vector index embeds, so two recordings of one preference compared at
+    0.62 instead of the 0.98 their real values share, and the duplicate stood.
+
+    Fall back to the grounded value whenever the hint is not itself supported.
+    """
+
+    authorized = request.authorized_user_messages()
+    cited = " ".join(
+        dict.fromkeys(
+            authorized[item.message_id]
+            for item in proposal.source_spans
+            if item.message_id in authorized
+        )
+    )
+    if value_supported(proposal.display_hint, evidence_text, cited):
+        return proposal.display_hint
+    if isinstance(proposal.typed_value, str) and proposal.typed_value.strip():
+        return proposal.typed_value
+    return proposal.display_hint
 
 
 def build_candidate(
@@ -240,7 +346,7 @@ def build_candidate(
         slot_key=slot_key,
         cardinality=cardinality,
         canonical_value=proposal.typed_value,
-        display_text=proposal.display_hint,
+        display_text=_display_text_for(request, proposal, evidence_text),
         sensitivity=sensitivity or Sensitivity.NORMAL,
         confidence=proposal.confidence,
         importance=7,
@@ -288,6 +394,30 @@ class DeterministicCorrectionResolver:
                 CorrectionResolutionKind.RECONFIRM,
                 "exact_active_duplicate",
                 (duplicates[0],),
+            )
+
+        # The same fact can arrive under a different slot than the one it was
+        # first stored in: a model names an unrecognised preference dimension
+        # ("urban_sketching_practice" one turn, "practice_session_format" the
+        # next), so a slot comparison alone sees two unrelated memories and
+        # stores the identical sentence twice.  Meaning, not slot, decides
+        # whether this is already remembered, and the existing record stays
+        # authoritative so a delete still has one target to find.
+        restated = tuple(
+            item
+            for item in records
+            if item.subject_key == proposal.subject_key
+            and item.memory_type is proposal.memory_type
+            and item.domain_key == proposal.domain_key
+            and item.scope_type == proposal.scope_type
+            and item.scope_project_id == proposal.scope_project_id
+            and _fold(item.canonical_value) == _fold(proposal.canonical_value)
+        )
+        if restated:
+            return CorrectionResolution(
+                CorrectionResolutionKind.RECONFIRM,
+                "restated_active_value",
+                (restated[0],),
             )
 
         if candidate.explicit_type_change:
@@ -361,22 +491,53 @@ class DeterministicCorrectionResolver:
         proposal: ModelRetractionProposal,
         records: tuple[CanonicalMemorySnapshot, ...],
     ) -> CorrectionResolution:
-        matches = tuple(
+        hint = _fold(proposal.old_value_hint)
+        eligible = tuple(
             item
             for item in records
-            if _fold(item.canonical_value) == _fold(proposal.old_value_hint)
-            and (proposal.memory_type_hint is None or item.memory_type is proposal.memory_type_hint)
+            if (proposal.memory_type_hint is None or item.memory_type is proposal.memory_type_hint)
             and (proposal.domain_hint is None or item.domain_key == proposal.domain_hint)
             and (proposal.slot_hint is None or item.slot_key.endswith(f":{proposal.slot_hint}"))
         )
-        if len(matches) == 1:
+        # A user names the value inside a sentence — "forget that I use a
+        # fineliner pen and a pocket watercolor set for urban sketching" — while
+        # the stored value is the bare phrase.  Requiring the two to be equal
+        # meant an explicit delete resolved to no target at all and silently
+        # became a review item, so accept a stored value the user's own words
+        # fully contain.  Containment only ever runs in this direction: the user
+        # must name at least the whole stored value, so naming one word of a
+        # remembered phrase can never delete it.
+        exact = tuple(item for item in eligible if _fold(item.canonical_value) == hint)
+        matches = exact or tuple(
+            item for item in eligible if _contains_phrase(hint, _fold(item.canonical_value))
+        )
+        if not matches:
             return CorrectionResolution(
-                CorrectionResolutionKind.RETRACT,
-                "exact_retraction_target",
-                matches,
+                CorrectionResolutionKind.NEEDS_REVIEW,
+                "retraction_target_ambiguous_or_missing",
             )
+        # Every match is a value the user's own sentence spelled out, so all of
+        # them were named and all of them go.  "Forget that I use a fineliner pen
+        # and a pocket watercolor set" must clear both when they were stored as
+        # two facts, and must clear every copy when one fact was stored twice.
+        #
+        # Only maximal matches are kept: when one stored value sits inside
+        # another that also matched, the shorter one is a fragment of the longer
+        # rather than a separate fact the user named, and retracting it would
+        # reach past what was asked.
+        maximal = tuple(
+            item
+            for item in matches
+            if not any(
+                other is not item
+                and _contains_phrase(
+                    _fold(other.canonical_value), _fold(item.canonical_value)
+                )
+                for other in matches
+            )
+        )
         return CorrectionResolution(
-            CorrectionResolutionKind.NEEDS_REVIEW,
-            "retraction_target_ambiguous_or_missing",
-            matches,
+            CorrectionResolutionKind.RETRACT,
+            "exact_retraction_target",
+            maximal or matches,
         )

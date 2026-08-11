@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 from dataclasses import replace
 from time import monotonic
@@ -28,6 +29,7 @@ from app.services.memory.contracts import (
     TargetRevision,
 )
 from app.services.memory.correction_resolver import (
+    CorrectionResolution,
     CorrectionResolutionKind,
     DeterministicCorrectionResolver,
     build_candidate,
@@ -72,6 +74,8 @@ from app.services.memory.policy import (
     extraction_timing_policy,
 )
 from app.services.memory.preparser import deterministic_model_response, preparse
+
+_SEMANTIC_LOG = logging.getLogger("neo.memory.extraction_coordinator")
 
 EXTRACTOR_VERSION = "memory-extractor-v1"
 REDACTED_SENSITIVE_ASSERTION = "[sensitive memory]"
@@ -183,11 +187,63 @@ class MemoryExtractionCoordinator:
         model: ExtractionModel | None = None,
         resolver: DeterministicCorrectionResolver | None = None,
         diagnostics: ExtractionDiagnosticSink | None = None,
+        duplicate_finder=None,
+        duplicate_threshold: float = 0.93,
     ) -> None:
         self.adapter = adapter
         self.model = model
         self.resolver = resolver or DeterministicCorrectionResolver()
         self.diagnostics = diagnostics or InMemoryExtractionDiagnostics()
+        self.duplicate_finder = duplicate_finder
+        self.duplicate_threshold = duplicate_threshold
+
+    def _semantic_duplicate(
+        self,
+        candidate: NormalizedExtractionCandidate,
+        records: tuple[CanonicalMemorySnapshot, ...],
+    ) -> CanonicalMemorySnapshot | None:
+        """Find an active record already meaning what this candidate says.
+
+        Only reached once the deterministic resolver has decided this is a new
+        fact, so this is the last check before a second copy of one memory is
+        written.  Comparison is restricted to records the candidate could
+        legitimately be a restatement of — same subject, type, domain and scope
+        — so a semantic near-miss can never reach across categories.
+        """
+
+        if self.duplicate_finder is None:
+            return None
+        proposal = candidate.proposal
+        comparable = {
+            item.memory_id: item
+            for item in records
+            if item.subject_key == proposal.subject_key
+            and item.memory_type is proposal.memory_type
+            and item.domain_key == proposal.domain_key
+            and item.scope_type == proposal.scope_type
+            and item.scope_project_id == proposal.scope_project_id
+        }
+        _SEMANTIC_LOG.warning(
+            "semantic_duplicate_entry comparable=%d finder=%s type=%s domain=%s",
+            len(comparable),
+            self.duplicate_finder is not None,
+            proposal.memory_type.value,
+            proposal.domain_key,
+        )
+        if not comparable:
+            return None
+        try:
+            match = self.duplicate_finder(
+                proposal.display_text,
+                frozenset(comparable),
+                threshold=self.duplicate_threshold,
+            )
+        except Exception:
+            # Not noticing a duplicate leaves the store exactly as it was before
+            # this check existed; letting the failure escape would lose a memory
+            # the user asked to keep.
+            return None
+        return comparable.get(match) if match is not None else None
 
     def process(
         self,
@@ -266,6 +322,11 @@ class MemoryExtractionCoordinator:
         response, capped_count = self._apply_candidate_cap(request, response)
         if capped_count:
             model_summary = model_summary.model_copy(update={"capped_count": capped_count})
+        response, nested_count = self._drop_nested_assertions(response)
+        if nested_count:
+            reason_codes_nested = ("nested_assertion_dropped",)
+        else:
+            reason_codes_nested = ()
 
         grounding: list[GroundingDecision] = []
         grounded_retractions: list[ModelRetractionProposal] = []
@@ -285,7 +346,7 @@ class MemoryExtractionCoordinator:
 
         built: list[NormalizedExtractionCandidate] = []
         decisions: list[ExtractionCandidateDecision] = []
-        reason_codes: list[str] = []
+        reason_codes: list[str] = list(reason_codes_nested)
         for item in response.assertions:
             candidate = build_candidate(
                 request,
@@ -352,6 +413,31 @@ class MemoryExtractionCoordinator:
                 continue
 
             resolution = self.resolver.resolve(candidate, active_records)
+            if resolution.kind is CorrectionResolutionKind.CREATE:
+                restated = self._semantic_duplicate(candidate, active_records)
+                if restated is not None:
+                    resolution = CorrectionResolution(
+                        CorrectionResolutionKind.RECONFIRM,
+                        "semantic_active_duplicate",
+                        (restated,),
+                    )
+            if resolution.kind is CorrectionResolutionKind.RECONFIRM and resolution.targets:
+                # Recognising a restatement is not enough on its own.  The write
+                # kernel matches on the canonical fingerprint, and the slot key is
+                # part of that fingerprint, so a candidate the resolver matched to
+                # a record in a different slot still hashed differently and was
+                # written as a second copy.  The model naming another dimension
+                # for one preference does not make it another preference: adopt
+                # the slot of the record this restates.
+                target = resolution.targets[0]
+                if target.slot_key != candidate.proposal.slot_key:
+                    proposal = candidate.proposal.model_copy(
+                        update={
+                            "slot_key": target.slot_key,
+                            "cardinality": target.cardinality,
+                        }
+                    )
+                    candidate = candidate.model_copy(update={"proposal": proposal})
             targets = resolution.targets
             if not targets:
                 for hint in candidate.old_value_hints:
@@ -467,21 +553,24 @@ class MemoryExtractionCoordinator:
                 override_builder.record_unresolved_hint(retraction.old_value_hint)
                 reason_codes.append(resolution.reason)
                 continue
-            target = resolution.targets[0]
-            applied = self._apply_retraction(
-                request,
-                context,
-                retraction,
-                target.memory_id,
-                target.revision,
-                parsed.lifecycle_hint,
-            )
-            decisions.append(applied)
-            override_builder.record_final_outcome(
-                CorrectionResolutionKind.RETRACT,
-                (target,),
-                applied,
-            )
+            # Every target here holds the same value, so all of them are the fact
+            # the user asked to remove.  Retracting only the first left the
+            # duplicates active and the value returned on the next recall.
+            for target in resolution.targets:
+                applied = self._apply_retraction(
+                    request,
+                    context,
+                    retraction,
+                    target.memory_id,
+                    target.revision,
+                    parsed.lifecycle_hint,
+                )
+                decisions.append(applied)
+                override_builder.record_final_outcome(
+                    CorrectionResolutionKind.RETRACT,
+                    (target,),
+                    applied,
+                )
 
         positive = next(
             (
@@ -836,6 +925,66 @@ class MemoryExtractionCoordinator:
             model_meta=model_meta,
             sensitivity=sensitivity,
         )
+
+    @staticmethod
+    def _drop_nested_assertions(
+        response: ModelProposalResponse,
+    ) -> tuple[ModelProposalResponse, int]:
+        """Drop an assertion whose evidence sits wholly inside another's.
+
+        Asked to record "simple 25-minute practice sessions with perspective
+        steps, line-control drills, shading notes, and progress tracking", the
+        model proposes both the whole preference and "perspective steps" cut out
+        of the middle of it.  The fragment is not a second preference the user
+        holds, it is part of the first, and storing it produced a spurious extra
+        memory and an exclusive-slot conflict that landed in review.
+
+        Only same-type neighbours are compared, so a goal quoted inside a wide
+        preference span survives: a fact of a different kind is never merely a
+        piece of the one around it.  Assertions citing equal spans both survive,
+        because neither is the container.
+        """
+
+        assertions = response.assertions
+        if len(assertions) < 2:
+            return response, 0
+
+        def envelopes(item) -> dict[str, tuple[int, int]]:
+            bounds: dict[str, tuple[int, int]] = {}
+            for span in item.source_spans:
+                start, end = bounds.get(span.message_id, (span.start, span.end))
+                bounds[span.message_id] = (min(start, span.start), max(end, span.end))
+            return bounds
+
+        spans = {item.proposal_id: envelopes(item) for item in assertions}
+        kept = []
+        for item in assertions:
+            mine = spans[item.proposal_id]
+            nested = False
+            for other in assertions:
+                if other.proposal_id == item.proposal_id:
+                    continue
+                if other.memory_type_hint is not item.memory_type_hint:
+                    continue
+                theirs = spans[other.proposal_id]
+                if not mine or set(mine) - set(theirs):
+                    continue
+                inside = all(
+                    theirs[key][0] <= mine[key][0] and mine[key][1] <= theirs[key][1]
+                    for key in mine
+                )
+                narrower = any(
+                    theirs[key][0] < mine[key][0] or mine[key][1] < theirs[key][1]
+                    for key in mine
+                )
+                if inside and narrower:
+                    nested = True
+                    break
+            if not nested:
+                kept.append(item)
+        if len(kept) == len(assertions):
+            return response, 0
+        return response.model_copy(update={"assertions": tuple(kept)}), len(assertions) - len(kept)
 
     @staticmethod
     def _apply_candidate_cap(

@@ -13,6 +13,15 @@ if TYPE_CHECKING:
 
 _SPACE = re.compile(r"\s+")
 _QUESTION_WORD = re.compile(r"\b(?:who|what|when|where|why|how|which)\b", re.IGNORECASE)
+# An explicit "remember ..." instruction is a memory-write command regardless of
+# what follows it.  ``_PERSONAL_DECLARATION`` below only recognises specific
+# shapes ("my name is", "I prefer", ...) immediately after the "remember"
+# prefix, so a message like "Remember this for future chats: I want to improve
+# at home coffee brewing... water temperature..." fell through to weather-signal
+# matching on the word "temperature" instead of being treated as memory.
+_EXPLICIT_REMEMBER_COMMAND = re.compile(
+    r"^\s*(?:please\s+)?remember\b", re.IGNORECASE
+)
 _EXPLICIT_LOOKUP = re.compile(
     r"(?:^\s*(?:please\s+)?(?:search|find|google)\b|"
     r"\b(?:look\s+up|lookup|verify|fact[- ]?check|check online)\b)",
@@ -180,6 +189,17 @@ class SearchIntentResolver:
                 decision_source="structured",
             )
 
+        if _EXPLICIT_REMEMBER_COMMAND.search(cleaned):
+            return self._result(
+                SearchIntentKind.NONE,
+                original,
+                cleaned,
+                "Explicit remember command; keep local and offer it to memory.",
+                0.99,
+                timezone=timezone,
+                locale=locale,
+                decision_source="structured",
+            )
         if self._is_personal_declaration(cleaned):
             return self._result(
                 SearchIntentKind.NONE,
@@ -498,9 +518,25 @@ class SearchIntentResolver:
                 flags=re.IGNORECASE,
             )
             fragment = _SPACE.sub(" ", fragment).strip(" .,?!")
-            if fragment and not _QUESTION_WORD.search(fragment):
-                location = fragment
-        if location is None and prior_is_weather:
+            if not fragment:
+                # The whole message was filler/date words ("and tomorrow?"),
+                # so this is a pure date continuation of the same question.
+                location = previous.location
+            else:
+                # A genuine "for where?" follow-up answer is a short place
+                # name, not a new full sentence.  Without this bound, any
+                # unrelated message after a weather turn ("I currently use a
+                # V60 dripper...") was taken whole as a location to geocode,
+                # and because the result was again classified as WEATHER, the
+                # same trap caught every later turn with no way to recover.
+                looks_like_place = (
+                    len(fragment.split()) <= 5
+                    and not _QUESTION_WORD.search(fragment)
+                    and not re.search(r"[.!?;:]", query)
+                )
+                if looks_like_place:
+                    location = fragment
+        if location is None and prior_is_weather and explicit:
             location = previous.location
         if not location and not explicit:
             return None

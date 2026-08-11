@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     memory_vector_candidate_limit: int = Field(default=50, ge=1, le=500)
     memory_semantic_weight: float = Field(default=0.35, ge=0, le=1)
     memory_semantic_cap: float = Field(default=1, ge=0, le=1)
+    # Cosine similarity at which a new candidate is treated as a restatement of
+    # an existing memory rather than a second one.  Deliberately high: merging
+    # two genuinely different facts loses data, while missing a duplicate only
+    # leaves the store as it was before this check existed.
+    memory_semantic_duplicate_threshold: float = Field(default=0.93, ge=0, le=1)
     memory_query_embedding_timeout_seconds: int = Field(default=5, ge=1, le=60)
     memory_index_embedding_timeout_seconds: int = Field(default=30, ge=1, le=300)
     memory_provider_cooldown_seconds: int = Field(default=60, ge=1, le=3600)

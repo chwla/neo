@@ -152,7 +152,14 @@ def _fingerprint_material(
 
     def identity_fold(value: JsonValue) -> JsonValue:
         if isinstance(value, str):
-            return value.casefold()
+            # Case folding alone leaves "improve at urban sketching" and
+            # "improve_at_urban_sketching" with different fingerprints, so the
+            # mutation planner treated one restated fact as two and wrote a
+            # second record even after the correction resolver had recognised it
+            # as a duplicate.  Fold word separators too: the identity of a
+            # remembered value is its words, not the punctuation between them.
+            normalized = unicodedata.normalize("NFKC", value).casefold()
+            return " ".join(re.findall(r"[^\W_]+", normalized, flags=re.UNICODE))
         if isinstance(value, list):
             return [identity_fold(item) for item in value]
         if isinstance(value, dict):

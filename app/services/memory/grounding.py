@@ -91,14 +91,35 @@ def _ground_spans(
 
 
 def _value_supported(value: str | None, evidence: str, cited: str) -> bool:
-    """Return whether the value appears in the cited span or its own message."""
+    """Return whether the user's own words support the asserted value.
+
+    A contiguous match is preferred, but a model normalising what it read is
+    routine: asked to record "use a V60 dripper and a manual burr grinder" it
+    proposes "V60 dripper and manual burr grinder", dropping the articles.  A
+    strict substring test rejected that and the memory was silently lost, so
+    fall back to requiring every word of the value to appear in the same source
+    text.  Provenance still holds — each word came from the user's own message —
+    while a value containing anything the user did not write is still refused.
+    """
 
     if not value:
         return False
     folded = _fold(value)
     if not folded:
         return False
-    return folded in _fold(evidence) or folded in _fold(cited)
+    haystacks = (_fold(evidence), _fold(cited))
+    if any(folded and folded in haystack for haystack in haystacks):
+        return True
+    tokens = set(folded.split())
+    if not tokens:
+        return False
+    return any(tokens <= set(haystack.split()) for haystack in haystacks)
+
+
+def value_supported(value: str | None, evidence: str, cited: str) -> bool:
+    """Public form of the span check, for callers choosing what text to store."""
+
+    return _value_supported(value, evidence, cited)
 
 
 def ground_assertion(

@@ -185,6 +185,61 @@ def _contains_complete_card_number(text: str) -> bool:
     return any(_luhn_valid(candidate) for candidate in candidates)
 
 
+# Anchored to the start of a sentence so it reads an instruction rather than a
+# mention.  Unanchored, "what do you remember about my goals?" matched and every
+# recall question was treated as a memory write.
+_MEMORY_COMMAND = re.compile(
+    r"^\s*(?:please\s+)?(?:remember|memorise|memorize|forget|save this|note that|call me)\b",
+    re.IGNORECASE,
+)
+_CORRECTION = re.compile(
+    r"\b(?:changed my mind|no longer|not anymore|instead of)\b",
+    re.IGNORECASE,
+)
+# "me" is deliberately absent: it appears in requests for output ("give me a
+# practice session") far more often than in statements about the user, and those
+# requests state nothing to store.
+_FIRST_PERSON = re.compile(r"\b(?:i|i'm|im|i've|ive|i'd|my|mine)\b", re.IGNORECASE)
+_QUESTION_OPENER = re.compile(
+    r"^\s*(?:what|who|when|where|why|which|how|do|does|did|is|are|was|were|can|could|"
+    r"would|will|should|have|has|tell me|remind me|list|show)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def turn_may_contain_memory(text: str) -> bool:
+    """Return whether a turn can plausibly contain a fact worth storing.
+
+    Extraction used to run on every turn, so asking "what do you remember about
+    my goals?" spent a local model call on a message that states nothing, and —
+    because extraction also reads the supporting window — re-asserted facts from
+    earlier messages as brand new candidates.  A question is the one shape that
+    reliably carries nothing to store, so it is the only shape skipped here.
+
+    The gate stays deliberately generous: anything with an explicit memory
+    instruction runs, and so does any sentence the user speaks about themselves.
+    Only a turn made entirely of questions is skipped, because a false negative
+    silently loses a memory while a false positive merely costs what every turn
+    already cost before this existed.
+    """
+
+    stripped = text.strip()
+    if not stripped:
+        return False
+    for sentence in _SENTENCE_SPLIT.split(stripped):
+        candidate = sentence.strip()
+        if not candidate:
+            continue
+        if candidate.endswith("?") or _QUESTION_OPENER.match(candidate):
+            continue
+        if _MEMORY_COMMAND.match(candidate):
+            return True
+        if _CORRECTION.search(candidate) or _FIRST_PERSON.search(candidate):
+            return True
+    return False
+
+
 def classify_sensitivity(text: str) -> Sensitivity:
     if any(pattern.search(text) for pattern in _PROHIBITED_PATTERNS):
         return Sensitivity.PROHIBITED

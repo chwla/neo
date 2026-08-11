@@ -15,6 +15,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.db.session import build_engine
 from app.models import ChatGeneration, ChatMessage
 from app.repositories.app_store import AppStore
 from app.services.agents.guidance import agent_run_guidance
@@ -35,6 +36,8 @@ from app.services.memory.extraction_contracts import (
     TrustedConversationMessage,
 )
 from app.services.memory.factory import MemoryRuntime
+from app.services.memory.policy import turn_may_contain_memory
+from app.services.memory.runtime import drain_memory_outbox
 from app.services.memory_chat import (
     STABLE_MEMORY_POLICY,
     MemoryQueryContext,
@@ -72,6 +75,13 @@ _ROUTING_LOG = logging.getLogger("neo.chat.routing")
 _MEMORY_SAVE_OUTCOMES = frozenset(
     {"created", "reconfirmed", "refined", "replaced", "merged", "restored"}
 )
+_MEMORY_FORGET_OUTCOMES = frozenset({"archived", "forgotten", "erased_permanently"})
+# Replayed in place of a turn that removed a memory.  Deleting a memory has to
+# survive the rest of the conversation: the forget request and its confirmation
+# both spell out the value that was just removed, so replaying them verbatim let
+# the model read the deleted fact straight off the transcript and repeat it back
+# while insisting it had forgotten it.
+_FORGOTTEN_TURN_PLACEHOLDER = "[A memory was removed in this turn. Its content is unavailable.]"
 _CONNECTOR_INFORMATIONAL_REQUEST = re.compile(
     r"^\s*(?:please\s+)?(?:explain|describe|document|write\s+(?:documentation|docs)|"
     r"compare|define|summari[sz]e|teach|tell\s+me\s+about|"
@@ -338,9 +348,7 @@ class NeoChatService:
         locale: str | None = None,
     ) -> str:
         persisted_messages = self.store.list_chat_messages(chat_id)
-        history = [
-            ChatTurn(role=message.role, content=message.content) for message in persisted_messages
-        ]
+        history = self._history_turns(persisted_messages)
         search_intent = self._resolve_search_intent(
             prompt,
             persisted_messages,
@@ -740,9 +748,7 @@ class NeoChatService:
             )
 
         persisted_messages = self.store.list_chat_messages(chat_id)
-        history = [
-            ChatTurn(role=message.role, content=message.content) for message in persisted_messages
-        ]
+        history = self._history_turns(persisted_messages)
         if existing_user_message_id is not None:
             try:
                 message_index = next(
@@ -1574,6 +1580,15 @@ class NeoChatService:
                 mode=ExtractionMode.FOREGROUND_DETERMINISTIC,
                 transport="sync",
             )
+            # "forget" matches the correction trigger, so a retraction is applied
+            # here, in the foreground, and never appears in the post-turn result
+            # that writes the message metadata.  Carry the count across, or the
+            # turn is not recognised as a forget and its text keeps being
+            # replayed into later prompts.
+            self._foreground_forgotten = sum(
+                getattr(decision, "outcome", None) in _MEMORY_FORGET_OUTCOMES
+                for decision in (getattr(result, "decisions", ()) or ())
+            )
             return result.current_turn_override if result is not None else None
         except Exception:
             return None
@@ -1590,6 +1605,11 @@ class NeoChatService:
     ) -> dict[str, object]:
         if not self.memory_enabled or self.memory_runtime is None:
             return {"status": "disabled"}
+        if not turn_may_contain_memory(prompt):
+            # A turn made only of questions states nothing to remember, and
+            # running extraction on it spent a local model call re-asserting
+            # facts read out of the supporting window as new candidates.
+            return {"status": "skipped", "reason": "no_memory_bearing_statement"}
         database = self.db.get_bind()
         # Snapshot every ORM-backed input while the chat session is still owned
         # by this worker. Background threads must never dereference ChatMessage
@@ -1636,6 +1656,7 @@ class NeoChatService:
                     assistant_message_id=assistant_message_id,
                     result=result,
                 )
+                self._build_memory_indexes()
             except Exception as exc:
                 _ROUTING_LOG.exception(
                     "memory_extraction_failed chat_id=%s message_id=%s",
@@ -1664,7 +1685,53 @@ class NeoChatService:
         return {"status": "scheduled", "source_message_id": str(message_id)}
 
     @staticmethod
+    def _forgetting_turn(message: ChatMessage) -> bool:
+        if message.role != "assistant":
+            return False
+        try:
+            metadata = json.loads(message.metadata_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(metadata, dict):
+            return False
+        extraction = metadata.get("memory_extraction")
+        if not isinstance(extraction, dict):
+            return False
+        return bool(extraction.get("forgotten_memories"))
+
+    @classmethod
+    def _history_turns(cls, messages: list[ChatMessage]) -> list[ChatTurn]:
+        """Replay history with the turns that removed a memory blanked out.
+
+        A delete only means something if the deleted value stops coming back.
+        Purging the record is not enough while the request that named it, and the
+        reply confirming it, are still replayed into every later prompt: the
+        model reads the value there and repeats it, which is how "I no longer
+        remember that you use a Garmin watch" got produced.  Both halves of the
+        exchange go, since either one alone restates the fact.
+        """
+
+        redacted: set[int] = set()
+        for index, message in enumerate(messages):
+            if not cls._forgetting_turn(message):
+                continue
+            redacted.add(index)
+            for previous in range(index - 1, -1, -1):
+                if messages[previous].role == "user":
+                    redacted.add(previous)
+                    break
+        return [
+            ChatTurn(
+                role=message.role,
+                content=(
+                    _FORGOTTEN_TURN_PLACEHOLDER if index in redacted else message.content
+                ),
+            )
+            for index, message in enumerate(messages)
+        ]
+
     def _record_memory_extraction_result(
+        self,
         database,
         *,
         assistant_message_id: int,
@@ -1688,9 +1755,14 @@ class NeoChatService:
                 metadata = {}
             if not isinstance(metadata, dict):
                 metadata = {}
+            forgotten = sum(
+                getattr(decision, "outcome", None) in _MEMORY_FORGET_OUTCOMES
+                for decision in decisions
+            ) + getattr(self, "_foreground_forgotten", 0)
             metadata["memory_extraction"] = {
                 "status": "completed",
                 "saved_durable_memories": saved,
+                "forgotten_memories": forgotten,
             }
             message.metadata_json = json.dumps(metadata, sort_keys=True)
             if saved:
@@ -1700,6 +1772,33 @@ class NeoChatService:
                 )
                 current = (message.thinking or "").strip()
                 message.thinking = f"{current}\n\n{summary}" if current else summary
+
+    def _build_memory_indexes(self) -> None:
+        """Index memories just written so semantic recall can actually find them.
+
+        Extraction only enqueues indexing work; nothing in the deployed app
+        drained that queue, so the vector index stayed empty and recall fell
+        back to literal word overlap.  This runs on the post-turn extraction
+        thread, after the response has already been delivered, and never raises:
+        an indexing failure must not lose a memory that was stored correctly.
+        """
+
+        if not self.memory_enabled or self.memory_runtime is None:
+            return
+        execution = self.memory_runtime.execution
+        engine = build_engine(execution.database_url)
+        try:
+            drain_memory_outbox(
+                engine,
+                owner_id=execution.owner_id,
+                database_identity=execution.database_identity,
+                flags=self.memory_runtime.settings,
+                settings=self.settings,
+            )
+        except Exception:
+            _ROUTING_LOG.exception("memory_index_build_failed")
+        finally:
+            engine.dispose()
 
     @staticmethod
     def _record_memory_extraction_failure(
@@ -2173,33 +2272,19 @@ class NeoChatService:
         return payload
 
     def _web_query_with_memory_region(self, query: str, context: ContextPackage) -> str:
-        if not self._is_release_date_query(query):
-            return query
-        if self._target_region(query) is not None:
-            return query
-        country = self._country_from_memory(context)
-        if country is None:
-            return query
-        return f"{query} in {country}"
+        """Return the query unchanged; stored memory never reaches a search engine.
+
+        This used to append the user's country, read out of memory, to release
+        date lookups.  It sharpened a narrow class of query at the cost of
+        sending a personal fact to a third-party search provider on a turn where
+        the user asked only about a release date.  Memory is stored locally so it
+        stays the user's; a small ranking gain does not justify spending it.
+        """
+
+        return query
 
     def _is_release_date_query(self, query: str) -> bool:
         return resolve_search_intent(query).kind == SearchIntentKind.RELEASE_DATE
-
-    def _country_from_memory(self, context: ContextPackage) -> str | None:
-        for item in context.profile:
-            key = str(getattr(item, "key", "")).lower()
-            value = str(getattr(item, "value", ""))
-            if key not in {"location", "country", "nationality"}:
-                continue
-            country = self._country_from_text(value)
-            if country is not None:
-                return country
-        return None
-
-    def _country_from_text(self, text: str) -> str | None:
-        if re.search(r"\b(india|indian)\b", text, re.IGNORECASE):
-            return "India"
-        return None
 
     def _compact_context(self, context: ContextPackage) -> str:
         lines: list[str] = []
