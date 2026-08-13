@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1539 tests passing, 28 strict `xfail`s recording ten real defects —
-**652 of 880 plan items.**
+**Progress:** 1624 tests passing, 28 strict `xfail`s recording ten real defects —
+**674 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -22,10 +22,10 @@ routers.
 | 2 — Extraction | 148 | 2 | 2 | 152 |
 | 3 — Persistence | 182 | 0 | 23 | 205 |
 | 4 — Derived / async | 72 | 1 | 28 | 101 |
-| 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
+| 5 — Recall / prompt / chat | 69 | 0 | 25 | 94 |
 | 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **652** | **4** | **224** | **880** |
+| **Total** | **674** | **4** | **202** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1073,15 +1073,15 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `queries.py` — QRY
 
-- [ ] **QRY-01** `MemoryQueryContext` rejects an override whose owner differs.
-- [ ] **QRY-02** …rejects `explicit_sensitive_lookup` outside deterministic mode.
-- [ ] **QRY-03** …bounds `maximum_records` 1–20 and `maximum_characters` 200–12000.
+- [x] **QRY-01** `MemoryQueryContext` rejects an override whose owner differs.
+- [x] **QRY-02** …rejects `explicit_sensitive_lookup` outside deterministic mode.
+- [x] **QRY-03** …bounds `maximum_records` 1–20 and `maximum_characters` 200–12000.
 - [x] **QRY-04** `RecallQuery` in deterministic mode requires a selector.
-- [ ] **QRY-05** …accepts each selector kind individually.
-- [ ] **QRY-06** `trusted_slot_keys` is capped at 50.
-- [ ] **QRY-07** `RecallScoreBreakdown` bounds every component to 0–1.
-- [ ] **QRY-08** `RecallResult.canonical_ids` matches its items, in order.
-- [ ] **QRY-09** Every contract model rejects extra fields.
+- [x] **QRY-05** …accepts each selector kind individually.
+- [x] **QRY-06** `trusted_slot_keys` is capped at 50.
+- [x] **QRY-07** `RecallScoreBreakdown` bounds every component to 0–1.
+- [x] **QRY-08** `RecallResult.canonical_ids` matches its items, in order.
+- [x] **QRY-09** Every contract model rejects extra fields.
 
 ### `recall.py` — RCL
 
@@ -1161,24 +1161,29 @@ Semantic path:
 
 ### `prompt.py` — PMT
 
-- [ ] **PMT-01** `SecureMemoryPromptSerializer` emits the fixed header and
+- [x] **PMT-01** `SecureMemoryPromptSerializer` emits the fixed header and
       `STABLE_MEMORY_POLICY`.
-- [ ] **PMT-02** The message name is always `UNTRUSTED_MEMORY_MESSAGE_NAME`.
-- [ ] **PMT-03** Serialised memory text is escaped/fenced so it cannot close the block —
+- [x] **PMT-02** The message name is always `UNTRUSTED_MEMORY_MESSAGE_NAME`.
+- [x] **PMT-03** Serialised memory text is escaped so it cannot close the block —
       test with a record whose display text contains the header, a fence, and
       "ignore previous instructions".
-- [ ] **PMT-04** `_slot_label` renders a readable label for each slot shape.
-- [ ] **PMT-05** …handles a `None` / malformed slot without raising.
-- [ ] **PMT-06** Output stays within the character budget.
-- [ ] **PMT-07** Zero records produces no memory message at all (not an empty block).
-- [ ] **PMT-08** Serialisation is deterministic for a fixed selection.
-- [ ] **PMT-09** `RecallPromptOrchestrator.build` returns both the selection and the
+- [x] **PMT-04** `_slot_label` renders a readable label for each slot shape.
+- [x] **PMT-05** …handles a `None` / malformed slot without raising.
+- [x] **PMT-06** Output stays within the character budget, and an oversized record is
+      *skipped* rather than stopping the block (`continue`, not `break`).
+- [x] **PMT-07** Zero records produces no memory message at all (not an empty block).
+- [x] **PMT-08** Serialisation is deterministic for a fixed selection.
+- [x] **PMT-09** `RecallPromptOrchestrator.build` returns both the selection and the
       message.
-- [ ] **PMT-10** …records usage exactly once per build.
-- [ ] **PMT-11** …skips usage recording when nothing was selected.
-- [ ] **PMT-12** `repository_usage_recorder` returns the recorded ids.
-- [ ] **PMT-13** A usage-recording failure doesn't lose the prompt.
-- [ ] **PMT-14** Sensitive text never reaches the prompt unless explicitly looked up.
+- [x] **PMT-10** …records usage exactly once per build.
+- [x] **PMT-11** …skips usage recording when nothing was selected.
+- [x] **PMT-12** `repository_usage_recorder` returns the recorded ids.
+- [x] **PMT-13** A usage-recording failure doesn't lose the prompt.
+- [x] **PMT-14** ~~Sensitive text never reaches the prompt unless explicitly looked up.~~
+      **Corrected:** `prompt.py` never reads `sensitivity` — it serializes whatever recall
+      selected. The filter is `CanonicalRecallService` (RCL-07/08), and QRY-02 pins that the
+      unlocking flag cannot be set outside deterministic mode. Same trust boundary as
+      COR-23/24; covered as one. See `decisions.md` 41.
 
 ### `direct_answer.py` — DAN
 

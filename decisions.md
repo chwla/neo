@@ -858,3 +858,65 @@ assemble its own record set, a test fails rather than a silent assumption breaki
 Worth recording as a pattern rather than a one-off: when a shared helper turns out to rely
 on its callers having filtered, the useful response isn't only to document it where it
 lives — it's to go to each caller and show, with a test, that the caller does its part.
+
+## 41. The prompt serializer is the other half of grounding, and I named it that way
+
+`test_grounding.py` guards the input end: text the user never wrote cannot *become* a
+memory. `PMT-03` guards the output end: a stored memory cannot *escape* its container on
+the way into a prompt. Same threat, opposite direction. Both halves have to hold, because a
+fact can get in legitimately and still carry an instruction — the user may have been
+quoting a webpage when they asked Neo to remember something.
+
+**The guarantee is narrower than the plan's wording, and I pinned the real one.** The plan
+said text is "escaped/fenced". What actually happens is that each record is wrapped in a
+`<memory …>` element and its text is HTML-escaped, so `<` and `>` cannot produce a tag.
+That is the entire mechanism. Backticks, newlines, and a verbatim copy of the header all
+pass through unchanged, because `html.escape` touches only `& < > " '`.
+
+Containment still holds — the delimiters are the escaped tags, so a copy of the header sits
+inside a properly closed element and starts nothing. But "escaped/fenced" invites the
+reader to believe the text was neutralised, and it was not. The tests assert tag counts
+rather than absence of scary strings, and one test pins the header-copy case explicitly so
+the limit is written down instead of discovered.
+
+The instruction-shaped text is deliberately *not* stripped, which is worth defending: a
+user may legitimately ask Neo to remember "my boss always says 'ignore previous
+instructions'". Removing it would be censoring the user's own data. The design keeps the
+text, contains it structurally, and tells the model to ignore instructions found inside.
+
+**`PMT-01` turned out to pin a separation worth having.** `STABLE_MEMORY_POLICY` is not in
+the serialized block at all — it goes in the system prompt, while `_HEADER` travels inside
+the untrusted message. That is the right split: an instruction that lives only inside the
+untrusted block is an instruction sitting next to attacker-controlled text.
+
+**`PMT-14` is a third instance of the COR-23/24 shape.** The plan expected sensitive text to
+be withheld here; `prompt.py` never reads `sensitivity`. Recall does the filtering
+(RCL-07/08), and QRY-02 pins that the unlocking flag cannot even be set outside
+deterministic mode. Three layers now, each holding one part, and none of them checking what
+the others already did. That is good design and bad documentation, which is why each one
+gets a test naming the layer that actually holds it.
+
+## 42. I wrote the vacuous-test bug into my own work, one commit after describing it
+
+Decision 36 recorded a disjunction that always passed on its left side. Two files later I
+wrote:
+
+```python
+serialized = _serialize(_view("a" * 500), _view("b" * 500), characters=900)
+if serialized is not None:
+    assert len(serialized.content) <= 900
+```
+
+The header alone is 443 characters, so at a 900 cap with two 500-character records nothing
+fits, `serialize` returns `None`, and the body never runs. The test passed while asserting
+nothing at all — the exact failure the other session hit, and the exact one I had just
+written up.
+
+Knowing the failure mode is not the same as having a habit that prevents it. What actually
+caught it was checking, after the file went green, which of the new assertions could ever
+have failed. That check is cheap and I should have run it on the PRE work too rather than
+being told.
+
+The replacement is parametrised over two caps, chosen so the budget binds in one case and
+not the other, and it asserts the record count so that "nothing was produced" can never
+masquerade as "the budget was respected".
