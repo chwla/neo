@@ -12,17 +12,31 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1318 tests passing, 27 strict `xfail`s recording nine real defects.
-**Tiers 0, 1, 2 and 3 are complete, as is recall, and Tier 4's derived indexes** —
-568 of 880 plan items. Extraction runs end to end in tests from the HTTP socket up: a
-scripted transport, a scripted model, and a real database underneath both.
+**Progress:** 1318 tests passing, 27 strict `xfail`s recording nine real defects —
+**568 of 880 plan items.**
+
+| Tier | Done | Partial | Open | Total |
+|---|---:|---:|---:|---:|
+| 0 — Infrastructure | 7 | 1 | 0 | 8 |
+| 1 — Foundations | 193 | 0 | **3** | 196 |
+| 2 — Extraction | 114 | 2 | **36** | 152 |
+| 3 — Persistence | 182 | 0 | **23** | 205 |
+| 4 — Derived / async | 25 | 0 | 76 | 101 |
+| 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
+| 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
+| 7 — Cross-cutting | 0 | 0 | 47 | 47 |
+| **Total** | **568** | **3** | **309** | **880** |
+
+*This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
+They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
+47 in Tier 5 were open the whole time. The item count (568) was always right; the
+sentence describing it was not. A generated table is harder to overstate than a
+sentence, which is the point of replacing it.*
 
 Findings that matter most: **SCH-14** (exclusive-slot uniqueness not enforced at global
 scope), **RCL-21d** (stemmer breaks `-es` plurals, so "sketches" misses "sketching"), and
 **PRE-01b** ("call me X" passes the extraction gate but has no deterministic pattern).
 All detailed in `decisions.md`.
-
-Next up: the extraction coordinator (EXC), then Tier 4 the async index path.
 
 **Prior coverage** (51 tests) lives in
 `test_extraction_gate.py`, `test_forget_and_duplicates.py`, `test_history_redaction.py`,
