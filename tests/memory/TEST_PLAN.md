@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1318 tests passing, 27 strict `xfail`s recording nine real defects —
-**568 of 880 plan items.**
+**Progress:** 1339 tests passing, 27 strict `xfail`s recording nine real defects —
+**571 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
-| 1 — Foundations | 193 | 0 | **3** | 196 |
+| 1 — Foundations | 196 | 0 | 0 | 196 |
 | 2 — Extraction | 114 | 2 | **36** | 152 |
 | 3 — Persistence | 182 | 0 | **23** | 205 |
 | 4 — Derived / async | 25 | 0 | 76 | 101 |
 | 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
 | 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **568** | **3** | **309** | **880** |
+| **Total** | **571** | **3** | **306** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -85,10 +85,14 @@ These are cheap, fast, and catch the majority of silent-corruption bugs.
 
 ### `versions.py` — VER
 
-- [ ] **VER-01** Every version constant is a non-empty string.
-- [ ] **VER-02** Version constants are unique (no two names share a value).
-- [ ] **VER-03** Changing `CONTRACT_VERSION` breaks the `Literal` on `MemoryCommandBase`
-      — i.e. the guard actually guards. (Assert via a wrong-version dict.)
+- [x] **VER-01** Every version constant is a non-empty string. Parametrised over the
+      module's public names rather than a hand-written list, so a newly added constant
+      is covered the moment it exists.
+- [x] **VER-02** Version constants are unique (no two names share a value).
+- [x] **VER-03** Changing `CONTRACT_VERSION` breaks the `Literal` on `MemoryCommandBase`
+      — i.e. the guard actually guards. (Assert via a wrong-version dict.) Extended to
+      `taxonomy_version` and `policy_version` on `CandidateProposal`, which the command
+      adapter never reaches.
 
 ### `taxonomy.py` — TAX
 

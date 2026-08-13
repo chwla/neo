@@ -495,3 +495,56 @@ different text embeds differently (two memories can't collide). Tests that need 
 geometry — orthogonal, identical, opposite — pass explicit vectors instead.
 
 Both seams were needed. Neither would have done the other's job.
+
+---
+
+## 30. Numbering starts at 30 because two sessions are writing this file
+
+Sections 1–22 belong to the session working Tier 4 forward. I picked up the items its
+progress table listed as open — `VER`, then the `PRE` and `COR` gaps — and I number from
+30 so neither of us has to guess whether 23 is taken. Same reason the two of us stage
+explicit file paths rather than `git add tests/memory/`: we share one working directory,
+so a directory add sweeps up whatever the other session happens to have half-written.
+
+## 31. The version constants are tested as a set, not as fifteen strings
+
+`versions.py` is constants and nothing else, which makes it look like there is nothing to
+test. What it actually holds is the compatibility story: every command carries
+`contract_version`, every derived document carries the builder version that produced it,
+and each of those is compared for equality somewhere else in the layer.
+
+That framing picks the tests. A blank constant turns an equality check into one that always
+passes. Two constants sharing a value make them indistinguishable — bump one and you either
+silently invalidate the other's data or silently fail to invalidate it. Neither failure
+raises anything; the wrong data is already written by the time it shows up. So the tests are
+about the constants as a group, and they enumerate the module rather than listing names,
+because the case that matters is the sixteenth constant somebody adds next year.
+
+**I dropped an exact-count assertion after it failed.** VER-01 originally asserted the
+module holds exactly 15 constants. It holds 14. The obvious fix is to change the number,
+and it is the wrong fix: a hardcoded count fails on the entirely legitimate act of adding a
+constant, and a test that cries wolf teaches people to bump the number without reading why
+it moved. What the assertion was really there for is to stop the parametrised tests from
+passing vacuously if the constants were ever moved or renamed out from under them.
+Membership of the names the rest of the layer imports does that job and stays quiet when a
+constant is added.
+
+## 32. `VER-03` needed a second seam to test what it claims
+
+The plan describes VER-03 as proving the `Literal[CONTRACT_VERSION]` guard actually
+rejects. Every command is built through a factory in Python, so it always gets the right
+default — the guard is unreachable from the normal path and only bites on a command that
+arrives as a *dict*, from a replay envelope or a stored payload, which is exactly where a
+version from an older build turns up. So the test mutates a dumped payload rather than
+constructing a command.
+
+Routing that through `MEMORY_COMMAND_ADAPTER` only reaches `contract_version`. The other
+two guards live on `CandidateProposal`, and they guard different things — `taxonomy_version`
+covers how a slot was built, `policy_version` covers which sensitivity rules classified it.
+A proposal carrying a stale one of those is a different kind of wrong from a stale contract
+version, so each is pinned separately.
+
+There is also a test asserting the *unmodified* payload still validates. Without it, the
+rejection test would keep passing if the factory ever started producing something
+unparseable for an unrelated reason — it would be rejecting for the wrong cause and looking
+identical from the outside.
