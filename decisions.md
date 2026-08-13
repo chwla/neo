@@ -438,3 +438,60 @@ different fix — pull the model, versus set `"stream": false`.
 it would let provider-authored text enter the pipeline as though the user had typed it,
 which is precisely what grounding exists to prevent. The provider rejects it, and now
 something says so.
+
+---
+
+## 20. The derived indexes get tested as a leak surface, not as a search feature
+
+**What:** The `IDX-*` tests spend more effort on what *never* reaches the index than on
+what searching returns.
+
+**Why:** The FTS table stores `display_text` verbatim — it has to, because you cannot run
+a full-text query over ciphertext. Everything else in the memory layer protects a sensitive
+value by encrypting it; this path can't. So the only protection is the builder refusing to
+produce a document at all, and that single `if` is the whole guarantee.
+
+The test over lifecycle states is written as a loop over the enum rather than a few
+examples, for the same reason: adding a new state without adding it to the builder's check
+would leave records in that state searchable, and a hand-listed test wouldn't notice.
+
+**The staleness guard is the other half.** Deletes arrive from a queue and can be delayed.
+If a memory is updated between a delete being enqueued and processed, an unconditional
+delete removes the *new* row on the strength of a decision made about the old one. Both
+indexes take an expected hash and refuse when it doesn't match — there's a test for the
+refusal and a test for the matching case, because a guard that always refuses is as broken
+as one that never does.
+
+**Two tables, one delete.** FTS keeps a metadata row and a separate FTS5 virtual-table row.
+Clearing only the first would leave the text searchable while the index believed it was
+gone. That gets its own test on both the single-row and clear-owner paths, because the
+failure is invisible from the metadata side.
+
+## 21. Two things I expected to be bugs and aren't
+
+**`_cosine` returns 0 for mismatched vector lengths instead of raising.** My plan
+(`IDX-22`) assumed it should raise — comparing vectors of different dimensions is
+meaningless. On reading where it runs, returning 0 is better: it's inside a loop over every
+stored vector, so one row written by a previously-configured embedding model would abort
+the entire search rather than just failing to match. Scoring it 0 excludes it, which is
+exactly what you want from a vector that can't be compared. The mismatch *is* caught where
+it can be acted on — `upsert` raises `embedding_dimension_mismatch`, so a wrong-dimension
+vector can't be stored in the first place. Test renamed and the reasoning written down.
+
+**A slot rename doesn't invalidate the embedding.** The derived hash and the embedding hash
+cover different material, which looks like an oversight until you notice re-embedding is
+the expensive operation here. The derived hash asks "has anything about this memory
+changed?"; the embedding hash asks "would this embed differently?" Only the text can change
+an embedding. There's now a test asserting both at once: renaming the slot moves one hash
+and not the other.
+
+## 22. `INF-07` is finally done, at two seams rather than one
+
+Decision 16 explained why the duplicate finder was faked at the callable rather than at the
+embedding model, and flagged that a fixed-dimension embedding fake was still owed for the
+vector index. That now exists: `FakeEmbeddingProvider` derives vectors from a hash of the
+text, so identical text always embeds identically (a re-index is genuinely a no-op) and
+different text embeds differently (two memories can't collide). Tests that need a specific
+geometry — orthogonal, identical, opposite — pass explicit vectors instead.
+
+Both seams were needed. Neither would have done the other's job.

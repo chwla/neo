@@ -16,6 +16,7 @@ the bytes came from.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 from uuid import UUID
@@ -235,6 +236,66 @@ class StaticDuplicateFinder:
         if self.answer is not None and self.answer in candidates:
             return self.answer
         return None
+
+
+# --------------------------------------------------------------------------
+# INF-07 — a fake embedding provider
+# --------------------------------------------------------------------------
+
+
+class FakeEmbeddingProvider:
+    """A deterministic embedding provider with a fixed dimension.
+
+    Real embeddings are a model call: slow, and different on every machine.  The
+    vector index does not care what the numbers mean — it stores them, checks
+    the dimension against the provider, and ranks by cosine similarity.  So the
+    only properties a test needs are *deterministic* and *of the declared
+    dimension*.
+
+    Vectors are derived from a hash of the text, which gives two things worth
+    having: the same text always embeds identically (so a re-index is a no-op),
+    and different text embeds differently (so two memories don't collide).  For
+    tests that need a specific geometry — orthogonal, identical, opposite —
+    pass an explicit vector via ``script``.
+    """
+
+    def __init__(
+        self,
+        *,
+        dimension: int = 8,
+        provider_name: str = "fake",
+        model_name: str = "fake-embed-v1",
+        provider_version: str = "1",
+        script: dict[str, list[float]] | None = None,
+        raises: Exception | None = None,
+    ) -> None:
+        self.dimension = dimension
+        self.provider_name = provider_name
+        self.model_name = model_name
+        self.provider_version = provider_version
+        self.script = script or {}
+        self.raises = raises
+        self.calls: list[str] = []
+
+    def embed(self, text: str) -> list[float]:
+        self.calls.append(text)
+        if self.raises is not None:
+            raise self.raises
+        if text in self.script:
+            return list(self.script[text])
+        digest = hashlib.sha256(text.encode()).digest()
+        return [digest[index % len(digest)] / 255.0 for index in range(self.dimension)]
+
+    def health(self):
+        from app.services.memory.index_contracts import ProviderHealth
+
+        return ProviderHealth(
+            provider=self.provider_name,
+            model=self.model_name,
+            provider_version=self.provider_version,
+            healthy=self.raises is None,
+            failure_code=None if self.raises is None else "embedding_unavailable",
+        )
 
 
 # --------------------------------------------------------------------------

@@ -12,10 +12,10 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1250 tests passing, 27 strict `xfail`s recording nine real defects.
-**Tiers 0, 1, 2 and 3 are complete, as is recall** — 542 of 880 plan items.
-Extraction now runs end to end in tests, from the HTTP socket up: a scripted transport,
-a scripted model, and a real database underneath both.
+**Progress:** 1318 tests passing, 27 strict `xfail`s recording nine real defects.
+**Tiers 0, 1, 2 and 3 are complete, as is recall, and Tier 4's derived indexes** —
+568 of 880 plan items. Extraction runs end to end in tests from the HTTP socket up: a
+scripted transport, a scripted model, and a real database underneath both.
 
 Findings that matter most: **SCH-14** (exclusive-slot uniqueness not enforced at global
 scope), **RCL-21d** (stemmer breaks `-es` plurals, so "sketches" misses "sketching"), and
@@ -51,10 +51,12 @@ were deleted in `9071502`; these rebuild the minimum needed.
       far reads a timestamp rather than advancing one. Marked `[~]` rather than `[x]`
       so this isn't mistaken for coverage. Its consumers are in Tier 4 (outbox leases,
       maintenance sweeps) and the tombstone-expiry cases.
-- [~] **INF-07** A stand-in for the embedding path. `doubles.StaticDuplicateFinder`
-      covers the *duplicate-finder* seam (the coordinator only needs a callable that
-      names a restated record), including a failure switch. A fixed-dimension fake
-      embedding provider is still needed for the vector-index tier (IDX/OBX).
+- [x] **INF-07** Stand-ins for the embedding path, at two seams.
+      `doubles.StaticDuplicateFinder` covers the *duplicate-finder* callable the
+      coordinator needs; `doubles.FakeEmbeddingProvider` is the fixed-dimension
+      embedding provider the vector index needs, deriving vectors from a hash of the
+      text (so identical text embeds identically) with an escape hatch for tests that
+      need a specific geometry, plus a failure switch.
 - [x] **INF-08** Model scripting. `doubles.scripted_model` wraps the app's own
       `FixtureExtractionModel`; `RecordingModel` captures what the model was shown;
       `UnavailableModel` scripts provider errors and timeouts. `doubles.assertion`
@@ -861,35 +863,35 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `indexes.py` — IDX
 
-- [ ] **IDX-01** `DerivedDocumentBuilder.build` returns None for a record that shouldn't
+- [x] **IDX-01** `DerivedDocumentBuilder.build` returns None for a record that shouldn't
       be indexed (inactive / sensitive / expired) — one case each.
-- [ ] **IDX-02** …produces a stable `content_hash` for identical input.
-- [ ] **IDX-03** …changes the hash when display text, type, domain, or slot changes.
-- [ ] **IDX-04** `build_embedding` produces a stable embedding document and hash.
-- [ ] **IDX-05** The embedding document differs from the FTS document (different
+- [x] **IDX-02** …produces a stable `content_hash` for identical input.
+- [x] **IDX-03** …changes the hash when display text, type, domain, or slot changes.
+- [x] **IDX-04** `build_embedding` produces a stable embedding document and hash.
+- [x] **IDX-05** The embedding document differs from the FTS document (different
       versions/identity).
-- [ ] **IDX-06** `SqliteMemoryFtsIndex._is_available` is False without FTS5 and every
+- [x] **IDX-06** `SqliteMemoryFtsIndex._is_available` is False without FTS5 and every
       call then raises a clear error rather than corrupting state.
-- [ ] **IDX-07** `upsert` inserts, then updates in place (one row per memory).
-- [ ] **IDX-08** `delete` with a matching expected hash removes the row and returns True.
-- [ ] **IDX-09** `delete` with a stale expected hash returns False and keeps the row.
-- [ ] **IDX-10** `delete` of an absent row returns False.
-- [ ] **IDX-11** `search` returns owner-scoped results only.
-- [ ] **IDX-12** `search` respects the limit and orders by relevance.
-- [ ] **IDX-13** `search` handles FTS metacharacters (`"`, `*`, `NEAR`) without raising.
-- [ ] **IDX-14** `search` with an empty query returns nothing.
-- [ ] **IDX-15** `get_metadata` / `list_metadata_for_owner` round-trip what `upsert` wrote.
-- [ ] **IDX-16** `clear_owner` removes only that owner's rows, returning the count.
-- [ ] **IDX-17** `health` reports availability.
-- [ ] **IDX-18** `SqliteMemoryVectorIndex.upsert` stores the vector and its dimension.
-- [ ] **IDX-19** …rejects a dimension mismatch against the stored provider dimension.
-- [ ] **IDX-20** `search` ranks by cosine similarity, owner-scoped.
-- [ ] **IDX-21** `_cosine` returns 1.0 for identical vectors, 0.0 for orthogonal, and
+- [x] **IDX-07** `upsert` inserts, then updates in place (one row per memory).
+- [x] **IDX-08** `delete` with a matching expected hash removes the row and returns True.
+- [x] **IDX-09** `delete` with a stale expected hash returns False and keeps the row.
+- [x] **IDX-10** `delete` of an absent row returns False.
+- [x] **IDX-11** `search` returns owner-scoped results only.
+- [x] **IDX-12** `search` respects the limit and orders by relevance.
+- [x] **IDX-13** `search` handles FTS metacharacters (`"`, `*`, `NEAR`) without raising.
+- [x] **IDX-14** `search` with an empty query returns nothing.
+- [x] **IDX-15** `get_metadata` / `list_metadata_for_owner` round-trip what `upsert` wrote.
+- [x] **IDX-16** `clear_owner` removes only that owner's rows, returning the count.
+- [x] **IDX-17** `health` reports availability.
+- [x] **IDX-18** `SqliteMemoryVectorIndex.upsert` stores the vector and its dimension.
+- [x] **IDX-19** …rejects a dimension mismatch against the stored provider dimension.
+- [x] **IDX-20** `search` ranks by cosine similarity, owner-scoped.
+- [x] **IDX-21** `_cosine` returns 1.0 for identical vectors, 0.0 for orthogonal, and
       handles a zero vector without dividing by zero.
-- [ ] **IDX-22** `_cosine` on mismatched lengths raises rather than truncating.
-- [ ] **IDX-23** Vector `delete` honours the expected hash the same way FTS does.
-- [ ] **IDX-24** `clear_owner` on the vector index is owner-scoped.
-- [ ] **IDX-25** Neither index ever returns a row for a different owner, even when asked
+- [x] **IDX-22** `_cosine` on mismatched lengths raises rather than truncating.
+- [x] **IDX-23** Vector `delete` honours the expected hash the same way FTS does.
+- [x] **IDX-24** `clear_owner` on the vector index is owner-scoped.
+- [x] **IDX-25** Neither index ever returns a row for a different owner, even when asked
       directly by memory id.
 
 ### `outbox.py` — OBX
