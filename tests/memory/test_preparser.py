@@ -590,9 +590,12 @@ class TestCorrections:
             "I am experimenting with watercolour."
         )
 
-        assert result.retractions == () or all(
-            "watercolour" not in span.normalized_value for span in result.retractions
-        )
+        # `fullmatch` against a bounded character class means a second sentence
+        # defeats the grammar outright: the turn goes to the model rather than
+        # being extracted with a target stitched together across sentences.
+        assert result.kind is PreparseKind.MODEL_REQUIRED
+        assert result.retractions == ()
+        assert result.assertions == ()
 
     def test_a_preference_correction_pairs_both_halves(self) -> None:
         """PRE-17"""

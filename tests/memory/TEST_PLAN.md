@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1420 tests passing, 28 strict `xfail`s recording ten real defects —
-**613 of 880 plan items.**
+**Progress:** 1475 tests passing, 28 strict `xfail`s recording ten real defects —
+**621 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 129 | 2 | 21 | 152 |
-| 3 — Persistence | 182 | 0 | 23 | 205 |
-| 4 — Derived / async | 52 | 1 | 48 | 101 |
-| 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
-| 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
-| 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **613** | **4** | **263** | **880** |
+| 2 — Extraction | 137 | 2 | **13** | 152 |
+| 3 — Persistence | 182 | 0 | **23** | 205 |
+| 4 — Derived / async | 52 | 1 | **48** | 101 |
+| 5 — Recall / prompt / chat | 47 | 0 | **47** | 94 |
+| 6 — Config / runtime / HTTP | 0 | 0 | **77** | 77 |
+| 7 — Cross-cutting | 0 | 0 | **47** | 47 |
+| **Total** | **621** | **4** | **255** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -461,15 +461,25 @@ Candidate building:
 - [x] **COR-04** Slug and prose forms share a slot. `test_forget_and_duplicates.py`
 - [x] **COR-05** Case variants share a slot. `test_forget_and_duplicates.py`
 - [x] **COR-06** Distinct values keep distinct slots. `test_forget_and_duplicates.py`
-- [ ] **COR-07** `_value_entity_id` is a pure function of the folded value.
-- [ ] **COR-08** `_entity_token` output is stable and inside `_SLOT_TOKEN_ALPHABET`.
-- [ ] **COR-09** `_candidate_uuid` is deterministic per (request, proposal id).
-- [ ] **COR-10** `_sensitivity` escalates from the policy classifier, not just the hint.
-- [ ] **COR-11** `_domain_for` uses the model's hint when it resolves, else the source text.
-- [ ] **COR-12** `_domain_for` fails closed when neither grounds a domain.
-- [ ] **COR-13** `build_candidate` returns a reason (not a bare `None`) on every failure.
-- [ ] **COR-14** A candidate built from a SENSITIVE assertion without explicit request is
-      not returned as validated.
+- [x] **COR-07** `_value_entity_id` is a pure function of the folded value — stable across
+      candidate ids, shared by the slug and prose forms, distinct per domain.
+- [x] **COR-08** `_entity_token` output is stable and inside `_SLOT_TOKEN_ALPHABET`. Run
+      over many random UUIDs, since the Luhn false positive it prevents is data-dependent.
+- [x] **COR-09** `_candidate_uuid` is deterministic per (request, proposal id), varies with
+      owner and message id, and does *not* depend on the message text.
+- [x] **COR-10** `_sensitivity` escalates from the policy classifier, not just the hint.
+- [x] **COR-11** `_domain_for` uses the model's hint when it resolves, else the source text,
+      and overrides a `global` hint for topic-specific preference wording.
+- [x] **COR-12** ~~`_domain_for` fails closed when neither grounds a domain.~~ **Corrected:**
+      it defaults to `global`, deliberately — a domain is an organising facet, and losing a
+      durable fact over an unrecognised label is the worse outcome. `resolve_domain` does
+      fail closed (TAX-04); `_domain_for` catches it. Value grounding is enforced separately
+      by `ground_assertion`. See `decisions.md` 35.
+- [x] **COR-13** `build_candidate` returns a reason (not a bare `None`) on every failure,
+      including the success path (`candidate_normalized`).
+- [x] **COR-14** A candidate built from a SENSITIVE assertion without explicit request is
+      not returned as validated — and the same fact *is* accepted with one, so the guard
+      keys on intent rather than rejecting all sensitive content.
 
 Resolution:
 - [x] **COR-15** Same value + same slot → RECONFIRM. `test_forget_and_duplicates.py`
