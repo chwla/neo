@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1339 tests passing, 27 strict `xfail`s recording nine real defects —
-**571 of 880 plan items.**
+**Progress:** 1420 tests passing, 28 strict `xfail`s recording ten real defects —
+**613 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 114 | 2 | **36** | 152 |
-| 3 — Persistence | 182 | 0 | **23** | 205 |
-| 4 — Derived / async | 25 | 0 | 76 | 101 |
+| 2 — Extraction | 129 | 2 | 21 | 152 |
+| 3 — Persistence | 182 | 0 | 23 | 205 |
+| 4 — Derived / async | 52 | 1 | 48 | 101 |
 | 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
 | 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **571** | **3** | **306** | **880** |
+| **Total** | **613** | **4** | **263** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -399,29 +399,47 @@ One case per pattern, plus the ordering rules. All are deterministic and cheap.
 - [x] **PRE-03** `_DIRECT_ORIGIN` → identity/origin.
 - [x] **PRE-04** `_DIRECT_EMPLOYER` → employment.
 - [x] **PRE-05** `_DIRECT_OCCUPATION` → employment/occupation.
-- [ ] **PRE-06** `_DIRECT_PROJECT` → project.
-- [ ] **PRE-07** `_DIRECT_GOAL` ("I want to …") → goal.
-- [ ] **PRE-08** `_NOW_GOAL` ("Now I want …") → goal, correction-flavoured.
+- [x] **PRE-06** `_DIRECT_PROJECT` → project. Both sides of the negative lookahead:
+      "a project called Neo" is a project, "my fitness" is left to the model, because
+      the projects field is a read-permission boundary.
+- [x] **PRE-07** `_DIRECT_GOAL` ("I want to …") → goal. Outside a known domain the same
+      pattern still matches but `deterministic` is False — the `kind` is identical either
+      way, so that distinction is asserted directly.
+- [x] **PRE-08** `_NOW_GOAL` ("Now I want …") → **AMBIGUOUS**, not a correction. The
+      phrasing implies a predecessor but names none, so there is nothing to retract
+      against. Also pins that this path skips `_video_verb` where every other goal path
+      applies it.
 - [x] **PRE-09** `_DIRECT_PREFERENCE` ("I prefer …") → preference.
-- [ ] **PRE-10** `_DOMAIN_PREFERENCE` scopes the preference to its domain.
+- [x] **PRE-10** `_DOMAIN_PREFERENCE` scopes the preference to its domain.
 - [x] **PRE-11** `_GLOBAL_STYLE` ("Always answer me …") → global response-style preference.
-- [ ] **PRE-12** `_GOAL_AND_GLOBAL_STYLE` yields both, not one.
+- [x] **PRE-12** `_GOAL_AND_GLOBAL_STYLE` yields both, not one — different domains and
+      different slots, so neither absorbs the other.
 - [x] **PRE-13** `_REMEMBER` prefix strips cleanly and marks explicit intent.
-- [ ] **PRE-14** `_ADDITIVE_GOALS` yields multiple independent goals.
-- [ ] **PRE-15** `_IMPLICIT_GOAL_CORRECTION` marks a replacement.
-- [ ] **PRE-16** `_EXPLICIT_REPLACE` marks a replacement with an old-value hint.
-- [ ] **PRE-17** `_PREFERENCE_CORRECTION` marks a preference replacement.
-- [ ] **PRE-18** `_CATEGORY_CORRECTION` retargets the category.
-- [ ] **PRE-19** `_COMPOUND` corrections split into a retraction + an assertion.
-- [ ] **PRE-20** `_PURE_LOCATION_RETRACTION` retracts without asserting.
+- [x] **PRE-14** `_ADDITIVE_GOALS` yields multiple independent goals, and retracts nothing.
+- [x] **PRE-15** `_IMPLICIT_GOAL_CORRECTION` marks a replacement, both halves sharing one
+      `correction_group`, and the retraction names the value *as stored* (`create …`, not
+      the user's `make …`) or it would match nothing.
+- [x] **PRE-16** `_EXPLICIT_REPLACE` marks a replacement with an old-value hint, and does
+      not span sentences (the bounded character class that fixed a dropped correction).
+- [x] **PRE-17** `_PREFERENCE_CORRECTION` marks a preference replacement.
+- [x] **PRE-18** `_CATEGORY_CORRECTION` retargets the category — the only pattern that
+      reads the conversation window. The span points at the *earlier* message, with the
+      current turn attached as an additional span; an unresolvable reference is AMBIGUOUS
+      rather than guessed.
+- [x] **PRE-19** `_COMPOUND` corrections split into a retraction + an assertion, with
+      distinct `correction_group`s per pair; one pair alone is not treated as compound.
+- [x] **PRE-20** `_PURE_LOCATION_RETRACTION` retracts without asserting, and archives
+      rather than forgets — the user moved, they were not misrecorded.
 - [x] **PRE-21** `_CURRENT_LOCATION` asserts a durable location.
 - [x] **PRE-22** `_TRANSIENT_LOCATION` ("I'm in Paris this week") does **not** persist.
-- [ ] **PRE-23** `_TEMPORARY` phrasing is not durable.
+- [x] **PRE-23** `_TEMPORARY` phrasing is not durable, and the exemption list rescues a
+      standing preference stated with temporary wording.
 - [x] **PRE-24** `_HYPOTHETICAL` ("if I were…") produces nothing.
 - [x] **PRE-25** `_THIRD_PARTY` ("my brother likes…") produces nothing about the user.
 - [x] **PRE-26** `_AMBIGUOUS_PRONOUN` opener ("That is my favourite") produces nothing.
 - [x] **PRE-27** `_EXPLICIT_LIFECYCLE` (forget/delete) yields a retraction.
-- [ ] **PRE-28** `_has_multiple_statements` splits a compound turn.
+- [x] **PRE-28** `_has_multiple_statements` splits a compound turn, so one hedging word
+      cannot discard a real fact stated in the next sentence.
 - [x] **PRE-29** Every produced span's offsets actually index the source text.
 - [x] **PRE-30** `preparse` on an empty/whitespace message returns no proposals.
 - [x] **PRE-31** `preparse` is deterministic (same input twice → identical result).
@@ -429,7 +447,8 @@ One case per pattern, plus the ordering rules. All are deterministic and cheap.
       `ModelProposalResponse` that passes the model schema.
 - [x] **PRE-33** A message matching two patterns resolves by the documented precedence,
       not by dict order.
-- [ ] **PRE-34** `_video_verb` normalisation covers the phrasings it claims.
+- [x] **PRE-34** `_video_verb` normalisation covers the phrasings it claims, rewrites only
+      a leading verb, and folds a goal and its later retraction to one value.
 
 ### `correction_resolver.py` — COR
 
@@ -914,46 +933,46 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `outbox.py` — OBX
 
-- [ ] **OBX-01** `enabled_targets` reflects the FTS/vector settings.
-- [ ] **OBX-02** `lease_batch` leases up to the batch size and sets worker id, leased-at,
+- [x] **OBX-01** `enabled_targets` reflects the FTS/vector settings.
+- [x] **OBX-02** `lease_batch` leases up to the batch size and sets worker id, leased-at,
       and expiry.
-- [ ] **OBX-03** …skips events already leased with an unexpired lease.
-- [ ] **OBX-04** …reclaims an expired lease.
-- [ ] **OBX-05** …respects `next_attempt_at`.
-- [ ] **OBX-06** …is owner-scoped.
-- [ ] **OBX-07** Two workers leasing concurrently never get the same delivery.
-- [ ] **OBX-08** `_ensure_deliveries` creates one delivery row per enabled target.
-- [ ] **OBX-09** `process` on a `canonical_upsert` writes both derived targets.
-- [ ] **OBX-10** `process` on a `canonical_remove` deletes from both.
+- [x] **OBX-03** …skips events already leased with an unexpired lease.
+- [x] **OBX-04** …reclaims an expired lease.
+- [x] **OBX-05** …respects `next_attempt_at`.
+- [x] **OBX-06** …is owner-scoped.
+- [x] **OBX-07** Two workers leasing concurrently never get the same delivery.
+- [x] **OBX-08** `_ensure_deliveries` creates one delivery row per enabled target.
+- [x] **OBX-09** `process` on a `canonical_upsert` writes both derived targets.
+- [x] **OBX-10** `process` on a `canonical_remove` deletes from both.
 - [ ] **OBX-11** A target whose canonical record vanished → `CANONICAL_MISSING`.
-- [ ] **OBX-12** A record now inactive → `CANONICAL_INACTIVE`.
+- [x] **OBX-12** A record now inactive → `CANONICAL_INACTIVE`.
 - [ ] **OBX-13** A record whose hash advanced → `CANONICAL_HASH_ADVANCED`, and the event
       is not applied stale.
-- [ ] **OBX-14** An owner-binding mismatch → `OWNER_BINDING_MISMATCH`, nothing written.
-- [ ] **OBX-15** A lost lease → `LEASE_LOST`, no write.
-- [ ] **OBX-16** Each embedding failure mode maps to its own code (timeout, unavailable,
+- [x] **OBX-14** An owner-binding mismatch → `OWNER_BINDING_MISMATCH`, nothing written.
+- [~] **OBX-15** A lost lease → `LEASE_LOST`, no write.
+- [x] **OBX-16** Each embedding failure mode maps to its own code (timeout, unavailable,
       invalid response, dimension mismatch).
-- [ ] **OBX-17** Each index failure maps to its code (fts/vector upsert/delete failed).
-- [ ] **OBX-18** An unknown exception maps to `UNKNOWN`, never escapes.
-- [ ] **OBX-19** A retryable failure schedules `next_attempt_at` with backoff.
-- [ ] **OBX-20** `_stable_jitter` is deterministic per (event, target, attempt) and
+- [x] **OBX-17** Each index failure maps to its code (fts/vector upsert/delete failed).
+- [x] **OBX-18** An unknown exception maps to `UNKNOWN`, never escapes.
+- [x] **OBX-19** A retryable failure schedules `next_attempt_at` with backoff.
+- [x] **OBX-20** `_stable_jitter` is deterministic per (event, target, attempt) and
       bounded.
-- [ ] **OBX-21** Attempts beyond the max move the delivery to `dead_letter`.
-- [ ] **OBX-22** `requeue_dead_letter` returns it to pending and returns True.
-- [ ] **OBX-23** …returns False for an unknown event/target.
-- [ ] **OBX-24** `_refresh_event_state` marks the event done only when every delivery is
+- [x] **OBX-21** Attempts beyond the max move the delivery to `dead_letter`.
+- [x] **OBX-22** `requeue_dead_letter` returns it to pending and returns True.
+- [x] **OBX-23** …returns False for an unknown event/target.
+- [x] **OBX-24** `_refresh_event_state` marks the event done only when every delivery is
       terminal.
-- [ ] **OBX-25** …marks it failed when any delivery dead-letters.
+- [x] **OBX-25** …marks it failed when any delivery dead-letters.
 - [ ] **OBX-26** `_set_derived_state` / `_set_derived_failure` keep
       `memory_health_state` in step with the delivery.
-- [ ] **OBX-27** Processing the same event twice is idempotent.
+- [x] **OBX-27** Processing the same event twice is idempotent.
 - [ ] **OBX-28** `schedule_repair` enqueues a reconciliation request with a bounded reason.
 - [ ] **OBX-29** `_queue_repair` de-duplicates an identical outstanding repair.
-- [ ] **OBX-30** Every processed target emits an `OutboxTargetDiagnostic` with latency and
+- [x] **OBX-30** Every processed target emits an `OutboxTargetDiagnostic` with latency and
       from/to state.
-- [ ] **OBX-31** Diagnostics carry no user content.
-- [ ] **OBX-32** `process_batch` isolates failures — one bad lease doesn't abort the rest.
-- [ ] **OBX-33** A sensitive record is not written to the FTS/vector index in plaintext.
+- [x] **OBX-31** Diagnostics carry no user content.
+- [x] **OBX-32** `process_batch` isolates failures — one bad lease doesn't abort the rest.
+- [x] **OBX-33** A sensitive record is not written to the FTS/vector index in plaintext.
 
 ### `maintenance.py` — MNT
 

@@ -548,3 +548,49 @@ There is also a test asserting the *unmodified* payload still validates. Without
 rejection test would keep passing if the factory ever started producing something
 unparseable for an unrelated reason — it would be rejecting for the wrong cause and looking
 identical from the outside.
+
+## 33. The preparser tests pin what it *classifies*, not what its pattern names imply
+
+The file's existing docstring already warns that several patterns exist but hand off to
+the model anyway. Writing the remaining fifteen items turned that from a caveat into the
+main finding: three of the plan's own descriptions were wrong about what the code does,
+and in each case I pinned the code and corrected the plan rather than the reverse.
+
+**`PRE-08` is the clearest.** The plan called `_NOW_GOAL` "goal, correction-flavoured".
+It actually returns AMBIGUOUS. That is right: "Now I want X" implies something is being
+superseded but names no predecessor, so acting on the implication means superseding
+whatever happened to occupy the slot. The pattern hands it on instead. I marked the item
+`[x]` against the real behaviour and rewrote the plan line, because a plan that describes
+a behaviour the code doesn't have is worse than one that says nothing.
+
+**`PRE-07` hides a distinction in a field nobody looks at.** "I want to make YouTube
+videos" and "I want to travel more" both return `DETERMINISTIC_ASSERTION`. The difference
+is the `deterministic` flag — False for the second, because with no domain there is no
+slot to write to. Asserting only `kind` would pass for both and prove nothing, so the
+flag is asserted directly.
+
+**Where I checked behaviour before writing expectations.** All fifteen were run through
+the real `preparse` first and the tests written against the output. Several of my initial
+guesses were wrong — I expected `_ADDITIVE_GOALS` to strip the leading "to" from its
+values (it does not) and expected the compound scanner to fire on a single correction
+pair (it requires two, and falls through to the single-correction grammar). Guessing and
+then adjusting until green would have produced the same passing suite while pinning my
+guesses instead of the code.
+
+## 34. One inconsistency found and deliberately left alone
+
+`_NOW_GOAL` does not run its value through `_video_verb`; every other goal path does. So
+"Now I want to make short films" stores `make short films` while "I want to make short
+films" stores `create short films` — the same goal under two strings, which would not
+match on a later retraction.
+
+I did not fix it, for the reason decision 15 gives: this suite pins existing behaviour.
+There is also a real argument it doesn't matter — the path is AMBIGUOUS, so the value is
+a hint to the model rather than something stored directly. But that argument depends on
+the classification never changing, which is exactly the kind of assumption that stops
+being true quietly. There is now a test asserting the current value, so anyone who makes
+that path deterministic will find this decision waiting for them.
+
+The matching positive case is pinned too: a goal stored via `I want to make …` and
+retracted via `I no longer want to make …` fold to the same string. That is the property
+`_video_verb` exists for, and nothing tested it before.
