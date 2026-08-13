@@ -830,3 +830,31 @@ and the suite would have been actively misleading about the layer boundaries.
 The tell, every time, was that the test was hard to write. `COR-24` needed a foreign
 snapshot to be rejected, and there was no code path that could reject it. That difficulty
 is information.
+
+---
+
+## 29. A precondition the other session found, checked against my layer
+
+The parallel session covering the correction resolver found that `resolve` and
+`resolve_retraction` read neither `status` nor `owner_id`. Hand either an archived or a
+foreign record snapshot and it matches — on the retraction path, as a *delete target*.
+
+That is not a defect. `list_active_records` filters to ACTIVE against an owner-scoped
+repository, so the system is correct as assembled. But it means "only active, only mine" is
+a **precondition on the input** rather than a property the resolver enforces, and an
+unwritten precondition is exactly the kind that gets violated when a second caller appears.
+
+Maintenance is a second caller, so I checked rather than assumed:
+
+- It never calls the resolver at all — no `resolve`, no `resolve_retraction`.
+- It enumerates through `repository.list_index_candidates`, which builds on
+  `eligible_records_statement`: `owner_id`, `status == ACTIVE` and expiry are all filtered
+  **in SQL**, before any Python sees a row.
+
+So the concern doesn't reach this layer. `MNT-02c` now pins the status axis explicitly
+(owner scoping was already pinned either side), so if someone later changes maintenance to
+assemble its own record set, a test fails rather than a silent assumption breaking.
+
+Worth recording as a pattern rather than a one-off: when a shared helper turns out to rely
+on its callers having filtered, the useful response isn't only to document it where it
+lives — it's to go to each caller and show, with a test, that the caller does its part.

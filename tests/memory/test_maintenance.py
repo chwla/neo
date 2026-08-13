@@ -355,6 +355,32 @@ class TestReconciliation:
         restarted = maintenance.reconcile(now=FROZEN_NOW, limit=2, checkpoint=None)
         assert restarted.checked == 2
 
+    def test_an_archived_record_is_not_treated_as_missing(
+        self, maintenance, engine, scheduler
+    ) -> None:
+        """MNT-02c — maintenance enumerates through an owner- and status-filtered query.
+
+        Written after the correction resolver turned out to read neither
+        `status` nor `owner_id`, relying on its caller to have filtered
+        already (COR-23/24). That makes "only active, only mine" a precondition
+        rather than an enforced property, and an unwritten precondition is the
+        kind that breaks when a second caller appears.
+
+        Maintenance is a second caller, so it is worth showing it does not rely
+        on the same assumption. It never uses the resolver, and it enumerates
+        via `list_index_candidates` → `eligible_records_statement`, which
+        filters owner, ACTIVE status and expiry in SQL. This pins the status
+        axis; owner scoping is pinned by the tests either side.
+        """
+
+        from app.services.memory.contracts import MemoryLifecycleState
+
+        insert_record(engine, status=MemoryLifecycleState.ARCHIVED)
+        report = maintenance.reconcile(now=FROZEN_NOW)
+        assert report.checked == 0
+        assert report.missing_fts == 0
+        assert scheduler.requests == []
+
     def test_an_expired_record_is_not_treated_as_missing(
         self, maintenance, engine, scheduler
     ) -> None:

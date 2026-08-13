@@ -13,19 +13,19 @@ routers.
 `[x]` covered and passing.
 
 **Progress:** 1539 tests passing, 28 strict `xfail`s recording ten real defects —
-**641 of 880 plan items.**
+**652 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 137 | 2 | 13 | 152 |
+| 2 — Extraction | 148 | 2 | 2 | 152 |
 | 3 — Persistence | 182 | 0 | 23 | 205 |
 | 4 — Derived / async | 72 | 1 | 28 | 101 |
 | 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
 | 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **641** | **4** | **235** | **880** |
+| **Total** | **652** | **4** | **224** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
