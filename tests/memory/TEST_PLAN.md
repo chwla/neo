@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1624 tests passing, 28 strict `xfail`s recording ten real defects —
-**674 of 880 plan items.**
+**Progress:** 1690 tests passing, 28 strict `xfail`s recording ten real defects —
+**691 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -22,10 +22,10 @@ routers.
 | 2 — Extraction | 148 | 2 | 2 | 152 |
 | 3 — Persistence | 182 | 0 | 23 | 205 |
 | 4 — Derived / async | 72 | 1 | 28 | 101 |
-| 5 — Recall / prompt / chat | 69 | 0 | 25 | 94 |
+| 5 — Recall / prompt / chat | 86 | 0 | 8 | 94 |
 | 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **674** | **4** | **202** | **880** |
+| **Total** | **691** | **4** | **185** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1187,30 +1187,45 @@ Semantic path:
 
 ### `direct_answer.py` — DAN
 
-- [ ] **DAN-01** `_is_personal_memory_question` accepts "what's my name", "what do you
+- [x] **DAN-01** `_is_personal_memory_question` accepts "what's my name", "what do you
       remember about me", and rejects general questions.
-- [ ] **DAN-02** `_memory_type` maps question shapes to the right type, and returns None
+- [x] **DAN-02** `_memory_type` maps question shapes to the right type, and returns None
       when unsure.
-- [ ] **DAN-03** `_trusted_slots` returns the core identity slots for an identity question.
-- [ ] **DAN-04** `answer` returns None for a non-memory question (falls through to chat).
-- [ ] **DAN-05** `answer` returns a value when the record exists.
-- [ ] **DAN-06** …returns None (not a fabricated answer) when it doesn't.
-- [ ] **DAN-07** …returns None when the context is gated (incognito/disabled).
-- [ ] **DAN-08** …never returns sensitive content without an explicit lookup.
-- [ ] **DAN-09** …is owner-scoped.
-- [ ] **DAN-10** Disabling `direct_answer_reads_enabled` disables the path.
+- [x] **DAN-03** `_trusted_slots` returns the core identity slots for an identity question.
+- [x] **DAN-04** `answer` returns None for a non-memory question (falls through to chat).
+- [x] **DAN-05** `answer` returns a value when the record exists.
+- [x] **DAN-06** ~~…returns None (not a fabricated answer) when it doesn't.~~
+      **Corrected:** it returns an explicit refusal sentence, not None. Returning None
+      would hand the question to the chat model, which has the turn in context and will
+      often guess. The refusal is the stronger behaviour — reliably saying "I don't know"
+      is the one thing this path can do that the model cannot. See `decisions.md` 43.
+- [x] **DAN-07** …returns None when the context is gated (incognito/disabled).
+- [x] **DAN-08** ~~…never returns sensitive content without an explicit lookup.~~
+      **Corrected:** `direct_answer.py` never reads `sensitivity`. Recall filters
+      (RCL-07/08) and QRY-02 bars the unlocking flag outside deterministic mode. Fourth
+      instance of the COR-23/24 trust boundary; covered as one.
+- [x] **DAN-09** …is owner-scoped **by inheritance** — it never reads `owner_id`, but it
+      also never rewrites the context, which is the part this layer owns and the test
+      asserts (the owner survives the `model_copy` that switches recall mode).
+- [x] **DAN-10** Disabling `direct_answer_reads_enabled` disables the path.
 
 ### `memory_chat.py` — CHT
 
-- [ ] **CHT-01** `_BROAD_MEMORY_QUERY` matches broad recall asks and picks `BROAD` mode.
-- [ ] **CHT-02** A specific question picks `SCOPED_LEXICAL`.
-- [ ] **CHT-03** `context_for` carries owner, database identity, profile, request id, and
+- [x] **CHT-01** `_BROAD_MEMORY_QUERY` matches broad recall asks and picks `BROAD` mode.
+- [x] **CHT-02** A specific question picks `SCOPED_LEXICAL`.
+- [x] **CHT-03** `context_for` carries owner, database identity, profile, request id, and
       current time.
-- [ ] **CHT-04** …propagates `active_project_id`.
-- [ ] **CHT-05** …propagates incognito and disabled flags.
-- [ ] **CHT-06** `build_chat_memory_runtime` wires recall, prompt, and direct-answer
+- [x] **CHT-04** …propagates `active_project_id`.
+- [x] **CHT-05** …propagates incognito and disabled flags.
+- [x] **CHT-06** `build_chat_memory_runtime` wires recall and prompt (direct answers are
+      wired in `chat.py`, not here), and the context budget comes from settings rather than
+      a local default. Also pins the fail-closed paths: a binding mismatch or foreign owner
+      returns None. Original wording: …wires recall, prompt, and direct-answer
       consistently with settings.
-- [ ] **CHT-07** A disabled memory setting yields a runtime that injects nothing.
+- [x] **CHT-07** ~~A disabled memory setting yields a runtime that injects nothing.~~
+      **Corrected:** it returns None. Stronger form of the same intent — there is no object
+      to accidentally call, so a caller who forgets to check cannot recall from a disabled
+      store.
 
 ---
 

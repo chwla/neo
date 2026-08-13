@@ -920,3 +920,71 @@ being told.
 The replacement is parametrised over two caps, chosen so the budget binds in one case and
 not the other, and it asserts the record count so that "nothing was produced" can never
 masquerade as "the budget was respected".
+
+## 43. Two plan items asked for `None` where a refusal is better
+
+`DAN-06` expected the direct-answer path to return `None` when no stored record answers the
+question. It returns a sentence: *"I do not have an active saved memory that answers that
+yet."*
+
+`None` means "not mine, pass it on", and passing it on hands the question to the chat
+model — which has the whole conversation in context and will often produce a confident
+guess at your name. The explicit refusal is the stronger behaviour, because reliably saying
+*I don't know* is precisely the thing a language model asked about your personal details
+will not do. The distinction only matters in the case that matters: when the memory is
+missing.
+
+`CHT-07` is the same shape. The plan wanted a disabled memory setting to yield "a runtime
+that injects nothing"; `build_chat_memory_runtime` returns `None` instead. That is better
+for a reason worth stating: an inert runtime is an object a caller can still call, and one
+that quietly returns empty results is indistinguishable from a working one that found
+nothing. Returning `None` makes the disabled case structurally unmissable.
+
+Both are cases where the plan specified the mechanism and the code chose a better one.
+
+## 44. The trust-boundary pattern turned out to be structural, not accidental
+
+`COR-23/24`, `PMT-14` and now `DAN-08/09` are four instances of the same finding: the plan
+expected a layer to enforce sensitivity or owner scoping, and the layer does not read those
+fields at all.
+
+After the fourth I stopped treating it as a series of separate discoveries. The reason is
+architectural: `CanonicalRecallService` is the only component below chat that touches the
+database, so every consumer downstream of it — the serializer, the direct-answer path,
+the chat wiring — inherits its filtering rather than repeating it. That is good design.
+Repeating an owner check in four places invites the four copies to disagree.
+
+What it costs is that the guarantee is invisible from any of the four call sites. So each
+one now has a test naming the layer that actually holds it, and `DAN-09` gets a positive
+assertion for the part that layer genuinely owns: it never *rewrites* the owner, which it
+could easily do, since it builds a new query by copying the context to change the recall
+mode.
+
+## 45. Two tests of mine that could not have failed
+
+Both found by auditing the new assertions after the file went green, which is now the step
+I run before committing rather than the one I skip.
+
+**A circular assertion.** The first version of `CHT-02` computed its expectation from the
+same regex the code consults:
+
+```python
+expected = BROAD if _BROAD_MEMORY_QUERY.search(prompt) else SCOPED_LEXICAL
+assert mode is expected
+```
+
+That holds no matter what `context_for` does with the match — it re-derives the answer
+instead of stating it. Replaced with literal expected modes, which then forced me to
+discover that one of my "specific" prompts wasn't: *"what do you remember about the api"*
+contains the broad trigger phrase and enumerates. That is now its own test, recorded rather
+than fixed — broad mode returns more than needed rather than less, so the cost is budget,
+not a wrong answer.
+
+**A comparison that held either way.** The freshness test asserted `second >= first` on two
+real `now()` readings. If the timestamp were frozen at build time the two would simply be
+equal and the assertion would still pass — testing nothing about the property it was named
+for. It now stubs the clock to return successive instants and asserts both exact values.
+
+The common thread with decision 42 is that all three passed for a reason unrelated to the
+behaviour they described. A test that cannot fail is worse than a missing one: the missing
+test is visible in the plan as an open item.
