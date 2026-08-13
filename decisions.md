@@ -261,6 +261,7 @@ normal test.
 | `NRM-30b` | The negated-fact guard catches `do not want` and `did not want` but not `does not want`. | **Minor.** Display text is normally the user's own first-person words, so this needs a model-written display hint to trigger. |
 | `SCH-11b` | The "display text must not be blank" check uses SQLite `trim()`, which strips spaces only. A tab- or newline-only display text passes. | **Cosmetic**, but the constraint doesn't mean what it looks like it means. |
 | `EXT-21d` | The provider resolves its response timeout with `response_timeout_seconds or timeout_seconds or 120`. Zero is falsy, so it's replaced by the default *before* the 1–600 range check runs. Every other out-of-range value, including `-1`, is caught. | **Minor**, and the substituted value is the sane default so nothing breaks. Reachable though: `MemorySettings.__post_init__` validates the input-char and recall limits but neither extraction timeout, and `factory.py` passes the setting straight through — so `0`, the natural way to write "no limit", silently means 120 seconds instead of raising. Recorded because a validator that misses exactly one value invites trust it hasn't earned. |
+| **`OBX-15`** | **A worker whose outbox lease was reclaimed raises out of `process()` instead of reporting a failure.** `_finish_target` raises `lease_lost` when the delivery row no longer matches the worker; the `except` handler in `process()` computes the correct `DerivedFailureCode.LEASE_LOST` and then calls `_finish_target` **again**, which raises the same error with nothing left to catch it. | **Serious for availability, harmless for data.** `_failure_code` has an explicit `lease_lost` branch, so this was plainly meant to be a reported failure — it is unreachable. A stale lease isn't exceptional; it's the normal outcome whenever work outruns its lease, which is the exact situation leases exist for. The worker dies instead of recording the failure, and because `process_batch` maps over every lease, one stale lease aborts the rest of the batch too. Nothing is corrupted (the reclaiming worker already did the write) but the queue stops draining until restart. |
 
 None of these are fixed. Each is a strict `xfail` that turns red the moment someone fixes
 it, which is the signal to promote it into a normal test.
@@ -497,6 +498,65 @@ geometry — orthogonal, identical, opposite — pass explicit vectors instead.
 Both seams were needed. Neither would have done the other's job.
 
 ---
+
+---
+
+## 23. The outbox is tested as a queue, not as a function
+
+**What:** Every `OBX-*` test drives the clock explicitly and asserts on database rows rather
+than return values alone.
+
+**Why:** Canonical writes commit first; the derived indexes are updated afterwards by a
+worker draining this queue. That gap is deliberate — a slow embedding model must never hold
+up a user's write — but it means the whole surface is "work happens later, elsewhere, maybe
+twice". Testing `process()` as a pure function would miss every property that actually
+matters: whether a second worker can steal a held lease, whether a crashed worker strands a
+delivery forever, whether a retry storm is bounded.
+
+This is where the frozen clock finally earns its place. Lease expiry, exponential backoff
+and the dead-letter threshold are all time-dependent. Against the wall clock these would
+need `sleep` (slow) or would pass now and fail at midnight (flaky). Decision 9 said a flaky
+test here is worse than no test; this is the section that would have been flaky.
+
+**Boundaries are tested on both sides.** A lease is reclaimed at 61 seconds and *not*
+reclaimed at 59. A failed delivery is not leasable before its backoff elapses and is
+afterwards. A guard that always fires is as broken as one that never does, and only the
+pair distinguishes them.
+
+## 24. A test that was passing without testing anything
+
+`OBX-27` (idempotency) was originally written as "process the event, then try to lease it
+again, and if you get a lease process it too". I checked what the second lease actually
+returned: nothing. Both deliveries were already terminal, so the `if` never ran and the test
+asserted idempotency without ever processing anything twice.
+
+Rewritten around how double processing genuinely happens: a lease expires while its work is
+still running, another worker reclaims and completes it, and the original worker then
+finishes too. That is a real at-least-once scenario rather than an imagined one — and
+writing it that way is what exposed `OBX-15` below.
+
+The general lesson, and the reason this gets its own section: **a conditional inside a test
+is a place where the test can quietly stop testing.** If the branch is the interesting case,
+the test should fail when the branch isn't taken, not skip it.
+
+## 25. The tenth finding, and why it was invisible until now
+
+`OBX-15` — a worker whose lease was reclaimed raises `RuntimeError("lease_lost")` out of
+`process()` instead of returning a result carrying `DerivedFailureCode.LEASE_LOST`.
+
+The give-away is that `_failure_code` contains an explicit branch mapping the message
+`lease_lost` to that code. Somebody intended this to be a reported failure like every other.
+It cannot be: the `except` handler computes the code, then calls `_finish_target` a second
+time to record it — and `_finish_target` is exactly what raised in the first place, because
+the lease is still lost. The second raise has nothing catching it.
+
+Why no earlier test found it: reaching this state requires a lease to expire *and* be
+reclaimed *and* the original worker to keep going. With a real clock that's a timing
+accident; with a frozen clock it's three lines. The infrastructure decision from §9 is what
+made the bug reachable.
+
+Recorded as a strict `xfail`, alongside a passing test pinning the current behaviour, so
+both what it does and what it should do are written down.
 
 ## 30. Numbering starts at 30 because two sessions are writing this file
 
