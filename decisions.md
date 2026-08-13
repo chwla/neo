@@ -716,3 +716,57 @@ that count would have looked plausible, been internally consistent, and quietly 
 the remaining work by the entire E2E section. The check that caught it was comparing the
 generated total against a number derived a different way, which is the only reason to keep
 the stated denominator around at all.
+
+---
+
+## 26. Reconciliation's checkpoint is tested as a pure function first
+
+**What:** Ten of the `MNT-*` tests never touch a database. They exercise
+`_parse_reconciliation_checkpoint`, `_format_reconciliation_checkpoint` and `_next_cursor`
+directly, before anything that uses them.
+
+**Why:** The checkpoint is three independent cursors packed into one opaque string that
+crosses a process boundary — a caller stores it and hands it back on the next pass. If
+parsing and formatting disagree even slightly, resumption either fails loudly (fine) or
+silently restarts (not fine, because a re-scan reports success). Testing that through
+`reconcile()` would mean a database round-trip per case and would make a parsing bug look
+like a reconciliation bug.
+
+Two cases are there specifically because they cause infinite loops rather than wrong
+answers: a page of exactly `limit` items must be marked done (a resumable cursor would
+schedule a pass that finds nothing and returns the same cursor forever), and a malformed
+checkpoint must raise rather than being read as "start from the beginning".
+
+## 27. The loop I wrote first would have re-scanned forever
+
+Worth recording because it is a contract that reads backwards.
+
+`reconcile()` signals completion by returning `next_checkpoint = None`. I wrote the
+resumption loop to continue until `checked == 0` instead, feeding the returned checkpoint
+back in each time. Passing `None` back does **not** mean "carry on from where you were" —
+it means "start from the beginning". So the walk completed correctly in three passes and
+then started over, and my test counted 17 records in a store of 5.
+
+The code was right; my loop was wrong. But the failure mode is bad enough to deserve its
+own test: a caller who makes this mistake gets a reconciliation that never terminates and
+never reports an error, just permanent CPU. `MNT-12b` now pins `next_checkpoint is None` as
+the termination signal and asserts that passing `None` restarts, so the behaviour is
+written down rather than inferred.
+
+## 28. Two more expectations that were wrong about the code, not the code being wrong
+
+**`PrivilegedGlobalMemoryMaintenance` refuses at construction, not per method.** My plan
+item (`MNT-22`) assumed each method checks authorization. It doesn't — the constructor
+raises. That is stronger: an unauthorized instance cannot be brought into existence, so
+there is no object to accidentally pass somewhere that trusts it, and no method can forget
+to ask. Test rewritten around what it actually does.
+
+**`verify_owner_rebuild` takes the `RebuildResult` it is verifying.** I had assumed it
+re-derived state from the database. Passing the result in is what lets it check
+`result.owner_id` against its own owner and refuse a mismatch — verifying one profile's
+rebuild against another's index would compare unrelated stores. That refusal now has its
+own test (`MNT-16b`).
+
+Both were cases where the plan encoded an assumption made from the module's shape rather
+than its source. Pinning what the code does, and saying why it is defensible, is more
+useful than filing a defect against my own guess.

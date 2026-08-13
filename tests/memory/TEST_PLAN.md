@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1475 tests passing, 28 strict `xfail`s recording ten real defects —
-**621 of 880 plan items.**
+**Progress:** 1539 tests passing, 28 strict `xfail`s recording ten real defects —
+**641 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 137 | 2 | **13** | 152 |
-| 3 — Persistence | 182 | 0 | **23** | 205 |
-| 4 — Derived / async | 52 | 1 | **48** | 101 |
-| 5 — Recall / prompt / chat | 47 | 0 | **47** | 94 |
-| 6 — Config / runtime / HTTP | 0 | 0 | **77** | 77 |
-| 7 — Cross-cutting | 0 | 0 | **47** | 47 |
-| **Total** | **621** | **4** | **255** | **880** |
+| 2 — Extraction | 137 | 2 | 13 | 152 |
+| 3 — Persistence | 182 | 0 | 23 | 205 |
+| 4 — Derived / async | 72 | 1 | 28 | 101 |
+| 5 — Recall / prompt / chat | 47 | 0 | 47 | 94 |
+| 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
+| 7 — Cross-cutting | 0 | 0 | 47 | 47 |
+| **Total** | **641** | **4** | **235** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -76,6 +76,15 @@ were deleted in `9071502`; these rebuild the minimum needed.
       `UnavailableModel` scripts provider errors and timeouts. `doubles.assertion`
       and `doubles.source_span` build spans whose offsets genuinely index the message,
       so a fixture typo fails loudly instead of as a grounding rejection.
+
+**Known duplication, deliberately not consolidated yet.** Three test files each keep a
+local `CanonicalMemorySnapshot` builder — `test_forget_and_duplicates.py` (preference in an
+exclusive slot), `test_extraction_coordinator.py` (knowledge in an additive slot, feeding
+the override builder), and `test_correction_resolver.py`. The rule of three assumes the
+three uses are the same; these are three different shapes of one contract type, so a shared
+builder would need defaults none of them wants and every caller would override half of
+them. Revisit when either a fourth caller appears or only one session is editing
+`factories.py`, and then build it around what all four actually need.
 
 ---
 
@@ -486,14 +495,25 @@ Resolution:
 - [x] **COR-16** Same value + different slot → RECONFIRM (targets the existing record).
       `test_forget_and_duplicates.py`
 - [x] **COR-17** A different value → CREATE. `test_forget_and_duplicates.py`
-- [ ] **COR-18** A refined value on an exclusive slot → REFINE, not CREATE.
-- [ ] **COR-19** An incompatible value on an exclusive slot with correction evidence →
+- [x] **COR-18** ~~A refined value on an exclusive slot → REFINE, not CREATE.~~
+      **Corrected:** `resolve` never returns REFINE and should not — refinement is a
+      *planning* decision made against the stored record (`MemoryOutcome.REFINED`,
+      PLN-03), not a resolution decision made against a snapshot list. A refinement here
+      resolves to NEEDS_REVIEW. Leaves `CorrectionResolutionKind.REFINE` an unused enum
+      member; flagged, not removed. See `decisions.md` 38.
+- [x] **COR-19** An incompatible value on an exclusive slot with correction evidence →
       REPLACE.
-- [ ] **COR-20** …without correction evidence → NEEDS_REVIEW.
-- [ ] **COR-21** An additive slot never replaces; it creates alongside.
-- [ ] **COR-22** Resolution against an empty existing set is always CREATE.
-- [ ] **COR-23** Resolution ignores non-active snapshots.
-- [ ] **COR-24** Resolution never targets another owner's snapshot.
+- [x] **COR-20** …without correction evidence → NEEDS_REVIEW, with the occupant
+      returned as context rather than replaced on an assumption.
+- [x] **COR-21** An additive slot never replaces; it creates alongside.
+- [x] **COR-22** Resolution against an empty existing set is always CREATE.
+- [x] **COR-23** ~~Resolution ignores non-active snapshots.~~ **Corrected:** it does not —
+      `resolve` never reads `status`. Hand it an archived record and it matches. The
+      guarantee is the caller's (`list_active_records`, MUT-34). Pinned as a trust
+      boundary. See `decisions.md` 39.
+- [x] **COR-24** ~~Resolution never targets another owner's snapshot.~~ **Corrected:** it
+      never reads `owner_id` either, on both the assertion and retraction paths. Same
+      trust boundary as COR-23; owner scoping is held by the repository.
 
 Retraction:
 - [x] **COR-25** A value named inside a sentence retracts. `test_forget_and_duplicates.py`
@@ -505,10 +525,16 @@ Retraction:
 - [x] **COR-30** "Forget A and B" removes both when stored separately.
       `test_forget_and_duplicates.py`
 - [x] **COR-31** A fragment of a longer match is left alone. `test_forget_and_duplicates.py`
-- [ ] **COR-32** A retraction with no hint at all → NEEDS_REVIEW, no targets.
-- [ ] **COR-33** Retraction matching is case- and punctuation-insensitive.
-- [ ] **COR-34** Retraction across memory types works when the value matches.
-- [ ] **COR-35** Retraction never crosses owners.
+- [x] **COR-32** A retraction whose hint matches nothing → NEEDS_REVIEW, no targets. The
+      literally-hintless case is unreachable: `old_value_hint` is required with
+      `min_length=1`, so the contract refuses it before any resolver runs.
+- [x] **COR-33** Retraction matching is case- and punctuation-insensitive, and
+      whitespace- and underscore-insensitive.
+- [x] **COR-34** Retraction across memory types works when the value matches, and a type
+      hint narrows the eligible set when the model supplies one.
+- [x] **COR-35** ~~Retraction never crosses owners.~~ **Corrected:** `resolve_retraction`
+      does not check owner; a foreign snapshot passed in is returned as a RETRACT target.
+      Owner scoping is enforced before the call. Covered as a trust boundary.
 
 ### `model_schema.py` / `extraction_contracts.py` — MSC
 
@@ -986,34 +1012,34 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `maintenance.py` — MNT
 
-- [ ] **MNT-01** `reconcile` on a consistent store reports zero drift and changes nothing.
-- [ ] **MNT-02** …detects a missing FTS document and repairs it.
-- [ ] **MNT-03** …detects a missing vector point and repairs it.
+- [x] **MNT-01** `reconcile` on a consistent store reports zero drift and changes nothing.
+- [x] **MNT-02** …detects a missing FTS document and repairs it.
+- [x] **MNT-03** …detects a missing vector point and repairs it.
 - [ ] **MNT-04** …detects a stale hash and refreshes it.
-- [ ] **MNT-05** …detects a ghost derived row with no canonical record and deletes it.
-- [ ] **MNT-06** …detects a derived row belonging to another owner and removes it.
-- [ ] **MNT-07** …honours the batch limit and returns a resumable cursor.
-- [ ] **MNT-08** `_parse_reconciliation_checkpoint` round-trips
+- [x] **MNT-05** …detects a ghost derived row with no canonical record and deletes it.
+- [x] **MNT-06** …detects a derived row belonging to another owner and removes it.
+- [x] **MNT-07** …honours the batch limit and returns a resumable cursor.
+- [x] **MNT-08** `_parse_reconciliation_checkpoint` round-trips
       `_format_reconciliation_checkpoint`.
-- [ ] **MNT-09** …rejects a malformed checkpoint.
-- [ ] **MNT-10** …rejects a checkpoint from a different version.
-- [ ] **MNT-11** `_next_cursor` returns `_RECONCILIATION_CURSOR_DONE` on the final page.
-- [ ] **MNT-12** Resuming from a cursor covers exactly the remaining records (no gap, no
+- [x] **MNT-09** …rejects a malformed checkpoint.
+- [x] **MNT-10** …rejects a checkpoint from a different version.
+- [x] **MNT-11** `_next_cursor` returns `_RECONCILIATION_CURSOR_DONE` on the final page.
+- [x] **MNT-12** Resuming from a cursor covers exactly the remaining records (no gap, no
       repeat) across a full multi-page run.
-- [ ] **MNT-13** `rebuild_owner` clears and reconstructs both indexes.
-- [ ] **MNT-14** …is safe to run twice.
-- [ ] **MNT-15** …touches only its owner.
-- [ ] **MNT-16** `verify_owner_rebuild` passes after a rebuild.
+- [x] **MNT-13** `rebuild_owner` clears and reconstructs both indexes.
+- [x] **MNT-14** …is safe to run twice.
+- [x] **MNT-15** …touches only its owner.
+- [x] **MNT-16** `verify_owner_rebuild` passes after a rebuild.
 - [ ] **MNT-17** …fails when a document was tampered with.
-- [ ] **MNT-18** `coverage` reports per-target counts by state that sum to the record count.
-- [ ] **MNT-19** `_canonical_checksum` is stable and changes when a record changes.
+- [x] **MNT-18** `coverage` reports per-target counts by state that sum to the record count.
+- [x] **MNT-19** `_canonical_checksum` is stable and changes when a record changes.
 - [ ] **MNT-20** `_fts_metadata_current` / `_vector_metadata_current` detect a version
       bump as stale.
 - [ ] **MNT-21** `MemoryIndexMaintenance.from_settings` honours disabled targets.
-- [ ] **MNT-22** `PrivilegedGlobalMemoryMaintenance` refuses every method when
+- [x] **MNT-22** `PrivilegedGlobalMemoryMaintenance` refuses every method when
       `authorized=False`.
-- [ ] **MNT-23** …fans out across owners when authorized.
-- [ ] **MNT-24** `GlobalCoverageReport` aggregates per-owner reports correctly.
+- [x] **MNT-23** …fans out across owners when authorized.
+- [x] **MNT-24** `GlobalCoverageReport` aggregates per-owner reports correctly.
 
 ### `metrics.py` / `diagnostics.py` — DIA
 
