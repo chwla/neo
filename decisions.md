@@ -770,3 +770,63 @@ own test (`MNT-16b`).
 Both were cases where the plan encoded an assumption made from the module's shape rather
 than its source. Pinning what the code does, and saying why it is defensible, is more
 useful than filing a defect against my own guess.
+
+## 38. `COR-18` asked the wrong layer, and found dead code doing it
+
+The plan expected a refined value on an occupied exclusive slot to resolve to `REFINE`
+rather than `CREATE`. It resolves to `NEEDS_REVIEW`, and `resolve` never returns `REFINE`
+at all — nothing in the module does.
+
+Refinement is a *planning* decision, not a resolution one. The resolver answers "which
+stored record, if any, is this candidate about?" from a list of snapshots. Whether the new
+value is a compatible refinement of the old one is decided in `planner.py` against the
+record itself, and `PLN-03` already pins it (`MemoryOutcome.REFINED`). Two different enums,
+two different layers, and the plan item conflated them.
+
+That leaves `CorrectionResolutionKind.REFINE` as an unused enum member. I flagged it rather
+than deleting it: it is pre-existing, removing it is a source change, and this suite's job
+is to describe the code rather than tidy it. There is now a test asserting the current
+outcome is NEEDS_REVIEW and explicitly *not* REFINE, so if someone wires the member up
+later the test will tell them what changed.
+
+## 39. Where a guarantee lives matters more than whether it holds
+
+`COR-23` and `COR-24` said resolution ignores non-active snapshots and never targets
+another owner's record. Neither is true of the resolver: `resolve` reads neither `status`
+nor `owner_id`, and `resolve_retraction` doesn't either. Hand any of them an archived or
+foreign snapshot and it will match it — on the retraction path, it comes back as a delete
+target.
+
+This is not a defect, and I want to be precise about why. The resolver is a pure function
+over the records it is given. The filtering happens in `MutationService.list_active_records`
+— ACTIVE only, against an owner-scoped repository — which `MUT-34` already pins. The system
+is correct as assembled.
+
+But "the system is correct as assembled" is exactly the kind of claim that stops being true
+when someone adds a second caller. The property everyone assumes is being enforced here is
+in fact a *precondition* on the input, and preconditions that nobody writes down are the
+ones that get violated. So rather than write a test that passes because the fixtures
+happened to be clean — which is what testing the resolver for owner scoping would have
+been — the tests assert the boundary as it really is: pass in an archived record and it
+matches, pass in a foreign one and it matches.
+
+A test that documents a trust assumption is worth more than one that pretends the
+assumption isn't there. The next person to call this resolver now has to pre-filter, and
+will find out why from a test rather than from a cross-owner bug.
+
+## 40. Three of eleven plan items were wrong, which is itself the finding
+
+COR-18, COR-23, COR-24 and (in a smaller way) COR-32 all described behaviour the code does
+not have. That is not a criticism of whoever wrote the plan — it was written from module
+names and function signatures before the code was read closely, which is the only way to
+write a plan of this size up front.
+
+It does mean a plan item is a hypothesis, not a specification. Every one of these was
+resolved by running the real function first and writing the test against what came back.
+Had I instead written the test the plan described and then adjusted until it went green, I
+would have produced eleven passing tests pinning four behaviours the system does not have,
+and the suite would have been actively misleading about the layer boundaries.
+
+The tell, every time, was that the test was hard to write. `COR-24` needed a foreign
+snapshot to be rejected, and there was no code path that could reject it. That difficulty
+is information.

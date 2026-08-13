@@ -18,10 +18,17 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
-from app.services.memory.contracts import Sensitivity
+from app.services.memory.contracts import (
+    CanonicalMemorySnapshot,
+    MemoryLifecycleState,
+    Sensitivity,
+)
 from app.services.memory.correction_resolver import (
     _SLOT_TOKEN_ALPHABET,
+    CorrectionResolutionKind,
+    DeterministicCorrectionResolver,
     _candidate_uuid,
     _domain_for,
     _entity_token,
@@ -35,10 +42,11 @@ from app.services.memory.grounding import ground_assertion
 from app.services.memory.model_schema import (
     DurabilityHint,
     ModelAssertionProposal,
+    ModelRetractionProposal,
     ModelSourceSpan,
     SubjectHint,
 )
-from app.services.memory.taxonomy import MemoryType
+from app.services.memory.taxonomy import Cardinality, MemoryType
 
 OWNER = "11111111-1111-4111-8111-111111111111"
 OTHER_OWNER = "22222222-2222-4222-8222-222222222222"
@@ -460,3 +468,452 @@ class TestBuildCandidateFailures:
         assert result.candidate is not None
         assert result.candidate.proposal.sensitivity is Sensitivity.SENSITIVE
         assert result.candidate.proposal.explicit_user_request is True
+
+
+# --------------------------------------------------------------------------
+# Resolution — COR-18..24
+# --------------------------------------------------------------------------
+
+
+def _snapshot(
+    value: str,
+    *,
+    memory_type: MemoryType = MemoryType.GOAL,
+    domain: str = "video_creation",
+    slot: str = "goal:video_creation:current_primary_goal",
+    cardinality: Cardinality = Cardinality.EXCLUSIVE,
+    status: MemoryLifecycleState = MemoryLifecycleState.ACTIVE,
+    owner: str = OWNER,
+) -> CanonicalMemorySnapshot:
+    """One stored record, as the resolver receives it.
+
+    Kept local rather than promoted to `factories.py`: the two other suites that
+    build snapshots want different default shapes (an exclusive preference, and
+    an additive knowledge record feeding the override builder).  Three uses of
+    one contract type is not three uses of one helper — consolidating now would
+    mean a default shape none of the three wants and four overrides at every
+    call site.
+    """
+
+    return CanonicalMemorySnapshot(
+        memory_id=uuid4(),
+        owner_id=owner,
+        subject_key="user",
+        memory_type=memory_type,
+        domain_key=domain,
+        slot_key=slot,
+        cardinality=cardinality,
+        canonical_value=value,
+        display_text=value,
+        sensitivity=Sensitivity.NORMAL,
+        status=status,
+        revision=1,
+    )
+
+
+def _candidate(
+    message: str,
+    quoted: str,
+    *,
+    memory_type: MemoryType = MemoryType.GOAL,
+    slot_hint: str | None = None,
+    old_value_hints: tuple[str, ...] = (),
+):
+    """A normalized candidate, optionally carrying retraction evidence."""
+
+    request = _request(message)
+    start = message.index(quoted)
+    spans = (
+        ModelSourceSpan(message_id="m1", start=start, end=start + len(quoted), quoted_text=quoted),
+    )
+    proposal = ModelAssertionProposal(
+        proposal_id="p1",
+        source_spans=spans,
+        subject_hint=SubjectHint.USER,
+        memory_type_hint=memory_type,
+        typed_value=quoted,
+        display_hint=quoted,
+        durability=DurabilityHint.DURABLE,
+        confidence=0.9,
+        sensitivity_hint=Sensitivity.NORMAL,
+        domain_hint="video_creation",
+        slot_hint=slot_hint,
+        correction_group="g1" if old_value_hints else None,
+    )
+    retractions = tuple(
+        ModelRetractionProposal(
+            proposal_id=f"r{index}",
+            source_spans=spans,
+            subject_hint=SubjectHint.USER,
+            confidence=0.9,
+            old_value_hint=hint,
+            correction_group="g1",
+        )
+        for index, hint in enumerate(old_value_hints)
+    )
+    result = build_candidate(request, proposal, ground_assertion(request, proposal), retractions)
+    assert result.candidate is not None, result.reason
+    return result.candidate
+
+
+def _retraction(
+    hint: str,
+    *,
+    memory_type: MemoryType | None = None,
+    domain: str | None = None,
+    slot: str | None = None,
+) -> ModelRetractionProposal:
+    return ModelRetractionProposal(
+        proposal_id="r1",
+        source_spans=(
+            ModelSourceSpan(message_id="m1", start=0, end=6, quoted_text="forget"),
+        ),
+        subject_hint=SubjectHint.USER,
+        confidence=0.9,
+        old_value_hint=hint,
+        memory_type_hint=memory_type,
+        domain_hint=domain,
+        slot_hint=slot,
+    )
+
+
+RESOLVER = DeterministicCorrectionResolver()
+
+
+class TestResolution:
+    def test_an_empty_store_always_creates(self) -> None:
+        """COR-22"""
+
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+        )
+
+        resolution = RESOLVER.resolve(candidate, ())
+
+        assert resolution.kind is CorrectionResolutionKind.CREATE
+        assert resolution.reason == "independent_assertion"
+        assert resolution.targets == ()
+
+    def test_an_occupied_exclusive_slot_without_evidence_needs_review(self) -> None:
+        """COR-20 — the conflict is surfaced, not resolved by guessing.
+
+        Something already holds this slot and the user did not say what they were
+        correcting.  Replacing on that basis would discard a fact on an
+        assumption, so the occupant is returned as context for a human decision.
+        """
+
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+        )
+        occupant = _snapshot("write a book")
+
+        resolution = RESOLVER.resolve(candidate, (occupant,))
+
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+        assert resolution.reason == "unlinked_exclusive_slot_conflict"
+        assert resolution.targets == (occupant,)
+
+    def test_correction_evidence_turns_the_same_conflict_into_a_replace(self) -> None:
+        """COR-19 — identical state, different outcome, because the user said so.
+
+        The only difference from the case above is that the turn named what it
+        was replacing.  That is what licenses the destructive operation.
+        """
+
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+            old_value_hints=("write a book",),
+        )
+        occupant = _snapshot("write a book")
+
+        resolution = RESOLVER.resolve(candidate, (occupant,))
+
+        assert resolution.kind is CorrectionResolutionKind.REPLACE
+        assert resolution.reason == "grounded_predecessor_match"
+        assert resolution.targets == (occupant,)
+
+    def test_evidence_naming_a_value_that_is_not_stored_needs_review(self) -> None:
+        """COR-19b — a hint that resolves to nothing must not fall through to CREATE.
+
+        Creating here would leave the fact the user meant to correct still
+        active, alongside its replacement.
+        """
+
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+            old_value_hints=("something never stored",),
+        )
+
+        resolution = RESOLVER.resolve(candidate, ())
+
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+        assert resolution.reason == "grounded_retraction_target_not_found"
+        assert resolution.targets == ()
+
+    def test_an_additive_slot_creates_alongside_rather_than_replacing(self) -> None:
+        """COR-21 — additive means "and also", so occupancy is not a conflict."""
+
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            memory_type=MemoryType.KNOWLEDGE,
+        )
+        assert candidate.proposal.cardinality is Cardinality.ADDITIVE
+        existing = _snapshot(
+            "something else",
+            memory_type=MemoryType.KNOWLEDGE,
+            slot=candidate.proposal.slot_key,
+            domain=candidate.proposal.domain_key,
+            cardinality=Cardinality.ADDITIVE,
+        )
+
+        resolution = RESOLVER.resolve(candidate, (existing,))
+
+        assert resolution.kind is CorrectionResolutionKind.CREATE
+        assert resolution.targets == ()
+
+    def test_an_exact_duplicate_reconfirms(self) -> None:
+        """The path COR-19/20 must not swallow: same slot, same value."""
+
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+        )
+        existing = _snapshot("create YouTube videos")
+
+        resolution = RESOLVER.resolve(candidate, (existing,))
+
+        assert resolution.kind is CorrectionResolutionKind.RECONFIRM
+        assert resolution.reason == "exact_active_duplicate"
+
+
+class TestResolverTrustBoundary:
+    """COR-23 / COR-24 — corrected: the resolver filters neither status nor owner.
+
+    The plan expected `resolve` to ignore non-active snapshots and never target a
+    foreign one.  It does neither, because it never reads `status` or `owner_id`:
+    it is a pure function over the records it is handed, and both guarantees are
+    held by the caller.  `MutationService.list_active_records` filters to ACTIVE
+    and is built against an owner-scoped repository — MUT-34 pins that.
+
+    Testing the resolver for those properties would have meant asserting
+    something it does not do, and passing only because the fixtures happened to
+    be clean.  So these assert the trust boundary as it really is: hand it an
+    archived or foreign record and it *will* match.  That is not a defect, but it
+    is a constraint on every future caller, and it was not written down anywhere.
+    """
+
+    def test_an_archived_snapshot_is_matched_if_it_is_passed_in(self) -> None:
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+        )
+        archived = _snapshot("write a book", status=MemoryLifecycleState.ARCHIVED)
+
+        resolution = RESOLVER.resolve(candidate, (archived,))
+
+        assert resolution.targets == (archived,)
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+
+    def test_a_foreign_snapshot_is_matched_if_it_is_passed_in(self) -> None:
+        candidate = _candidate(
+            "I want to create YouTube videos",
+            "create YouTube videos",
+            slot_hint="current_primary_goal",
+        )
+        foreign = _snapshot("write a book", owner=OTHER_OWNER)
+
+        resolution = RESOLVER.resolve(candidate, (foreign,))
+
+        assert resolution.targets == (foreign,)
+
+    def test_a_foreign_snapshot_is_retracted_if_it_is_passed_in(self) -> None:
+        """The same boundary on the retraction path, where it would delete."""
+
+        foreign = _snapshot(
+            "fineliner pen",
+            memory_type=MemoryType.KNOWLEDGE,
+            domain="art",
+            slot="knowledge:art:item:x",
+            cardinality=Cardinality.ADDITIVE,
+            owner=OTHER_OWNER,
+        )
+
+        resolution = RESOLVER.resolve_retraction(_retraction("fineliner pen"), (foreign,))
+
+        assert resolution.kind is CorrectionResolutionKind.RETRACT
+        assert [target.owner_id for target in resolution.targets] == [OTHER_OWNER]
+
+
+class TestRetractionResolution:
+    def _pen(self) -> CanonicalMemorySnapshot:
+        return _snapshot(
+            "fineliner pen",
+            memory_type=MemoryType.KNOWLEDGE,
+            domain="art",
+            slot="knowledge:art:item:x",
+            cardinality=Cardinality.ADDITIVE,
+        )
+
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            "fineliner pen",
+            "Fineliner Pen",
+            "FINELINER PEN!",
+            "fineliner_pen",
+            "  fineliner   pen  ",
+        ],
+    )
+    def test_matching_ignores_case_punctuation_and_spacing(self, hint: str) -> None:
+        """COR-33 — the user retypes a value; they do not copy it back exactly."""
+
+        resolution = RESOLVER.resolve_retraction(_retraction(hint), (self._pen(),))
+
+        assert resolution.kind is CorrectionResolutionKind.RETRACT
+        assert resolution.reason == "exact_retraction_target"
+
+    def test_a_value_named_inside_a_sentence_still_retracts(self) -> None:
+        """Containment runs one way only, which is what makes it safe.
+
+        The user must name at least the whole stored value, so a longer sentence
+        containing it matches — but naming one word of a remembered phrase never
+        can.
+        """
+
+        resolution = RESOLVER.resolve_retraction(
+            _retraction("forget that I use a fineliner pen for sketching"),
+            (self._pen(),),
+        )
+
+        assert resolution.kind is CorrectionResolutionKind.RETRACT
+
+    def test_one_word_of_a_stored_phrase_does_not_retract_it(self) -> None:
+        """The other direction of the same rule — over-deletion is the worse error."""
+
+        resolution = RESOLVER.resolve_retraction(_retraction("pen"), (self._pen(),))
+
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+        assert resolution.targets == ()
+
+    def test_a_hint_matching_nothing_needs_review_with_no_targets(self) -> None:
+        """COR-32 — nothing resolved means nothing is deleted."""
+
+        resolution = RESOLVER.resolve_retraction(
+            _retraction("a fact never stored"), (self._pen(),)
+        )
+
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+        assert resolution.reason == "retraction_target_ambiguous_or_missing"
+        assert resolution.targets == ()
+
+    def test_a_retraction_cannot_be_built_without_a_hint(self) -> None:
+        """COR-32b — the hintless case is unreachable, one layer up.
+
+        The plan asked what happens with "no hint at all".  It cannot happen:
+        `old_value_hint` is required with `min_length=1`, so the contract refuses
+        the proposal before any resolver sees it.  Asserting that here is more
+        honest than a resolver test that could never have been reached.
+        """
+
+        with pytest.raises(ValidationError):
+            _retraction("")
+
+    def test_retraction_matches_across_memory_types_when_unhinted(self) -> None:
+        """COR-34 — a value the user names is retracted wherever it is stored.
+
+        The user says "forget the fineliner pen"; they do not know whether it was
+        filed as knowledge or as a preference.  With no type hint, the value
+        decides.
+        """
+
+        as_preference = _snapshot(
+            "fineliner pen",
+            memory_type=MemoryType.PREFERENCE,
+            domain="art",
+            slot="preference:art:tool",
+        )
+
+        resolution = RESOLVER.resolve_retraction(_retraction("fineliner pen"), (as_preference,))
+
+        assert resolution.kind is CorrectionResolutionKind.RETRACT
+        assert resolution.targets == (as_preference,)
+
+    def test_a_type_hint_narrows_the_eligible_set(self) -> None:
+        """COR-34b — and when the model does supply a type, it is respected."""
+
+        resolution = RESOLVER.resolve_retraction(
+            _retraction("fineliner pen", memory_type=MemoryType.GOAL),
+            (self._pen(),),
+        )
+
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+
+    def test_every_stored_copy_of_a_named_value_is_retracted(self) -> None:
+        """One fact stored twice must not survive its own deletion."""
+
+        first, second = self._pen(), self._pen()
+
+        resolution = RESOLVER.resolve_retraction(_retraction("fineliner pen"), (first, second))
+
+        assert resolution.kind is CorrectionResolutionKind.RETRACT
+        assert set(resolution.targets) == {first, second}
+
+    def test_a_fragment_of_a_longer_match_is_left_alone(self) -> None:
+        """Only maximal matches are kept, so a delete never reaches past the ask."""
+
+        long_form = _snapshot(
+            "fineliner pen and pocket watercolour set",
+            memory_type=MemoryType.KNOWLEDGE,
+            domain="art",
+            slot="knowledge:art:item:y",
+            cardinality=Cardinality.ADDITIVE,
+        )
+        short_form = self._pen()
+
+        resolution = RESOLVER.resolve_retraction(
+            _retraction("forget the fineliner pen and pocket watercolour set"),
+            (long_form, short_form),
+        )
+
+        assert resolution.kind is CorrectionResolutionKind.RETRACT
+        assert resolution.targets == (long_form,)
+
+
+class TestRefineIsNeverReturnedHere:
+    """COR-18 — corrected: `resolve` never returns REFINE, and should not.
+
+    The plan expected a refined value on an exclusive slot to resolve to REFINE
+    rather than CREATE.  `CorrectionResolutionKind.REFINE` exists in the enum but
+    is returned by nothing in this module — refinement is a *planning* decision,
+    made against the stored record in `planner.py` (`MemoryOutcome.REFINED`,
+    pinned by PLN-03), not a resolution decision made against a snapshot list.
+
+    That leaves `REFINE` as an unused enum member. Flagged rather than removed:
+    it is pre-existing, and deleting it is a source change this suite has no
+    mandate to make.
+    """
+
+    def test_a_refinement_of_the_slot_occupant_resolves_to_review_not_refine(self) -> None:
+        candidate = _candidate(
+            "I want to create YouTube videos about urban sketching",
+            "create YouTube videos about urban sketching",
+            slot_hint="current_primary_goal",
+        )
+        occupant = _snapshot("create YouTube videos")
+
+        resolution = RESOLVER.resolve(candidate, (occupant,))
+
+        assert resolution.kind is not CorrectionResolutionKind.REFINE
+        assert resolution.kind is CorrectionResolutionKind.NEEDS_REVIEW
+        assert resolution.targets == (occupant,)
