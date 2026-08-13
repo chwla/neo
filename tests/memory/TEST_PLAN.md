@@ -12,10 +12,10 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1181 tests passing, 26 strict `xfail`s recording eight real defects.
-**Tier 0, Tier 1, all of Tier 3, recall, and all of Tier 2 except the provider
-transport layer are complete** — 520 of 880 plan items. The extraction coordinator
-now runs end to end in tests: a scripted model, and a real database underneath it.
+**Progress:** 1250 tests passing, 27 strict `xfail`s recording nine real defects.
+**Tiers 0, 1, 2 and 3 are complete, as is recall** — 542 of 880 plan items.
+Extraction now runs end to end in tests, from the HTTP socket up: a scripted transport,
+a scripted model, and a real database underneath both.
 
 Findings that matter most: **SCH-14** (exclusive-slot uniqueness not enforced at global
 scope), **RCL-21d** (stemmer breaks `-es` plurals, so "sketches" misses "sketching"), and
@@ -480,33 +480,33 @@ Retraction:
 
 Transport and provider behaviour, all against a fake transport — no live model.
 
-- [ ] **EXT-01** `FixtureExtractionModel` returns the scripted response.
-- [ ] **EXT-02** A response over `MAX_PROVIDER_RESPONSE_BYTES` is rejected.
-- [ ] **EXT-03** A connect timeout raises `ExtractionModelTimeout` with stage `connect`.
-- [ ] **EXT-04** A response timeout raises with stage `response`.
-- [ ] **EXT-05** A transport failure raises `ExtractionModelError`, not a bare `OSError`.
-- [ ] **EXT-06** Error messages are sanitised to `MAX_SANITIZED_ERROR_CHARS`.
-- [ ] **EXT-07** Error messages never contain the user's message text.
-- [ ] **EXT-08** `_ollama_failure_code` maps 404 / 400 / 500 / connection error to
+- [x] **EXT-01** `FixtureExtractionModel` returns the scripted response.
+- [x] **EXT-02** A response over `MAX_PROVIDER_RESPONSE_BYTES` is rejected.
+- [x] **EXT-03** A connect timeout raises `ExtractionModelTimeout` with stage `connect`.
+- [x] **EXT-04** A response timeout raises with stage `response`.
+- [x] **EXT-05** A transport failure raises `ExtractionModelError`, not a bare `OSError`.
+- [x] **EXT-06** Error messages are sanitised to `MAX_SANITIZED_ERROR_CHARS`.
+- [x] **EXT-07** Error messages never contain the user's message text.
+- [x] **EXT-08** `_ollama_failure_code` maps 404 / 400 / 500 / connection error to
       distinct, stable codes.
-- [ ] **EXT-09** A "model not found" body maps to its own code (this was a real
+- [x] **EXT-09** A "model not found" body maps to its own code (this was a real
       deployment failure).
-- [ ] **EXT-10** `DirectJsonExtractionProvider` posts the expected body shape.
-- [ ] **EXT-11** `OllamaChatExtractionProvider` uses `format: json` in `ollama_json` mode.
-- [ ] **EXT-12** …uses the JSON schema in `ollama_schema` mode.
-- [ ] **EXT-13** `auto` mode resolves via the probe result.
-- [ ] **EXT-14** A non-JSON body is rejected with a clear code, not a `JSONDecodeError`.
-- [ ] **EXT-15** A JSON body that isn't a valid `ModelProposalResponse` is rejected.
-- [ ] **EXT-16** A response wrapped in markdown fences is still decoded (if supported) or
+- [x] **EXT-10** `DirectJsonExtractionProvider` posts the expected body shape.
+- [x] **EXT-11** `OllamaChatExtractionProvider` uses `format: json` in `ollama_json` mode.
+- [x] **EXT-12** …uses the JSON schema in `ollama_schema` mode.
+- [x] **EXT-13** `auto` mode resolves via the probe result.
+- [x] **EXT-14** A non-JSON body is rejected with a clear code, not a `JSONDecodeError`.
+- [x] **EXT-15** A JSON body that isn't a valid `ModelProposalResponse` is rejected.
+- [x] **EXT-16** A response wrapped in markdown fences is still decoded (if supported) or
       cleanly rejected (if not) — pin whichever is true.
-- [ ] **EXT-17** `probe_ollama_provider` reports capabilities from a scripted `/api/tags`
+- [x] **EXT-17** `probe_ollama_provider` reports capabilities from a scripted `/api/tags`
       and `/api/show`.
-- [ ] **EXT-18** …degrades gracefully when the endpoint is unreachable.
-- [ ] **EXT-19** The synthetic probe input never reaches a persisted candidate.
-- [ ] **EXT-20** `build_extraction_model_provider` returns the fixture model when live
+- [x] **EXT-18** …degrades gracefully when the endpoint is unreachable.
+- [x] **EXT-19** The synthetic probe input never reaches a persisted candidate.
+- [x] **EXT-20** `build_extraction_model_provider` returns the fixture model when live
       extraction is disabled.
-- [ ] **EXT-21** …raises a configuration error for an unknown provider name.
-- [ ] **EXT-22** `ProviderResponseMetadata` records model, duration, and byte count.
+- [x] **EXT-21** …raises a configuration error for an unknown provider name.
+- [x] **EXT-22** `ProviderResponseMetadata` records model, duration, and byte count.
 
 ### `extraction_coordinator.py` — EXC
 

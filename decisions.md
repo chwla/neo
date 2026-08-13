@@ -260,6 +260,7 @@ normal test.
 | `POL-15e` | The sensitive-content address pattern matches a house number followed by `street/road/avenue/lane/drive/boulevard` — but not `Way`, `Court`, `Place`, `Terrace`, `Crescent`, `Close`, `Square`, or `Parkway`. | **Privacy gap.** A home address on a Court or a Way classifies as NORMAL, so it can be stored without the explicit request a home address is meant to require. |
 | `NRM-30b` | The negated-fact guard catches `do not want` and `did not want` but not `does not want`. | **Minor.** Display text is normally the user's own first-person words, so this needs a model-written display hint to trigger. |
 | `SCH-11b` | The "display text must not be blank" check uses SQLite `trim()`, which strips spaces only. A tab- or newline-only display text passes. | **Cosmetic**, but the constraint doesn't mean what it looks like it means. |
+| `EXT-21d` | The provider resolves its response timeout with `response_timeout_seconds or timeout_seconds or 120`. Zero is falsy, so it's replaced by the default *before* the 1–600 range check runs. Every other out-of-range value, including `-1`, is caught. | **Minor**, and the substituted value is the sane default so nothing breaks. Reachable though: `MemorySettings.__post_init__` validates the input-char and recall limits but neither extraction timeout, and `factory.py` passes the setting straight through — so `0`, the natural way to write "no limit", silently means 120 seconds instead of raising. Recorded because a validator that misses exactly one value invites trust it hasn't earned. |
 
 None of these are fixed. Each is a strict `xfail` that turns red the moment someone fixes
 it, which is the signal to promote it into a normal test.
@@ -404,3 +405,36 @@ that the second half of this task is explaining decisions in plain terms, and th
 place for "why is this test asserting something that looks wrong" is next to the assertion
 rather than in a document nobody opens. The test *code* is kept minimal; the prose is the
 deliverable.
+
+---
+
+## 19. The HTTP layer is tested by faking the socket, not the provider
+
+**What:** The `EXT-*` tests inject a scripted `FakeTransport` into the real provider
+classes, rather than replacing the providers themselves.
+
+**Why:** `JsonHttpTransport` is a Protocol and every provider already takes one as a
+constructor argument, so this seam exists in the production code — it isn't something the
+tests bolted on. Substituting there means the payload construction, the envelope decoding,
+the error classification and the message sanitisation all run for real. The only thing
+that doesn't happen is the packet leaving the machine.
+
+Faking one level up — a stubbed `OllamaChatExtractionProvider` — would have tested nothing,
+because the provider *is* the thing under test. That's the mistake this seam avoids.
+
+**What this buys, concretely:** 69 tests that need no Ollama, no model pulled, and no
+network. They run in 0.2 seconds. This matters more than usual here: the one deployment
+failure this layer has actually had was extraction pointed at a model that was never
+installed, and a test suite that itself requires an installed model could never have caught
+it.
+
+**The failure that shaped the tests.** Ollama reports some errors with HTTP 200 and an
+`error` key in the body, and reports streamed output as newline-delimited JSON where every
+line parses on its own. Both look like success to anything checking only the status code or
+only "did JSON parse". Each has its own test and its own error code, because each has a
+different fix — pull the model, versus set `"stream": false`.
+
+**One deliberately paranoid case:** a response whose message claims `role: "user"`. Accepting
+it would let provider-authored text enter the pipeline as though the user had typed it,
+which is precisely what grounding exists to prevent. The provider rejects it, and now
+something says so.

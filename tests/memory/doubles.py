@@ -1,12 +1,13 @@
-"""Test doubles for the two collaborators the memory layer cannot run for real.
+"""Test doubles for the collaborators the memory layer cannot run for real.
 
 Everything else in this suite runs against the real thing — a real SQLite file,
-the real migration ledger, the real mutation kernel.  Two collaborators cannot
+the real migration ledger, the real mutation kernel.  Three collaborators cannot
 be: the local extraction model (an Ollama process that may not be installed, and
-whose output is by definition not reproducible) and the embedding-backed
-semantic duplicate finder (a vector model, same problem).
+whose output is by definition not reproducible), the embedding-backed semantic
+duplicate finder (a vector model, same problem), and the HTTP socket underneath
+the provider.
 
-Both are replaced here with scripted stand-ins rather than mocks.  A mock would
+All are replaced here with scripted stand-ins rather than mocks.  A mock would
 assert that a call happened; these produce *real values of the real contract
 type*, so everything downstream — parsing, grounding, taxonomy, the write
 kernel — runs exactly as it does in production.  The only thing faked is where
@@ -15,6 +16,7 @@ the bytes came from.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
@@ -233,3 +235,89 @@ class StaticDuplicateFinder:
         if self.answer is not None and self.answer in candidates:
             return self.answer
         return None
+
+
+# --------------------------------------------------------------------------
+# A scripted HTTP transport, for the provider tests
+# --------------------------------------------------------------------------
+
+
+class FakeTransport:
+    """Answer provider HTTP calls from a script keyed by endpoint suffix.
+
+    ``JsonHttpTransport`` is a Protocol and every provider takes one as a
+    constructor argument, so this substitutes at the socket and leaves the
+    entire provider — payload construction, envelope decoding, error mapping,
+    sanitisation — running for real.
+
+    Keys are matched by endpoint suffix (``/api/chat``, ``/api/tags``) because
+    the probe walks several endpoints on one host.  A value is either an
+    ``(status, body)`` pair or an exception to raise, which is how the timeout
+    and transport-failure paths get exercised without a real network.
+    """
+
+    def __init__(self, script: dict[str, Any], *, default: Any = None) -> None:
+        self.script = script
+        self.default = default
+        self.requests: list[dict[str, Any]] = []
+
+    def _resolve(self, endpoint: str) -> Any:
+        for suffix, value in self.script.items():
+            if endpoint.endswith(suffix):
+                return value
+        if self.default is None:
+            raise AssertionError(f"no scripted response for {endpoint}")
+        return self.default
+
+    def request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        body: bytes | None,
+        headers: Any,
+        connect_timeout_seconds: int,
+        read_timeout_seconds: int,
+    ):
+        from app.services.memory.extraction import HttpTransportResponse
+
+        self.requests.append(
+            {
+                "method": method,
+                "endpoint": endpoint,
+                "body": body,
+                "headers": dict(headers),
+                "connect_timeout_seconds": connect_timeout_seconds,
+                "read_timeout_seconds": read_timeout_seconds,
+            }
+        )
+        value = self._resolve(endpoint)
+        if isinstance(value, list):
+            value = value.pop(0) if len(value) > 1 else value[0]
+        if isinstance(value, Exception):
+            raise value
+        status, payload = value
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        elif not isinstance(payload, bytes):
+            payload = json.dumps(payload).encode("utf-8")
+        return HttpTransportResponse(status=status, body=payload)
+
+    def last_json(self) -> dict[str, Any]:
+        """The body of the most recent request, decoded."""
+
+        return json.loads(self.requests[-1]["body"])
+
+
+def ollama_chat_body(content: Any, **envelope: Any) -> dict[str, Any]:
+    """Ollama's ``/api/chat`` envelope wrapping a model response."""
+
+    return {
+        "model": "test-model",
+        "message": {
+            "role": "assistant",
+            "content": content if isinstance(content, str) else json.dumps(content),
+        },
+        "done": True,
+        **envelope,
+    }
