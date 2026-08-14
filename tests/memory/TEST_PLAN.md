@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 2080 tests passing, 31 strict `xfail`s recording thirteen real defects —
-**866 of 880 plan items.**
+**Progress:** 2100 tests passing, 31 strict `xfail`s recording thirteen real defects —
+**873 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -24,8 +24,8 @@ routers.
 | 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
-| 7 — Cross-cutting | 38 | 0 | 9 | 47 |
-| **Total** | **866** | **5** | **9** | **880** |
+| 7 — Cross-cutting | 45 | 0 | 2 | 47 |
+| **Total** | **873** | **5** | **2** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1427,17 +1427,23 @@ These are the ones that decide whether the layer is genuinely safe to use.
 
 Each runs the full stack — extraction → mutation → outbox → recall → prompt.
 
-- [ ] **E2E-01** "Remember I want to improve at urban sketching" → stored → recalled on a
+- [x] **E2E-01** "Remember I want to improve at urban sketching" → stored → recalled on a
       later relevant turn → appears in the prompt.
-- [ ] **E2E-02** Restating the same fact later does not create a second record.
-- [ ] **E2E-03** "Actually, now I want to improve at watercolour" replaces the goal;
+- [x] **E2E-02** Restating the same fact later does not create a second record.
+- [x] **E2E-03** ~~"Actually, now I want to improve at watercolour" replaces the goal;~~
+      **Corrected:** that phrasing does *not* replace it. The old value is never written in
+      the turn, so `ground_retraction` refuses and the turn goes to review
+      (`unlinked_exclusive_slot_conflict`) with nothing deleted — correct, since the
+      alternative is deleting a goal on an inference. A correction that *names* the old
+      value ("I no longer want X. I want Y.") does replace it. Both pinned.
+      See `decisions.md` 71. Original wording:
       recall returns only the new one.
-- [ ] **E2E-04** "Forget that I use a fineliner pen" removes it from recall permanently,
+- [x] **E2E-04** "Forget that I use a fineliner pen" removes it from recall permanently,
       and re-asserting it automatically is blocked by the tombstone.
 - [ ] **E2E-05** …but explicitly re-stating it restores it.
-- [ ] **E2E-06** A preference set in one domain doesn't leak into another domain's recall.
-- [ ] **E2E-07** A project-scoped memory is invisible outside the project.
-- [ ] **E2E-08** An identity fact ("my name is …") is answerable directly without the LLM.
+- [x] **E2E-06** A preference set in one domain doesn't leak into another domain's recall.
+- [x] **E2E-07** A project-scoped memory is invisible outside the project.
+- [x] **E2E-08** An identity fact ("my name is …") is answerable directly without the LLM.
 - [ ] **E2E-09** A sensitive fact stated without an explicit request is not stored and is
       surfaced for review.
 - [x] **E2E-10** …with an explicit request is stored encrypted and recalled only on a

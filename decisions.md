@@ -1808,3 +1808,64 @@ Both are now asserted side by side in the isolation tests, with the reasoning at
 That pairing is the whole argument for a cross-cutting tier: the individual facts were
 already covered, and the thing that was missing was the sentence explaining which of them
 carries the guarantee.
+
+## 71. The correction journey does not do what E2E-03 says, and the code is right
+
+`E2E-03` asks that "Actually, now I want to improve at watercolour" replace the stored goal.
+It does not. The turn resolves to `unlinked_exclusive_slot_conflict` and goes to review with
+the old goal untouched.
+
+The reason is `ground_retraction`. The retraction's `old_value_hint` is "improve at urban
+sketching", and that text appears nowhere in the correction message — the user implied the
+old goal was finished without naming it. An ungrounded retraction is refused, so the
+candidate reaches the resolver with no `old_value_hints`, falls through to the exclusive-slot
+occupancy check, and is routed to review.
+
+That is the right outcome. The alternative is deleting a goal on the strength of an
+inference, which is the failure mode the whole grounding layer exists to prevent. Review is
+where an ambiguous delete belongs.
+
+The journey the plan *meant* also works, and is now pinned separately: "I no longer want to
+improve at urban sketching. I want to improve at watercolour." names both halves, the
+preparser handles it deterministically with both grounded, and the replacement happens. Two
+tests, because the difference between them is the entire safety property.
+
+## 72. Two journeys that were green for the wrong reason
+
+**A scripted span must cite the message it arrived on.** `doubles.assertion` defaults to
+`message_id="m1"`. My multi-turn journeys used `m2` for the second turn while their spans
+still claimed `m1`, so every second turn was rejected as
+`source_message_not_user_authorized`. E2E-02 asserts "restating creates no second record" and
+passed — because the restatement never got stored at all. A rejection is indistinguishable
+from correct de-duplication when you only look at the record count. Both turns are now
+asserted to have been *applied* before the count is checked.
+
+**The domain filter test named a domain that does not exist.** I filtered on `"art"`, the
+hint I had scripted, and got an empty result. But `_domain_for` could not ground "art" in the
+message and fell back to `global` (decision 35), so the record's domain was never "art" —
+the empty result came from filtering on a domain nothing was stored under. It now asserts
+both directions: the record's own domain returns it, another domain does not.
+
+Both are the same mistake in different clothes: a negative assertion that passes because the
+setup failed rather than because the filter worked. Every one of these I have found came
+from asking, after green, *which* of the ways this could pass actually happened.
+
+## 73. A filename collision destroyed uncommitted work
+
+Both sessions independently created `tests/memory/test_e2e_journeys.py`. `Write` overwrites,
+so the second write replaced the first wholesale. Neither copy was committed, so there was no
+reflog entry and nothing to recover — the work was simply gone.
+
+Every convention we had built protects the *index*: stage explicit paths, re-read before
+editing, regenerate the table rather than hand-editing it. None of them apply to a file that
+does not exist yet, because there is nothing to re-read and no conflict to detect. Two agents
+told to "write the E2E tests" reach for the same obvious name.
+
+The coordination that failed was mine as much as the tooling's: I claimed *plan items*
+(E2E-01..09), and plan items do not name files. The convention adopted afterwards is to claim
+the filename. The other session added the sharper detail: `Write` reports "created" versus
+"updated", and "updated" on a file you believe is new is a stop signal.
+
+Recorded because the cost was real and the lesson is not about git. In a shared working
+directory, "I am creating this file" is an assumption, and it is checkable before the write
+rather than after.
