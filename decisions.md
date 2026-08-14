@@ -1215,3 +1215,54 @@ So the assertion is on the number of engines built, not on the outcome. The same
 applies to `_verified_memory_schemas` being cleared before *and* after each test: it is
 process-lifetime state keyed by `(url, owner, identity)`, and a test asserting the migration
 ran would otherwise pass or fail on ordering alone.
+
+---
+
+## 33b. The adapters are tested as an idempotency-namespace boundary
+
+**What:** Most of the `ADP-*` tests are about which idempotency *surface* a write uses,
+rather than about the write itself.
+
+**Why:** The adapters are deliberately thin. Every one of them ends at the same mutation
+coordinator, so testing "does create create" over and over would be testing the kernel
+seven times. What each adapter uniquely decides is the write's identity: which actor, which
+source, and which idempotency namespace.
+
+That namespacing is load-bearing. There are seven surfaces — `chat`, `review`, `import`,
+`agent`, `maintenance`, `manual`, `source_change` — and a collision between any two would
+mean the second caller's write is silently swallowed as a replay of the first. The concrete
+failure: a reviewer accepts a candidate while a background extraction worker writes the
+same fact, and one of the two decisions disappears with no error anywhere. So there is a
+test feeding every surface the *same* logical identifier and asserting all seven keys
+differ.
+
+The review key gets extra attention because it encodes a decision rather than a fact:
+accepting and rejecting one candidate must hash differently (otherwise reject-then-accept
+is a no-op), and a candidate edited between reviews must hash differently again (otherwise
+the second reviewer's decision is lost to the first).
+
+## 34b. Owner isolation turns out to be enforced twice, at different depths
+
+Writing `SRC-05` I expected the cross-owner detach to fail at the command's owner check.
+It fails earlier, in the migration binding check — `MemoryMigrationError:
+memory_owner_database_binding_mismatch` — which refuses to open a database whose recorded
+owner disagrees with the caller's.
+
+Two independent layers stop it, and the outer one stops it before the connection is even
+usable. I pinned the outer failure explicitly rather than catching a broad exception,
+because *which* layer refuses is the interesting part: if someone later removes the binding
+check believing the command check covers it, this test names what was lost.
+
+Ruff caught me writing `pytest.raises(Exception)` here and in one other place. It was right
+to: a blind exception assertion passes on any failure, including the test being broken. Both
+are now specific, which is the same lesson the parallel session hit from a different angle —
+an assertion that accepts more than one world isn't pinning anything.
+
+## 35b. Three Tier 3 items left open rather than claimed
+
+`SRC-01`, `SRC-02` and `SRC-03` need a memory that genuinely has persisted source rows, and
+attaching one means going through the full extraction-and-persist path rather than inserting
+a record directly. That is a fixture worth building, but it belongs with the mutation tests
+that already own source persistence, not bolted onto the adapter file. Marked open rather
+than approximated — a test that detaches a source which was never attached would pass while
+proving nothing, which is the exact failure mode I have been auditing for elsewhere.

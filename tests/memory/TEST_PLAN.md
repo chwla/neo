@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1817 tests passing, 28 strict `xfail`s recording ten real defects —
-**739 of 880 plan items.**
+**Progress:** 1870 tests passing, 28 strict `xfail`s recording ten real defects —
+**759 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
 | 2 — Extraction | 148 | 2 | 2 | 152 |
-| 3 — Persistence | 182 | 0 | 23 | 205 |
+| 3 — Persistence | 202 | 0 | 3 | 205 |
 | 4 — Derived / async | 90 | 1 | 10 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 22 | 0 | 55 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **739** | **4** | **137** | **880** |
+| **Total** | **759** | **4** | **117** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -899,36 +899,36 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `coordinator.py` / `adapters.py` — ADP
 
-- [ ] **ADP-01** `MemoryExecutionContext` validates its owner id.
-- [ ] **ADP-02** An invalid context raises `MemoryCoordinationError` before any DB work.
-- [ ] **ADP-03** `execute` gates on incognito / disabled before building a service.
-- [ ] **ADP-04** Each `GenericMemoryAdapter` verb (create, update, replace, merge,
+- [x] **ADP-01** `MemoryExecutionContext` validates its owner id.
+- [x] **ADP-02** An invalid context raises `MemoryCoordinationError` before any DB work.
+- [x] **ADP-03** `execute` gates on incognito / disabled before building a service.
+- [x] **ADP-04** Each `GenericMemoryAdapter` verb (create, update, replace, merge,
       archive, forget, erase, restore, supersede) builds the right command — one case
       each, asserting operation kind, actor kind, source kind, and idempotency surface.
-- [ ] **ADP-05** `TypedMemoryAdapter.create_typed` derives slot and cardinality correctly.
-- [ ] **ADP-06** `CandidateReviewAdapter.apply` ACCEPT applies the candidate and links the
+- [x] **ADP-05** `TypedMemoryAdapter.create_typed` derives slot and cardinality correctly.
+- [x] **ADP-06** `CandidateReviewAdapter.apply` ACCEPT applies the candidate and links the
       operation.
-- [ ] **ADP-07** …REJECT records the rejection.
-- [ ] **ADP-08** …on an already-decided candidate is idempotent.
-- [ ] **ADP-09** …uses the review idempotency surface (a repeat is a no-op).
-- [ ] **ADP-10** `ChatMemoryAdapter.apply_structured_candidate` uses the chat surface.
-- [ ] **ADP-11** `apply_structured_replacement` sets REPLACE intent and authority.
-- [ ] **ADP-12** `ImportMemoryAdapter.accept` uses the import surface and per-item hash.
-- [ ] **ADP-13** `MaintenanceMemoryAdapter.archive_proposal` uses the maintenance actor.
-- [ ] **ADP-14** `AgentMemoryAdapter.create_from_tool` uses the agent surface and tool
+- [x] **ADP-07** …REJECT records the rejection.
+- [x] **ADP-08** …on an already-decided candidate is idempotent.
+- [x] **ADP-09** …uses the review idempotency surface (a repeat is a no-op).
+- [x] **ADP-10** `ChatMemoryAdapter.apply_structured_candidate` uses the chat surface.
+- [x] **ADP-11** `apply_structured_replacement` sets REPLACE intent and authority.
+- [x] **ADP-12** `ImportMemoryAdapter.accept` uses the import surface and per-item hash.
+- [x] **ADP-13** `MaintenanceMemoryAdapter.archive_proposal` uses the maintenance actor.
+- [x] **ADP-14** `AgentMemoryAdapter.create_from_tool` uses the agent surface and tool
       call id.
-- [ ] **ADP-15** `structured_item_hash` is stable and order-independent.
-- [ ] **ADP-16** `MemoryAdapterContext.actor` / `.source` produce valid contract models.
-- [ ] **ADP-17** `_validated_candidate` rejects a proposal that can't be validated.
-- [ ] **ADP-18** Every adapter refuses a cross-owner request.
+- [x] **ADP-15** `structured_item_hash` is stable and order-independent.
+- [x] **ADP-16** `MemoryAdapterContext.actor` / `.source` produce valid contract models.
+- [x] **ADP-17** `_validated_candidate` rejects a proposal that can't be validated.
+- [x] **ADP-18** Every adapter refuses a cross-owner request.
 
 ### `source_changes.py` — SRC
 
 - [ ] **SRC-01** `delete_message_source` detaches every source row for the message.
 - [ ] **SRC-02** A message with no sources is a clean no-op.
 - [ ] **SRC-03** A memory losing its last source is flagged for review.
-- [ ] **SRC-04** Canonical state is never mutated.
-- [ ] **SRC-05** The operation is owner-scoped.
+- [x] **SRC-04** Canonical state is never mutated.
+- [x] **SRC-05** The operation is owner-scoped.
 
 ---
 
