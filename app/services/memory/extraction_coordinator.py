@@ -1193,11 +1193,17 @@ class MemoryExtractionCoordinator:
             message_id=request.message_id,
             evidence=evidence,
         )
+        # The target is part of the key.  One retraction can resolve to several
+        # memories -- "forget that I use Python" when the value is stored twice --
+        # and this runs once per target.  Keyed on the proposal alone, every
+        # target computed the same key, so the second forget replayed the first
+        # operation's record, found it named a different memory, and returned
+        # FAILED while the turn still reported success.
         key = MemoryIdempotency.chat(
             request.owner_id,
             request.message_id,
             EXTRACTOR_VERSION,
-            retraction.proposal_id,
+            f"{retraction.proposal_id}:{memory_id}",
         )
         target = TargetRevision(memory_id=memory_id, expected_revision=revision)
         action = CandidateAction.RETRACT

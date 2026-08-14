@@ -1134,36 +1134,32 @@ class TestRetractions:
             CandidateAction.FORGET,
         ]
 
-    def test_only_the_first_of_several_matches_is_actually_forgotten(
+    def test_each_forget_is_its_own_operation(
         self, extraction_coordinator_factory, adapter_context, chat_adapter
     ) -> None:
-        """EXC-19b — pinning the current, wrong behaviour alongside the xfail."""
+        """EXC-19b — the property that distinguishes fixed from broken.
+
+        This previously asserted the defect: the second forget returned FAILED
+        and both decisions shared one ``operation_id``, because the idempotency
+        key was derived from the retraction proposal alone. Distinct operation
+        ids are the outward sign that the key is now per-target, and they are
+        what would regress first if someone reverted that line.
+        """
 
         self._two_memories_with_one_value(extraction_coordinator_factory, adapter_context)
         result = extraction_coordinator_factory(None).process(
             request_for("Forget that I use Python.", message_id="m3"),
             replace(adapter_context, message_id="m3"),
         )
-        assert [item.outcome for item in result.decisions] == ["forgotten", "failed"]
-        assert len(chat_adapter.list_active_memories(adapter_context)) == 1
-        # The give-away: both lifecycle commands share one operation id.
-        assert len({item.operation_id for item in result.decisions}) == 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: _apply_retraction derives its idempotency key from "
-            "(owner, message_id, EXTRACTOR_VERSION, retraction.proposal_id) with no "
-            "target in it, but it is called once per target in a loop. Every target "
-            "therefore computes the same key, so the second forget replays the first "
-            "operation's idempotency record, finds it refers to a different memory, "
-            "and fails. Remove this xfail when the key includes the target memory id."
-        ),
-    )
+        assert [item.outcome for item in result.decisions] == ["forgotten", "forgotten"]
+        assert len({item.operation_id for item in result.decisions}) == 2
+        assert chat_adapter.list_active_memories(adapter_context) == ()
+
     def test_every_matching_memory_should_be_forgotten(
         self, extraction_coordinator_factory, adapter_context, chat_adapter
     ) -> None:
-        """EXC-19c — a gap found while writing EXC-19, recorded not patched.
+        """EXC-19c — fixed. The regression guard for the deletion that half-ran.
 
         Saying "forget that I use Python" when two memories hold that value
         removes one of them. The turn reports ``APPLIED``. The user is told the
