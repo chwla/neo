@@ -213,7 +213,12 @@ def _validate_positive_text(value: str) -> str:
     normalized = normalize_text(value, code="positive_display_text_required", limit=4_000)
     check = re.sub(r"\bnot only\b", "", normalized, flags=re.IGNORECASE)
     if re.search(
-        r"\b(?:no longer|do not want|don't want|did not want|used to|stop(?:ped)? wanting)\b",
+        # The negated-want forms are generated rather than listed. The list held
+        # "do not want", "don't want" and "did not want" but not "does not want",
+        # so a model-written third-person display hint was stored as a positive
+        # fact. Enumerating auxiliary x negation covers all six.
+        r"\b(?:no longer|(?:do|does|did)(?:n't| not)\s+want"
+        r"|used to|stop(?:ped)? wanting)\b",
         check,
         flags=re.IGNORECASE,
     ):

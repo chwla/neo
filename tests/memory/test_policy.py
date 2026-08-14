@@ -255,17 +255,8 @@ class TestSensitiveContent:
         "suffix",
         ["Way", "Court", "Place", "Terrace", "Crescent", "Close", "Square", "Parkway"],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: the address pattern's street-suffix list covers "
-            "street/road/avenue/lane/drive/boulevard but not Way, Court, Place, "
-            "Terrace, Crescent, Close, Square or Parkway. Remove this xfail when "
-            "the suffix list is widened."
-        ),
-    )
-    def test_common_street_suffixes_are_currently_missed(self, suffix: str) -> None:
-        """POL-15e — a gap found while writing POL-15d, recorded not patched.
+    def test_every_common_street_suffix_is_sensitive(self, suffix: str) -> None:
+        """POL-15e — fixed. A home address is sensitive whatever the road is called.
 
         ``_SENSITIVE_PATTERNS`` matches a house number followed by one of a
         fixed list of street suffixes.  A home address on a Way, Court, Place or

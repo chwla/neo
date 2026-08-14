@@ -429,16 +429,8 @@ class TestPositiveValueGuard:
                 keyed_provider=crypto,
             )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: the guard lists 'do not want' and 'did not want' but not "
-            "'does not want', so a third-person negated display text slips through. "
-            "Remove this xfail when the pattern is widened."
-        ),
-    )
-    def test_a_third_person_negation_is_currently_missed(self, crypto: LocalMemoryCrypto) -> None:
-        """NRM-30b — a gap found while writing NRM-30, recorded rather than patched.
+    def test_a_third_person_negation_is_rejected(self, crypto: LocalMemoryCrypto) -> None:
+        """NRM-30b — fixed. The negated-want forms are now generated, not listed.
 
         ``_validate_positive_text`` matches "do not want" and "did not want" but
         has no "does not want" branch.  Display text is normally the user's own

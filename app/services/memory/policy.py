@@ -159,7 +159,13 @@ _SENSITIVE_PATTERNS = (
     re.compile(
         r"\b(?:my (?:home |private )?address|i live)\s*(?:is|at|[:=])\s*"
         r"\d{1,6}\s+[A-Za-z0-9 .'-]+\s+"
-        r"(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd)\b",
+        # Longer forms first so "court" is not shadowed by "ct" and "square" not
+        # by "sq". The list previously stopped at boulevard, so a home address on
+        # a Way, Court, Place or Crescent classified as NORMAL and could be
+        # stored without the explicit request a home address is meant to require.
+        r"(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd"
+        r"|parkway|pkwy|court|ct|place|pl|terrace|terr|crescent|cres"
+        r"|square|sq|close|way)\b",
         re.IGNORECASE,
     ),
 )
