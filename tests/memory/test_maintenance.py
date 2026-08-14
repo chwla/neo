@@ -246,20 +246,25 @@ class TestReconciliation:
     def test_a_missing_fts_document_is_detected(self, maintenance, engine, scheduler) -> None:
         """MNT-02 — a saved memory that cannot be found."""
 
-        record_id = index_record(maintenance, engine)
+        record_id = index_record(maintenance, engine, display_text="alpha")
+        survivor = index_record(maintenance, engine, display_text="beta")
         maintenance.fts_index.delete(OWNER_ID, record_id, None)
         report = maintenance.reconcile(now=FROZEN_NOW)
         assert report.missing_fts == 1
-        assert record_id in scheduler.memory_ids()
+        assert report.missing_vector == 0
+        assert scheduler.memory_ids() == {record_id}
+        assert maintenance.fts_index.get_metadata(OWNER_ID, survivor) is not None
 
     def test_a_missing_vector_point_is_detected(self, maintenance, engine, scheduler) -> None:
         """MNT-03"""
 
-        record_id = index_record(maintenance, engine)
+        record_id = index_record(maintenance, engine, display_text="alpha")
+        index_record(maintenance, engine, display_text="beta")
         maintenance.vector_index.delete(OWNER_ID, record_id, None)
         report = maintenance.reconcile(now=FROZEN_NOW)
         assert report.missing_vector == 1
-        assert record_id in scheduler.memory_ids()
+        assert report.missing_fts == 0
+        assert scheduler.memory_ids() == {record_id}
 
     def test_a_ghost_row_is_detected(self, maintenance, engine, scheduler) -> None:
         """MNT-05 — the worst drift, because the user cannot see it.
@@ -270,7 +275,8 @@ class TestReconciliation:
         reconciliation.
         """
 
-        record_id = index_record(maintenance, engine)
+        record_id = index_record(maintenance, engine, display_text="alpha")
+        survivor = index_record(maintenance, engine, display_text="beta")
         with engine.begin() as connection:
             from sqlalchemy import text as sql_text
 
@@ -278,7 +284,12 @@ class TestReconciliation:
                 sql_text("DELETE FROM memory_records WHERE id = :i"), {"i": record_id}
             )
         report = maintenance.reconcile(now=FROZEN_NOW)
-        assert report.ghost_fts >= 1 or report.ghost_vector >= 1
+        # Exact counts with a survivor present, not `>= 1`: a sweep that counted
+        # every derived row as a ghost would also satisfy `>= 1`, so the healthy
+        # record is what makes this fail if the scoping is wrong.
+        assert (report.ghost_fts, report.ghost_vector) == (1, 1)
+        assert report.checked == 1
+        assert maintenance.fts_index.get_metadata(OWNER_ID, survivor) is not None
 
     def test_a_dry_run_changes_nothing(self, maintenance, engine, scheduler) -> None:
         """MNT-01b — an operator has to be able to look before acting."""

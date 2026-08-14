@@ -286,16 +286,24 @@ class FakeEmbeddingProvider:
         digest = hashlib.sha256(text.encode()).digest()
         return [digest[index % len(digest)] / 255.0 for index in range(self.dimension)]
 
-    def health(self):
-        from app.services.memory.index_contracts import ProviderHealth
+    def health(self) -> bool:
+        """A plain ``bool``, because that is what the protocol declares.
 
-        return ProviderHealth(
-            provider=self.provider_name,
-            model=self.model_name,
-            provider_version=self.provider_version,
-            healthy=self.raises is None,
-            failure_code=None if self.raises is None else "embedding_unavailable",
-        )
+        This returned a ``ProviderHealth`` model until the parallel session
+        found the trap: ``ProviderHealth`` is a pydantic model with no
+        ``__bool__``, so it is *always truthy*.  Consumers written against the
+        real ``EmbeddingProvider`` protocol — which declares ``health() -> bool``
+        — do ``if not provider.health()``, and against the old double that
+        branch was unreachable even with ``raises`` set.
+
+        A degradation test using it would still have gone green: ``embed()``
+        raises on the next line and an outer handler catches it, so the right
+        outcome arrives by the wrong path and the test proves nothing about the
+        health check. Nothing in this suite was hitting it yet, which is exactly
+        why it was worth fixing before something did.
+        """
+
+        return self.raises is None
 
 
 # --------------------------------------------------------------------------
