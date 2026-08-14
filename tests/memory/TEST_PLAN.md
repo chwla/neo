@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1902 tests passing, 28 strict `xfail`s recording ten real defects —
-**778 of 880 plan items.**
+**Progress:** 1905 tests passing, 28 strict `xfail`s recording ten real defects —
+**781 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
 | 2 — Extraction | 148 | 2 | 2 | 152 |
-| 3 — Persistence | 202 | 0 | 3 | 205 |
+| 3 — Persistence | 205 | 0 | 0 | 205 |
 | 4 — Derived / async | 90 | 1 | 10 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 41 | 2 | 34 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **778** | **6** | **96** | **880** |
+| **Total** | **781** | **6** | **93** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -924,9 +924,9 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `source_changes.py` — SRC
 
-- [ ] **SRC-01** `delete_message_source` detaches every source row for the message.
-- [ ] **SRC-02** A message with no sources is a clean no-op.
-- [ ] **SRC-03** A memory losing its last source is flagged for review.
+- [x] **SRC-01** `delete_message_source` detaches every source row for the message.
+- [x] **SRC-02** A message with no sources is a clean no-op.
+- [x] **SRC-03** A memory losing its last source is flagged for review.
 - [x] **SRC-04** Canonical state is never mutated.
 - [x] **SRC-05** The operation is owner-scoped.
 

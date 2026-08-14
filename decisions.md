@@ -1317,3 +1317,48 @@ record's existence to someone who cannot read it.
 
 That makes six of these across my slice. The tell is always the same: an assertion that
 accepts a range or a set is an assertion I have not finished writing.
+
+---
+
+## 36b. The deferred SRC tests, and the vacuous one they replaced
+
+Decision 35b left `SRC-01/02/03` open because they needed genuinely persisted source rows
+and I would not approximate them. They are done now, and building the fixture properly
+exposed that one of the tests I *had* written was vacuous.
+
+`SRC-04` ("detaching never runs a lifecycle command") passed a randomly generated
+`source_id`. That returns `SOURCE_NOT_FOUND`, so nothing was detached, so "the record is
+still active" was trivially true — the test would have passed against an implementation
+that deleted the memory on every real detach. Exactly the failure the parallel session kept
+finding in its own work, and the fifth instance between us.
+
+The replacement creates a memory with real evidence, reads the actual source id out of the
+database, detaches it, and asserts three things at once: the source row is now inactive, the
+memory is **still active**, and the outcome is `NEEDS_REVIEW`. That last part is the design
+worth pinning — editing away the message you learned something from is not a request to
+forget it, so a memory whose last support disappears is surfaced for review rather than
+silently kept or silently deleted.
+
+The "unknown source id" case is now its own named test, so the real ones cannot quietly
+collapse back into it.
+
+**One fixture detail worth recording**, because it cost me a confusing empty result: the
+`engine` fixture and the mutation coordinator use *different database files*. The
+coordinator builds its own engine from `execution_context.database_url` (`profile.db`),
+while `engine` is a separately migrated `memory.db`. Tests that go through an adapter and
+then query rows directly must query the coordinator's database, not the fixture's.
+
+## 37b. `detach_source` refuses cross-owner access two ways, and the difference is deliberate
+
+Writing `SRC-05b` I found the two paths behave differently, and both are right:
+
+- A **command** whose owner disagrees with the context returns `SourceChangeOutcome.
+  OWNER_MISMATCH` as a *result*. That is a caller error, and the caller should see it in the
+  value they get back.
+- A **context** pointing at a database bound to someone else *raises*, from the migration
+  binding check, before the connection is usable. That is an environment fault, and it
+  should stop everything.
+
+Both now have tests, and the docstrings say which is which. Worth the distinction because
+"cross-owner access is refused" would have been satisfied by testing either one, while
+missing that the system draws a line between a bad request and a bad deployment.

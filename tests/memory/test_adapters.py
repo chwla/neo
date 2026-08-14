@@ -16,6 +16,7 @@ background worker got there first with a coincidentally identical id.
 from __future__ import annotations
 
 from dataclasses import replace
+from uuid import UUID
 
 import pytest
 
@@ -603,19 +604,21 @@ class TestSourceChanges:
                 source_id=uuid4(),
             )
 
-    def test_detaching_never_runs_a_lifecycle_command(
+    def test_detaching_a_source_that_does_not_exist_reports_so(
         self, mutation_coordinator, adapter_context
     ) -> None:
-        """SRC-04 — removing provenance is not removing the memory.
+        """SRC-02 — an unknown source id is a clean, reported no-op.
 
-        The docstring on the coordinator says it "never infers or runs a
-        lifecycle command", and that is the security-relevant part: editing a
-        message must not silently delete what was learned from it. The record
-        stays active; losing its last source is a review signal, not a delete.
+        Worth its own test because it is what my first attempt at SRC-04
+        accidentally exercised: passing a random source id makes every "the
+        record survived" assertion trivially true, since nothing happened at
+        all. Naming this case separately means the tests below cannot quietly
+        collapse into it.
         """
 
         from uuid import uuid4
 
+        from app.services.memory.contracts import SourceChangeOutcome
         from app.services.memory.source_changes import MemorySourceChangeCoordinator
 
         generic = GenericMemoryAdapter(mutation_coordinator)
@@ -624,15 +627,186 @@ class TestSourceChanges:
         )
         memory_id = created.mutation.affected_memory_ids[0]
 
-        coordinator = MemorySourceChangeCoordinator(generic)
-        coordinator.delete_message_source(
+        result = MemorySourceChangeCoordinator(generic).delete_message_source(
             adapter_context,
             message_id="m1",
             edit_revision=1,
             target=TargetRevision(memory_id=memory_id, expected_revision=1),
             source_id=uuid4(),
         )
+        assert result.outcome is SourceChangeOutcome.SOURCE_NOT_FOUND
         assert len(generic.list_active_memories(adapter_context)) == 1
+
+    def test_detaching_the_last_source_flags_review_and_keeps_the_memory(
+        self, mutation_coordinator, adapter_context
+    ) -> None:
+        """SRC-01 / SRC-03 / SRC-04 — the case that actually matters.
+
+        A real persisted source is detached here, not an invented id.
+
+        Three things have to hold at once. The source is marked inactive, so the
+        provenance really is gone. The memory is **still active**, because
+        editing away the message you learned something from is not the same as
+        asking to forget it — the coordinator's docstring says it never infers a
+        lifecycle command, and this is the security-relevant half of that. And
+        losing the last supporting source raises `NEEDS_REVIEW`, so a memory
+        with nothing left standing behind it is surfaced rather than either
+        silently kept or silently deleted.
+        """
+
+        from dataclasses import replace as dataclass_replace
+
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sql_text
+
+        from app.services.memory.contracts import (
+            EvidenceRole,
+            EvidenceSpan,
+            SourceChangeOutcome,
+        )
+        from app.services.memory.source_changes import MemorySourceChangeCoordinator
+
+        generic = GenericMemoryAdapter(mutation_coordinator)
+        context = dataclass_replace(
+            adapter_context,
+            evidence=(
+                EvidenceSpan(
+                    role=EvidenceRole.ASSERTION,
+                    text="improve at urban sketching",
+                    start=0,
+                    end=26,
+                ),
+            ),
+        )
+        created = generic.create(context, structured(), idempotency_key="memory:manual:create-1")
+        memory_id = created.mutation.affected_memory_ids[0]
+
+        # Read the real source id from the coordinator's own database, which is
+        # a different file from the `engine` fixture: the coordinator builds its
+        # engine from `database_url`.
+        database = create_engine(adapter_context.execution.database_url)
+        with database.connect() as connection:
+            sources = connection.execute(
+                sql_text("SELECT id, is_active FROM memory_sources WHERE memory_id = :m"),
+                {"m": str(memory_id)},
+            ).all()
+        assert len(sources) == 1, "setup failed: no source row was persisted"
+        source_id, active_before = sources[0]
+        assert active_before == 1
+
+        result = MemorySourceChangeCoordinator(generic).delete_message_source(
+            context,
+            message_id="m1",
+            edit_revision=1,
+            target=TargetRevision(memory_id=memory_id, expected_revision=1),
+            source_id=UUID(source_id),
+        )
+
+        assert result.outcome is SourceChangeOutcome.NEEDS_REVIEW
+        assert result.review_required is True
+        assert result.remaining_active_source_count == 0
+
+        with database.connect() as connection:
+            still_active = connection.scalar(
+                sql_text("SELECT is_active FROM memory_sources WHERE id = :i"),
+                {"i": source_id},
+            )
+        assert still_active == 0
+        assert len(generic.list_active_memories(adapter_context)) == 1
+
+    def test_detaching_the_same_source_twice_is_reported_not_repeated(
+        self, mutation_coordinator, adapter_context
+    ) -> None:
+        """SRC-01b — a retried edit must not double-count the detachment."""
+
+        from dataclasses import replace as dataclass_replace
+
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sql_text
+
+        from app.services.memory.contracts import (
+            EvidenceRole,
+            EvidenceSpan,
+            SourceChangeOutcome,
+        )
+        from app.services.memory.source_changes import MemorySourceChangeCoordinator
+
+        generic = GenericMemoryAdapter(mutation_coordinator)
+        context = dataclass_replace(
+            adapter_context,
+            evidence=(
+                EvidenceSpan(
+                    role=EvidenceRole.ASSERTION,
+                    text="improve at urban sketching",
+                    start=0,
+                    end=26,
+                ),
+            ),
+        )
+        created = generic.create(context, structured(), idempotency_key="memory:manual:create-1")
+        memory_id = created.mutation.affected_memory_ids[0]
+        database = create_engine(adapter_context.execution.database_url)
+        with database.connect() as connection:
+            source_id = connection.scalar(
+                sql_text("SELECT id FROM memory_sources WHERE memory_id = :m"),
+                {"m": str(memory_id)},
+            )
+
+        coordinator = MemorySourceChangeCoordinator(generic)
+        arguments = {
+            "message_id": "m1",
+            "edit_revision": 1,
+            "target": TargetRevision(memory_id=memory_id, expected_revision=1),
+            "source_id": UUID(source_id),
+        }
+        first = coordinator.delete_message_source(context, **arguments)
+        second = coordinator.delete_message_source(context, **arguments)
+
+        assert first.outcome is SourceChangeOutcome.NEEDS_REVIEW
+        assert second.outcome is SourceChangeOutcome.ALREADY_DETACHED
+        assert second.remaining_active_source_count == 0
+
+    def test_a_command_for_another_owner_is_reported_not_raised(
+        self, mutation_coordinator, adapter_context
+    ) -> None:
+        """SRC-05b — the soft-fail path, which the test above does not reach.
+
+        `detach_source` has two owner defences and they behave differently. The
+        test above points the *context* at a foreign database and the migration
+        binding check raises. This one keeps the context intact and sends a
+        command whose owner disagrees, which returns `OWNER_MISMATCH` as a
+        result rather than raising.
+
+        Both are correct, and the difference is deliberate: a mismatched command
+        is a caller error that the caller should see in the result, while a
+        database bound to someone else is an environment fault that must stop
+        everything.
+        """
+
+        from uuid import uuid4
+
+        from app.services.memory.contracts import (
+            DetachMemorySourceCommand,
+            SourceChangeOutcome,
+        )
+
+        generic = GenericMemoryAdapter(mutation_coordinator)
+        created = generic.create(
+            adapter_context, structured(), idempotency_key="memory:manual:create-1"
+        )
+        memory_id = created.mutation.affected_memory_ids[0]
+
+        result = generic.detach_source(
+            adapter_context,
+            DetachMemorySourceCommand(
+                owner_id=OTHER_OWNER_ID,
+                idempotency_key="memory:source_change:x",
+                target=TargetRevision(memory_id=memory_id, expected_revision=1),
+                source_id=uuid4(),
+            ),
+        )
+        assert result.outcome is SourceChangeOutcome.OWNER_MISMATCH
+        assert result.reason == "command_owner_context_mismatch"
 
     def test_the_detach_key_covers_the_edit_revision(self) -> None:
         """SRC-02b — editing a message twice is two distinct detaches.
