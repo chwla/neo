@@ -26,6 +26,7 @@ from app.services.memory.contracts import (
 from app.services.memory.extraction_coordinator import MemoryExtractionCoordinator
 from app.services.memory.extraction_contracts import NormalizedExtractionCandidate
 from app.services.memory.taxonomy import Cardinality, MemoryType
+from tests.memory.doubles import ScoredDuplicateFinder
 
 OWNER = "11111111-1111-4111-8111-111111111111"
 
@@ -164,6 +165,121 @@ class TestSemanticDuplicate:
         candidate = _candidate("simple 25-minute sessions")
         assert _coordinator(finder)._semantic_duplicate(candidate, (existing,)) is None
 
+
+class TestTheThresholdBoundary:
+    """EXC-14 — the coordinator's half of the similarity threshold.
+
+    The coordinator does not compute similarity; it hands the configured
+    threshold to the finder and acts on the answer. Two things are therefore
+    its responsibility, and neither was covered before: that the threshold it
+    passes is the one it was configured with, and that a score on either side
+    of it produces the opposite outcome.
+
+    `StaticDuplicateFinder` cannot show this — it answers from a script and
+    ignores `threshold` entirely, so every test written against it would pass
+    unchanged if the coordinator stopped passing the threshold at all.
+    `ScoredDuplicateFinder` applies the same `>=` comparison the real finder
+    makes.
+    """
+
+    @staticmethod
+    def _pair(score: float):
+        existing = _snapshot("simple 25-minute practice sessions with perspective steps")
+        finder = ScoredDuplicateFinder({existing.memory_id: score})
+        candidate = _candidate("simple 25-minute sessions with perspective steps")
+        return existing, finder, candidate
+
+    def test_a_score_above_the_threshold_is_a_duplicate(self) -> None:
+        """EXC-14d"""
+
+        existing, finder, candidate = self._pair(0.94)
+
+        found = _coordinator(finder, threshold=0.93)._semantic_duplicate(
+            candidate, (existing,)
+        )
+
+        assert found == existing
+
+    def test_a_score_exactly_at_the_threshold_is_a_duplicate(self) -> None:
+        """EXC-14e — the comparison is inclusive, and that is the case a `>` breaks.
+
+        A restatement scoring exactly at the configured threshold is the one
+        that decides whether the setting means "at least this similar" or
+        "strictly more similar than this". Both readings are defensible; only
+        one is implemented, and this pins which.
+        """
+
+        existing, finder, candidate = self._pair(0.93)
+
+        found = _coordinator(finder, threshold=0.93)._semantic_duplicate(
+            candidate, (existing,)
+        )
+
+        assert found == existing
+
+    def test_a_score_below_the_threshold_is_not_a_duplicate(self) -> None:
+        """EXC-14f — the other side, and the more dangerous direction.
+
+        A false duplicate is worse than a missed one: missing it stores a second
+        copy, which reconciliation and a later delete can still find. Treating
+        two different facts as one silently discards the second.
+        """
+
+        existing, finder, candidate = self._pair(0.92)
+
+        found = _coordinator(finder, threshold=0.93)._semantic_duplicate(
+            candidate, (existing,)
+        )
+
+        assert found is None
+
+    def test_the_configured_threshold_is_the_one_handed_to_the_finder(self) -> None:
+        """EXC-14g — not a default baked in somewhere between the two."""
+
+        existing, finder, candidate = self._pair(0.5)
+
+        _coordinator(finder, threshold=0.81)._semantic_duplicate(candidate, (existing,))
+
+        assert [call[2] for call in finder.calls] == [0.81]
+
+    def test_the_same_score_flips_outcome_with_the_threshold(self) -> None:
+        """EXC-14h — the strongest form: one score, two settings, opposite answers.
+
+        Each assertion above fixes the threshold and varies the score. This
+        fixes the score and varies the threshold, which is what proves the
+        setting is doing the work rather than the finder deciding on its own.
+        """
+
+        existing, finder, candidate = self._pair(0.90)
+
+        lenient = _coordinator(finder, threshold=0.85)._semantic_duplicate(
+            candidate, (existing,)
+        )
+        strict = _coordinator(finder, threshold=0.95)._semantic_duplicate(
+            candidate, (existing,)
+        )
+
+        assert lenient == existing
+        assert strict is None
+
+    def test_the_best_scoring_comparable_record_wins(self) -> None:
+        """EXC-14i — with several candidates above the threshold, one is chosen.
+
+        The finder is handed every comparable record at once. Returning an
+        arbitrary one above the threshold would make the result depend on set
+        iteration order, which is not stable across runs.
+        """
+
+        weak = _snapshot("25-minute sessions", slot="preference:global:a")
+        strong = _snapshot("simple 25-minute practice sessions", slot="preference:global:b")
+        finder = ScoredDuplicateFinder({weak.memory_id: 0.94, strong.memory_id: 0.99})
+        candidate = _candidate("simple 25-minute sessions")
+
+        found = _coordinator(finder, threshold=0.93)._semantic_duplicate(
+            candidate, (weak, strong)
+        )
+
+        assert found == strong
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -2145,3 +2145,41 @@ with no second source — and it is the one I came closest to shipping, because 
 number I wanted. The check that caught it was the one that has caught every other instance:
 recount from the checkboxes and compare against the sentence, rather than trusting the
 sentence.
+
+## 77. `EXC-14` needed a double that could fail, not another test
+
+The item asks that the coordinator "respects the similarity threshold at both sides of the
+boundary". It sat partial for the whole exercise, and the reason was not effort — it was
+that the available double could not express the property.
+
+`StaticDuplicateFinder` answers from a script and ignores `threshold` entirely. Every test
+written against it — and there were several, covering which records are eligible and what
+happens when the finder fails — would pass **unchanged if the coordinator stopped passing a
+threshold at all**. The boundary was unreachable through it, so the item stayed `[~]` rather
+than being written badly.
+
+`ScoredDuplicateFinder` scores each comparable record from a supplied map and applies the
+same `>=` the real finder does. That makes five properties testable, and they divide into
+two kinds:
+
+- *Fix the threshold, vary the score*: above, exactly at, and below. The equal case is the
+  one that decides whether the setting means "at least this similar" or "strictly more
+  similar than this" — both readings are defensible and only one is implemented.
+- *Fix the score, vary the threshold*: one score, two settings, opposite answers. This is
+  the stronger form, because it is the only one that shows the **setting** is doing the work
+  rather than the finder deciding on its own.
+
+**I mutation-tested the result rather than trusting it.** Replacing
+`threshold=self.duplicate_threshold` with a hardcoded `0.5` turns three of the five red.
+That is the check these tests exist to survive, and running it took a minute — cheap
+compared with the eleven tests in this codebase that turned out to assert nothing.
+
+One direction is worth naming: a *false* duplicate is worse than a missed one. Missing it
+stores a second copy, which reconciliation and a later delete can still find. Treating two
+different facts as one silently discards the second, with nothing left to reconcile against.
+That asymmetry is why the below-threshold case gets its own test rather than being implied
+by the others.
+
+With this, the plan reaches **880 of 880 with nothing partial and nothing open** — and the
+number is recounted from the checkboxes rather than asserted, for the reason decision 76
+describes.

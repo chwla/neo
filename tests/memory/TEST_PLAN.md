@@ -12,27 +12,25 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 2147 tests passing, **zero `xfail`s** — every one of the thirteen recorded
-defects has been fixed. **879 of 880 plan items covered, 1 partial, 0 open.**
+**Progress:** 2153 tests passing, **zero `xfail`s** — every one of the thirteen recorded
+defects has been fixed. **880 of 880 plan items covered, 0 partial, 0 open.**
 
-Four of the five formerly-partial items are now covered outright: `INF-06` (the frozen
-clock has consumers), `EXC-17` (PRV-02 covers the at-rest half), and `EXC-19` and `OBX-15`,
-which were partial because they described behaviour the code did not have and now do.
-**`EXC-14` remains partial** — the similarity-threshold boundary is covered for the
-duplicate finder itself (RUN-19) but not through the coordinator, which is what the item
-asks for.
+All five formerly-partial items are now covered outright: `INF-06` (the frozen clock has
+consumers), `EXC-17` (PRV-02 covers the at-rest half), `EXC-19` and `OBX-15` (which were
+partial because they described behaviour the code did not have), and `EXC-14`, whose
+threshold boundary needed a duplicate-finder double that actually applies a threshold.
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 8 | 0 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 151 | 1 | 0 | 152 |
+| 2 — Extraction | 152 | 0 | 0 | 152 |
 | 3 — Persistence | 205 | 0 | 0 | 205 |
 | 4 — Derived / async | 101 | 0 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
 | 7 — Cross-cutting | 47 | 0 | 0 | 47 |
-| **Total** | **879** | **1** | **0** | **880** |
+| **Total** | **880** | **0** | **0** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -609,10 +607,12 @@ The integration seam. Uses a scripted model and a real (in-memory) store.
 - [x] **EXC-11** An ungrounded proposal is rejected with `UNGROUNDED_CANDIDATE`.
 - [x] **EXC-12** A semantic duplicate is not stored twice. `test_semantic_duplicate.py`
 - [x] **EXC-13** …and the duplicate check is owner-scoped.
-- [~] **EXC-14** …and respects the similarity threshold at both sides of the boundary.
-      Covered: the finder is not consulted with nothing to compare against, and a
-      failing finder never loses the memory. The threshold boundary itself still
-      needs the fixed-dimension embedding fake (INF-07).
+- [x] **EXC-14** …and respects the similarity threshold at both sides of the boundary.
+      Above, exactly at (the comparison is inclusive), and below; the configured threshold
+      is the one handed to the finder; and one score with two thresholds gives opposite
+      answers, which is what proves the setting does the work. Needed a threshold-aware
+      double — `StaticDuplicateFinder` ignores `threshold`, so every test using it would
+      pass unchanged if the coordinator stopped passing one. See `decisions.md` 77.
 - [x] **EXC-15** A PROHIBITED candidate is never persisted, and the rejection is recorded.
 - [x] **EXC-16** A SENSITIVE candidate without explicit request goes to review, redacted
       as `REDACTED_SENSITIVE_ASSERTION`.

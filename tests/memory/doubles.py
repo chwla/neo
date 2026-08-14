@@ -238,6 +238,44 @@ class StaticDuplicateFinder:
         return None
 
 
+class ScoredDuplicateFinder:
+    """A duplicate finder that actually applies the threshold it is handed.
+
+    ``StaticDuplicateFinder`` answers from a script and ignores ``threshold``
+    entirely.  That is the right shape for testing duplicate *policy* — which
+    records are eligible for comparison, what happens to the slot afterwards —
+    but it cannot exercise the boundary, because it never compares anything to
+    the threshold.  Every test written against it would pass identically if the
+    coordinator stopped passing the threshold through at all.
+
+    This one scores each comparable record from a supplied map and returns the
+    best match only when it reaches the threshold, using the same ``>=``
+    comparison the real finder makes.  A record absent from the map scores zero,
+    so a test only has to name the record it cares about.
+    """
+
+    def __init__(self, scores: dict[UUID, float] | None = None) -> None:
+        self.scores = scores or {}
+        self.calls: list[tuple[str, frozenset[UUID], float]] = []
+
+    def __call__(
+        self,
+        display_text: str,
+        candidates: frozenset[UUID],
+        *,
+        threshold: float,
+    ) -> UUID | None:
+        self.calls.append((display_text, candidates, threshold))
+        best: tuple[UUID, float] | None = None
+        for memory_id in candidates:
+            score = float(self.scores.get(memory_id, 0.0))
+            if best is None or score > best[1]:
+                best = (memory_id, score)
+        if best is not None and best[1] >= threshold:
+            return best[0]
+        return None
+
+
 # --------------------------------------------------------------------------
 # INF-07 — a fake embedding provider
 # --------------------------------------------------------------------------
