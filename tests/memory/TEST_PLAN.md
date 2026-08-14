@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1762 tests passing, 28 strict `xfail`s recording ten real defects —
-**710 of 880 plan items.**
+**Progress:** 1791 tests passing, 28 strict `xfail`s recording ten real defects —
+**728 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -21,11 +21,11 @@ routers.
 | 1 — Foundations | 196 | 0 | 0 | 196 |
 | 2 — Extraction | 148 | 2 | 2 | 152 |
 | 3 — Persistence | 182 | 0 | 23 | 205 |
-| 4 — Derived / async | 72 | 1 | 28 | 101 |
+| 4 — Derived / async | 90 | 1 | 10 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 11 | 0 | 66 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **710** | **4** | **166** | **880** |
+| **Total** | **728** | **4** | **148** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1043,29 +1043,29 @@ The transactional boundary. Real SQLite, real transactions.
 
 ### `metrics.py` / `diagnostics.py` — DIA
 
-- [ ] **DIA-01** `MemoryDerivedMetrics.record` increments existing counters and inserts
+- [x] **DIA-01** `MemoryDerivedMetrics.record` increments existing counters and inserts
       new ones.
-- [ ] **DIA-02** …rejects an unknown metric code.
-- [ ] **DIA-03** …is owner-scoped.
-- [ ] **DIA-04** `snapshot` returns every code, defaulting to zero.
-- [ ] **DIA-05** `identify_database_owner` returns the bound owner and identity.
-- [ ] **DIA-06** …raises on an unbound database.
-- [ ] **DIA-07** `_require_sqlite` rejects a non-SQLite engine.
-- [ ] **DIA-08** `run_sqlite_integrity_check` returns `("ok",)` on a healthy database.
-- [ ] **DIA-09** `create_sqlite_backup` writes a file, and the manifest checksum matches
+- [x] **DIA-02** …rejects an unknown metric code.
+- [x] **DIA-03** …is owner-scoped.
+- [x] **DIA-04** `snapshot` returns every code, defaulting to zero.
+- [x] **DIA-05** `identify_database_owner` returns the bound owner and identity.
+- [x] **DIA-06** …raises on an unbound database.
+- [x] **DIA-07** `_require_sqlite` rejects a non-SQLite engine.
+- [x] **DIA-08** `run_sqlite_integrity_check` returns `("ok",)` on a healthy database.
+- [x] **DIA-09** `create_sqlite_backup` writes a file, and the manifest checksum matches
       it.
-- [ ] **DIA-10** …the backup is restorable and byte-identical in content checksum.
-- [ ] **DIA-11** `schema_checksum` is stable and changes when the schema changes.
-- [ ] **DIA-12** `canonical_data_checksum` is stable, owner-scoped, and changes on a
+- [x] **DIA-10** …the backup is restorable and byte-identical in content checksum.
+- [x] **DIA-11** `schema_checksum` is stable and changes when the schema changes.
+- [x] **DIA-12** `canonical_data_checksum` is stable, owner-scoped, and changes on a
       record change.
-- [ ] **DIA-13** …is insensitive to row ordering.
-- [ ] **DIA-14** `inspect_memory_invariants` is healthy on a clean store.
-- [ ] **DIA-15** …reports a violation for two active exclusive records on one slot
+- [x] **DIA-13** …is insensitive to row ordering.
+- [x] **DIA-14** `inspect_memory_invariants` is healthy on a clean store.
+- [x] **DIA-15** …reports a violation for two active exclusive records on one slot
       (inserted with constraints bypassed).
 - [ ] **DIA-16** …reports orphan sources / relations / derived rows.
-- [ ] **DIA-17** …reports a cross-owner row.
-- [ ] **DIA-18** `MemoryInvariantReport.healthy` is False whenever violations exist.
-- [ ] **DIA-19** Violations name the offending ids.
+- [x] **DIA-17** …reports a cross-owner row.
+- [x] **DIA-18** `MemoryInvariantReport.healthy` is False whenever violations exist.
+- [x] **DIA-19** Violations name the offending ids.
 
 ---
 

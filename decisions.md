@@ -1106,3 +1106,59 @@ justified by a difference in contract, and when the difference goes away so does
 justification. A stale explanation for why something exists is more expensive than the
 duplication itself, because the next reader has to verify it before they can trust anything
 around it.
+
+---
+
+## 30b. The SCH-14 defect has no preventer, but it does have a detector
+
+*(Numbered 30b because the parallel session took 30–36; mine continue from here.)*
+
+`DIA-15` is the most useful test in the diagnostics file, and it only works *because*
+`SCH-14` is unfixed.
+
+`SCH-14` is the finding that the unique index guaranteeing one active record per exclusive
+slot stops firing at global scope — migration 0003 added the nullable `scope_project_id` to
+it, and SQL unique indexes treat NULLs as distinct. The database will accept the second
+row.
+
+`inspect_memory_invariants` runs its own `GROUP BY subject_key, memory_type, domain_key,
+slot_key HAVING count(*) > 1` and catches exactly that pair. So the invariant checker finds
+what the constraint fails to prevent.
+
+That distinction is worth stating plainly, because it changes how bad `SCH-14` is. Without
+a detector it would be a silent corruption: two contradictory answers to "what is my name?"
+with nothing able to tell you. With one, an operator can ask whether the gap has actually
+cost anything — and when I checked the real profile databases earlier, it hadn't. The
+finding stays serious, but it is *findable*, and the fix ordering I recorded (check for
+duplicates first, then rebuild the index) has a tool to do the checking with.
+
+The test is written so that repairing `SCH-14` turns it red: the inserts it depends on start
+failing. That is the correct outcome, and the docstring says what to rewrite it into.
+
+## 31b. Three more plan items that were wrong about the code
+
+Same pattern as decisions 21 and 28 — my plan encoded assumptions from a module's shape
+rather than its source. All three are pinned as-is with the reasoning:
+
+- **`DIA-04`**: `snapshot()` returns only codes that have been recorded, not a zero-filled
+  dict of every code. Defensible — an absent key means "never happened" while a present
+  zero would mean "happened and counted zero", and for counters like *semantic hits dropped
+  for wrong owner* that difference is real. The cost is that consumers must write
+  `.get(code, 0)`, which is now written down rather than discovered.
+- **`DIA-03`**: a metrics reader built for another owner does not return zeros — it raises.
+  Every call re-checks the database's owner binding. That is stronger than what I assumed
+  and better for a per-profile store, because a reader silently returning zeros against the
+  wrong profile is indistinguishable from a healthy idle one.
+- **`DIA-06`**: an unmigrated database fails with `OperationalError` (no binding table),
+  not the `ValueError` raised when the table exists with the wrong number of rows. Two
+  distinct causes, both refusing. I split it into two tests rather than assert one broad
+  exception, so the migrated-but-unbound case is covered on its own.
+
+## 32b. Tier 4 is closed except for orphan detection
+
+Ten items remain open in Tier 4, and one is worth naming: `DIA-16` (orphan sources,
+relations and derived rows). I marked it open rather than claiming it — the diagnostics
+module does check for orphans, but constructing genuine orphans requires defeating the
+foreign keys that exist to prevent them, and doing that convincingly needs the
+`PRAGMA foreign_keys` manipulation that the schema tests already own. It belongs with
+`SCH`, not here, and pretending otherwise would have inflated the count.
