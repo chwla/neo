@@ -13,7 +13,7 @@ routers.
 `[x]` covered and passing.
 
 **Progress:** 2080 tests passing, 31 strict `xfail`s recording thirteen real defects —
-**856 of 880 plan items.**
+**866 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -24,8 +24,8 @@ routers.
 | 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
-| 7 — Cross-cutting | 28 | 0 | 19 | 47 |
-| **Total** | **856** | **5** | **19** | **880** |
+| 7 — Cross-cutting | 38 | 0 | 9 | 47 |
+| **Total** | **866** | **5** | **9** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1420,7 +1420,7 @@ These are the ones that decide whether the layer is genuinely safe to use.
 - [x] **CNC-02** Concurrent updates: one succeeds, the other gets a revision conflict.
 - [x] **CNC-03** Concurrent forget + update never produces a forgotten-but-updated row.
 - [x] **CNC-04** Concurrent outbox workers never double-apply an event.
-- [ ] **CNC-05** Reconcile running during a mutation doesn't corrupt derived state.
+- [x] **CNC-05** Reconcile running during a mutation doesn't corrupt derived state.
 - [x] **CNC-06** The same idempotency key used concurrently produces one operation.
 
 ### End-to-end journeys — E2E
@@ -1440,21 +1440,21 @@ Each runs the full stack — extraction → mutation → outbox → recall → p
 - [ ] **E2E-08** An identity fact ("my name is …") is answerable directly without the LLM.
 - [ ] **E2E-09** A sensitive fact stated without an explicit request is not stored and is
       surfaced for review.
-- [ ] **E2E-10** …with an explicit request is stored encrypted and recalled only on a
+- [x] **E2E-10** …with an explicit request is stored encrypted and recalled only on a
       direct question.
-- [ ] **E2E-11** A prohibited fact is never stored and the user is told so.
-- [ ] **E2E-12** Asking "what do you remember?" creates no new records (the duplicate
+- [x] **E2E-11** A prohibited fact is never stored and the user is told so.
+- [x] **E2E-12** Asking "what do you remember?" creates no new records (the duplicate
       regression, end to end).
-- [ ] **E2E-13** Incognito: nothing is written, nothing is recalled, and the store is
+- [x] **E2E-13** Incognito: nothing is written, nothing is recalled, and the store is
       byte-identical afterwards (canonical checksum).
-- [ ] **E2E-14** Memory disabled: same.
-- [ ] **E2E-15** Kill the process mid-mutation (simulated): the store is consistent and
+- [x] **E2E-14** Memory disabled: same.
+- [x] **E2E-15** Kill the process mid-mutation (simulated): the store is consistent and
       the outbox catches up on restart.
-- [ ] **E2E-16** Drop both derived indexes, run `rebuild_owner`, and recall returns
+- [x] **E2E-16** Drop both derived indexes, run `rebuild_owner`, and recall returns
       identical results to before.
-- [ ] **E2E-17** A cold start with an empty store answers "I don't have that" rather than
+- [x] **E2E-17** A cold start with an empty store answers "I don't have that" rather than
       erroring.
-- [ ] **E2E-18** Fifty facts across every type: recall stays within budget and returns the
+- [x] **E2E-18** Fifty facts across every type: recall stays within budget and returns the
       most relevant.
 
 ### Performance guardrails — PRF

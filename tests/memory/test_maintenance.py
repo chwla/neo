@@ -435,10 +435,26 @@ class TestRebuild:
         This is the most destructive operation in the module: it empties the
         index first. An unscoped clear would wipe every other profile's derived
         data on the way to fixing one.
+
+        **The positive control is the important half.** As first written this
+        created only a foreign record, rebuilt, and asserted the foreign record
+        survived — which passes just as well if the rebuild indexed *nothing*.
+        The parallel session hit the same shape in ISO-07 and flagged it: a
+        rebuild that quietly does nothing satisfies every "the other profile is
+        untouched" assertion you can write. So this now proves the rebuild ran
+        against this owner's records first, and only then that the other
+        profile's row survived.
         """
 
+        mine = insert_record(engine, display_text="my own memory")
         other = index_record(maintenance, engine, owner=OTHER_OWNER_ID)
-        maintenance.rebuild_owner(now=FROZEN_NOW)
+
+        result = maintenance.rebuild_owner(now=FROZEN_NOW)
+
+        assert result.canonical_eligible_count == 1, "the rebuild indexed nothing"
+        assert result.pending_target_count >= 1
+        assert str(result.owner_id) == OWNER_ID
+        assert mine
         assert maintenance.fts_index.get_metadata(OTHER_OWNER_ID, other) is not None
 
     def test_a_rebuild_verifies_against_the_canonical_checksum(self, maintenance, engine) -> None:
