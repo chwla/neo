@@ -90,48 +90,44 @@ class TestIdentityFacts:
 
     @pytest.mark.parametrize(
         "message",
-        [
-            "Call me Soham.",
-            "Please call me Soham.",
-            "You can call me Soham.",
-            "I'm Soham.",
-            "I am Soham.",
-        ],
+        ["Call me Soham.", "Please call me Soham.", "You can call me Soham."],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: policy._MEMORY_COMMAND lists 'call me' as an explicit "
-            "memory instruction, but preparser._DIRECT_NAME only matches "
-            "'My name is X' and 'I am called X'. So 'Call me Soham' passes the "
-            "extraction gate and then falls through to the model. Remove this "
-            "xfail when _DIRECT_NAME covers the call-me and bare-copula forms."
-        ),
-    )
-    def test_other_natural_name_phrasings_are_currently_left_to_the_model(
-        self, message: str
-    ) -> None:
-        """PRE-01b — a gap found while writing PRE-01, recorded not patched.
+    def test_call_me_is_handled_deterministically(self, message: str) -> None:
+        """PRE-01b — fixed. The gate and the preparser now agree about "call me".
 
-        Two parts of the system disagree about "call me X".
-
-        ``policy._MEMORY_COMMAND`` lists ``call me`` alongside ``remember`` and
-        ``forget`` as a verb that definitely signals a memory instruction — and
-        ``test_extraction_gate.py`` already asserts that "Call me Soham." opens
-        the gate.  But ``preparser._DIRECT_NAME`` matches only ``My name is X``
-        and ``I am called X``, so the turn passes the gate and then falls
-        through to the local model.
-
-        That means the most direct way a person states their name depends on the
-        model being available and getting it right, when a two-branch regex
-        already handles the less common phrasing deterministically.  A name is
-        the single identity fact a personal assistant is asked for most, so this
-        is the worst place to depend on a model call.
+        `policy._MEMORY_COMMAND` lists `call me` alongside `remember` and
+        `forget` as a verb that signals a memory instruction, and
+        `test_extraction_gate.py` already asserted it opens the gate. But
+        `_DIRECT_NAME` matched only "My name is X" and "I am called X", so the
+        turn passed the gate and then fell through to the local model — making
+        the most direct way a person states their name depend on a model being
+        installed and getting it right.
         """
 
         result = _parse(message)
+
         assert result.kind is PreparseKind.DETERMINISTIC_ASSERTION
         assert result.assertions[0].normalized_value == "Soham"
+        assert result.assertions[0].slot_hint == "name"
+
+    @pytest.mark.parametrize("message", ["I'm Soham.", "I am Soham."])
+    def test_a_bare_copula_is_deliberately_left_to_the_model(self, message: str) -> None:
+        """PRE-01c — not a gap. A rule here would be actively harmful.
+
+        "I am Soham" is indistinguishable, by any pattern this file could carry,
+        from "I am British", "I am Muslim" or "I am Deaf". A capitalised-word
+        heuristic matches all four identically.
+
+        The last two are sensitive categories. Filing one as `identity:global:name`
+        would be wrong on its face, and it would reach the store through the
+        deterministic path — which is precisely the path that does not consult
+        the model's judgement about what a statement means. Falling through is
+        the safer outcome and is the intended behaviour, not an omission.
+        """
+
+        result = _parse(message)
+
+        assert result.kind is not PreparseKind.DETERMINISTIC_ASSERTION
 
     def test_an_age_is_extracted(self) -> None:
         """PRE-02"""

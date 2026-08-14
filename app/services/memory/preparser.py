@@ -62,8 +62,19 @@ _CURRENT_LOCATION = re.compile(
     r"(?P<value>[^.?!]+)\.?$",
     re.IGNORECASE,
 )
+# "Call me X" is listed in ``policy._MEMORY_COMMAND`` as an explicit memory
+# instruction, so the gate already opens for it; without a branch here the most
+# direct way a person states their name fell through to the local model.
+#
+# A bare copula ("I'm Soham") is deliberately *not* here.  It cannot be told
+# apart from "I am British", "I am Muslim" or "I am Deaf" by any rule this file
+# could carry — the last two are sensitive categories, and filing one as a name
+# would both be wrong and skip the judgement the model exists to apply.
 _DIRECT_NAME = re.compile(
-    r"^(?:My\s+(?:full\s+)?name\s+is|I\s+am\s+called)\s+(?P<value>[^.?!]+)\.?$",
+    r"^(?:My\s+(?:full\s+)?name\s+is"
+    r"|I\s+am\s+called"
+    r"|(?:Please\s+|You\s+can\s+)?Call\s+me)"
+    r"\s+(?P<value>[^.?!]+)\.?$",
     re.IGNORECASE,
 )
 _DIRECT_AGE = re.compile(
