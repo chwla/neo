@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -35,8 +36,8 @@ from app.services.memory.diagnostics import (
 )
 from app.services.memory.index_contracts import DerivedMetricCode
 from app.services.memory.metrics import MemoryDerivedMetrics
-from tests.memory.conftest import OTHER_OWNER_ID, OWNER_ID
-from tests.memory.factories import insert_record
+from tests.memory.conftest import FROZEN_NOW, OTHER_OWNER_ID, OWNER_ID
+from tests.memory.factories import insert_operation, insert_record
 
 
 @pytest.fixture
@@ -386,6 +387,60 @@ class TestInvariants:
         insert_record(engine, display_text="Someone Else", **shared)
         report = inspect_memory_invariants(engine, owner_id=OWNER_ID)
         assert all(item.row_ids or item.detail for item in report.violations)
+
+    def test_an_orphaned_source_is_reported(self, engine) -> None:
+        """DIA-16 — provenance pointing at a record that no longer exists.
+
+        Like `OBX-11`, reaching this state requires switching foreign keys off,
+        and for the same reason: with `PRAGMA foreign_keys=ON` the source row's
+        key into `memory_records` makes the record undeletable. SQLite only
+        enforces that pragma per connection and defaults to off, so a database
+        touched by any process that did not set it — a migration script, a
+        `sqlite3` prompt — can genuinely reach this state.
+
+        That is precisely why the invariant check exists. It is the thing that
+        finds damage the constraints were supposed to prevent, and it can only
+        be trusted if it has been shown to actually fire.
+        """
+
+        from sqlalchemy import insert as sql_insert
+        from sqlalchemy import text as sql_text
+
+        from app.models.memory import MemorySource
+
+        record_id = insert_record(engine)
+        operation_id = insert_operation(engine)
+        source_id = str(uuid4())
+        with engine.begin() as connection:
+            connection.execute(
+                sql_insert(MemorySource).values(
+                    id=source_id,
+                    owner_id=OWNER_ID,
+                    memory_id=record_id,
+                    operation_id=operation_id,
+                    source_kind="chat_message",
+                    assertion_role="supports",
+                    source_content_hash="a" * 64,
+                    observed_at=FROZEN_NOW,
+                )
+            )
+
+        healthy = inspect_memory_invariants(engine, owner_id=OWNER_ID)
+        assert healthy.healthy is True, "setup should start from a clean store"
+
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                sql_text("DELETE FROM memory_records WHERE id = :i"), {"i": record_id}
+            )
+            connection.commit()
+
+        report = inspect_memory_invariants(engine, owner_id=OWNER_ID)
+        assert report.healthy is False
+        violation = next(
+            item for item in report.violations if item.code == "orphan_or_cross_owner_source"
+        )
+        assert violation.row_ids == (source_id,)
 
     def test_a_mismatched_owner_is_reported(self, engine) -> None:
         """DIA-17 — asking about a profile this database is not bound to."""

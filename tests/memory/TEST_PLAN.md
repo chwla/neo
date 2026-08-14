@@ -13,7 +13,7 @@ routers.
 `[x]` covered and passing.
 
 **Progress:** 1937 tests passing, 28 strict `xfail`s recording eleven real defects —
-**799 of 880 plan items.**
+**807 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -21,11 +21,11 @@ routers.
 | 1 — Foundations | 196 | 0 | 0 | 196 |
 | 2 — Extraction | 149 | 3 | 0 | 152 |
 | 3 — Persistence | 205 | 0 | 0 | 205 |
-| 4 — Derived / async | 98 | 1 | 2 | 101 |
+| 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
-| 6 — Config / runtime / HTTP | 50 | 2 | 25 | 77 |
+| 6 — Config / runtime / HTTP | 56 | 0 | 21 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **799** | **7** | **74** | **880** |
+| **Total** | **807** | **5** | **68** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -999,7 +999,7 @@ The transactional boundary. Real SQLite, real transactions.
 - [x] **OBX-24** `_refresh_event_state` marks the event done only when every delivery is
       terminal.
 - [x] **OBX-25** …marks it failed when any delivery dead-letters.
-- [ ] **OBX-26** `_set_derived_state` / `_set_derived_failure` keep
+- [x] **OBX-26** `_set_derived_state` / `_set_derived_failure` keep
       `memory_health_state` in step with the delivery.
 - [x] **OBX-27** Processing the same event twice is idempotent.
 - [x] **OBX-28** `schedule_repair` enqueues a reconciliation request with a bounded reason.
@@ -1062,7 +1062,7 @@ The transactional boundary. Real SQLite, real transactions.
 - [x] **DIA-14** `inspect_memory_invariants` is healthy on a clean store.
 - [x] **DIA-15** …reports a violation for two active exclusive records on one slot
       (inserted with constraints bypassed).
-- [ ] **DIA-16** …reports orphan sources / relations / derived rows.
+- [x] **DIA-16** …reports orphan sources / relations / derived rows.
 - [x] **DIA-17** …reports a cross-owner row.
 - [x] **DIA-18** `MemoryInvariantReport.healthy` is False whenever violations exist.
 - [x] **DIA-19** Violations name the offending ids.
@@ -1299,15 +1299,15 @@ Semantic path:
       returns 404. `_record_or_404` runs first and a forgotten record is no longer listed.
       Defensible — the second caller learns the record is gone rather than being told it
       deleted something twice. See `decisions.md` 55.
-- [~] **API-16** `GET /memory/candidates` lists pending candidates only. Empty-store case
-      covered; the "pending only" filter still needs a seeded candidate.
-- [ ] **API-17** `POST /candidates/{id}/accept` applies and returns the record.
+- [x] **API-16** `GET /memory/candidates` lists pending candidates only — `validated` and
+      `needs_review` are listed, `applied` and `rejected` are not.
+- [x] **API-17** `POST /candidates/{id}/accept` applies and returns the record.
 - [x] **API-18** …on an unknown candidate returns 404.
-- [ ] **API-19** …on an already-applied candidate is idempotent.
-- [~] **API-20** `POST /candidates/{id}/reject` rejects. Unknown-candidate 404 covered;
-      the reject path itself still needs a seeded candidate.
-- [ ] **API-21** …is idempotent.
-- [ ] **API-22** `_ensure_applied` turns a non-applied result into the right HTTP error
+- [x] **API-19** …on an already-applied candidate is idempotent.
+- [x] **API-20** `POST /candidates/{id}/reject` rejects, and the candidate leaves the
+      queue without a record being written.
+- [x] **API-21** …is idempotent.
+- [x] **API-22** `_ensure_applied` turns a non-applied result into the right HTTP error
       for every rejection code (parametrised).
 - [x] **API-23** Every route requires a profile and fails cleanly without one.
 - [x] **API-24** No route leaks another profile's data when given its ids.

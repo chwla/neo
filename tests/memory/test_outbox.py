@@ -882,6 +882,110 @@ class TestStalenessAndRepair:
         assert repairs[0].state == "pending"
 
 
+class TestDerivedHealthState:
+    """`memory_derived_state` is what health and coverage read; it must track reality."""
+
+    def _derived_rows(self, engine, memory_id: str):
+        from sqlalchemy.orm import Session
+
+        from app.models.memory import MemoryDerivedState
+
+        with Session(engine) as session:
+            return {
+                row.target: row
+                for row in session.scalars(
+                    select(MemoryDerivedState).where(MemoryDerivedState.memory_id == memory_id)
+                )
+            }
+
+    def test_a_successful_write_records_current_state_and_provider(self, engine, processor) -> None:
+        """OBX-26 — the health row is the only place coverage can read from.
+
+        Nothing else records "is this memory indexed, by which model". If the
+        row were not updated alongside the delivery, coverage would report
+        permanent drift for records that are in fact perfectly indexed.
+        """
+
+        record_id = insert_record(engine)
+        insert_event(engine, memory_id=record_id)
+        lease = processor.lease_batch(worker_id="worker-a").leases[0]
+        processor.process(lease)
+
+        rows = self._derived_rows(engine, record_id)
+        assert set(rows) == {"fts", "vector"}
+        assert rows["fts"].state == DerivedTargetState.CURRENT.value
+        assert rows["fts"].last_error_code is None
+        assert rows["vector"].provider == "fake"
+        assert rows["vector"].dimension == 8
+
+    def test_a_failure_records_the_error_against_the_target(
+        self, engine, processor_factory
+    ) -> None:
+        """OBX-26b — and a failure has to be visible in the same place.
+
+        A health row still saying `current` after the write failed would make a
+        broken index look healthy, which is the one thing health reporting must
+        never do.
+        """
+
+        class BrokenIndex:
+            def upsert(self, *args, **kwargs):
+                raise RuntimeError("index exploded")
+
+            def delete(self, *args, **kwargs):
+                raise RuntimeError("index exploded")
+
+            def get_metadata(self, *args, **kwargs):
+                return None
+
+        processor = processor_factory(fts_index=BrokenIndex())
+        record_id = insert_record(engine)
+        insert_event(engine, memory_id=record_id)
+        lease = processor.lease_batch(worker_id="worker-a").leases[0]
+        processor.process(lease)
+
+        rows = self._derived_rows(engine, record_id)
+        assert rows["fts"].state == DerivedTargetState.FAILED.value
+        assert rows["fts"].last_error_code == DerivedFailureCode.FTS_UPSERT_FAILED.value
+        # The healthy target is untouched by the other one's failure.
+        assert rows["vector"].state == DerivedTargetState.CURRENT.value
+        assert rows["vector"].last_error_code is None
+
+    def test_a_later_success_clears_an_earlier_error(self, engine, processor_factory) -> None:
+        """OBX-26c — recovery must actually clear the error, not layer over it.
+
+        A stale `last_error_code` on a now-healthy row would keep an alert
+        firing after the underlying problem was fixed, which is how people learn
+        to ignore alerts.
+        """
+
+        class FlakyIndex(SqliteMemoryFtsIndex):
+            fail = True
+
+            def upsert(self, document):
+                if FlakyIndex.fail:
+                    raise RuntimeError("index exploded")
+                return super().upsert(document)
+
+        flaky = FlakyIndex(engine)
+        processor = processor_factory(fts_index=flaky)
+        record_id = insert_record(engine)
+        insert_event(engine, memory_id=record_id)
+        processor.process(processor.lease_batch(worker_id="worker-a").leases[0])
+        assert self._derived_rows(engine, record_id)["fts"].last_error_code is not None
+
+        FlakyIndex.fail = False
+        try:
+            insert_event(engine, memory_id=record_id)
+            processor.process(processor.lease_batch(worker_id="worker-b").leases[0])
+        finally:
+            FlakyIndex.fail = True
+
+        row = self._derived_rows(engine, record_id)["fts"]
+        assert row.state == DerivedTargetState.CURRENT.value
+        assert row.last_error_code is None
+
+
 class TestDiagnostics:
     def test_every_processed_target_emits_a_diagnostic(self, engine, processor) -> None:
         """OBX-30"""

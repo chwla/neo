@@ -1466,3 +1466,88 @@ The test therefore switches the pragma off for the deletion, which recreates exa
 state the branch defends against, and the docstring says why rather than leaving it looking
 like a workaround. This is the same reasoning as `conftest.py` turning foreign keys *on* for
 the test engine: SQLite's default is the unusual one, and both directions need stating.
+
+## 62. The schema makes the sensitive-candidate masking redundant, which is the point
+
+`list_candidates` renders `"[sensitive memory]"` instead of the stored text when a candidate
+is sensitive. I set out to test that by seeding a sensitive candidate with a real
+`display_text`, and the database refused the insert:
+`CHECK constraint failed: ck_memory_candidates_payload_shape`.
+
+The constraint requires a sensitive candidate to have `canonical_payload` and `display_text`
+**NULL**, with the encrypted columns populated. So the plaintext the route is "hiding" cannot
+exist on that row at all. The substitution is masking an absence rather than withholding a
+value it could have shown.
+
+That is two independent layers — the schema refusing to store it, and the route refusing to
+render it — and neither depends on the other being correct. The test now seeds the encrypted
+shape, which is the only shape that exists in production anyway, and asserts the ciphertext
+does not appear in the response either.
+
+Worth recording because I would not have found the stronger guarantee by reading the route.
+The database told me by rejecting a row I thought was reasonable.
+
+## 63. A test suite that quietly depended on a model server running
+
+The full suite went from 72 seconds to still-running at ten minutes. The process was at 0%
+CPU, which rules out slow code and points at waiting on something external.
+
+`build_memory_runtime` calls `_resolve_ollama_request_mode` whenever extraction is enabled,
+and that probes a real Ollama endpoint with a warmup timeout of up to **300 seconds**. My API
+tests build a runtime on nearly every request and never disabled extraction, so the suite's
+runtime — and, on a machine with no model server, whether it finished at all — depended on
+something entirely outside the tests.
+
+Two details made it worse than it looks. A *failed* probe is deliberately not cached
+(decision 50 covers why: a transient outage must not pin the mode for the process lifetime),
+so every runtime build retried it. And it passed locally at first, because a probe against a
+running Ollama returns quickly — the dependency was invisible exactly when it was harmless.
+
+Fixed by disabling live extraction in the API fixtures. The health-route tests do not build a
+runtime, so they never had the problem.
+
+The general rule I should have applied from the start: a unit or integration test that
+constructs production wiring inherits every network call that wiring makes. "It passes on my
+machine in 40 seconds" is not evidence there is no network call — it is evidence the call
+succeeded.
+
+---
+
+## 40b. Tier 4 is closed; two notes on how the last two items were reached
+
+**`OBX-26`** covers the `memory_derived_state` rows that health and coverage read from.
+Nothing else records "is this memory indexed, and by which model", so a row that drifts out
+of step with the delivery makes a broken index look healthy — the one thing health
+reporting must never do. Three cases: a success records `current` plus the provider
+identity, a failure records `failed` plus the error code *without touching the healthy
+target*, and a later success **clears** the earlier error. That last one matters because a
+stale `last_error_code` on a now-healthy row keeps an alert firing after the cause is fixed,
+which is how people learn to ignore alerts.
+
+**`DIA-16`** needed the same foreign-keys-off technique as `OBX-11`, and for the same
+reason — with the pragma on, a source row's key makes its record undeletable, so the orphan
+state is unreachable. The invariant checker exists precisely to find damage the constraints
+were supposed to prevent, and it is only trustworthy if it has been shown to fire. The test
+asserts the store is clean *first*, so a check that reported violations unconditionally
+would fail rather than pass.
+
+I stopped hand-writing the INSERT after guessing two column names wrong and switched to the
+ORM model, which fills its own defaults. Faster, and it cannot drift from the schema.
+
+## 41b. Where the eleven findings stand
+
+All eleven remain recorded as strict `xfail`s rather than fixed, per the decision in §14
+and your explicit call on `SCH-14`. Two of them are worth re-reading together, because they
+compound:
+
+- **`SCH-14`** lets two active records occupy one exclusive slot.
+- **`EXC-19c`** means a "forget" matching several memories removes only the first, and
+  reports success.
+
+The first makes duplicates more likely; the second makes them harder to remove and lies
+about having done so. Either alone is a bug; together they describe a store that can
+accumulate contradictory facts the user cannot fully delete. `DIA-15` is the mitigation —
+`inspect_memory_invariants` detects the duplicate state — so the sequence for anyone picking
+this up is: run the invariant check, fix `EXC-19c` (one line: put the target memory id in
+the idempotency key), then fix `SCH-14`'s index, in that order. Fixing the index first fails
+against data that already violates it.
