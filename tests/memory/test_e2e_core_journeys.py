@@ -451,3 +451,148 @@ class TestDirectIdentityAnswer:
         )
 
         assert answer == "From your saved memory: Soham"
+
+
+class TestForgetAndRestate:
+    def test_explicitly_restating_a_forgotten_fact_stores_it_again(
+        self, extraction_coordinator_factory, adapter_context, execution_context,
+        profile_database,
+    ) -> None:
+        """E2E-05 — a forget is not a permanent ban on ever saying it again.
+
+        `forget` leaves a tombstone that blocks *resurrection*, so an automatic
+        re-extraction of the same fact stays blocked. An explicit request from
+        the user is the documented exception (PLN-08): the person who deleted it
+        is the person asking for it back.
+
+        The three states are asserted in sequence — present, gone, present —
+        because any two of them alone are satisfiable by a journey where nothing
+        ever happened.
+        """
+
+        forget = "Forget that I want to improve at urban sketching"
+        restate = "Remember that I want to improve at urban sketching"
+        coordinator = extraction_coordinator_factory(
+            scripted_model(
+                {
+                    SKETCHING: _goal_turn(SKETCHING, GOAL_VALUE),
+                    forget: model_output(
+                        retractions=[
+                            retraction(
+                                forget, GOAL_VALUE, old_value_hint=GOAL_VALUE,
+                                explicit_forget=True, message_id="m2",
+                            )
+                        ]
+                    ),
+                    restate: _goal_turn(restate, GOAL_VALUE, message_id="m3"),
+                }
+            )
+        )
+
+        _store_goal(coordinator, adapter_context)
+        assert _recall_for(profile_database, execution_context).recall(
+            _query(execution_context, "urban sketching")
+        ).items, "stored"
+
+        coordinator.process(
+            _request(forget, message_id="m2", explicit_memory_intent=True),
+            replace(adapter_context, message_id="m2"),
+        )
+        assert _recall_for(profile_database, execution_context).recall(
+            _query(execution_context, "urban sketching")
+        ).items == (), "forgotten"
+
+        coordinator.process(
+            _request(restate, message_id="m3", explicit_memory_intent=True),
+            replace(adapter_context, message_id="m3"),
+        )
+
+        restored = _recall_for(profile_database, execution_context).recall(
+            _query(execution_context, "urban sketching")
+        )
+        assert [item.memory.display_text for item in restored.items] == [GOAL_VALUE]
+
+
+class TestSensitiveWithoutRequest:
+    def test_a_sensitive_fact_mentioned_in_passing_is_not_stored(
+        self, extraction_coordinator_factory, adapter_context, execution_context,
+        profile_database,
+    ) -> None:
+        """E2E-09 — stating a diagnosis is not asking for it to be remembered.
+
+        An innocuous fact is stored first, for two reasons: it proves the
+        pipeline is working in this test rather than silently doing nothing, and
+        it creates the database — a journey that stores nothing never migrates
+        one, so the recall service would raise `memory_schema_or_binding_unavailable`
+        instead of returning an empty result.
+        """
+
+        diagnosis = "I was diagnosed with asthma last year"
+        coordinator = extraction_coordinator_factory(
+            scripted_model(
+                {
+                    SKETCHING: _goal_turn(SKETCHING, GOAL_VALUE),
+                    diagnosis: model_output(
+                        assertions=[
+                            assertion(
+                                diagnosis, "diagnosed with asthma",
+                                memory_type="knowledge", domain_hint="health",
+                                typed_value="diagnosed with asthma",
+                                sensitivity_hint="sensitive", message_id="m2",
+                            )
+                        ]
+                    ),
+                }
+            )
+        )
+        _store_goal(coordinator, adapter_context)
+
+        result = coordinator.process(
+            _request(diagnosis, message_id="m2"), replace(adapter_context, message_id="m2")
+        )
+
+        recall = _recall_for(profile_database, execution_context)
+        assert recall.recall(_query(execution_context, "urban sketching")).items, (
+            "the ordinary fact must still be stored, or this proves nothing"
+        )
+        assert recall.recall(_query(execution_context, "asthma diagnosis")).items == ()
+        assert result.status.value != "applied"
+
+    def test_the_diagnosis_text_is_not_written_anywhere(
+        self, extraction_coordinator_factory, adapter_context, execution_context,
+        profile_database,
+    ) -> None:
+        """E2E-09b — refused means absent, not merely unrecalled.
+
+        A record excluded from recall but sitting in the store in plaintext would
+        satisfy the test above while being the failure that matters.
+        """
+
+        from sqlalchemy import create_engine
+
+        from tests.memory.test_privacy import _assert_absent
+
+        diagnosis = "I was diagnosed with asthma last year"
+        coordinator = extraction_coordinator_factory(
+            scripted_model(
+                {
+                    SKETCHING: _goal_turn(SKETCHING, GOAL_VALUE),
+                    diagnosis: model_output(
+                        assertions=[
+                            assertion(
+                                diagnosis, "diagnosed with asthma",
+                                memory_type="knowledge", domain_hint="health",
+                                typed_value="diagnosed with asthma",
+                                sensitivity_hint="sensitive", message_id="m2",
+                            )
+                        ]
+                    ),
+                }
+            )
+        )
+        _store_goal(coordinator, adapter_context)
+        coordinator.process(
+            _request(diagnosis, message_id="m2"), replace(adapter_context, message_id="m2")
+        )
+
+        _assert_absent(create_engine(f"sqlite:///{profile_database}", future=True), "asthma")

@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 2100 tests passing, 31 strict `xfail`s recording thirteen real defects —
-**873 of 880 plan items.**
+**Progress:** 2103 tests passing, 31 strict `xfail`s recording thirteen real defects —
+**875 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -24,8 +24,8 @@ routers.
 | 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
-| 7 — Cross-cutting | 45 | 0 | 2 | 47 |
-| **Total** | **873** | **5** | **2** | **880** |
+| 7 — Cross-cutting | 47 | 0 | 0 | 47 |
+| **Total** | **875** | **5** | **0** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1440,11 +1440,16 @@ Each runs the full stack — extraction → mutation → outbox → recall → p
       recall returns only the new one.
 - [x] **E2E-04** "Forget that I use a fineliner pen" removes it from recall permanently,
       and re-asserting it automatically is blocked by the tombstone.
-- [ ] **E2E-05** …but explicitly re-stating it restores it.
+- [x] **E2E-05** …but explicitly re-stating it restores it. The tombstone blocks automatic
+      resurrection; an explicit user request is the documented exception (PLN-08). Asserted
+      as present → gone → present, since any two of those states alone are satisfiable by a
+      journey where nothing happened.
 - [x] **E2E-06** A preference set in one domain doesn't leak into another domain's recall.
 - [x] **E2E-07** A project-scoped memory is invisible outside the project.
 - [x] **E2E-08** An identity fact ("my name is …") is answerable directly without the LLM.
-- [ ] **E2E-09** A sensitive fact stated without an explicit request is not stored and is
+- [x] **E2E-09** A sensitive fact stated without an explicit request is not stored — and the
+      text is swept from every table, because "excluded from recall" and "absent" are
+      different claims. Original wording: …is not stored and is
       surfaced for review.
 - [x] **E2E-10** …with an explicit request is stored encrypted and recalled only on a
       direct question.
