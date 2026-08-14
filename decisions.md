@@ -1362,3 +1362,61 @@ Writing `SRC-05b` I found the two paths behave differently, and both are right:
 Both now have tests, and the docstrings say which is which. Worth the distinction because
 "cross-owner access is refused" would have been satisfied by testing either one, while
 missing that the system draws a line between a bad request and a bad deployment.
+
+## 58. A flag that nothing can set, tested anyway
+
+`health_routes_enabled` gates all three maintenance routes. `MemorySettings.from_settings`
+sets it to a literal `True` — it is not derived from any setting, so no deployment can
+currently switch it off. The only way to exercise the guard is to substitute the flags
+object.
+
+I tested it regardless, and the reason is worth stating: the guard is real code on a
+security-relevant path, and the *reason* it cannot be reached today is a missing wire-up
+rather than a decision to remove it. If someone later adds `NEO_MEMORY_HEALTH_ROUTES=false`
+to the settings, they will wire it to this flag and expect the guard to work. A test that
+exists now means that day is a one-line change rather than a one-line change plus an
+unverified assumption.
+
+The behaviour is also right in a way worth pinning: it returns **404**, not 403. A disabled
+administrative control should be indistinguishable from one that does not exist, because a
+403 confirms the route is there and worth attacking.
+
+Recorded rather than "fixed" — wiring the flag to a setting is a source change and outside
+what this suite does.
+
+## 59. `HLT-06` describes a token that never crosses the wire
+
+The plan asks for validation of "the owner token" against `_UUID_TOKEN_PATTERN`. No request
+to these routes carries an owner: the owner comes from the session profile, and the database
+binding is re-derived from the migration ledger. `_UUID_TOKEN_PATTERN` exists only as a
+building block of the reconciliation checkpoint grammar.
+
+So the pattern is tested through the checkpoint shapes it composes, which is where a
+malformed value could actually arrive. That includes a SQL-shaped checkpoint, deliberately:
+the checkpoint is the one free-text field on this surface and it ends up in a cursor, so
+"rejected by the contract before it becomes a query" is the property worth having.
+
+## 60. Route ordering is load-bearing and now has a test
+
+`GET /api/memory/health` and `GET /api/memory/{memory_id}` both match the same path. The
+health router is included before the memory router in `create_app`, and that ordering is the
+only reason `health` is not parsed as a memory id — reversed, the route would start
+returning a 422 for an invalid UUID.
+
+Nothing about that is visible from either router file, and both look independently correct.
+There is now a test that fails if the `include_router` order changes, which is the only
+place the coupling can be caught.
+
+## 61. Two more weak assertions, same tell as the other six
+
+`assert "targets" in body or "owner_id" in body or body` — the third clause is truthy for
+any non-empty dict, so the first two never mattered. Replaced with the actual coverage
+fields and their expected zeroes, which is the thing an operator reads this route for.
+
+`assert response.json()["detail"] in {three possible codes}` — a set, in a test already
+parametrised over the three routes. The expected code is now part of the parametrisation, so
+each route asserts exactly its own.
+
+Eight now. The rule has stabilised into something I can apply without thinking: **if an
+assertion accepts more than one outcome, either the parametrisation is missing a column or
+I have not yet found out what the code does.** Both times here it was the first.

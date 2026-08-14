@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1905 tests passing, 28 strict `xfail`s recording ten real defects —
-**781 of 880 plan items.**
+**Progress:** 1937 tests passing, 28 strict `xfail`s recording ten real defects —
+**790 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -23,9 +23,9 @@ routers.
 | 3 — Persistence | 205 | 0 | 0 | 205 |
 | 4 — Derived / async | 90 | 1 | 10 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
-| 6 — Config / runtime / HTTP | 41 | 2 | 34 | 77 |
+| 6 — Config / runtime / HTTP | 50 | 2 | 25 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **781** | **6** | **93** | **880** |
+| **Total** | **790** | **6** | **84** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1315,16 +1315,22 @@ Semantic path:
 
 ### `api/routes/memory_health.py` — HLT
 
-- [ ] **HLT-01** Routes 404/403 when `health_routes_enabled` is False.
-- [ ] **HLT-02** `_authorized_profile` rejects an unauthorized caller.
-- [ ] **HLT-03** `GET /health` reports coverage and metric counts.
-- [ ] **HLT-04** `POST /derived/reconcile` runs a bounded reconcile and returns a cursor.
-- [ ] **HLT-05** …validates the checkpoint against
+- [x] **HLT-01** Routes 404 (not 403) when `health_routes_enabled` is False — a disabled
+      control should not advertise itself. Note the flag is hardcoded `True` in
+      `from_settings` and is not derived from any setting, so nothing can switch it off
+      today; the guard is pinned anyway. See `decisions.md` 58.
+- [x] **HLT-02** `_authorized_profile` rejects an unauthorized caller.
+- [x] **HLT-03** `GET /health` reports coverage and metric counts.
+- [x] **HLT-04** `POST /derived/reconcile` runs a bounded reconcile and returns a cursor.
+- [x] **HLT-05** …validates the checkpoint against
       `_RECONCILIATION_CHECKPOINT_PATTERN` and rejects a malformed one with 422.
-- [ ] **HLT-06** …validates the owner token against `_UUID_TOKEN_PATTERN`.
-- [ ] **HLT-07** `POST /derived/rebuild` rebuilds and reports the result.
-- [ ] **HLT-08** Both mutating routes are owner-scoped.
-- [ ] **HLT-09** A maintenance failure returns a clean 5xx with no stack trace.
+- [x] **HLT-06** ~~…validates the owner token against `_UUID_TOKEN_PATTERN`.~~
+      **Corrected:** there is no owner token on the wire. `_UUID_TOKEN_PATTERN` exists only
+      as a component of the reconciliation checkpoint grammar, so it is exercised through
+      the checkpoint shapes it composes.
+- [x] **HLT-07** `POST /derived/rebuild` rebuilds and reports the result.
+- [x] **HLT-08** Both mutating routes are owner-scoped.
+- [x] **HLT-09** A maintenance failure returns a clean 5xx with no stack trace.
 
 ### `memory_retrieval/` and `context_memory/` — RTV / CTX
 
