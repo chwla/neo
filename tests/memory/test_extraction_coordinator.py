@@ -951,6 +951,28 @@ class TestIdempotencyAndDuplicates:
         assert chat_adapter.list_active_memories(adapter_context)
 
 
+class TestDuplicateScoping:
+    def test_the_duplicate_finder_only_sees_this_owners_records(
+        self, extraction_coordinator_factory, adapter_context
+    ) -> None:
+        """EXC-13 — a restatement can only be a restatement of your own memory.
+
+        The finder is handed a set of candidate ids to compare against. If that
+        set were assembled without an owner filter, one profile's memory could
+        be named as the duplicate of another's — and the coordinator would then
+        adopt its slot key, writing one profile's structure into another's
+        store. The records reaching the finder come from
+        `list_active_memories`, which is owner-scoped, so the set is empty here.
+        """
+
+        finder = StaticDuplicateFinder()
+        coordinator = extraction_coordinator_factory(python_model(), duplicate_finder=finder)
+        coordinator.process(request_for(PYTHON_MESSAGE), adapter_context)
+
+        for _text, candidates, _threshold in finder.calls:
+            assert candidates == frozenset()
+
+
 class TestRetractions:
     def test_a_forget_removes_the_matching_memory(
         self, extraction_coordinator_factory, adapter_context, chat_adapter
@@ -1045,6 +1067,141 @@ class TestRetractions:
         result = extraction_coordinator_factory(None).process(request_for(message), adapter_context)
         assert result.status is ExtractionStatus.NEEDS_REVIEW
         assert any(item.review_required for item in result.decisions)
+
+    def _two_memories_with_one_value(self, extraction_coordinator_factory, adapter_context) -> None:
+        """Two active memories holding "Python", in different domains."""
+
+        first = "I use Python for work."
+        extraction_coordinator_factory(
+            scripted_model(
+                {
+                    first: model_output(
+                        assertions=[
+                            assertion(
+                                first,
+                                "Python",
+                                proposal_id="p1",
+                                domain_hint="software_development",
+                            )
+                        ]
+                    )
+                }
+            )
+        ).process(request_for(first), adapter_context)
+
+        second = "I use Python for sketching."
+        extraction_coordinator_factory(
+            scripted_model(
+                {
+                    second: model_output(
+                        assertions=[
+                            assertion(
+                                second,
+                                "Python",
+                                proposal_id="p2",
+                                message_id="m2",
+                                domain_hint="urban_sketching",
+                            )
+                        ]
+                    )
+                }
+            )
+        ).process(
+            request_for(second, message_id="m2"),
+            replace(adapter_context, message_id="m2"),
+        )
+
+    def test_a_retraction_matching_several_memories_targets_all_of_them(
+        self, extraction_coordinator_factory, adapter_context, chat_adapter
+    ) -> None:
+        """EXC-19 — the resolver does find every match; pinning that half.
+
+        The forget loop exists because an earlier version retracted only the
+        first target and left the duplicates active. The resolution step is
+        correct: both memories are identified and both get a decision. What
+        happens to the second one is the defect below.
+        """
+
+        self._two_memories_with_one_value(extraction_coordinator_factory, adapter_context)
+        assert len(chat_adapter.list_active_memories(adapter_context)) == 2
+
+        result = extraction_coordinator_factory(None).process(
+            request_for("Forget that I use Python.", message_id="m3"),
+            replace(adapter_context, message_id="m3"),
+        )
+        assert [item.action for item in result.decisions] == [
+            CandidateAction.FORGET,
+            CandidateAction.FORGET,
+        ]
+
+    def test_only_the_first_of_several_matches_is_actually_forgotten(
+        self, extraction_coordinator_factory, adapter_context, chat_adapter
+    ) -> None:
+        """EXC-19b — pinning the current, wrong behaviour alongside the xfail."""
+
+        self._two_memories_with_one_value(extraction_coordinator_factory, adapter_context)
+        result = extraction_coordinator_factory(None).process(
+            request_for("Forget that I use Python.", message_id="m3"),
+            replace(adapter_context, message_id="m3"),
+        )
+        assert [item.outcome for item in result.decisions] == ["forgotten", "failed"]
+        assert len(chat_adapter.list_active_memories(adapter_context)) == 1
+        # The give-away: both lifecycle commands share one operation id.
+        assert len({item.operation_id for item in result.decisions}) == 1
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Known gap: _apply_retraction derives its idempotency key from "
+            "(owner, message_id, EXTRACTOR_VERSION, retraction.proposal_id) with no "
+            "target in it, but it is called once per target in a loop. Every target "
+            "therefore computes the same key, so the second forget replays the first "
+            "operation's idempotency record, finds it refers to a different memory, "
+            "and fails. Remove this xfail when the key includes the target memory id."
+        ),
+    )
+    def test_every_matching_memory_should_be_forgotten(
+        self, extraction_coordinator_factory, adapter_context, chat_adapter
+    ) -> None:
+        """EXC-19c — a gap found while writing EXC-19, recorded not patched.
+
+        Saying "forget that I use Python" when two memories hold that value
+        removes one of them. The turn reports ``APPLIED``. The user is told the
+        deletion happened, and a fact they explicitly asked to remove is still
+        in the store and still recallable.
+
+        The cause is one line. ``_apply_retraction`` builds its key from the
+        *retraction*, not the *target*:
+
+            key = MemoryIdempotency.chat(
+                request.owner_id, request.message_id,
+                EXTRACTOR_VERSION, retraction.proposal_id,
+            )
+
+        and the caller invokes it once per target. Both calls compute an
+        identical key, so the second is treated as a replay of the first,
+        matches an idempotency record naming a different memory id, and returns
+        FAILED. Both decisions carry the same ``operation_id``, which is how
+        this is visible from outside.
+
+        The comment above the loop says it was written to fix exactly this —
+        "Retracting only the first left the duplicates active and the value
+        returned on the next recall." The loop was added; the key was not made
+        per-target, so the original symptom survives.
+
+        This is the most serious finding after SCH-14, and arguably worse in
+        kind: SCH-14 lets bad state exist, while this one **fails a deletion the
+        user explicitly requested and reports success**. The two interact —
+        SCH-14 makes duplicate values more likely, and this makes them harder to
+        remove once they are there.
+        """
+
+        self._two_memories_with_one_value(extraction_coordinator_factory, adapter_context)
+        extraction_coordinator_factory(None).process(
+            request_for("Forget that I use Python.", message_id="m3"),
+            replace(adapter_context, message_id="m3"),
+        )
+        assert chat_adapter.list_active_memories(adapter_context) == ()
 
     def test_an_unresolved_retraction_deletes_nothing(
         self, extraction_coordinator_factory, adapter_context, chat_adapter

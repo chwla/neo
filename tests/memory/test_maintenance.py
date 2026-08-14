@@ -492,6 +492,198 @@ class TestChecksums:
         assert maintenance._canonical_checksum(FROZEN_NOW) == before
 
 
+class TestStaleDetection:
+    """Present but wrong is a different failure from absent, and worse."""
+
+    def test_a_stale_hash_is_detected_and_repaired(self, maintenance, engine, scheduler) -> None:
+        """MNT-04 — the drift nobody notices without checking.
+
+        A missing row makes a memory unfindable, which the user sees. A *stale*
+        row keeps answering searches with the old text, which looks exactly like
+        working software while returning something the user has since changed.
+        """
+
+        record_id = index_record(maintenance, engine, display_text="alpha")
+        survivor = index_record(maintenance, engine, display_text="beta")
+        with engine.begin() as connection:
+            from sqlalchemy import text as sql_text
+
+            connection.execute(
+                sql_text(
+                    "UPDATE memory_records SET display_text = 'alpha revised', "
+                    "revision = revision + 1 WHERE id = :i"
+                ),
+                {"i": record_id},
+            )
+
+        report = maintenance.reconcile(now=FROZEN_NOW)
+        assert report.stale_fts == 1
+        assert report.stale_vector == 1
+        assert scheduler.memory_ids() == {record_id}
+        assert survivor not in scheduler.memory_ids()
+
+    def test_matching_metadata_is_current(self, maintenance, engine) -> None:
+        """MNT-20 — the control, so the drift checks below are meaningful."""
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+
+        from app.models.memory import MemoryRecord as MemoryRecordRow
+
+        record_id = index_record(maintenance, engine)
+        with Session(engine) as session:
+            row = session.scalar(select(MemoryRecordRow).where(MemoryRecordRow.id == record_id))
+        document = DerivedDocumentBuilder().build(row, now=FROZEN_NOW)
+
+        fts = maintenance.fts_index.get_metadata(OWNER_ID, record_id)
+        vector = maintenance.vector_index.get_metadata(OWNER_ID, record_id)
+        assert maintenance._fts_metadata_current(fts, document) is True
+        assert maintenance._vector_metadata_current(vector, document) is True
+
+    @pytest.mark.parametrize(
+        "field",
+        ["content_hash", "derived_schema_version"],
+    )
+    def test_fts_metadata_drift_is_detected(self, maintenance, engine, field: str) -> None:
+        """MNT-20b — a schema-version bump must invalidate every derived row.
+
+        Content-hash drift is the obvious case. The version field is the one
+        that matters on an upgrade: if the derived document format changes and
+        the version is not compared, every existing row stays "current" forever
+        while being in the old shape.
+        """
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+
+        from app.models.memory import MemoryRecord as MemoryRecordRow
+
+        record_id = index_record(maintenance, engine)
+        with Session(engine) as session:
+            row = session.scalar(select(MemoryRecordRow).where(MemoryRecordRow.id == record_id))
+        document = DerivedDocumentBuilder().build(row, now=FROZEN_NOW)
+
+        metadata = dict(maintenance.fts_index.get_metadata(OWNER_ID, record_id))
+        metadata[field] = "something-else"
+        assert maintenance._fts_metadata_current(metadata, document) is False
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "content_hash",
+            "metadata_version",
+            "derived_schema_version",
+            "embedding_document_version",
+            "embedding_content_hash",
+            "embedding_identity_version",
+            "provider",
+            "model",
+            "provider_version",
+            "dimension",
+        ],
+    )
+    def test_vector_metadata_drift_is_detected(self, maintenance, engine, field: str) -> None:
+        """MNT-20c — ten fields, each of which independently invalidates a vector.
+
+        The provider identity fields are the interesting ones: a vector written
+        by a different embedding model is not comparable to one written by the
+        current model, so switching models must invalidate every stored vector
+        rather than silently mixing two incompatible spaces.
+        """
+
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+
+        from app.models.memory import MemoryRecord as MemoryRecordRow
+
+        record_id = index_record(maintenance, engine)
+        with Session(engine) as session:
+            row = session.scalar(select(MemoryRecordRow).where(MemoryRecordRow.id == record_id))
+        document = DerivedDocumentBuilder().build(row, now=FROZEN_NOW)
+
+        metadata = dict(maintenance.vector_index.get_metadata(OWNER_ID, record_id))
+        metadata[field] = 999 if field == "dimension" else "something-else"
+        assert maintenance._vector_metadata_current(metadata, document) is False
+
+    def test_verification_fails_when_a_document_was_tampered_with(
+        self, maintenance, engine
+    ) -> None:
+        """MNT-17 — a rebuild that verified unconditionally would verify nothing.
+
+        This is the check that makes `verify_owner_rebuild` worth calling: it
+        has to notice when the derived rows do not match what the canonical
+        records say they should be.
+        """
+
+        insert_record(engine)
+        result = maintenance.rebuild_owner(now=FROZEN_NOW)
+        clean = maintenance.verify_owner_rebuild(result, now=FROZEN_NOW)
+
+        insert_record(engine, display_text="an unindexed extra memory")
+        tampered = maintenance.verify_owner_rebuild(result, now=FROZEN_NOW)
+        assert clean != tampered
+
+
+class TestConstruction:
+    def test_from_settings_carries_the_configured_policy(self, engine, tmp_path, scheduler) -> None:
+        """MNT-21 — the retry and batch policy comes from settings, not defaults.
+
+        A maintainer built with hardcoded values would ignore the operator's
+        configuration entirely, which is the kind of thing nobody notices until
+        a sweep behaves differently in production than in a test.
+        """
+
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        built = MemoryIndexMaintenance.from_settings(
+            engine,
+            settings=settings,
+            owner_id=OWNER_ID,
+            database_identity=str(tmp_path / "memory.db"),
+            fts_index=SqliteMemoryFtsIndex(engine),
+            vector_index=SqliteMemoryVectorIndex(engine),
+            repair_scheduler=scheduler,
+        )
+        assert built.max_attempts == settings.memory_retry_max_attempts
+        assert built.reconciliation_batch_size == min(
+            max(1, settings.memory_reconciliation_batch_size), 5_000
+        )
+        assert built.alert_dead_letter_count == settings.memory_alert_dead_letter_count
+
+    def test_the_batch_size_is_clamped(self, engine, tmp_path, scheduler) -> None:
+        """MNT-21b — a misconfigured batch size must not become an unbounded scan.
+
+        Reconciliation pages through a whole profile; an unclamped size read
+        from configuration would let one pass try to load everything.
+        """
+
+        built = MemoryIndexMaintenance(
+            engine,
+            owner_id=OWNER_ID,
+            database_identity=str(tmp_path / "memory.db"),
+            fts_index=SqliteMemoryFtsIndex(engine),
+            vector_index=SqliteMemoryVectorIndex(engine),
+            repair_scheduler=scheduler,
+            reconciliation_batch_size=1_000_000,
+        )
+        assert built.reconciliation_batch_size == 5_000
+
+    def test_a_zero_batch_size_is_raised_to_one(self, engine, tmp_path, scheduler) -> None:
+        """MNT-21c — zero would make every pass a no-op that reports completion."""
+
+        built = MemoryIndexMaintenance(
+            engine,
+            owner_id=OWNER_ID,
+            database_identity=str(tmp_path / "memory.db"),
+            fts_index=SqliteMemoryFtsIndex(engine),
+            vector_index=SqliteMemoryVectorIndex(engine),
+            repair_scheduler=scheduler,
+            reconciliation_batch_size=0,
+        )
+        assert built.reconciliation_batch_size == 1
+
+
 class TestCoverage:
     def test_coverage_reports_per_target_counts(self, maintenance, engine) -> None:
         """MNT-18 — the number an operator actually looks at."""

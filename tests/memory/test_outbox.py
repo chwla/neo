@@ -659,6 +659,229 @@ class TestFailureHandling:
         assert DerivedFailureCode.FTS_UPSERT_FAILED in result.failure_codes
 
 
+class TestStalenessAndRepair:
+    """A queued instruction can describe a record that has since moved on."""
+
+    def test_a_vanished_record_schedules_a_delete_instead(self, engine, processor) -> None:
+        """OBX-11 — an upsert for a record that no longer exists.
+
+        The right response is not "fail" but "delete the derived rows": the
+        canonical record is gone, so whatever is in the index is a ghost. The
+        processor turns the upsert into a removal rather than leaving orphaned
+        derived data behind.
+
+        **Reaching this state requires switching foreign keys off**, and that is
+        the point rather than a workaround. With `PRAGMA foreign_keys=ON` the
+        outbox event's key into `memory_records` makes the row undeletable, so
+        this branch is unreachable — I tried the straightforward deletion first
+        and the constraint refused it.
+
+        But SQLite enforces foreign keys only when the pragma is set, *per
+        connection*, and off is the default. `app/db/session.py` sets it, so the
+        running app is protected; any other process opening the same file
+        (a migration script, `sqlite3` at a prompt, a future worker that builds
+        its own engine) is not. This branch is the defence for a database that
+        has been through such a process, so the test recreates exactly that.
+        """
+
+        from sqlalchemy import text as sql_text
+
+        record_id = insert_record(engine)
+        insert_event(engine, memory_id=record_id)
+        lease = processor.lease_batch(worker_id="worker-a").leases[0]
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                sql_text("DELETE FROM memory_records WHERE id = :i"), {"i": record_id}
+            )
+            connection.commit()
+
+        result = processor.process(lease)
+        reasons = {item.repair_reason for item in result.diagnostics}
+        assert DerivedFailureCode.CANONICAL_MISSING.value in reasons
+
+    def test_an_event_describing_an_older_revision_is_skipped(self, engine, processor) -> None:
+        """OBX-13 — the guard against writing a stale value over a fresh one.
+
+        The queue is asynchronous, so a record can be updated between an event
+        being enqueued and processed. Applying the queued document would put the
+        *old* display text back into the index, and the index would then
+        disagree with canonical until the next reconciliation.
+        """
+
+        record_id = insert_record(engine)
+        insert_event(engine, memory_id=record_id)
+        lease = processor.lease_batch(worker_id="worker-a").leases[0]
+        with engine.begin() as connection:
+            from sqlalchemy import text as sql_text
+
+            connection.execute(
+                sql_text(
+                    "UPDATE memory_records SET revision = revision + 1, "
+                    "display_text = 'a newer value' WHERE id = :i"
+                ),
+                {"i": record_id},
+            )
+
+        result = processor.process(lease)
+        reasons = {item.repair_reason for item in result.diagnostics}
+        assert DerivedFailureCode.CANONICAL_HASH_ADVANCED.value in reasons
+        assert processor.fts_index.get_metadata(OWNER_ID, record_id) is None
+
+    def test_a_skipped_stale_event_queues_a_fresh_repair(self, engine, processor) -> None:
+        """OBX-13b — skipping is not enough; the index still needs updating.
+
+        Refusing the stale write without queueing a correct one would leave the
+        index permanently behind, with nothing scheduled to fix it.
+        """
+
+        record_id = insert_record(engine)
+        insert_event(engine, memory_id=record_id)
+        lease = processor.lease_batch(worker_id="worker-a").leases[0]
+        with engine.begin() as connection:
+            from sqlalchemy import text as sql_text
+
+            connection.execute(
+                sql_text("UPDATE memory_records SET revision = revision + 1 WHERE id = :i"),
+                {"i": record_id},
+            )
+        processor.process(lease)
+
+        from sqlalchemy import select as sql_select
+        from sqlalchemy.orm import Session
+
+        with Session(engine) as session:
+            repairs = list(
+                session.scalars(
+                    sql_select(MemoryOutbox).where(
+                        MemoryOutbox.event_idempotency_key.like("memory:repair:%")
+                    )
+                )
+            )
+        assert repairs, "no repair was queued for the superseded record"
+
+    def test_an_identical_repair_is_queued_only_once(self, engine, processor) -> None:
+        """OBX-29 — the same drift found twice must not grow the queue.
+
+        Reconciliation runs repeatedly. Without de-duplication, every pass over
+        an unfixable record would add another event, and the queue would grow
+        without bound while never draining.
+        """
+
+        from app.services.memory.index_contracts import IndexRepairRequest
+
+        record_id = insert_record(engine)
+        request = IndexRepairRequest(
+            owner_id=UUID(OWNER_ID),
+            memory_id=UUID(record_id),
+            action="upsert",
+            reason="reconciliation_drift",
+        )
+        processor.schedule_repair(request)
+        processor.schedule_repair(request)
+
+        from sqlalchemy import select as sql_select
+        from sqlalchemy.orm import Session
+
+        with Session(engine) as session:
+            repairs = list(
+                session.scalars(
+                    sql_select(MemoryOutbox).where(
+                        MemoryOutbox.event_idempotency_key.like("memory:repair:%")
+                    )
+                )
+            )
+        assert len(repairs) == 1
+
+    def test_a_repair_for_another_owner_is_refused(self, engine, processor) -> None:
+        """OBX-28 — a repair is a write, so it carries the same owner check."""
+
+        from app.services.memory.index_contracts import IndexRepairRequest
+
+        record_id = insert_record(engine)
+        with pytest.raises(ValueError, match="owner_binding_mismatch"):
+            processor.schedule_repair(
+                IndexRepairRequest(
+                    owner_id=UUID(OTHER_OWNER_ID),
+                    memory_id=UUID(record_id),
+                    action="upsert",
+                    reason="reconciliation_drift",
+                )
+            )
+
+    def test_a_repair_for_an_unknown_record_is_a_no_op(self, engine, processor) -> None:
+        """OBX-28b — an upsert repair needs a record to describe.
+
+        Queueing one for a record that no longer exists would enqueue work that
+        can only ever fail.
+        """
+
+        from app.services.memory.index_contracts import IndexRepairRequest
+
+        processor.schedule_repair(
+            IndexRepairRequest(
+                owner_id=UUID(OWNER_ID),
+                memory_id=uuid4(),
+                action="upsert",
+                reason="reconciliation_drift",
+            )
+        )
+
+        from sqlalchemy import select as sql_select
+        from sqlalchemy.orm import Session
+
+        with Session(engine) as session:
+            repairs = list(
+                session.scalars(
+                    sql_select(MemoryOutbox).where(
+                        MemoryOutbox.event_idempotency_key.like("memory:repair:%")
+                    )
+                )
+            )
+        assert repairs == []
+
+    def test_a_completed_repair_is_revived_rather_than_duplicated(self, engine, processor) -> None:
+        """OBX-29b — drift recurring after a fix reuses the same event.
+
+        The idempotency key is derived from the repair's content, so a second
+        occurrence of identical drift finds the finished event and returns it to
+        pending instead of creating a parallel one.
+        """
+
+        from sqlalchemy import select as sql_select
+        from sqlalchemy import update as sql_update
+        from sqlalchemy.orm import Session
+
+        from app.services.memory.index_contracts import IndexRepairRequest
+
+        record_id = insert_record(engine)
+        request = IndexRepairRequest(
+            owner_id=UUID(OWNER_ID),
+            memory_id=UUID(record_id),
+            action="upsert",
+            reason="reconciliation_drift",
+        )
+        processor.schedule_repair(request)
+        with engine.begin() as connection:
+            connection.execute(
+                sql_update(MemoryOutbox)
+                .where(MemoryOutbox.event_idempotency_key.like("memory:repair:%"))
+                .values(state="done")
+            )
+        processor.schedule_repair(request)
+
+        with Session(engine) as session:
+            repairs = list(
+                session.scalars(
+                    sql_select(MemoryOutbox).where(
+                        MemoryOutbox.event_idempotency_key.like("memory:repair:%")
+                    )
+                )
+            )
+        assert len(repairs) == 1
+        assert repairs[0].state == "pending"
+
+
 class TestDiagnostics:
     def test_every_processed_target_emits_a_diagnostic(self, engine, processor) -> None:
         """OBX-30"""

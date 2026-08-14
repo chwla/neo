@@ -255,6 +255,7 @@ normal test.
 | **`PRE-01b`** | **"Call me Soham" has no deterministic pattern.** `policy._MEMORY_COMMAND` lists `call me` as an explicit memory instruction — and the existing test suite already asserts it opens the extraction gate — but `preparser._DIRECT_NAME` matches only `My name is X` and `I am called X`. Same for `I'm Soham`. | **User-visible.** The most direct way a person states their name falls through to the local model, when a two-branch regex already handles the *less* common phrasing deterministically. A name is the identity fact an assistant is asked for most, so it's the worst place to depend on a model call being available and correct. |
 | **`RCL-21d`** | **The recall stemmer mangles `-es` plurals and doubled-consonant participles.** It strips a bare `s` but not the `es` plural, and doesn't undouble a final consonant. `sketches` → `sketche`, `running` → `runn` — neither matches `sketch` or `run`. | **User-visible.** These words aren't "left as written" as the docstring promises; they're transformed into forms that match nothing. It's the same failure mode as the "podcasting didn't match podcasts" bug this stemmer was written to fix. In this app specifically: "show me my sketches" reaches no memory that says "sketching". |
 | **`RCL-31b`** | **`policy.USAGE_AFFECTS_RANKING = False` is declared, never read, and contradicted by the scorer**, which gives usage a 0.03 weight in the lexical total. | **Design contradiction.** Ranking by usage creates a feedback loop — recalled memories get recalled more regardless of relevance — which is exactly what the constant appears to guard against. The effect is bounded at 0.03 of total score, but that's enough to reorder near-ties, which is where ranking decisions actually get made. Either the scorer drops the term or the constant should say `True`. |
+| **`EXC-19c`** | **A "forget" matching several memories removes only the first, and reports success.** `_apply_retraction` derives its idempotency key from `(owner, message_id, extractor_version, retraction.proposal_id)` — no target — but is called once per target in a loop. Every target computes the same key, so the second forget replays the first operation's record, finds it names a different memory, and returns FAILED. Both decisions carry the same `operation_id`. | **The most serious finding after SCH-14, and arguably worse in kind.** SCH-14 lets bad state exist; this *fails a deletion the user explicitly asked for and tells them it worked*. The comment above the loop says it was written to fix exactly this symptom — the loop was added, the key was not made per-target, so the original bug survives. The two interact: SCH-14 makes duplicate values more likely, and this makes them harder to remove. |
 | **`SCH-14`** | **The unique index guaranteeing one active record per exclusive slot does not fire for globally-scoped memories.** The index covers `(owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key)`. Every global record has `scope_project_id IS NULL`, and SQL unique indexes treat NULLs as distinct — so two rows identical in all six other columns are not duplicates as far as the index is concerned. | **Serious.** This is the "one answer per question" guarantee, and it's off for your name, every preference, every current primary goal, current job, and current education. Two contradictory active records can coexist and recall returns whichever ranks higher. Project-scoped records *are* protected, which is what pins the cause. |
 | `CON-21b` | An `UpdateMemoryCommand` cannot survive `model_dump(mode="json")` → re-parse. A full dump writes `canonical_value: None`, which `MemoryUpdatePatch` rejects; `exclude_unset` drops the `operation` discriminator instead. Eight of nine commands round-trip; only `update` doesn't. | **Moderate, and reachable.** `mutations.py` stores exactly this dump in `memory_operations.normalized_command_json`, and `execute()` re-parses dicts through the same adapter. So the audit record of an update can't be replayed through the front door that wrote it. |
 | `POL-15e` | The sensitive-content address pattern matches a house number followed by `street/road/avenue/lane/drive/boulevard` — but not `Way`, `Court`, `Place`, `Terrace`, `Crescent`, `Close`, `Square`, or `Parkway`. | **Privacy gap.** A home address on a Court or a Way classifies as NORMAL, so it can be stored without the explicit request a home address is meant to require. |
@@ -1420,3 +1421,48 @@ each route asserts exactly its own.
 Eight now. The rule has stabilised into something I can apply without thinking: **if an
 assertion accepts more than one outcome, either the parametrisation is missing a column or
 I have not yet found out what the code does.** Both times here it was the first.
+
+---
+
+## 38b. The eleventh finding, and why writing one test found it
+
+`EXC-19` asked for "a retraction resolving to many targets forgets all of them". I had
+deferred it once as needing an awkward setup, then realised two memories can hold one value
+legitimately — same display text, different domains — with no need to exploit `SCH-14` at
+all.
+
+Setting that up and running it produced: two `FORGET` decisions, one `forgotten`, one
+`failed`, one memory still active, and the turn reporting `APPLIED`.
+
+The give-away was that **both decisions carried the same `operation_id`**. That is not
+something a test asserts by default; I only looked because "failed" with no obvious cause
+demanded an explanation. `_apply_retraction` builds its idempotency key from the retraction
+and is called once per target, so every target in the loop computes an identical key. The
+second call is treated as a replay of the first, matches an idempotency record naming a
+different memory, and fails.
+
+What makes this worth the emphasis: the comment directly above the loop says it exists
+because "retracting only the first left the duplicates active and the value returned on the
+next recall." Somebody already found this symptom and fixed half of it — the loop was
+added, the key was not made per-target. The test that would have caught the incomplete fix
+is precisely the one the plan listed and I had put off.
+
+Recorded as a strict `xfail` with a passing companion pinning the current behaviour, per
+decision 14. The fix is one line: include the target memory id in the key.
+
+## 39b. A branch that is only reachable with foreign keys off
+
+`OBX-11` handles an upsert whose canonical record has vanished. I tried to set that up by
+deleting the record and the foreign key refused — correctly, since the outbox event points
+at it.
+
+So the branch is unreachable in a database with `PRAGMA foreign_keys=ON`. That does not make
+it dead code, and the test does not skip: **SQLite enforces foreign keys only when that
+pragma is set, per connection, and off is the default.** `app/db/session.py` sets it, so the
+running application is protected — but any other process opening the same file is not: a
+migration script, `sqlite3` at a prompt, a future worker that builds its own engine.
+
+The test therefore switches the pragma off for the deletion, which recreates exactly the
+state the branch defends against, and the docstring says why rather than leaving it looking
+like a workaround. This is the same reasoning as `conftest.py` turning foreign keys *on* for
+the test engine: SQLite's default is the unusual one, and both directions need stating.

@@ -12,20 +12,20 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1937 tests passing, 28 strict `xfail`s recording ten real defects —
-**790 of 880 plan items.**
+**Progress:** 1937 tests passing, 28 strict `xfail`s recording eleven real defects —
+**799 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
 | 0 — Infrastructure | 7 | 1 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 148 | 2 | 2 | 152 |
+| 2 — Extraction | 149 | 3 | 0 | 152 |
 | 3 — Persistence | 205 | 0 | 0 | 205 |
-| 4 — Derived / async | 90 | 1 | 10 | 101 |
+| 4 — Derived / async | 98 | 1 | 2 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 50 | 2 | 25 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **790** | **6** | **84** | **880** |
+| **Total** | **799** | **7** | **74** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -601,7 +601,7 @@ The integration seam. Uses a scripted model and a real (in-memory) store.
 - [x] **EXC-10** Nested assertions are dropped. `test_nested_assertions.py`
 - [x] **EXC-11** An ungrounded proposal is rejected with `UNGROUNDED_CANDIDATE`.
 - [x] **EXC-12** A semantic duplicate is not stored twice. `test_semantic_duplicate.py`
-- [ ] **EXC-13** …and the duplicate check is owner-scoped.
+- [x] **EXC-13** …and the duplicate check is owner-scoped.
 - [~] **EXC-14** …and respects the similarity threshold at both sides of the boundary.
       Covered: the finder is not consulted with nothing to compare against, and a
       failing finder never loses the memory. The threshold boundary itself still
@@ -613,7 +613,7 @@ The integration seam. Uses a scripted model and a real (in-memory) store.
       The redaction and hash-suppression halves are covered; the at-rest encryption
       assertion belongs with the payload tests.
 - [x] **EXC-18** A retraction resolving to one target applies a forget.
-- [ ] **EXC-19** A retraction resolving to many targets forgets all of them.
+- [~] **EXC-19** A retraction resolving to many targets forgets all of them.
       Unblocked: SCH-14 is staying pinned rather than fixed, so two active records in
       one exclusive slot is a state the store genuinely permits today. Set it up by
       direct insert and assert the retraction clears both.
@@ -980,9 +980,9 @@ The transactional boundary. Real SQLite, real transactions.
 - [x] **OBX-08** `_ensure_deliveries` creates one delivery row per enabled target.
 - [x] **OBX-09** `process` on a `canonical_upsert` writes both derived targets.
 - [x] **OBX-10** `process` on a `canonical_remove` deletes from both.
-- [ ] **OBX-11** A target whose canonical record vanished → `CANONICAL_MISSING`.
+- [x] **OBX-11** A target whose canonical record vanished → `CANONICAL_MISSING`.
 - [x] **OBX-12** A record now inactive → `CANONICAL_INACTIVE`.
-- [ ] **OBX-13** A record whose hash advanced → `CANONICAL_HASH_ADVANCED`, and the event
+- [x] **OBX-13** A record whose hash advanced → `CANONICAL_HASH_ADVANCED`, and the event
       is not applied stale.
 - [x] **OBX-14** An owner-binding mismatch → `OWNER_BINDING_MISMATCH`, nothing written.
 - [~] **OBX-15** A lost lease → `LEASE_LOST`, no write.
@@ -1002,8 +1002,8 @@ The transactional boundary. Real SQLite, real transactions.
 - [ ] **OBX-26** `_set_derived_state` / `_set_derived_failure` keep
       `memory_health_state` in step with the delivery.
 - [x] **OBX-27** Processing the same event twice is idempotent.
-- [ ] **OBX-28** `schedule_repair` enqueues a reconciliation request with a bounded reason.
-- [ ] **OBX-29** `_queue_repair` de-duplicates an identical outstanding repair.
+- [x] **OBX-28** `schedule_repair` enqueues a reconciliation request with a bounded reason.
+- [x] **OBX-29** `_queue_repair` de-duplicates an identical outstanding repair.
 - [x] **OBX-30** Every processed target emits an `OutboxTargetDiagnostic` with latency and
       from/to state.
 - [x] **OBX-31** Diagnostics carry no user content.
@@ -1015,7 +1015,7 @@ The transactional boundary. Real SQLite, real transactions.
 - [x] **MNT-01** `reconcile` on a consistent store reports zero drift and changes nothing.
 - [x] **MNT-02** …detects a missing FTS document and repairs it.
 - [x] **MNT-03** …detects a missing vector point and repairs it.
-- [ ] **MNT-04** …detects a stale hash and refreshes it.
+- [x] **MNT-04** …detects a stale hash and refreshes it.
 - [x] **MNT-05** …detects a ghost derived row with no canonical record and deletes it.
 - [x] **MNT-06** …detects a derived row belonging to another owner and removes it.
 - [x] **MNT-07** …honours the batch limit and returns a resumable cursor.
@@ -1030,12 +1030,12 @@ The transactional boundary. Real SQLite, real transactions.
 - [x] **MNT-14** …is safe to run twice.
 - [x] **MNT-15** …touches only its owner.
 - [x] **MNT-16** `verify_owner_rebuild` passes after a rebuild.
-- [ ] **MNT-17** …fails when a document was tampered with.
+- [x] **MNT-17** …fails when a document was tampered with.
 - [x] **MNT-18** `coverage` reports per-target counts by state that sum to the record count.
 - [x] **MNT-19** `_canonical_checksum` is stable and changes when a record changes.
-- [ ] **MNT-20** `_fts_metadata_current` / `_vector_metadata_current` detect a version
+- [x] **MNT-20** `_fts_metadata_current` / `_vector_metadata_current` detect a version
       bump as stale.
-- [ ] **MNT-21** `MemoryIndexMaintenance.from_settings` honours disabled targets.
+- [x] **MNT-21** `MemoryIndexMaintenance.from_settings` honours disabled targets.
 - [x] **MNT-22** `PrivilegedGlobalMemoryMaintenance` refuses every method when
       `authorized=False`.
 - [x] **MNT-23** …fans out across owners when authorized.
