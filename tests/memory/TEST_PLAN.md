@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1713 tests passing, 28 strict `xfail`s recording ten real defects —
-**699 of 880 plan items.**
+**Progress:** 1762 tests passing, 28 strict `xfail`s recording ten real defects —
+**710 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -23,9 +23,9 @@ routers.
 | 3 — Persistence | 182 | 0 | 23 | 205 |
 | 4 — Derived / async | 72 | 1 | 28 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
-| 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
+| 6 — Config / runtime / HTTP | 11 | 0 | 66 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **699** | **4** | **177** | **880** |
+| **Total** | **710** | **4** | **166** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1237,21 +1237,25 @@ Semantic path:
 
 ### `settings.py` / `factory.py` / `runtime.py` — RUN
 
-- [ ] **RUN-01** `MemorySettings` defaults construct without error.
-- [ ] **RUN-02** Live extraction without an endpoint raises
+- [x] **RUN-01** `MemorySettings` defaults construct without error.
+- [x] **RUN-02** Live extraction without an endpoint raises
       `memory_live_extraction_requires_endpoint`.
-- [ ] **RUN-03** …with an unknown provider raises.
-- [ ] **RUN-04** An invalid `ollama_request_mode` raises.
-- [ ] **RUN-05** Each numeric bound raises at both ends (input chars, recall records,
+- [x] **RUN-03** …with an unknown provider raises.
+- [x] **RUN-04** An invalid `ollama_request_mode` raises.
+- [x] **RUN-05** Each numeric bound raises at both ends (input chars, recall records,
       recall chars, min score) — parametrised.
-- [ ] **RUN-06** Each bound accepts its extremes.
-- [ ] **RUN-07** `from_settings` derives the Ollama endpoint from `ollama_url` when the
-      provider is ollama and no endpoint is set.
-- [ ] **RUN-08** `from_settings` falls back to `default_model` for the extraction model
+- [x] **RUN-06** Each bound accepts its extremes.
+- [x] **RUN-07** `from_settings` derives the Ollama endpoint from `ollama_url` when the
+      provider is ollama and no endpoint is set. **This is load-bearing, not a
+      convenience:** the shipped defaults are `provider="ollama"` with an *empty* endpoint
+      and extraction enabled, so without the derivation `__post_init__` would reject the
+      default configuration and the service would not start. A non-ollama provider has no
+      derivation and must supply its own endpoint or fail closed. See `decisions.md` 49.
+- [x] **RUN-08** `from_settings` falls back to `default_model` for the extraction model
       (the deployment regression).
-- [ ] **RUN-09** `vector_index_enabled` requires both the index worker and semantic recall.
-- [ ] **RUN-10** `owner_is_enabled` is False for a blank owner and when disabled.
-- [ ] **RUN-11** `_resolve_ollama_request_mode` resolves `auto` from probe capabilities
+- [x] **RUN-09** `vector_index_enabled` requires both the index worker and semantic recall.
+- [x] **RUN-10** `owner_is_enabled` is False for a blank owner and when disabled.
+- [x] **RUN-11** `_resolve_ollama_request_mode` resolves `auto` from probe capabilities
       and honours an explicit mode.
 - [ ] **RUN-12** `_ensure_memory_schema` migrates a fresh profile database.
 - [ ] **RUN-13** …is idempotent across calls.

@@ -1055,3 +1055,54 @@ evidence it did not. The lexical route is closed, so only the route under test r
 This generalises past this file. When testing that a filter drops something, the test is
 only meaningful if every *other* way of obtaining the thing is closed off first. Otherwise
 you are not testing the filter, you are testing whichever path happens to win.
+
+## 49. The Ollama endpoint derivation is load-bearing, and I only found that by being wrong
+
+I wrote a test asserting that a non-Ollama provider with no endpoint yields an empty
+endpoint string. It doesn't — it raises. Following that failure produced the more useful
+finding underneath it.
+
+`from_settings` sets `live_extraction_model_enabled` from `memory_extraction_enabled`,
+which is on by default. `__post_init__` then requires a non-blank endpoint whenever live
+extraction is enabled. And the shipped defaults are `provider="ollama"` with an **empty**
+`memory_extraction_endpoint`.
+
+So the `ollama_url` → `{url}/api/chat` derivation in `from_settings` is the only reason the
+default configuration is constructible at all. Remove it and the service fails to start on
+its own defaults. `RUN-07` reads like a convenience feature; it is actually a dependency of
+the default deployment, and it now says so in the plan.
+
+The corrected test is also better than the one I meant to write. "A `direct_json`
+deployment that forgets its endpoint cannot start" is a real operational property; "returns
+an empty string" was a guess about an internal that I had no reason to care about.
+
+## 50. Global state in a module needs an explicit reset in its tests
+
+`_resolve_ollama_request_mode` caches the negotiated mode in a module-level dict keyed by
+`(endpoint, model)`. That is correct for production — probing on every extraction would add
+a round trip to every turn — but in a test suite it means whichever test runs first decides
+the answer for every test after it, and the coupling is invisible until someone reorders
+the file.
+
+The `RUN-11` tests clear the cache in an autouse fixture, before and after. Before matters
+as much as after: a test that assumes an empty cache but inherits a populated one fails for
+a reason that has nothing to do with its own subject.
+
+The cache also has a deliberate hole worth pinning: a probe that *fails* is not cached, so a
+transient outage cannot pin the mode for the process lifetime. That is asserted by probing
+twice and expecting two attempts — the only way to distinguish "not cached" from "cached
+and never re-read".
+
+## 51. Dropping my own duplicate rather than keeping it
+
+I wrote a local `StubSemanticProvider` for the semantic recall tests because
+`doubles.FakeEmbeddingProvider.health()` returned an always-truthy `ProviderHealth`. The
+other session then fixed the double to return a plain `bool`, which made my stub redundant
+and — worse — made its docstring false, since it explained itself by describing behaviour
+that no longer existed.
+
+Removed, and the tests now use the shared double. The rule I applied: a local duplicate is
+justified by a difference in contract, and when the difference goes away so does the
+justification. A stale explanation for why something exists is more expensive than the
+duplication itself, because the next reader has to verify it before they can trust anything
+around it.

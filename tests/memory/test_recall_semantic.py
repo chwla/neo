@@ -39,40 +39,15 @@ from app.services.memory.recall import CanonicalRecallService
 from app.services.memory.settings import MemorySettings
 from app.services.memory.versions import EMBEDDING_IDENTITY_VERSION, VECTOR_METADATA_VERSION
 from tests.memory import factories
+from tests.memory.doubles import FakeEmbeddingProvider
 from tests.memory.conftest import FROZEN_NOW, OTHER_OWNER_ID, OWNER_ID
 
 QUERY_TEXT = "urban sketching"
 
-
-class StubSemanticProvider:
-    """An embedding provider shaped the way *recall* expects one.
-
-    Deliberately not `doubles.FakeEmbeddingProvider`: that one returns a
-    `ProviderHealth` object from `health()`, which suits the vector-index tests
-    but is always truthy. Recall does `if not health(): degrade`, and the
-    production `ValidatedMemoryEmbeddingProvider.health()` returns a plain
-    `bool`. Reusing the other double here would make the unhealthy branch
-    unreachable and the degradation test pass for the wrong reason.
-    """
-
-    provider_name = "fake"
-    model_name = "fake-embed-v1"
-    provider_version = "1"
-    dimension = 8
-
-    def __init__(self, *, healthy: bool = True, embed_error: Exception | None = None) -> None:
-        self._healthy = healthy
-        self._embed_error = embed_error
-        self.embed_calls: list[str] = []
-
-    def embed(self, text: str) -> list[float]:
-        self.embed_calls.append(text)
-        if self._embed_error is not None:
-            raise self._embed_error
-        return [0.1] * self.dimension
-
-    def health(self) -> bool:
-        return self._healthy
+# The identity fields a vector row must carry to be considered current. Read from
+# a provider instance so a change to the double's defaults updates the hits too,
+# rather than silently making every hit stale.
+PROVIDER_IDENTITY = FakeEmbeddingProvider()
 
 
 class StubVectorIndex:
@@ -131,10 +106,10 @@ def _valid_hit(engine: Engine, record_id: str, *, score: float = 0.9, **override
         "content_hash": document.content_hash,
         "canonical_revision": row.revision,
         "score": score,
-        "provider": StubSemanticProvider.provider_name,
-        "model": StubSemanticProvider.model_name,
-        "provider_version": StubSemanticProvider.provider_version,
-        "dimension": StubSemanticProvider.dimension,
+        "provider": PROVIDER_IDENTITY.provider_name,
+        "model": PROVIDER_IDENTITY.model_name,
+        "provider_version": PROVIDER_IDENTITY.provider_version,
+        "dimension": PROVIDER_IDENTITY.dimension,
         "metadata_version": VECTOR_METADATA_VERSION,
         "derived_schema_version": document.schema_version,
         "embedding_document_version": embedding.version,
@@ -151,7 +126,7 @@ def _service(
     database_identity: str,
     *,
     hits: list[dict] | None = None,
-    provider: StubSemanticProvider | None = None,
+    provider: FakeEmbeddingProvider | None = None,
     vector_index: StubVectorIndex | None = None,
     scheduler: RecordingScheduler | None = None,
     metrics=None,
@@ -166,7 +141,7 @@ def _service(
     return CanonicalRecallService(
         repository,
         flags=flags,
-        semantic_provider=provider or StubSemanticProvider(),
+        semantic_provider=provider or FakeEmbeddingProvider(),
         vector_index=vector_index if vector_index is not None else StubVectorIndex(hits),
         repair_scheduler=scheduler,
         metric_recorder=metrics,
@@ -511,13 +486,16 @@ class TestDegradation:
         """The health pre-check runs before any work is attempted."""
 
         factories.insert_record(engine, display_text="improve at urban sketching")
-        provider = StubSemanticProvider(healthy=False)
+        provider = FakeEmbeddingProvider(raises=RuntimeError("ollama is unreachable"))
         service = _service(engine, session, database_identity, provider=provider)
 
         result = service.recall(_query(database_identity))
 
         assert result.diagnostic.degraded_semantic_reason == "embedding_unhealthy"
-        assert provider.embed_calls == []
+        # The health check runs first, so embed is never attempted. If health()
+        # were truthy-but-unhealthy this would still pass by the wrong route --
+        # the trap that made this double return a bool in the first place.
+        assert provider.calls == []
 
     def test_a_failing_vector_search_degrades_to_lexical(
         self, engine: Engine, session: Session, database_identity: str
