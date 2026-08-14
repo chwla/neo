@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1978 tests passing, 29 strict `xfail`s recording eleven real defects —
-**817 of 880 plan items.**
+**Progress:** 2045 tests passing, 31 strict `xfail`s recording thirteen real defects —
+**838 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -23,9 +23,9 @@ routers.
 | 3 — Persistence | 205 | 0 | 0 | 205 |
 | 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
-| 6 — Config / runtime / HTTP | 56 | 0 | 21 | 77 |
+| 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
 | 7 — Cross-cutting | 10 | 0 | 37 | 47 |
-| **Total** | **817** | **5** | **58** | **880** |
+| **Total** | **838** | **5** | **37** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1337,28 +1337,38 @@ Semantic path:
 These are the older, separate retrieval and conversation-compaction subsystems. They ship
 in the app and have their own routers, so they need at least a working-order pass.
 
-- [ ] **RTV-01** `POST /index` indexes an item and is idempotent.
-- [ ] **RTV-02** `POST /retrieve` returns scored items, scope-filtered.
-- [ ] **RTV-03** CRUD on `/items` round-trips create → get → patch → delete.
-- [ ] **RTV-04** `GET /items/{id}` 404s for unknown.
-- [ ] **RTV-05** `/scopes/{type}/{id}` returns only that scope's items.
-- [ ] **RTV-06** `/retrievals` respects its limit bounds (1–300).
-- [ ] **RTV-07** `prune/preview` reports what `prune/apply` would remove, and preview
+- [x] **RTV-01** ~~`POST /index` indexes an item and is idempotent.~~ **Corrected:**
+      `/index` *sweeps existing sources* (context summaries, runs) into retrieval; it takes
+      no title or content. Posting an item returns 200 and indexes nothing, silently.
+      Covered as a sweep, with re-sweep idempotency.
+- [x] **RTV-02** `POST /retrieve` returns scored items, scope-filtered.
+- [x] **RTV-03** CRUD on `/items` round-trips create → get → patch → delete. **DEFECT
+      (thirteenth):** a patch that changes `title` returns 500 — `update_item` re-derives a
+      duplicate key that includes the title, misses, and INSERTs with the existing id.
+      Strict `xfail`. See `decisions.md` 65.
+- [x] **RTV-04** `GET /items/{id}` 404s for unknown.
+- [x] **RTV-05** `/scopes/{type}/{id}` returns only that scope's items.
+- [x] **RTV-06** `/retrievals` respects its limit bounds (1–300).
+- [x] **RTV-07** `prune/preview` reports what `prune/apply` would remove, and preview
       changes nothing.
-- [ ] **RTV-08** `prune/apply` removes exactly the previewed set.
-- [ ] **RTV-09** `scorer` ranking is deterministic and bounded.
-- [ ] **RTV-10** `redaction` strips what it claims before storage.
-- [ ] **RTV-11** `audit` records each retrieval.
-- [ ] **RTV-12** Retrieval is owner/scope-isolated.
-- [ ] **CTX-01** `POST /preview` summarises without persisting.
-- [ ] **CTX-02** `POST /compact` persists a summary and returns it.
-- [ ] **CTX-03** `token_budget` respects its limit at the boundary.
-- [ ] **CTX-04** `extractor` pulls the expected facts from a transcript.
-- [ ] **CTX-05** `redaction` removes sensitive spans before summarising.
-- [ ] **CTX-06** `summarizer` is deterministic given a fixed model double.
-- [ ] **CTX-07** Summaries and events are scope-isolated.
-- [ ] **CTX-08** `GET /summaries/{id}` 404s for unknown.
-- [ ] **CTX-09** Event creation returns 201 and appears in the scope's event list.
+- [x] **RTV-08** `prune/apply` removes exactly the previewed set.
+- [x] **RTV-09** `scorer` ranking is deterministic and bounded.
+- [x] **RTV-10** `redaction` strips what it claims before storage.
+- [x] **RTV-11** `audit` records each retrieval.
+- [x] **RTV-12** ~~Retrieval is owner/scope-isolated.~~ **DEFECT (twelfth):** it is not.
+      `MemoryRetriever.retrieve` skips an item only when its `scope_type` **and** `scope_id`
+      both differ, so any two scopes sharing a type — every pair of chats — see each other's
+      items. Listing *is* isolated; retrieval is not. Strict `xfail` records the isolating
+      behaviour. See `decisions.md` 65.
+- [x] **CTX-01** `POST /preview` summarises without persisting.
+- [x] **CTX-02** `POST /compact` persists a summary and returns it.
+- [x] **CTX-03** `token_budget` respects its limit at the boundary.
+- [x] **CTX-04** `extractor` pulls the expected facts from a transcript.
+- [x] **CTX-05** `redaction` removes sensitive spans before summarising.
+- [x] **CTX-06** `summarizer` is deterministic given a fixed model double.
+- [x] **CTX-07** Summaries and events are scope-isolated.
+- [x] **CTX-08** `GET /summaries/{id}` 404s for unknown.
+- [x] **CTX-09** Event creation returns 201 and appears in the scope's event list.
 
 ---
 

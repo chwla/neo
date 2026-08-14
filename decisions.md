@@ -1679,3 +1679,70 @@ minutes. The dependency was undetectable exactly while it was harmless, which is
 shape as the other two things caught today — an item count that was internally consistent
 and wrong, and a progress summary that was coherent and wrong. None had a second source. A
 socket guard is a second source that costs nothing per run.
+
+## 65. Two defects in the older retrieval subsystem, both found by doing the obvious thing
+
+**Twelfth: retrieval is not scope-isolated.** `MemoryRetriever.retrieve` has two guards
+meant to exclude other scopes, and both read:
+
+```python
+if request.scope_type and item["scope_type"] != request.scope_type
+   and item["scope_id"] != request.scope_id:
+    continue
+```
+
+`and` where isolation needs `or`. An item is skipped only when its scope *type* and its
+scope *id* both differ — so any two scopes sharing a type see each other's items. Every pair
+of chats shares the type `chat`. A query in one conversation returns another conversation's
+stored text.
+
+What makes it easy to miss is the scorer: same-scope items get a +0.22 bonus, so the correct
+result still ranks first and the leak only appears further down the list. The test therefore
+asserts both — that the foreign item is present, *and* that the local one is on top — because
+asserting only the second would have looked like a passing isolation test.
+
+This subsystem stores content a user pasted into a chat, so this is an information boundary,
+not a ranking preference. Recorded as a strict `xfail` expressing the isolating behaviour.
+
+**Thirteenth: renaming an item returns 500.** `store.update_item` merges the patch and hands
+it to `upsert_item`, which decides insert-versus-update by looking for a row matching
+`(scope_type, scope_id, source_type, source_id, memory_type, title)`. When the patch changes
+the title, that lookup matches nothing, so the code takes the INSERT branch — carrying the
+item's existing id — and hits `UNIQUE constraint failed` on the primary key.
+
+Every other field patches fine, which is why it survived: the failure needs the one edit a
+user is most likely to make to a saved note. `update_item` knows the id it is updating; it
+should not be re-deriving identity from content.
+
+Both are in a subsystem the plan itself calls "older" and asks only for a working-order pass.
+That framing turned out to be the reason to look, not a reason to look less carefully.
+
+## 66. `/index` accepts a payload it ignores
+
+`RTV-01` reads "indexes an item and is idempotent", so I posted an item. It returned **200**
+and indexed nothing.
+
+`POST /workspace-memory/index` does not accept an item. `MemoryIndexRequest` carries a scope
+and a list of source types, and the endpoint sweeps *existing* rows — context summaries,
+agentic runs — into the retrieval store. The model does not forbid extra fields, so a title
+and content are accepted, discarded, and reported as success.
+
+Pinned as a sweep instead, with a re-sweep asserting no duplication. The wider point is the
+one that cost me the time: a 200 means the request was understood, not that it did what the
+caller meant. An endpoint whose request model ignores unknown fields will confirm any
+misunderstanding you bring to it.
+
+## 67. These subsystems write to the application database, not a profile
+
+`memory_retrieval` and `context_memory` both resolve their SQLite path from
+`get_settings().database_url` at call time — the application database, which in a normal
+checkout is the `neo_memory.db` sitting in the repository root.
+
+So a test that exercised these routers without redirecting that setting would write its rows
+into the developer's real database. Both store modules are patched, not the settings cache,
+because each reads it independently.
+
+Same category as the profile-directory care in decision 53, and worth stating as one rule:
+before testing any subsystem, find out which file it writes to. Two of the three memory
+subsystems in this application answer that question differently from the one I had just
+finished testing.
