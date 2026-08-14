@@ -988,3 +988,70 @@ for. It now stubs the clock to return successive instants and asserts both exact
 The common thread with decision 42 is that all three passed for a reason unrelated to the
 behaviour they described. A test that cannot fail is worse than a missing one: the missing
 test is visible in the plan as an open item.
+
+## 46. `degraded_lexical` means "tried and failed", not "switched off"
+
+`RCL-53` expected `lexical_available=False` to produce `degraded_lexical=True`. The
+behaviour is right and the flag is right; the plan conflated two different situations.
+
+`_fetch` sets the flag in exactly one place: when the FTS query raises. A configured-off
+lexical path returns `([], False)` instead. That distinction is worth keeping — "the search
+engine fell over" and "this deployment does not run a search engine" want different
+responses from whoever reads the diagnostic, and collapsing them would make the alerting
+signal fire constantly on a semantic-only install.
+
+What it costs is that the diagnostic no longer describes the disabled case at all: a
+semantic-only result looks, from the outside, exactly like a normal hybrid one that
+happened to find nothing lexically. I pinned the current behaviour rather than changing it,
+because the flag's name matches what it does; but the gap is real and now written down.
+
+`RCL-54` is the same kind of correction. The plan wanted both reason codes when lexical and
+semantic are both unavailable. Recall short-circuits *before* `_semantic` runs, so there is
+no semantic diagnosis to report and the result carries `LEXICAL_UNAVAILABLE` alone. The
+part the plan actually cared about — no exception, empty result — holds.
+
+## 47. I did not reuse the shared embedding double, and the reason is a real trap
+
+`doubles.FakeEmbeddingProvider` returns a `ProviderHealth` object from `health()`. Recall
+does:
+
+```python
+healthy = health()
+if not healthy:
+    diagnostic["degraded"] = "embedding_unhealthy"
+```
+
+`ProviderHealth` is a pydantic model with no `__bool__`, so it is *always* truthy. Passing
+that double to recall makes the unhealthy branch unreachable: a test asserting graceful
+degradation would still pass, because `embed()` would then raise and be caught by the
+outer handler — producing `semantic_unavailable` instead of `embedding_unhealthy`. Right
+outcome, wrong path, and the test would have been green while proving nothing about the
+health check.
+
+I checked whether this was a defect in recall before working around it. It is not: the
+`EmbeddingProvider` protocol declares `health() -> bool`, and the production
+`ValidatedMemoryEmbeddingProvider.health()` returns a real bool — it even unwraps a
+structured result via `getattr(result, "healthy")`. Recall is correct; the double simply
+conforms to a different contract than the one recall consumes, which is fine for the vector
+index tests it was written for.
+
+So this file defines its own provider stub returning a plain bool, with the reason in its
+docstring. The general lesson: a shared double is only shared if every consumer needs the
+same contract, and "it has the right method names" is not the same as "it has the right
+return types".
+
+## 48. Testing a filter means making the thing it filters unreachable by other routes
+
+Three of these tests were initially unable to fail, all for the same reason. A record whose
+display text is "improve at urban sketching" matches the query "urban sketching"
+*lexically*, so it appears in the result whether or not the semantic path returned it.
+Asserting it was present proved nothing about semantics; asserting it was absent failed
+even when the semantic drop worked correctly, because lexical had put it back.
+
+The fix is to give the record text that shares no token with the query — "plays the cello
+on tuesdays". Then presence is evidence the semantic path contributed, and absence is
+evidence it did not. The lexical route is closed, so only the route under test remains.
+
+This generalises past this file. When testing that a filter drops something, the test is
+only meaningful if every *other* way of obtaining the thing is closed off first. Otherwise
+you are not testing the filter, you are testing whichever path happens to win.

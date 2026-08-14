@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1690 tests passing, 28 strict `xfail`s recording ten real defects —
-**691 of 880 plan items.**
+**Progress:** 1713 tests passing, 28 strict `xfail`s recording ten real defects —
+**699 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -22,10 +22,10 @@ routers.
 | 2 — Extraction | 148 | 2 | 2 | 152 |
 | 3 — Persistence | 182 | 0 | 23 | 205 |
 | 4 — Derived / async | 72 | 1 | 28 | 101 |
-| 5 — Recall / prompt / chat | 86 | 0 | 8 | 94 |
+| 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 0 | 0 | 77 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **691** | **4** | **185** | **880** |
+| **Total** | **699** | **4** | **177** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1147,17 +1147,21 @@ Semantic path:
 - [x] **RCL-45** `_semantic_available` is False when semantic recall is disabled.
 - [x] **RCL-46** …False when the embedding provider is unavailable, with
       `SEMANTIC_UNAVAILABLE` and a working lexical fallback.
-- [ ] **RCL-47** A semantic hit for another owner is dropped and counted, and increments
+- [x] **RCL-47** A semantic hit for another owner is dropped and counted, and increments
       `semantic_wrong_owner_hit`.
-- [ ] **RCL-48** A stale hit (hash advanced) is dropped, counted, and schedules a repair.
-- [ ] **RCL-49** A ghost hit (no canonical record) is dropped, counted, and schedules a
+- [x] **RCL-48** A stale hit (hash advanced) is dropped, counted, and schedules a repair.
+- [x] **RCL-49** A ghost hit (no canonical record) is dropped, counted, and schedules a
       delete repair.
-- [ ] **RCL-50** An inactive hit is dropped and counted.
-- [ ] **RCL-51** `_schedule_repair` is best-effort — a failure there doesn't fail recall.
-- [ ] **RCL-52** Hybrid scoring blends lexical and semantic and is bounded.
-- [ ] **RCL-53** `lexical_available=False` degrades to semantic-only with
-      `degraded_lexical=True`.
-- [ ] **RCL-54** Both unavailable → empty result, both reason codes, no exception.
+- [x] **RCL-50** An inactive hit is dropped and counted.
+- [x] **RCL-51** `_schedule_repair` is best-effort — a failure there doesn't fail recall.
+- [x] **RCL-52** Hybrid scoring blends lexical and semantic and is bounded.
+- [x] **RCL-53** `lexical_available=False` degrades to semantic-only — but with
+      `degraded_lexical=**False**`. **Corrected:** the flag means "lexical was attempted
+      and failed"; `_fetch` sets it only when the FTS query raises. A deliberately
+      disabled lexical path is configuration, not degradation. See `decisions.md` 46.
+- [x] **RCL-54** Both unavailable → empty result, **one** reason code, no exception.
+      **Corrected:** recall short-circuits before `_semantic` runs, so there is no semantic
+      diagnosis to report and the result carries `LEXICAL_UNAVAILABLE` alone.
 
 ### `prompt.py` — PMT
 
