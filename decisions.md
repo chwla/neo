@@ -1266,3 +1266,54 @@ a record directly. That is a fixture worth building, but it belongs with the mut
 that already own source persistence, not bolted onto the adapter file. Marked open rather
 than approximated — a test that detaches a source which was never attached would pass while
 proving nothing, which is the exact failure mode I have been auditing for elsewhere.
+
+## 55. DELETE is not idempotent here, and that is the better answer
+
+`API-15` expected a repeated `DELETE /memory/{id}` to succeed. It returns 404: the route
+resolves the record through `_record_or_404` first, and a forgotten record is no longer
+listed.
+
+I pinned the behaviour rather than the plan, because the plan's version is worse for the
+only caller that matters. This API is driven by a browser. Two tabs open on the same memory,
+both showing a delete button: with an idempotent delete, the second tab reports success and
+the user believes they deleted something that was already gone. With a 404 they learn the
+record no longer exists. On a *missing* resource, a 404 is a defensible REST reading and the
+more informative one.
+
+The one thing that would change my mind is a retrying client — an automatic retry after a
+dropped response would see 404 and report a failure for a delete that worked. Nothing here
+retries, so it stays as it is, and it is now written down for whoever adds one.
+
+## 56. Testing the HTTP layer without creating real profiles
+
+`build_memory_runtime` resolves a profile database by calling `database_url_for`, which
+creates the directory as a side effect. Left alone, these tests would scatter real profile
+directories under the developer's data directory — the ones that then have to be found and
+deleted by hand.
+
+Every API test therefore redirects `_root()` into `tmp_path` before the first request and
+uses guest profiles, which never open the account registry. The owner-isolation test creates
+its *second* profile the same way, so even the cross-owner case stays inside the temporary
+tree.
+
+This also happens to make the isolation test honest. The foreign profile gets its own
+database, so the 404 is produced by the profile actually being empty — the real mechanism —
+rather than by a filter I would otherwise have had to fake.
+
+## 57. Two more disjunction assertions, caught before commit this time
+
+`assert 400 <= status < 500` for prohibited content, and `assert status in {404, 503}` for a
+foreign id. Both would have passed on outcomes I did not intend: the first on any client
+error including a validation failure that never reached the content guard, the second
+whether the record was properly hidden *or* the entire runtime failed to build — which are
+opposite outcomes wearing the same test.
+
+Replaced with the exact values, which I got by running the requests and reading them: 409
+with `rejection_code: prohibited_sensitive_content`, and 404 with the same body an unknown
+id returns. The second assertion is now stronger than a status check alone — it compares the
+foreign-id response to the unknown-id response and requires them to be identical, which is
+the actual security property. A different body for "exists but not yours" would confirm the
+record's existence to someone who cannot read it.
+
+That makes six of these across my slice. The tell is always the same: an assertion that
+accepts a range or a set is an assertion I have not finished writing.

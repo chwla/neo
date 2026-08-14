@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1870 tests passing, 28 strict `xfail`s recording ten real defects —
-**759 of 880 plan items.**
+**Progress:** 1902 tests passing, 28 strict `xfail`s recording ten real defects —
+**778 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -23,9 +23,9 @@ routers.
 | 3 — Persistence | 202 | 0 | 3 | 205 |
 | 4 — Derived / async | 90 | 1 | 10 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
-| 6 — Config / runtime / HTTP | 22 | 0 | 55 | 77 |
+| 6 — Config / runtime / HTTP | 41 | 2 | 34 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **759** | **4** | **117** | **880** |
+| **Total** | **778** | **6** | **96** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1281,32 +1281,37 @@ Semantic path:
 
 ### `api/routes/memory.py` — API
 
-- [ ] **API-01** `GET /memory` returns only the caller's records.
-- [ ] **API-02** …shapes each record with scope, field, type, and display text.
-- [ ] **API-03** `POST /memory` creates and returns 201.
-- [ ] **API-04** …rejects an invalid payload with 422.
-- [ ] **API-05** …rejects prohibited content with a clean 4xx, not a 500.
-- [ ] **API-06** …applies `_default_slot` when no slot is given.
-- [ ] **API-07** …honours project scope from the payload.
-- [ ] **API-08** …a duplicate create reconfirms rather than 500-ing on the unique index.
-- [ ] **API-09** `GET /memory/{id}` returns 404 for unknown and for another owner's id.
-- [ ] **API-10** `PATCH /memory/{id}` updates and bumps the revision.
-- [ ] **API-11** …with no fields returns 422.
-- [ ] **API-12** …on a revision conflict returns a 409-shaped error.
-- [ ] **API-13** `DELETE /memory/{id}` forgets and returns the outcome.
-- [ ] **API-14** …on an unknown id returns 404.
-- [ ] **API-15** …is idempotent on a second call.
-- [ ] **API-16** `GET /memory/candidates` lists pending candidates only.
+- [x] **API-01** `GET /memory` returns only the caller's records.
+- [x] **API-02** …shapes each record with scope, field, type, and display text.
+- [x] **API-03** `POST /memory` creates and returns 201.
+- [x] **API-04** …rejects an invalid payload with 422.
+- [x] **API-05** …rejects prohibited content with a clean 4xx, not a 500.
+- [x] **API-06** …applies `_default_slot` when no slot is given.
+- [x] **API-07** …honours project scope from the payload.
+- [x] **API-08** …a duplicate create reconfirms rather than 500-ing on the unique index.
+- [x] **API-09** `GET /memory/{id}` returns 404 for unknown and for another owner's id.
+- [x] **API-10** `PATCH /memory/{id}` updates and bumps the revision.
+- [x] **API-11** …with no fields returns 422.
+- [x] **API-12** …on a revision conflict returns a 409-shaped error.
+- [x] **API-13** `DELETE /memory/{id}` forgets and returns the outcome.
+- [x] **API-14** …on an unknown id returns 404.
+- [x] **API-15** ~~…is idempotent on a second call.~~ **Corrected:** a second DELETE
+      returns 404. `_record_or_404` runs first and a forgotten record is no longer listed.
+      Defensible — the second caller learns the record is gone rather than being told it
+      deleted something twice. See `decisions.md` 55.
+- [~] **API-16** `GET /memory/candidates` lists pending candidates only. Empty-store case
+      covered; the "pending only" filter still needs a seeded candidate.
 - [ ] **API-17** `POST /candidates/{id}/accept` applies and returns the record.
-- [ ] **API-18** …on an unknown candidate returns 404.
+- [x] **API-18** …on an unknown candidate returns 404.
 - [ ] **API-19** …on an already-applied candidate is idempotent.
-- [ ] **API-20** `POST /candidates/{id}/reject` rejects.
+- [~] **API-20** `POST /candidates/{id}/reject` rejects. Unknown-candidate 404 covered;
+      the reject path itself still needs a seeded candidate.
 - [ ] **API-21** …is idempotent.
 - [ ] **API-22** `_ensure_applied` turns a non-applied result into the right HTTP error
       for every rejection code (parametrised).
-- [ ] **API-23** Every route requires a profile and fails cleanly without one.
-- [ ] **API-24** No route leaks another profile's data when given its ids.
-- [ ] **API-25** Error responses never contain raw memory content.
+- [x] **API-23** Every route requires a profile and fails cleanly without one.
+- [x] **API-24** No route leaks another profile's data when given its ids.
+- [x] **API-25** Error responses never contain raw memory content.
 
 ### `api/routes/memory_health.py` — HLT
 
