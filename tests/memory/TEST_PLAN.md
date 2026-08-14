@@ -13,7 +13,7 @@ routers.
 `[x]` covered and passing.
 
 **Progress:** 1978 tests passing, 29 strict `xfail`s recording eleven real defects —
-**807 of 880 plan items.**
+**817 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -24,8 +24,8 @@ routers.
 | 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 56 | 0 | 21 | 77 |
-| 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **807** | **5** | **68** | **880** |
+| 7 — Cross-cutting | 10 | 0 | 37 | 47 |
+| **Total** | **817** | **5** | **58** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1398,12 +1398,12 @@ These are the ones that decide whether the layer is genuinely safe to use.
 
 ### Concurrency — CNC
 
-- [ ] **CNC-01** Concurrent creates on one exclusive slot leave exactly one active record.
-- [ ] **CNC-02** Concurrent updates: one succeeds, the other gets a revision conflict.
-- [ ] **CNC-03** Concurrent forget + update never produces a forgotten-but-updated row.
-- [ ] **CNC-04** Concurrent outbox workers never double-apply an event.
+- [x] **CNC-01** Concurrent creates on one exclusive slot leave exactly one active record.
+- [x] **CNC-02** Concurrent updates: one succeeds, the other gets a revision conflict.
+- [x] **CNC-03** Concurrent forget + update never produces a forgotten-but-updated row.
+- [x] **CNC-04** Concurrent outbox workers never double-apply an event.
 - [ ] **CNC-05** Reconcile running during a mutation doesn't corrupt derived state.
-- [ ] **CNC-06** The same idempotency key used concurrently produces one operation.
+- [x] **CNC-06** The same idempotency key used concurrently produces one operation.
 
 ### End-to-end journeys — E2E
 
@@ -1443,11 +1443,11 @@ Each runs the full stack — extraction → mutation → outbox → recall → p
 
 Not benchmarks — regression tripwires with generous bounds.
 
-- [ ] **PRF-01** Recall over 1,000 records completes under a fixed budget.
-- [ ] **PRF-02** Recall issues a bounded number of queries (no N+1 over records).
-- [ ] **PRF-03** A single mutation issues a bounded number of statements.
-- [ ] **PRF-04** Reconcile over 1,000 records stays within its batch limit per call.
-- [ ] **PRF-05** The prompt never exceeds `MAX_RECALL_CONTEXT_CHARS`, even with
+- [x] **PRF-01** Recall over 1,000 records completes under a fixed budget.
+- [x] **PRF-02** Recall issues a bounded number of queries (no N+1 over records).
+- [x] **PRF-03** A single mutation issues a bounded number of statements.
+- [x] **PRF-04** Reconcile over 1,000 records stays within its batch limit per call.
+- [x] **PRF-05** The prompt never exceeds `MAX_RECALL_CONTEXT_CHARS`, even with
       pathological display text.
 
 ---

@@ -1551,3 +1551,67 @@ accumulate contradictory facts the user cannot fully delete. `DIA-15` is the mit
 this up is: run the invariant check, fix `EXC-19c` (one line: put the target memory id in
 the idempotency key), then fix `SCH-14`'s index, in that order. Fixing the index first fails
 against data that already violates it.
+
+---
+
+## 42b. Concurrency is tested with real threads, and one assertion is a range
+
+**What:** The `CNC-*` tests spawn real threads against a real SQLite file rather than
+simulating a race.
+
+**Why:** SQLite serialises writes, but serialisation only means two writers do not
+interleave — it says nothing about whether the second does the right thing on finding the
+world changed. `BEGIN IMMEDIATE`, the busy-timeout retry, and the optimistic revision check
+all behave differently under genuine contention than under a scripted one, and a simulated
+race would only test the code path I *expected* to be taken.
+
+**`CNC-01` asserts a range, deliberately.** Four writers race to put different values in
+one globally-scoped exclusive slot — `identity:global:name`, which is exactly the case
+`SCH-14` says the unique index no longer protects. Asserting "exactly one record survives"
+would encode the *fix*, so the test would fail today and read as a regression. Asserting
+"exactly four" would encode the bug as intended behaviour, so it would fail when someone
+fixes it. Neither is honest. What is true regardless, and worth guarding, is that nothing
+is corrupted: every writer either succeeds or fails cleanly, and the store ends with between
+one and four active records. When `SCH-14` is fixed the range can tighten to one, and the
+docstring says so.
+
+## 43b. Two performance tripwires that started out proving nothing
+
+Both `PRF` tests over recall passed immediately, and both were worthless as first written.
+I found this by printing what they actually measured rather than trusting the green.
+
+**`PRF-05`** (the recall context stays under `MAX_RECALL_CONTEXT_CHARS` = 2,400) returned
+five items totalling **164 characters**. It would have passed against a build with no
+character bound at all, because two *other* limits bind first: identical slot keys collapse
+records to one, and the record-count limit stops at five long before 2,400 characters. The
+fix was to give every record its own slot and ~1,000 characters of text, so twenty
+candidates compete and only two fit. There is now also an assertion that one *more* record
+would have overshot — otherwise the test still could not distinguish "the bound worked" from
+"there was not much to return".
+
+**`PRF-02`** (recall does not query per record) was written with a threshold of fifty
+statements. The real number is four, over two hundred records. Fifty would have caught an
+N+1 — but so would fifteen, with far more margin for noticing a smaller regression, so the
+bound is now fifteen and the comment records the observed four.
+
+The general point, and the reason this gets its own section: **a passing performance test is
+the easiest kind to leave broken**, because green looks like the goal. The only way to know
+a bound is doing work is to make the thing it bounds actually press against it.
+
+## 44b. Verifying the suite makes no network calls
+
+The parallel session found the whole suite had been silently depending on a running Ollama —
+a runtime fixture probed a live endpoint with a 300-second warmup timeout, and it looked
+fine locally because a running service answers fast.
+
+I checked my own files by monkeypatching `socket.socket.connect` to raise and running all
+seven: 404 passed, 3 xfailed, **zero connect attempts**. Worth doing that way rather than by
+reading the code, because `test_extraction_providers.py` constructs three real
+`StdlibJsonHttpTransport` objects — construction never connects, but I would not want to
+assert that from inspection.
+
+I proposed making it permanent as an autouse fixture in `tests/memory/conftest.py`, with an
+opt-out marker for any test that genuinely needs a socket. Not added unilaterally: it lands
+in a shared file and would break the other session's API tests if any of them need one.
+Third time today a problem was invisible because the happy path was fast; a socket guard is
+a second source that costs nothing per run.
