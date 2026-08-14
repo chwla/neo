@@ -388,19 +388,10 @@ class TestTokenisation:
             ("swimming", "swims"),
         ],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: the stemmer strips a bare 's' but not the 'es' plural, and "
-            "does not undouble a final consonant. 'sketches' becomes 'sketche' and "
-            "'running' becomes 'runn', neither of which matches 'sketch' or 'run'. "
-            "Remove this xfail when -es and doubled-consonant forms are handled."
-        ),
-    )
-    def test_es_plurals_and_doubled_consonants_currently_miss(
+    def test_es_plurals_and_doubled_consonants_share_a_stem(
         self, first: str, second: str
     ) -> None:
-        """RCL-21d — a gap found while writing RCL-21, recorded not patched.
+        """RCL-21d — fixed. The forms the docstring promised but did not deliver.
 
         ``_stem`` documents itself as making "the singular, plural and participle
         forms of the same word agree", and promises that "any word it does not
@@ -422,11 +413,31 @@ class TestTokenisation:
 
         assert lexical_tokens(first) == lexical_tokens(second)
 
-    @pytest.mark.parametrize("token", ["cat", "runs", "2026", "id"])
+    @pytest.mark.parametrize("token", ["cat", "the", "2026", "id"])
     def test_short_tokens_and_digits_are_left_alone(self, token: str) -> None:
-        """RCL-21b — the stemmer is deliberately small and fails safe."""
+        """RCL-21b — the stemmer is deliberately small and fails safe.
+
+        The boundary moved from five characters to four when RCL-21d was fixed.
+        It had to: "runs" is four characters, so it was returned unstemmed while
+        "running" folded to "run", and the pair could never agree. Four-letter
+        plurals are now stemmed; three-letter words and digits still are not.
+        """
 
         assert lexical_tokens(token) == (token.casefold(),)
+
+    @pytest.mark.parametrize(
+        ("token", "expected"),
+        [("runs", "run"), ("eyes", "eye"), ("toes", "toe")],
+    )
+    def test_four_letter_plurals_are_now_stemmed(self, token: str, expected: str) -> None:
+        """The other side of that boundary, asserted so the change is deliberate.
+
+        Stemming is symmetric — it runs over the query and the stored text alike
+        — so a word it folds imperfectly still matches itself. What matters is
+        that a plural and its verb form land on the same stem.
+        """
+
+        assert lexical_tokens(token) == (expected,)
 
     def test_stemming_is_idempotent(self) -> None:
         """RCL-21c — stemming a stem must not keep eroding the word."""

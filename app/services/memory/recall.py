@@ -76,14 +76,37 @@ def _stem(token: str) -> str:
     word it does not recognise is left exactly as written.
     """
 
-    if len(token) <= 4 or token.isdigit():
+    # Four-letter words are stemmed: "runs" has to reach "run" for it to agree
+    # with "running".  The guard sat at five, which left every four-letter plural
+    # unstemmed while its participle was folded.
+    if len(token) <= 3 or token.isdigit():
         return token
-    if token.endswith("ies"):
+    if token.endswith("ies") and len(token) > 4:
         return token[:-3] + "y"
+    # An "es" plural, but only after a sibilant -- those are the stems that need
+    # it ("sketches", "boxes", "wishes").  Elsewhere the "e" belongs to the stem
+    # and only the "s" comes off, so "makes" folds to "make" rather than "mak".
+    if token.endswith("es") and token[:-2].endswith(("s", "x", "z", "ch", "sh")):
+        return token[:-2]
     for suffix in ("ing", "ed", "s"):
         if token.endswith(suffix) and len(token) - len(suffix) >= 3:
-            return token[: -len(suffix)]
+            return _undouble(token[: -len(suffix)])
     return token
+
+
+def _undouble(stem: str) -> str:
+    """Drop a consonant doubled only to carry a suffix: "runn" -> "run".
+
+    English doubles a final consonant before ``-ing``/``-ed`` after a short
+    vowel, so stripping the suffix leaves a letter that was never part of the
+    word.  ``s``, ``l``, ``f`` and ``z`` are excluded because they double in the
+    stem itself -- undoubling those would turn "passing" into "pas" and
+    "falling" into "fal", neither of which matches "pass" or "falls".
+    """
+
+    if len(stem) > 3 and stem[-1] == stem[-2] and stem[-1] not in "slfz":
+        return stem[:-1]
+    return stem
 
 
 def lexical_tokens(value: str) -> tuple[str, ...]:
