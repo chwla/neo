@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 2045 tests passing, 31 strict `xfail`s recording thirteen real defects —
-**838 of 880 plan items.**
+**Progress:** 2080 tests passing, 31 strict `xfail`s recording thirteen real defects —
+**856 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -24,8 +24,8 @@ routers.
 | 4 — Derived / async | 100 | 1 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
-| 7 — Cross-cutting | 10 | 0 | 37 | 47 |
-| **Total** | **838** | **5** | **37** | **880** |
+| 7 — Cross-cutting | 28 | 0 | 19 | 47 |
+| **Total** | **856** | **5** | **19** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1378,32 +1378,40 @@ These are the ones that decide whether the layer is genuinely safe to use.
 
 ### Owner and profile isolation — ISO
 
-- [ ] **ISO-01** Two profiles' databases never share a binding.
-- [ ] **ISO-02** No repository method returns another owner's row, given its id directly
+- [x] **ISO-01** Two profiles' databases never share a binding.
+- [x] **ISO-02** No repository method returns another owner's row, given its id directly
       (parametrised over every getter).
-- [ ] **ISO-03** No mutation writes across owners, given a foreign id (parametrised over
+- [x] **ISO-03** No mutation writes across owners, given a foreign id (parametrised over
       every command).
-- [ ] **ISO-04** Recall never returns a foreign record, even via a deterministic id.
-- [ ] **ISO-05** Neither derived index returns a foreign row.
-- [ ] **ISO-06** The outbox never processes a foreign event.
-- [ ] **ISO-07** Maintenance never touches a foreign owner.
-- [ ] **ISO-08** The API never exposes a foreign record.
-- [ ] **ISO-09** Fingerprints and tombstones from one owner never match another's.
-- [ ] **ISO-10** A guest/ephemeral profile leaves nothing in the registered store.
+- [x] **ISO-04** Recall never returns a foreign record, even via a deterministic id.
+- [x] **ISO-05** Neither derived index returns a foreign row.
+- [x] **ISO-06** The outbox never leases a foreign event — asserted with the owner's own
+      event present, so an empty lease cannot masquerade as isolation.
+- [x] **ISO-07** Maintenance never touches a foreign owner. Asserted at
+      `list_index_candidates`, the owner-scoped enumeration `rebuild_owner` reads through,
+      rather than through the rebuild itself — a rebuild that indexed nothing would report
+      isolation while proving only that it did nothing. See `decisions.md` 69.
+- [x] **ISO-08** The API never exposes a foreign record. Covered by API-24, which asserts
+      the foreign-id response is byte-identical to the unknown-id response.
+- [x] **ISO-09** Fingerprints and tombstones from one owner never match another's.
+- [x] **ISO-10** A guest/ephemeral profile leaves nothing in the registered store — the
+      `guest-profile:` / `account-profile:` identity prefix keeps the two trees disjoint
+      even for an identical profile id.
 
 ### Privacy — PRV
 
-- [ ] **PRV-01** Prohibited content never lands in any table (sweep every table after an
+- [x] **PRV-01** Prohibited content never lands in any table (sweep every table after an
       attempted write).
-- [ ] **PRV-02** Sensitive content is encrypted at rest in records, candidates, sources,
+- [x] **PRV-02** Sensitive content is encrypted at rest in records, candidates, sources,
       and operations.
-- [ ] **PRV-03** Sensitive content never appears in logs (capture logging during a full
+- [x] **PRV-03** Sensitive content never appears in logs (capture logging during a full
       sensitive round-trip).
-- [ ] **PRV-04** Sensitive content never appears in diagnostics or outbox payloads.
-- [ ] **PRV-05** Sensitive content never reaches the derived indexes.
-- [ ] **PRV-06** `erase_permanently` leaves no trace in any table (sweep by content).
-- [ ] **PRV-07** `forget` leaves no recallable trace but keeps provenance.
-- [ ] **PRV-08** A forgotten fact does not come back through recall, direct answer, the
+- [x] **PRV-04** Sensitive content never appears in diagnostics or outbox payloads.
+- [x] **PRV-05** Sensitive content never reaches the derived indexes. Enforced at the
+      builder (IDX-01) and re-asserted here as a whole-database sweep.
+- [x] **PRV-06** `erase_permanently` leaves no trace in any table (sweep by content).
+- [x] **PRV-07** `forget` leaves no recallable trace but keeps provenance.
+- [x] **PRV-08** A forgotten fact does not come back through recall, direct answer, the
       prompt, or the API.
 
 ### Concurrency — CNC

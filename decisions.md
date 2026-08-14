@@ -1746,3 +1746,65 @@ Same category as the profile-directory care in decision 53, and worth stating as
 before testing any subsystem, find out which file it writes to. Two of the three memory
 subsystems in this application answer that question differently from the one I had just
 finished testing.
+
+## 68. A whole-database sweep is a different test from a per-component check
+
+Individual layers already had privacy tests: SCH-12 pins the encrypted column shape, MUT-13
+checks one operation row, IDX-01 stops a sensitive record reaching the index. All of them
+ask "did *this* component behave?"
+
+The PRV tests ask a question none of those can: after the whole pipeline has run, is the
+string anywhere at all? Each one enumerates `MEMORY_TABLES` and names the table it found the
+value in.
+
+The difference matters for a specific failure. A per-component test keeps passing when
+someone adds a table — a new audit log, a new cache — that starts holding the same content.
+Nothing in the existing suite would notice, because every existing test is scoped to a
+component that did not change. A sweep driven off the migration's own table list notices
+automatically.
+
+**Every sweep needed a positive control**, and writing them was not optional politeness.
+`_assert_absent` passes trivially if the value was never stored, if the tables are empty, or
+if `_sweep` returns nothing. So there is a test asserting the sweep covers every managed
+table, and a test asserting ordinary content *is* found by it. The erase test runs its
+control inline: it asserts the value is present, then erases, then asserts it is gone.
+Without that, "erase leaves no trace" would pass against a create that silently failed.
+
+## 69. Testing isolation at the enumeration rather than the operation
+
+`ISO-07` asks that maintenance never touch a foreign owner. My first version called
+`rebuild_owner()` and asserted the foreign record was not in the index afterwards. The
+positive control failed: nothing was indexed at all, because the rebuild has its own
+eligibility rules and my fixture records did not meet them under a wall-clock `now`.
+
+That failure is the finding. Had I written only the negative assertion, it would have passed
+— reporting isolation while proving nothing except that the rebuild did no work. It is the
+same shape as decision 48: I was not testing the filter, I was testing whichever path
+happened to win.
+
+The fix was to assert at `repository.list_index_candidates`, the owner-scoped enumeration
+`rebuild_owner` reads through. That is where the guarantee actually lives — it filters in
+SQL — and the positive control is meaningful there because the enumeration returns the
+owner's own record unconditionally.
+
+The general rule: when an operation has preconditions of its own, testing a *property* of
+that operation risks the preconditions silently making the test vacuous. Test the mechanism
+the property comes from instead.
+
+## 70. Where owner isolation actually comes from, stated once
+
+Two facts live in different files and neither one alone answers the question.
+
+`NRM-15` pins that a NORMAL fingerprint ignores the owner: two profiles storing the same
+ordinary fact produce the *same* digest. `CRY-06` pins that a keyed (SENSITIVE) fingerprint
+differs across owners. Read separately, the first looks like a leak.
+
+It is not. For normal records isolation comes from the `owner_id` column and the
+owner-scoped unique index (`SCH-16`), not from the digest. For sensitive records the digest
+is owner-bound as well, because there the fingerprint would otherwise be a stable identifier
+that one profile could use to test whether another had stored a particular fact.
+
+Both are now asserted side by side in the isolation tests, with the reasoning attached.
+That pairing is the whole argument for a cross-cutting tier: the individual facts were
+already covered, and the thing that was missing was the sentence explaining which of them
+carries the guarantee.
