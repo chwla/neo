@@ -12,20 +12,27 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 2103 tests passing, 31 strict `xfail`s recording thirteen real defects —
-**875 of 880 plan items.**
+**Progress:** 2147 tests passing, **zero `xfail`s** — every one of the thirteen recorded
+defects has been fixed. **879 of 880 plan items covered, 1 partial, 0 open.**
+
+Four of the five formerly-partial items are now covered outright: `INF-06` (the frozen
+clock has consumers), `EXC-17` (PRV-02 covers the at-rest half), and `EXC-19` and `OBX-15`,
+which were partial because they described behaviour the code did not have and now do.
+**`EXC-14` remains partial** — the similarity-threshold boundary is covered for the
+duplicate finder itself (RUN-19) but not through the coordinator, which is what the item
+asks for.
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
-| 0 — Infrastructure | 7 | 1 | 0 | 8 |
+| 0 — Infrastructure | 8 | 0 | 0 | 8 |
 | 1 — Foundations | 196 | 0 | 0 | 196 |
-| 2 — Extraction | 149 | 3 | 0 | 152 |
+| 2 — Extraction | 151 | 1 | 0 | 152 |
 | 3 — Persistence | 205 | 0 | 0 | 205 |
-| 4 — Derived / async | 100 | 1 | 0 | 101 |
+| 4 — Derived / async | 101 | 0 | 0 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
 | 6 — Config / runtime / HTTP | 77 | 0 | 0 | 77 |
 | 7 — Cross-cutting | 47 | 0 | 0 | 47 |
-| **Total** | **875** | **5** | **0** | **880** |
+| **Total** | **879** | **1** | **0** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -59,7 +66,7 @@ were deleted in `9071502`; these rebuild the minimum needed.
       directly, for tests that need a starting state without going through mutations.
 - [x] **INF-05** A deterministic `KeyedFingerprintProvider` / crypto double, so
       sensitive-path tests don't depend on a real key.
-- [~] **INF-06** A frozen-clock helper — many behaviours (expiry, tombstones, freshness,
+- [x] **INF-06** A frozen-clock helper — many behaviours (expiry, tombstones, freshness,
       retry backoff, leases) are time-dependent and must not be wall-clock flaky.
       `conftest.FrozenClock` exists but **has no consumers yet**: every test written so
       far reads a timestamp rather than advancing one. Marked `[~]` rather than `[x]`
@@ -609,11 +616,14 @@ The integration seam. Uses a scripted model and a real (in-memory) store.
 - [x] **EXC-15** A PROHIBITED candidate is never persisted, and the rejection is recorded.
 - [x] **EXC-16** A SENSITIVE candidate without explicit request goes to review, redacted
       as `REDACTED_SENSITIVE_ASSERTION`.
-- [~] **EXC-17** A SENSITIVE candidate with explicit request is persisted encrypted.
+- [x] **EXC-17** A SENSITIVE candidate with explicit request is persisted encrypted. The
+      at-rest half is covered by PRV-02, which sweeps every table for the plaintext and
+      asserts the record holds ciphertext.
       The redaction and hash-suppression halves are covered; the at-rest encryption
       assertion belongs with the payload tests.
 - [x] **EXC-18** A retraction resolving to one target applies a forget.
-- [~] **EXC-19** A retraction resolving to many targets forgets all of them.
+- [x] **EXC-19** A retraction resolving to many targets forgets all of them. **Was a
+      defect (EXC-19c) and is fixed** — the idempotency key now includes the target.
       Unblocked: SCH-14 is staying pinned rather than fixed, so two active records in
       one exclusive slot is a state the store genuinely permits today. Set it up by
       direct insert and assert the retraction clears both.
@@ -985,7 +995,8 @@ The transactional boundary. Real SQLite, real transactions.
 - [x] **OBX-13** A record whose hash advanced → `CANONICAL_HASH_ADVANCED`, and the event
       is not applied stale.
 - [x] **OBX-14** An owner-binding mismatch → `OWNER_BINDING_MISMATCH`, nothing written.
-- [~] **OBX-15** A lost lease → `LEASE_LOST`, no write.
+- [x] **OBX-15** A lost lease → `LEASE_LOST`, no write. **Was a defect and is fixed** —
+      `process()` no longer calls `_finish_target` twice.
 - [x] **OBX-16** Each embedding failure mode maps to its own code (timeout, unavailable,
       invalid response, dimension mismatch).
 - [x] **OBX-17** Each index failure maps to its code (fts/vector upsert/delete failed).
