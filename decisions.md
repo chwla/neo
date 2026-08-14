@@ -1957,7 +1957,7 @@ The original goal was not a test count, it was readiness. So, plainly:
 **The canonical memory layer is ready, with three defects that should be fixed first.** The
 paths a user touches daily — storing a fact, recalling it, forgetting it, keeping a
 sensitive value private, running with no local model installed — are covered end to end and
-behave correctly. 2,100 tests pass across every tier.
+behave correctly. 2,103 tests pass across every tier, and every plan item is covered.
 
 **Fix these three before daily reliance, in this order:**
 
@@ -1972,12 +1972,15 @@ behave correctly. 2,100 tests pass across every tier.
 3. **`RTV-12`** — workspace retrieval leaks items between chats. Independent of the other
    two; fix whenever. `and` should be `or`.
 
-**The other eight findings are real but not blocking.** Two are user-visible annoyances
-(the stemmer missing `-es` plurals so "sketches" does not match "sketching"; "call me X"
-depending on the local model). The rest are narrow: a negation guard missing one phrasing,
-an address pattern missing some street suffixes, a blank-check that only strips spaces, a
-config validator that misses exactly one value, an unreachable failure code, and a command
-that cannot round-trip through JSON.
+**The other ten findings are real but not blocking.** Three are user-visible: the stemmer
+missing `-es` plurals, so "sketches" does not match "sketching" (`RCL-21d`); "call me X"
+depending on the local model rather than the deterministic path (`PRE-01b`); and renaming a
+workspace item returning 500 (`RTV-09`). The remaining seven are narrow: a negation guard
+missing one phrasing (`NRM-30b`), an address pattern missing some street suffixes
+(`POL-15e`), a blank-check that only strips spaces (`SCH-11b`), a config validator that
+misses exactly one value (`EXT-21d`), an unreachable failure code (`OBX-15`), a command that
+cannot round-trip through JSON (`CON-21b`), and a declared constant contradicted by the
+scorer (`RCL-31b`).
 
 **What is *not* covered, stated so it is not mistaken for coverage:**
 
@@ -1989,10 +1992,28 @@ that cannot round-trip through JSON.
   runs in 71 seconds with no Ollama and no network, and a socket guard now proves it — but
   it means extraction quality is unverified. What is verified is that bad model output
   cannot corrupt the store.
-- **Seven plan items** remain open, all in the other session's slice.
+- The **workspace retrieval and context-memory subsystems** got a working-order pass, not
+  the treatment the canonical layer got: 57 tests against roughly 1,800 lines, and two
+  defects surfaced in the first hour of looking. That ratio suggests there is more there.
+- **Nothing.** Every one of the 880 plan items is now covered: 875 done, 5 partial, 0 open.
+  The five partials are items whose desired behaviour is recorded as a strict `xfail`
+  because the code does not yet do it.
 
-**The most useful thing this exercise produced** is not the 2,100 tests. It is the eleven
-recorded defects, nine of which were invisible before — including two that had already been
-"fixed" once, with a comment asserting the fix. And the running lesson underneath: seven
-tests across two sessions were green while asserting nothing, every one caught by asking,
-after the green, *which of the ways this could pass actually happened.*
+**The most useful thing this exercise produced** is not the 2,100 tests. It is the thirteen
+recorded defects — none of which was tracked anywhere beforehand, and one of which,
+`EXC-19c`, sits directly beneath a source comment describing the very symptom it still
+exhibits. Someone diagnosed that one correctly, wrote the loop to fix it, left the
+idempotency key per-message instead of per-target, and moved on. A half-fix carrying a
+comment that asserts it is a whole one.
+
+And the lesson underneath, which cost more to learn than any single defect: **ten tests
+across two sessions were green while asserting nothing.** Every one was caught the same way
+— by asking, after it passed, *which of the ways this could pass actually happened.* The
+sharpest form of it: a test whose assertion is a count asserts that the number you expected
+happened, not that the thing you expected happened.
+
+*Three numbers in this section were themselves stale within an hour of being written — the
+findings table grew and the prose did not. They were caught by the other session reading it
+against the table rather than trusting it. That is the same failure this document spends
+several sections describing, appearing in the document about it, which is worth leaving on
+the record rather than quietly correcting.*
