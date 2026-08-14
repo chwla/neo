@@ -12,7 +12,7 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1937 tests passing, 28 strict `xfail`s recording eleven real defects —
+**Progress:** 1978 tests passing, 29 strict `xfail`s recording eleven real defects —
 **807 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |

@@ -27,6 +27,8 @@ from app.db.base import Base
 from app.main import create_app
 from app.services import profile_accounts
 from app.services.memory import factory
+from app.services.memory.contracts import Sensitivity
+from tests.memory import factories
 from tests.memory.conftest import OTHER_OWNER_ID, OWNER_ID
 
 PROFILE_ID = "guest-1"
@@ -42,6 +44,14 @@ def client(tmp_path, monkeypatch):
     """
 
     factory._verified_memory_schemas.clear()
+    # Live extraction is disabled for every API test. Otherwise
+    # `build_memory_runtime` calls `_resolve_ollama_request_mode`, which probes a
+    # real Ollama endpoint with a warmup timeout of up to 300s -- so the suite's
+    # runtime depends on whether a model server happens to be running on the
+    # developer's machine. A failed probe is deliberately not cached, so every
+    # runtime build retries it.
+    no_model = get_settings().model_copy(update={"memory_extraction_enabled": False})
+    monkeypatch.setattr(factory, "get_settings", lambda: no_model)
 
     root = tmp_path / "neo-data"
     root.mkdir()
@@ -59,8 +69,20 @@ def client(tmp_path, monkeypatch):
     with profile_accounts.profile_database(PROFILE_ID, guest=True):
         from app.db.session import SessionLocal
 
+        from app.db.memory_migrations import upgrade_memory
+
         session = SessionLocal()
         Base.metadata.create_all(session.get_bind())
+        # The memory tables are otherwise created lazily by the first runtime
+        # build, which is too late for a test that seeds a candidate row before
+        # issuing any request.
+        upgrade_memory(
+            session.get_bind(),
+            owner_id=OWNER_ID,
+            database_identity=profile_accounts.database_identity_for_profile(
+                PROFILE_ID, guest=True
+            ),
+        )
         session.close()
         with TestClient(application) as opened:
             yield opened
@@ -437,3 +459,195 @@ class TestAuthenticationAndIsolation:
 
         assert response.status_code == 409
         assert "my private note" not in response.text
+
+
+@pytest.fixture
+def profile_engine(client):
+    """The engine bound to the guest profile, for seeding rows directly.
+
+    The `client` fixture holds `profile_database` open for the duration of the
+    test, so `SessionLocal` is still bound to the profile database here.
+    """
+
+    from app.db.session import SessionLocal
+
+    session = SessionLocal()
+    try:
+        yield session.get_bind()
+    finally:
+        session.close()
+
+
+class TestCandidateFlow:
+    """The review queue: extraction proposes, the user accepts or rejects.
+
+    Seeded directly rather than driven through extraction. What these routes owe
+    is correct behaviour given a candidate row; how the row got there is the
+    extraction coordinator's contract and is covered in EXC.
+    """
+
+    def test_only_pending_candidates_are_listed(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """API-16 — an applied or rejected candidate is not still awaiting review."""
+
+        pending = factories.insert_candidate(profile_engine, state="validated")
+        review = factories.insert_candidate(profile_engine, state="needs_review")
+        factories.insert_candidate(profile_engine, state="applied")
+        factories.insert_candidate(profile_engine, state="rejected")
+
+        listed = client.get("/api/memory/candidates").json()
+
+        assert {item["id"] for item in listed} == {pending, review}
+
+    def test_a_sensitive_candidate_is_listed_without_its_content(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """The review queue must not become a way to read a sensitive value.
+
+        Two layers hold here, and the seeding proves the first one: the schema's
+        payload-shape constraint *refuses* a sensitive candidate that carries
+        plaintext at all, so `display_text` is NULL on the row. The route's
+        `"[sensitive memory]"` substitution is therefore masking an absence
+        rather than hiding a value it could have shown.
+
+        Found by trying to seed one the obvious way and being rejected by the
+        database — the constraint is the real guarantee.
+        """
+
+        factories.insert_candidate(
+            profile_engine,
+            sensitivity=Sensitivity.SENSITIVE,
+            explicit_user_request=True,
+            canonical_payload=None,
+            display_text=None,
+            encrypted_canonical_payload=b"ciphertext",
+            encrypted_display_payload=b"ciphertext",
+            encryption_algorithm="aes-256-gcm",
+            encryption_key_version="v1",
+            canonical_nonce=b"nonce-canonical",
+            display_nonce=b"nonce-display",
+            encryption_aad=b"aad",
+        )
+
+        response = client.get("/api/memory/candidates")
+
+        assert response.json()[0]["display_text"] == "[sensitive memory]"
+        assert "ciphertext" not in response.text
+
+    def test_accepting_a_candidate_creates_the_record(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """API-17"""
+
+        candidate_id = factories.insert_candidate(profile_engine)
+
+        response = client.post(f"/api/memory/candidates/{candidate_id}/accept", json={})
+
+        assert response.status_code == 200
+        listed = client.get("/api/memory").json()
+        assert [item["display_text"] for item in listed] == ["improve at urban sketching"]
+
+    def test_accepting_twice_does_not_create_a_second_record(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """API-19 — the idempotency key is derived from the candidate and revision.
+
+        A double-click on Accept must not store the memory twice; the second call
+        replays the first result rather than writing again.
+        """
+
+        candidate_id = factories.insert_candidate(profile_engine)
+        first = client.post(f"/api/memory/candidates/{candidate_id}/accept", json={})
+        second = client.post(f"/api/memory/candidates/{candidate_id}/accept", json={})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert len(client.get("/api/memory").json()) == 1
+
+    def test_accepting_with_a_stale_revision_conflicts(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """The candidate changed under the reviewer, so the decision is refused."""
+
+        candidate_id = factories.insert_candidate(profile_engine)
+
+        response = client.post(
+            f"/api/memory/candidates/{candidate_id}/accept", json={"expected_revision": 99}
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "candidate_revision_conflict"
+
+    def test_a_sensitive_candidate_cannot_be_accepted_from_the_queue(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """API-22 — a non-applied outcome becomes an HTTP error, not a silent skip.
+
+        Accepting from the list would store a sensitive memory on the strength of
+        one click on a screen that deliberately does not show its content. The
+        user has to restate it explicitly instead.
+        """
+
+        candidate_id = factories.insert_candidate(
+            profile_engine,
+            sensitivity=Sensitivity.SENSITIVE,
+            explicit_user_request=True,
+            canonical_payload=None,
+            display_text=None,
+            encrypted_canonical_payload=b"ciphertext",
+            encrypted_display_payload=b"ciphertext",
+            encryption_algorithm="aes-256-gcm",
+            encryption_key_version="v1",
+            canonical_nonce=b"nonce-canonical",
+            display_nonce=b"nonce-display",
+            encryption_aad=b"aad",
+        )
+
+        response = client.post(f"/api/memory/candidates/{candidate_id}/accept", json={})
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "sensitive_candidate_requires_explicit_reentry"
+        assert client.get("/api/memory").json() == []
+
+    def test_rejecting_a_candidate_removes_it_from_the_queue(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """API-20"""
+
+        candidate_id = factories.insert_candidate(profile_engine)
+
+        response = client.post(f"/api/memory/candidates/{candidate_id}/reject", json={})
+
+        assert response.status_code == 200
+        assert client.get("/api/memory/candidates").json() == []
+        assert client.get("/api/memory").json() == []
+
+    def test_rejecting_twice_is_idempotent(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """API-21 — unlike accept, reject genuinely repeats without error."""
+
+        candidate_id = factories.insert_candidate(profile_engine)
+        first = client.post(f"/api/memory/candidates/{candidate_id}/reject", json={})
+        second = client.post(f"/api/memory/candidates/{candidate_id}/reject", json={})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+    def test_another_owners_candidate_is_not_visible_or_actionable(
+        self, client: TestClient, profile_engine
+    ) -> None:
+        """The candidate queue is owner-scoped in the same way records are."""
+
+        foreign = factories.insert_candidate(profile_engine, owner=OTHER_OWNER_ID)
+
+        listed = client.get("/api/memory/candidates").json()
+
+        assert foreign not in {item["id"] for item in listed}
+        assert (
+            client.post(f"/api/memory/candidates/{foreign}/accept", json={}).status_code == 404
+        )
+        assert (
+            client.post(f"/api/memory/candidates/{foreign}/reject", json={}).status_code == 404
+        )
