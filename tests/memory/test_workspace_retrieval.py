@@ -90,23 +90,20 @@ class TestItemCrud:
         assert client.delete(f"{RETRIEVAL}/items/{identifier}").status_code == 204
         assert client.get(f"{RETRIEVAL}/items/{identifier}").status_code == 404
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Defect: PATCH that changes `title` returns 500. store.update_item routes "
-            "into upsert_item, whose duplicate lookup keys on "
-            "(scope_type, scope_id, source_type, source_id, memory_type, title). A "
-            "renamed item matches nothing, so it falls to the INSERT branch carrying "
-            "its existing id and hits UNIQUE constraint failed on the primary key. "
-            "Every other field patches fine. Remove this xfail when update_item "
-            "updates by id rather than re-deriving a duplicate key."
-        ),
-    )
-    def test_renaming_an_item_should_not_500(self, client: TestClient) -> None:
-        """RTV-03b — a defect found by trying the obvious edit.
+    def test_renaming_an_item_succeeds_and_changes_the_title(
+        self, client: TestClient
+    ) -> None:
+        """RTV-09 — fixed. Renaming is the most ordinary edit to a saved note.
 
-        Renaming is the most ordinary thing a user does to a saved note, and it
-        is the one field that cannot be patched.
+        This returned 500: `update_item` handed the merged row to `upsert_item`,
+        which decided insert-versus-update by re-deriving a content key that
+        *includes the title*. A renamed item matched nothing, took the INSERT
+        branch with its own id, and hit `UNIQUE constraint failed`.
+
+        The row is now resolved by id when one is supplied. The second assertion
+        matters as much as the first: the UPDATE statement did not set `title`,
+        so routing a rename through it without that change would have returned
+        200 and silently kept the old name.
         """
 
         identifier = _item(client)["id"]
@@ -116,6 +113,19 @@ class TestItemCrud:
         )
 
         assert response.status_code == 200
+        assert response.json()["title"] == "Renamed"
+        assert client.get(f"{RETRIEVAL}/items/{identifier}").json()["title"] == "Renamed"
+
+    def test_renaming_does_not_create_a_second_row(self, client: TestClient) -> None:
+        """The failure mode the id lookup replaced: a rename must not fork the row."""
+
+        identifier = _item(client)["id"]
+
+        client.patch(f"{RETRIEVAL}/items/{identifier}", json={"title": "Renamed"})
+
+        listed = client.get(f"{RETRIEVAL}/items").json()
+        assert listed["total"] == 1
+        assert listed["items"][0]["id"] == identifier
 
     def test_an_unknown_item_is_404(self, client: TestClient) -> None:
         """RTV-04"""
@@ -183,14 +193,18 @@ class TestScopeIsolation:
 
         assert filtered["total"] == 1
 
-    def test_retrieval_currently_returns_sibling_scopes(self, client: TestClient) -> None:
-        """RTV-02b — pinning what retrieval actually does, which is not isolate.
+    def test_retrieval_does_not_cross_scopes(self, client: TestClient) -> None:
+        """RTV-02b / RTV-12 — fixed. One chat cannot retrieve another's items.
 
-        `MemoryRetriever.retrieve` excludes an item only when its `scope_type`
-        **and** its `scope_id` both differ from the request. Two chats share a
-        scope_type, so neither exclusion fires and each sees the other's items,
-        ranked lower by the scorer's same-scope bonus. Pinned as-is; the
-        isolating behaviour is the xfail below.
+        This previously leaked: both scope guards required an item's `scope_type`
+        *and* its `scope_id` to differ before skipping it, and every pair of chats
+        shares `scope_type="chat"`, so neither guard fired. Each supplied field
+        now filters independently.
+
+        The leak was easy to miss because the scorer gives same-scope items a
+        +0.22 bonus, so the correct result still ranked first — the foreign item
+        appeared below it. Hence the assertion on the whole result set rather
+        than on the top hit.
         """
 
         _item(client, scope_id="chat-1", title="V60", content_text="pourover dripper")
@@ -203,36 +217,28 @@ class TestScopeIsolation:
 
         assert response.status_code == 200
         titles = [result["title"] for result in response.json()["results"]]
-        assert "Espresso" in titles
-        # The same-scope item still ranks first, which is what makes the leak
-        # easy to miss: the results look right until you read past the top hit.
-        assert titles[0] == "V60"
+        assert titles == ["V60"], "a sibling scope's item must not appear at all"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Defect: retrieval is not scope-isolated. The two guards in "
-            "MemoryRetriever.retrieve use `and` between the scope_type and "
-            "scope_id mismatch conditions, so an item is skipped only when BOTH "
-            "differ. Any two scopes sharing a scope_type -- every pair of chats -- "
-            "see each other's items. This subsystem stores user-pasted transcript "
-            "content, so it is an information boundary. Remove this xfail when the "
-            "guards use `or`."
-        ),
-    )
-    def test_retrieval_should_not_cross_scopes(self, client: TestClient) -> None:
-        """RTV-12 — what the plan asks for, and what the code does not do."""
+    def test_a_scope_type_filter_alone_still_matches_across_ids(
+        self, client: TestClient
+    ) -> None:
+        """The two filters are independent, which is what makes them correct.
+
+        Asking for every `chat` item without naming one is a legitimate query,
+        and it must still span chats. Without this, changing the guards to an
+        `or` over both fields would look equally correct.
+        """
 
         _item(client, scope_id="chat-1", title="V60", content_text="pourover dripper")
         _item(client, scope_id="chat-2", title="Espresso", content_text="pourover machine")
 
         response = client.post(
             f"{RETRIEVAL}/retrieve",
-            json={"scope_type": "chat", "scope_id": "chat-1", "query": "pourover"},
+            json={"scope_type": "chat", "query": "pourover"},
         )
 
         titles = {result["title"] for result in response.json()["results"]}
-        assert "Espresso" not in titles
+        assert titles == {"V60", "Espresso"}
 
 
 class TestRetrieval:

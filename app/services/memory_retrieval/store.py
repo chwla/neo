@@ -112,21 +112,34 @@ def upsert_item(values: dict[str, Any]) -> dict:
     values["redaction_summary_json"] = json.dumps(values.get("redaction_summary") or {})
     conn = _connect()
     try:
+        # An id that already exists identifies the row directly.  The content key
+        # below cannot: it includes `title`, so a rename matched nothing, fell to
+        # the INSERT branch carrying the row's own id, and failed on the primary
+        # key.  Sweeps still de-duplicate by content, because they supply no id
+        # for an item they have not seen before.
         duplicate = conn.execute(
-            "SELECT id, created_at FROM workspace_memory_items WHERE scope_type=? AND scope_id=? AND source_type=? AND COALESCE(source_id,'')=COALESCE(?, '') AND memory_type=? AND title=?",
-            (
-                values["scope_type"],
-                values["scope_id"],
-                values["source_type"],
-                values.get("source_id"),
-                values["memory_type"],
-                values["title"],
-            ),
+            "SELECT id, created_at FROM workspace_memory_items WHERE id=?",
+            (values["id"],),
         ).fetchone()
+        if duplicate is None:
+            duplicate = conn.execute(
+                "SELECT id, created_at FROM workspace_memory_items WHERE scope_type=? AND scope_id=? AND source_type=? AND COALESCE(source_id,'')=COALESCE(?, '') AND memory_type=? AND title=?",
+                (
+                    values["scope_type"],
+                    values["scope_id"],
+                    values["source_type"],
+                    values.get("source_id"),
+                    values["memory_type"],
+                    values["title"],
+                ),
+            ).fetchone()
         if duplicate:
             values["id"], values["created_at"] = duplicate["id"], duplicate["created_at"]
+            # `title` is updatable and belongs here.  Without it a rename routed
+            # through this branch would return 200 and change nothing, which is a
+            # quieter failure than the 500 it replaced.
             conn.execute(
-                """UPDATE workspace_memory_items SET content_text=:content_text, content_json=:content_json, tags_json=:tags_json, importance=:importance, confidence=:confidence, updated_at=:updated_at, expires_at=:expires_at, redaction_summary_json=:redaction_summary_json WHERE id=:id""",
+                """UPDATE workspace_memory_items SET title=:title, content_text=:content_text, content_json=:content_json, tags_json=:tags_json, importance=:importance, confidence=:confidence, updated_at=:updated_at, expires_at=:expires_at, redaction_summary_json=:redaction_summary_json WHERE id=:id""",
                 values,
             )
             conn.execute(

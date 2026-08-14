@@ -9,17 +9,15 @@ class MemoryRetriever:
         candidates = store.candidates(request.query)
         results = []
         for item in candidates:
-            if (
-                request.scope_type
-                and item["scope_type"] != request.scope_type
-                and item["scope_id"] != request.scope_id
-            ):
+            # Each supplied scope field filters independently.  These were two
+            # symmetric guards that each required *both* fields to mismatch, so
+            # an item was skipped only when its type and its id both differed.
+            # Every pair of chats shares scope_type="chat", so neither guard ever
+            # fired between them and each conversation could retrieve the other's
+            # stored text.
+            if request.scope_type and item["scope_type"] != request.scope_type:
                 continue
-            if (
-                request.scope_id
-                and item["scope_id"] != request.scope_id
-                and item["scope_type"] != request.scope_type
-            ):
+            if request.scope_id and item["scope_id"] != request.scope_id:
                 continue
             if request.memory_types and item["memory_type"] not in request.memory_types:
                 continue
