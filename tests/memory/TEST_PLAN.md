@@ -12,8 +12,8 @@ routers.
 **Status legend:** `[ ]` not written · `[~]` partially covered by an existing test ·
 `[x]` covered and passing.
 
-**Progress:** 1791 tests passing, 28 strict `xfail`s recording ten real defects —
-**728 of 880 plan items.**
+**Progress:** 1817 tests passing, 28 strict `xfail`s recording ten real defects —
+**739 of 880 plan items.**
 
 | Tier | Done | Partial | Open | Total |
 |---|---:|---:|---:|---:|
@@ -23,9 +23,9 @@ routers.
 | 3 — Persistence | 182 | 0 | 23 | 205 |
 | 4 — Derived / async | 90 | 1 | 10 | 101 |
 | 5 — Recall / prompt / chat | 94 | 0 | 0 | 94 |
-| 6 — Config / runtime / HTTP | 11 | 0 | 66 | 77 |
+| 6 — Config / runtime / HTTP | 22 | 0 | 55 | 77 |
 | 7 — Cross-cutting | 0 | 0 | 47 | 47 |
-| **Total** | **728** | **4** | **148** | **880** |
+| **Total** | **739** | **4** | **137** | **880** |
 
 *This table replaces a prose summary that claimed Tiers 0–3 and recall were "complete".
 They are not: 3 `VER` items in Tier 1, 36 `PRE`/`COR` items in Tier 2, 23 in Tier 3, and
@@ -1257,20 +1257,27 @@ Semantic path:
 - [x] **RUN-10** `owner_is_enabled` is False for a blank owner and when disabled.
 - [x] **RUN-11** `_resolve_ollama_request_mode` resolves `auto` from probe capabilities
       and honours an explicit mode.
-- [ ] **RUN-12** `_ensure_memory_schema` migrates a fresh profile database.
-- [ ] **RUN-13** …is idempotent across calls.
-- [ ] **RUN-14** …refuses a database bound to another owner.
-- [ ] **RUN-15** `build_memory_runtime` produces a runtime whose `execution` and `context`
+- [x] **RUN-12** `_ensure_memory_schema` migrates a fresh profile database.
+- [x] **RUN-13** …is idempotent across calls, **and cached** — asserted on the number of
+      engine builds, not the outcome, since a re-run migration would satisfy the outcome
+      while reintroducing the write contention the cache exists to remove.
+- [x] **RUN-14** …refuses a database bound to another owner.
+- [x] **RUN-15** `build_memory_runtime` produces a runtime whose `execution` and `context`
       carry the profile's owner and identity.
-- [ ] **RUN-16** …is safe to build twice for one profile.
-- [ ] **RUN-17** `build_memory_recall_dependencies` respects disabled lexical/semantic
+- [x] **RUN-16** …is safe to build twice for one profile.
+- [x] **RUN-17** `build_memory_recall_dependencies` respects disabled lexical/semantic
       settings.
-- [ ] **RUN-18** `build_semantic_duplicate_finder` returns None-equivalent behaviour when
+- [x] **RUN-18** `build_semantic_duplicate_finder` returns None-equivalent behaviour when
       semantic is off.
-- [ ] **RUN-19** …honours the threshold at both sides.
-- [ ] **RUN-20** `drain_memory_outbox` processes pending events and returns a count.
-- [ ] **RUN-21** …is a no-op when the worker is disabled.
-- [ ] **RUN-22** …never raises out to the caller.
+- [x] **RUN-19** …honours the threshold at both sides.
+- [x] **RUN-20** `drain_memory_outbox` processes pending events and returns a count.
+- [x] **RUN-21** …is a no-op when the worker is disabled.
+- [x] **RUN-22** ~~…never raises out to the caller.~~ **Corrected:** `drain_memory_outbox`
+      has no `try`/`except` — a failure from `lease_batch`/`process_batch` propagates,
+      despite its docstring promising otherwise. The property is real but implemented one
+      layer up, in `NeoChatService._build_memory_indexes`, which wraps the call and logs
+      `memory_index_build_failed`. Both halves are pinned: the propagation here, and the
+      handler at the call site. See `decisions.md` 52.
 
 ### `api/routes/memory.py` — API
 

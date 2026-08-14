@@ -1162,3 +1162,56 @@ module does check for orphans, but constructing genuine orphans requires defeati
 foreign keys that exist to prevent them, and doing that convincingly needs the
 `PRAGMA foreign_keys` manipulation that the schema tests already own. It belongs with
 `SCH`, not here, and pretending otherwise would have inflated the count.
+
+## 52. A docstring that promises what the function does not do
+
+`drain_memory_outbox` says it "returns the number of completed targets and never raises
+into the caller". It has no `try`/`except`. A failure from `lease_batch` or `process_batch`
+propagates straight out.
+
+The property is real; it is just implemented somewhere else.
+`NeoChatService._build_memory_indexes` wraps the call, catches `Exception`, and logs
+`memory_index_build_failed`. So the system behaves as documented — an indexing failure
+never loses a memory that was stored correctly — and there is no user-visible bug here.
+
+I pinned it as it is rather than as written, and tested both halves: the propagation in
+`drain_memory_outbox`, and the handler at the call site. The call-site test reads the
+source, which is a weak form of assertion, but the alternative was asserting nothing about
+the only thing standing between a locked database and a lost memory.
+
+This is the fifth instance of the pattern from decision 44, and the first where the
+misplacement is *documented as if it were here*. The earlier four were silent — a plan item
+assumed a guarantee and the layer simply did not implement it. This one actively tells the
+next caller they are safe when they are not. That makes it worse than the others despite
+being the least consequential today, because the cost arrives with the second caller and
+looks nothing like a documentation problem when it does.
+
+## 53. Tests must not create real profile directories
+
+`database_url_for` calls `mkdir(parents=True, exist_ok=True)` on a path derived from the
+user's data directory, and the non-guest key path reads the account registry. A naive
+`build_memory_runtime` test would therefore leave real profile directories behind on the
+developer's machine, which then need cleaning up by hand.
+
+The fixture redirects `_root()` into `tmp_path` by patching `get_base_settings`, and every
+test profile is a guest, which avoids the account registry entirely. A guest derives its key
+material from an `owner_id` file in its own directory, so the fixture seeds that too — the
+whole thing stays inside the test's temporary tree.
+
+Worth stating as a rule rather than a fix: a test that touches profile creation must
+redirect the root *before* the first call, because the directory is created as a side effect
+of asking for the database URL, not by a separate setup step.
+
+## 54. "Idempotent" and "cached" are different claims
+
+`RUN-13` asks whether `_ensure_memory_schema` is idempotent across calls. Asserting that a
+second call succeeds proves idempotence and nothing else — it would pass with the cache
+deleted and the migration re-run every time, which is precisely the write contention the
+function exists to remove. A runtime is built several times per chat turn, and each rebuild
+would otherwise open a write-capable connection to the database the chat worker is writing
+to.
+
+So the assertion is on the number of engines built, not on the outcome. The same reasoning
+applies to `_verified_memory_schemas` being cleared before *and* after each test: it is
+process-lifetime state keyed by `(url, owner, identity)`, and a test asserting the migration
+ran would otherwise pass or fail on ordering alone.
