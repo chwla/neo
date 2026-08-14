@@ -1869,3 +1869,79 @@ the filename. The other session added the sharper detail: `Write` reports "creat
 Recorded because the cost was real and the lesson is not about git. In a shared working
 directory, "I am creating this file" is an assumption, and it is checkable before the write
 rather than after.
+
+---
+
+## 46b. End-to-end journeys assert what a user would notice
+
+**What:** The `E2E-*` tests walk a whole path — a turn arrives, extraction runs, a record
+lands, recall finds it, a forget removes it — and assert on the store rather than on what a
+function returned.
+
+**Why they were written last.** A journey crossing five layers is only diagnostic when the
+layers beneath it are pinned. Written first, a red E2E means opening four investigations at
+once; written after everything else, a failure points at the seam between layers rather than
+at any one of them. Both sessions agreed to hold them until the end for this reason, and it
+was the right call.
+
+Two of them are worth singling out for what they assert rather than what they cover:
+
+- **`E2E-10`** sweeps *every table* in the profile database for the plaintext of a sensitive
+  value, rather than checking the one column it is supposed to be encrypted in. The value
+  passes through the candidate, the operation's command payload and the source excerpt on
+  its way to the record, and any of those could hold it in the clear. Checking the intended
+  column proves the intended column works; sweeping proves the promise.
+- **`E2E-15`** makes the claim only a journey can. `test_mutations.py` already covers
+  rollback stage by stage, so the addition here is that after a write is killed
+  mid-transaction, **the next write still succeeds and is recallable**. A rollback that also
+  poisoned the idempotency ledger would satisfy every "nothing was written" assertion while
+  leaving the profile permanently unusable — which is the failure a user would actually
+  experience.
+
+## 47b. Two more tests of mine that passed while proving nothing
+
+Both were caught by the parallel session's warnings rather than by me, and both are the same
+shape as the five found before.
+
+**`CNC-05`** built maintenance on the `engine` fixture (`memory.db`) while the concurrent
+writes went through the mutation coordinator, which builds its own engine from
+`database_url` (`profile.db`). Two different files. There was no contention at all, and the
+test would have passed against a completely unsynchronised implementation. Both halves now
+share one database, and there is a setup assertion that says so — because the next person to
+touch this will not know those are different files either.
+
+**`MNT-15`** created *only* a foreign record, rebuilt, and asserted the foreign record
+survived. That passes just as well if the rebuild indexed nothing, and `rebuild_owner`
+defaults to wall-clock `now` while the fixtures write at `FROZEN_NOW` — so "indexed nothing"
+was the likely outcome rather than a hypothetical. It now proves the rebuild ran against
+this owner's records first.
+
+**The running tally is seven tests between the two sessions that were green while asserting
+nothing.** Every one was found the same way: by asking, *after* it passed, which of the ways
+it could pass actually happened. That question is the only reliable tool here, and it costs
+one probe. The general form, sharpest as the other session put it: *testing that a filter
+drops something is only meaningful once every other route to the thing is closed off first.*
+
+## 48b. I overwrote another session's file, and the signal was already there
+
+Worth recording as an incident rather than a lesson in the abstract, because it cost real
+work.
+
+Both sessions independently created `tests/memory/test_e2e_journeys.py`. `Write` overwrites,
+so mine replaced theirs wholesale. Neither was committed, so there was nothing to recover.
+
+**The tool told me and I did not read it.** `Write` reports "File **created** successfully"
+for a new path and "The file ... has been **updated** successfully" for an existing one. I
+got "created" for `test_concurrency.py` minutes earlier and "updated" for this one. The
+difference was in the output.
+
+The convention we added afterwards — claim filenames, not just plan-item ranges — is worth
+having, because two agents told to write "the E2E tests" both reach for the same name and a
+message naming *items* does not prevent that. But the convention needs both parties to
+remember it every time, whereas the tool result only needed one party to read it once. The
+durable fix is the smaller one: **in a shared worktree, "I am creating this file" is an
+assumption, not a fact**, and the Write result is where that assumption gets checked.
+
+Related, and the reason it did not compound: when a stray `test_zz_probe.py` appeared that
+I could not prove was mine, I left it rather than tidying it up. Deleting a file of
+uncertain ownership is the same error one step further along.
