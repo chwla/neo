@@ -391,17 +391,14 @@ class TestCommandDiscrimination:
         }
         return builders[operation]()
 
-    @pytest.mark.parametrize(
-        "operation",
-        [item for item in MemoryOperationKind if item is not MemoryOperationKind.UPDATE],
-    )
+    @pytest.mark.parametrize("operation", list(MemoryOperationKind))
     def test_every_operation_kind_round_trips_through_the_adapter(
         self, operation: MemoryOperationKind
     ) -> None:
         """CON-21 / CON-35 — the wire format is the contract.
 
-        ``update`` is excluded here and covered by the xfail below: it is the one
-        command that cannot currently survive a JSON round trip.
+        Every kind, with no exclusions: ``update`` used to be excluded because it
+        could not survive a JSON round trip (CON-21b), which is now fixed.
         """
 
         memory_id = uuid4()
@@ -410,48 +407,55 @@ class TestCommandDiscrimination:
         assert reparsed.operation is operation
         assert reparsed == command
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known bug: UpdateMemoryCommand cannot survive model_dump(mode='json') "
-            "-> validate_python. A full dump emits canonical_value=None, which "
-            "MemoryUpdatePatch rejects; exclude_unset drops the 'operation' "
-            "discriminator instead. Remove this xfail once the patch model "
-            "distinguishes unset from null on the wire."
-        ),
-    )
     def test_an_update_command_round_trips_through_the_adapter(self) -> None:
-        """CON-21b — a bug found while writing CON-21, recorded not patched.
+        """CON-21b — fixed. The audit record of an update is replayable again.
 
         ``MemoryUpdatePatch`` treats a key being *present* as intent to change
         that field, and separately forbids ``canonical_value`` from being null.
-        A full JSON dump writes every optional field as null, so re-parsing sees
-        an explicit ``canonical_value: None`` and refuses.
+        A full JSON dump wrote every optional field as null, so re-parsing saw an
+        explicit ``canonical_value: None`` and refused.
 
-        This is reachable, not theoretical.  ``mutations.py`` stores exactly this
-        dump in ``memory_operations.normalized_command_json`` (line 973) and
-        ``execute()`` re-parses dicts through this adapter (line 296), so the
-        stored audit record of an update is not replayable through the same
-        front door that wrote it.  Eight of the nine commands round trip; only
-        ``update`` does not.
+        Reachable rather than theoretical: ``mutations.py`` stores exactly this
+        dump in ``memory_operations.normalized_command_json`` and ``execute()``
+        re-parses dicts through this adapter, so the stored audit record of an
+        update could not be replayed through the door that wrote it.
+
+        The patch now serialises only the fields that were set, so the wire
+        format carries the same unset-versus-null distinction the validator
+        relies on.
         """
 
         command = factories.update_command(memory_id=uuid4())
         reparsed = MEMORY_COMMAND_ADAPTER.validate_python(command.model_dump(mode="json"))
         assert reparsed == command
 
-    def test_an_update_command_dump_is_stable_even_though_it_cannot_reparse(self) -> None:
-        """CON-21c — pinning what the dump actually contains today.
+    def test_an_update_dump_carries_only_what_the_caller_set(self) -> None:
+        """CON-21c — the audit row's shape, which is the fix seen from outside.
 
-        Whatever the fix turns out to be, the audit row's shape is worth having
-        written down: every optional patch field is present and null, and the
-        one field the caller actually set carries its value.
+        Previously every optional patch field appeared as null. Now only the
+        fields the caller actually set are present, which is what makes the dump
+        re-parseable and also makes the audit row say what was changed rather
+        than listing everything that was not.
         """
 
         dumped = factories.update_command(memory_id=uuid4()).model_dump(mode="json")
-        assert dumped["patch"]["importance"] == 7
-        assert dumped["patch"]["canonical_value"] is None
+        assert dumped["patch"] == {"importance": 7}
         assert dumped["operation"] == "update"
+
+    def test_a_patch_field_set_to_null_is_still_transmitted(self) -> None:
+        """CON-21d — "clear this" and "leave this alone" stay different messages.
+
+        Filtering the dump to fields that were set would be wrong if it also
+        dropped an explicit null, since `expires_at=None` means "remove the
+        expiry" while omitting it means "do not touch it". An explicitly set
+        field is in `model_fields_set`, so it survives.
+        """
+
+        from app.services.memory.contracts import MemoryUpdatePatch
+
+        patch = MemoryUpdatePatch(importance=7, expires_at=None)
+        assert patch.model_dump(mode="json") == {"importance": 7, "expires_at": None}
+        assert MemoryUpdatePatch(importance=7).model_dump(mode="json") == {"importance": 7}
 
     def test_an_unknown_operation_is_rejected(self) -> None:
         """CON-22"""

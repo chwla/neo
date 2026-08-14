@@ -22,6 +22,7 @@ from app.services.memory.index_contracts import (
     VectorCandidate,
 )
 from app.services.memory.indexes import DerivedDocumentBuilder
+from app.services.memory.policy import USAGE_AFFECTS_RANKING
 from app.services.memory.queries import (
     CanonicalMemoryView,
     MemoryQueryContext,
@@ -303,7 +304,9 @@ class CanonicalRecallService:
         if context.mode is RecallMode.DETERMINISTIC:
             if query.canonical_id is not None:
                 record = self.repository.get_recall_eligible_by_id(
-                    str(query.canonical_id), now=context.current_time, project_id=context.active_project_id
+                    str(query.canonical_id),
+                    now=context.current_time,
+                    project_id=context.active_project_id,
                 )
                 return ([record] if record is not None else []), False
             if query.trusted_slot_keys:
@@ -367,7 +370,9 @@ class CanonicalRecallService:
             if str(hit.get("owner_id")) != str(context.owner_id):
                 continue
             record = self.repository.get_recall_eligible_by_id(
-                str(hit.get("memory_id")), now=context.current_time, project_id=context.active_project_id
+                str(hit.get("memory_id")),
+                now=context.current_time,
+                project_id=context.active_project_id,
             )
             if record is not None:
                 by_id[record.id] = record
@@ -441,7 +446,9 @@ class CanonicalRecallService:
                 )
                 continue
             record = self.repository.get_recall_eligible_by_id(
-                str(hit.memory_id), now=query.context.current_time, project_id=query.context.active_project_id
+                str(hit.memory_id),
+                now=query.context.current_time,
+                project_id=query.context.active_project_id,
             )
             if record is None:
                 historical = self.repository.get_owner_record_any_lifecycle(str(hit.memory_id))
@@ -723,15 +730,31 @@ class CanonicalRecallService:
         recency = _freshness(view.updated_at, now, 365)
         usage = min(1.0, math.log1p(view.usage_count) / math.log(101))
         pin = 1.0 if view.pinned else 0.0
+        # `policy.USAGE_AFFECTS_RANKING` was declared and never read, while this
+        # formula gave usage a 0.03 weight -- so the stated policy and the code
+        # disagreed, and the code won silently.
+        #
+        # The policy is the one to honour. Ranking by usage is a feedback loop:
+        # a memory that surfaces once scores higher, so it surfaces again,
+        # regardless of whether it was relevant either time. Over a long-lived
+        # store that makes rankings reflect their own history rather than the
+        # query. 0.03 is small, but ranking decisions are made at near-ties,
+        # which is exactly where a small constant term decides the order.
+        #
+        # The weight is folded into the lexical term when usage is off, so the
+        # maximum stays 1.0 and `recall_min_score` keeps meaning what it did.
+        # Flipping the constant to True restores the original behaviour.
+        usage_weight = 0.03 if USAGE_AFFECTS_RANKING else 0.0
+        lexical_weight = 0.45 + (0.03 - usage_weight)
         lexical_total = min(
             1.0,
             0.25 * domain_fit
-            + 0.45 * lexical
+            + lexical_weight * lexical
             + 0.08 * importance
             + 0.07 * confidence
             + 0.05 * confirmation
             + 0.04 * recency
-            + 0.03 * usage
+            + usage_weight * usage
             + 0.03 * pin,
         )
         total = min(1.0, (1 - semantic_weight) * lexical_total + semantic_weight * semantic)

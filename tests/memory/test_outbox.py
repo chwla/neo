@@ -33,6 +33,7 @@ from app.services.memory.index_contracts import (
     DerivedFailureCode,
     DerivedTarget,
     DerivedTargetState,
+    OutboxBatch,
     RetryPolicy,
 )
 from app.services.memory.indexes import SqliteMemoryFtsIndex, SqliteMemoryVectorIndex
@@ -400,55 +401,24 @@ class TestProcessing:
         assert len(processor.fts_index.list_metadata_for_owner(OWNER_ID)) == 1
         assert processor.fts_index.get_metadata(OWNER_ID, record_id) is not None
 
-    def test_a_worker_whose_lease_was_reclaimed_currently_raises(
-        self, engine, processor, clock
-    ) -> None:
-        """OBX-15b — pinning the current behaviour, which is the defect below.
+    def test_a_lost_lease_is_reported_not_raised(self, engine, processor, clock) -> None:
+        """OBX-15 — fixed. A reclaimed lease is reported, not thrown.
 
-        Kept as a passing test alongside the `xfail` so the actual behaviour is
-        recorded, not just the desired one.
-        """
+        `_failure_code` always had an explicit branch mapping the message
+        `lease_lost` to `DerivedFailureCode.LEASE_LOST`, so this was meant to be
+        a reported failure like every other. It was unreachable: the `except`
+        handler computed that code and then called `_finish_target` a second
+        time, which raised `lease_lost` again with nothing left to catch it, so
+        the exception left `process()` entirely.
 
-        record_id = insert_record(engine)
-        insert_event(engine, memory_id=record_id)
-        stale = processor.lease_batch(worker_id="worker-a", lease_seconds=60).leases[0]
-        clock.advance(seconds=61)
-        processor.process(processor.lease_batch(worker_id="worker-b").leases[0])
-        with pytest.raises(RuntimeError, match="lease_lost"):
-            processor.process(stale)
+        A stale lease is not exceptional — it is the ordinary outcome whenever
+        work outruns its lease duration, which is what leases exist for. The
+        worker draining the queue died instead of recording a failure and moving
+        on, and since `process_batch` maps over every lease, one stale lease took
+        the rest of the batch with it.
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: a worker whose lease was reclaimed raises RuntimeError("
-            "'lease_lost') out of process() instead of returning a result with "
-            "DerivedFailureCode.LEASE_LOST. _finish_target raises when the lease "
-            "row no longer matches the worker, and the except handler in process() "
-            "calls _finish_target again, which raises the same error a second time "
-            "and escapes. Remove this xfail when the handler tolerates a lost "
-            "lease instead of re-raising."
-        ),
-    )
-    def test_a_lost_lease_should_be_reported_not_raised(self, engine, processor, clock) -> None:
-        """OBX-15 — a gap found while writing OBX-27, recorded not patched.
-
-        `_failure_code` has an explicit branch mapping the message `lease_lost`
-        to `DerivedFailureCode.LEASE_LOST`, so this was clearly meant to be a
-        reported failure like every other. It is unreachable: the `except`
-        handler computes that code and then calls `_finish_target` a second
-        time, which raises `lease_lost` again — this time with nothing catching
-        it — so the exception leaves `process()` entirely.
-
-        Why it matters: a stale lease is not an exceptional event, it is the
-        normal outcome whenever work outruns its lease duration, which is
-        exactly the situation leases exist to handle. The worker draining the
-        queue dies instead of recording a failure and moving on.
-
-        It also defeats `process_batch`, which maps `process` over every lease
-        in the batch: one stale lease aborts the remaining leases too, so the
-        per-target isolation tested in OBX-32 does not hold for this failure
-        mode. Nothing is corrupted — the reclaiming worker has already done the
-        write — but the queue stops draining until the process is restarted.
+        The handler now tolerates a lost lease and reports it. Nothing needed
+        repairing: the reclaiming worker had already done the write.
         """
 
         record_id = insert_record(engine)
@@ -459,6 +429,32 @@ class TestProcessing:
 
         result = processor.process(stale)
         assert DerivedFailureCode.LEASE_LOST in result.failure_codes
+        assert len(processor.fts_index.list_metadata_for_owner(OWNER_ID)) == 1
+
+    def test_one_stale_lease_does_not_abort_the_rest_of_the_batch(
+        self, engine, processor, clock
+    ) -> None:
+        """OBX-15b — the consequence that made this worth fixing.
+
+        `process_batch` maps `process` over every lease. While a stale lease
+        raised, one of them stopped the whole batch — so a single expired lease
+        halted the queue for every other event in it. This is the property that
+        regresses first if the handler goes back to re-raising.
+        """
+
+        stale_record = insert_record(engine)
+        insert_event(engine, memory_id=stale_record)
+        stale = processor.lease_batch(worker_id="worker-a", lease_seconds=60).leases[0]
+        clock.advance(seconds=61)
+        processor.process(processor.lease_batch(worker_id="worker-b").leases[0])
+
+        healthy_record = insert_record(engine, display_text="a second memory")
+        insert_event(engine, memory_id=healthy_record)
+        healthy = processor.lease_batch(worker_id="worker-c").leases[0]
+
+        results = processor.process_batch(OutboxBatch(leases=(stale, healthy)))
+        assert len(results) == 2
+        assert processor.fts_index.get_metadata(OWNER_ID, healthy_record) is not None
 
     def test_processing_another_owners_lease_is_refused(self, engine, processor) -> None:
         """OBX-14 — the owner check is at the top of `process`, before any read."""

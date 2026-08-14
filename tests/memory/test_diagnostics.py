@@ -335,23 +335,19 @@ class TestInvariants:
         assert report.integrity_result == ("ok",)
 
     def test_two_active_exclusive_records_in_one_slot_are_detected(self, engine) -> None:
-        """DIA-15 — the detector for the defect recorded as SCH-14.
+        """DIA-15 — the detector, now that the preventer exists too.
 
-        SCH-14 is that the unique index guaranteeing one active record per
-        exclusive slot stops firing at global scope: migration 0003 added the
-        nullable `scope_project_id` to it, and SQL unique indexes treat NULLs as
-        distinct. The database will therefore accept the second row.
+        This used to work by exploiting `SCH-14`: the unique index did not fire
+        at global scope, so the duplicate could simply be inserted. Revision
+        0004 fixed that, and this test went red — which was the outcome its own
+        docstring predicted and asked for.
 
-        This test relies on that. It inserts exactly the pair the index should
-        have refused, and asserts `inspect_memory_invariants` catches it with
-        its own GROUP BY. So the defect has no *preventer* but does have a
-        *detector*, which is the difference between silently wrong and wrong but
-        findable — and it means an operator has a way to check whether the gap
-        has actually cost anything before it is fixed.
-
-        If SCH-14 is ever repaired, the inserts below start failing and this
-        test goes red. That is the correct outcome: it should then be rewritten
-        to assert the constraint refuses the second row.
+        The checker still matters, and arguably matters more now. Any database
+        that reached a bad state *before* 0004 still holds those rows, and the
+        0004 migration refuses to run until they are cleared. This is the tool
+        that finds them, so it has to be shown working against exactly that
+        state: the index is dropped for the insert, which is precisely how a
+        pre-0004 database acquired its duplicates.
         """
 
         from app.services.memory.taxonomy import Cardinality
@@ -362,6 +358,11 @@ class TestInvariants:
             "domain_key": "global",
         }
         first = insert_record(engine, display_text="Soham", **shared)
+        with engine.connect() as connection:
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"
+            )
+            connection.commit()
         second = insert_record(engine, display_text="Someone Else", **shared)
 
         report = inspect_memory_invariants(engine, owner_id=OWNER_ID)
@@ -374,6 +375,28 @@ class TestInvariants:
         )
         assert set(violation.row_ids) == {first, second}
 
+    def test_the_index_now_prevents_what_the_checker_detects(self, engine) -> None:
+        """DIA-15b — preventer and detector, asserted together.
+
+        With the index in place the second insert is refused outright, so the
+        state above is unreachable through any ordinary path. Worth pinning next
+        to the detector: it is the difference between a checker that finds
+        historical damage and one that is the only thing standing in the way.
+        """
+
+        from sqlalchemy.exc import IntegrityError
+
+        from app.services.memory.taxonomy import Cardinality
+
+        shared = {
+            "cardinality": Cardinality.EXCLUSIVE,
+            "slot_key": "identity:global:name",
+            "domain_key": "global",
+        }
+        insert_record(engine, display_text="Soham", **shared)
+        with pytest.raises(IntegrityError):
+            insert_record(engine, display_text="Someone Else", **shared)
+
     def test_a_violation_names_the_offending_rows(self, engine) -> None:
         """DIA-19 — a report saying only "something is wrong" is not actionable.
 
@@ -384,6 +407,11 @@ class TestInvariants:
 
         shared = {"cardinality": Cardinality.EXCLUSIVE, "slot_key": "identity:global:name"}
         insert_record(engine, display_text="Soham", **shared)
+        with engine.connect() as connection:
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"
+            )
+            connection.commit()
         insert_record(engine, display_text="Someone Else", **shared)
         report = inspect_memory_invariants(engine, owner_id=OWNER_ID)
         assert all(item.row_ids or item.detail for item in report.violations)

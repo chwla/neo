@@ -238,14 +238,32 @@ class MemoryOutboxProcessor:
                     revision=event.canonical_revision,
                     error_code=code.value,
                 )
-                self._finish_target(
-                    lease,
-                    target,
-                    state=(
-                        DerivedTargetState.DEAD_LETTER if is_dead else DerivedTargetState.FAILED
-                    ),
-                    error_code=code.value,
-                )
+                try:
+                    self._finish_target(
+                        lease,
+                        target,
+                        state=(
+                            DerivedTargetState.DEAD_LETTER if is_dead else DerivedTargetState.FAILED
+                        ),
+                        error_code=code.value,
+                    )
+                except RuntimeError as release_error:
+                    # `_finish_target` raises when the delivery row no longer
+                    # matches this worker, which is exactly what happens after a
+                    # lease expires and another worker reclaims it.  That is not
+                    # exceptional -- it is the ordinary outcome whenever work
+                    # outruns its lease, which is what leases exist for.
+                    #
+                    # Previously this second call re-raised the same error that
+                    # brought us into the handler, with nothing left to catch it,
+                    # so the exception escaped `process()` entirely: the worker
+                    # died, and because `process_batch` maps over every lease,
+                    # one stale lease took the rest of the batch with it.  The
+                    # reclaiming worker has already done the write, so there is
+                    # nothing to repair -- only a failure to record.
+                    if str(release_error) != "lease_lost":
+                        raise
+                    code = DerivedFailureCode.LEASE_LOST
                 failures.append(code)
                 (dead if is_dead else retryable).append(target)
                 diagnostics.append(

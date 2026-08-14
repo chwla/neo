@@ -15,6 +15,7 @@ from pydantic import (
     JsonValue,
     TypeAdapter,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -450,6 +451,29 @@ class MemoryUpdatePatch(ContractModel):
         if "canonical_value" in self.model_fields_set and self.canonical_value is None:
             raise ValueError("canonical_value_cannot_be_null")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_only_the_fields_that_were_set(self, handler):
+        """Emit only fields the caller actually set.
+
+        This model treats a key being *present* as intent to change that field,
+        which is the whole reason `model_fields_set` is consulted above.  A
+        default dump contradicted that by writing every optional field as null,
+        so re-parsing its own output saw an explicit ``canonical_value: None``
+        and refused -- meaning an update command could not survive a JSON round
+        trip.  That was reachable rather than theoretical: `mutations.py` stores
+        this dump in ``memory_operations.normalized_command_json`` and
+        ``execute()`` re-parses dicts through the same adapter, so the audit
+        record of an update could not be replayed through the door that wrote it.
+
+        Filtering to ``model_fields_set`` makes the wire format carry the same
+        distinction the validator relies on.  A field explicitly set to null is
+        still emitted, because it is in the set -- so "clear this expiry" and
+        "leave this expiry alone" remain different messages.
+        """
+
+        data = handler(self)
+        return {key: value for key, value in data.items() if key in self.model_fields_set}
 
 
 class MemoryCommandBase(ContractModel):

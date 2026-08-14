@@ -388,9 +388,7 @@ class TestTokenisation:
             ("swimming", "swims"),
         ],
     )
-    def test_es_plurals_and_doubled_consonants_share_a_stem(
-        self, first: str, second: str
-    ) -> None:
+    def test_es_plurals_and_doubled_consonants_share_a_stem(self, first: str, second: str) -> None:
         """RCL-21d — fixed. The forms the docstring promised but did not deliver.
 
         ``_stem`` documents itself as making "the singular, plural and participle
@@ -532,31 +530,22 @@ class TestUsageRanking:
 
         assert USAGE_AFFECTS_RANKING is False
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Contradiction: policy declares USAGE_AFFECTS_RANKING = False, but "
-            "_breakdown gives usage a 0.03 weight in the lexical total, so a "
-            "frequently-recalled memory does outrank an identical unused one. "
-            "The constant is referenced nowhere else in the codebase. Remove "
-            "this xfail once the two are reconciled."
-        ),
-    )
     def test_usage_does_not_change_the_score(self) -> None:
-        """RCL-31b — a contradiction found while writing RCL-31.
+        """RCL-31b — fixed. The scorer now reads the policy it is governed by.
 
         ``policy.USAGE_AFFECTS_RANKING = False`` reads as a deliberate product
-        decision, and a good one: ranking by usage creates a feedback loop where
-        memories that were recalled get recalled more, regardless of whether they
-        were relevant.  But the constant is declared and never read, and
-        ``_breakdown`` includes ``0.03 * usage`` in the lexical total.
+        decision, and a good one: ranking by usage is a feedback loop where a
+        memory that surfaces once scores higher and so surfaces again, whether
+        or not it was relevant either time. The constant was declared and never
+        read, while ``_breakdown`` gave usage a 0.03 weight — small, but ranking
+        decisions are made at near-ties, which is exactly where a constant term
+        decides the order.
 
-        Measured, the gap between an unused record and one used a hundred times
-        is about 0.03 of total score — small, but enough to reorder near-ties,
-        which is exactly where ranking decisions actually get made.
-
-        Either the scorer should drop the usage term or the constant should say
-        ``True``; right now the code and its stated policy disagree.
+        Resolved in favour of the stated policy rather than the code: the scorer
+        consults the constant, and folds the freed weight into the lexical term
+        so the maximum total stays 1.0 and ``recall_min_score`` keeps meaning
+        what it did. Flipping the constant to ``True`` restores the old
+        behaviour, which is what makes this a decision rather than a deletion.
         """
 
         from datetime import UTC, datetime
@@ -588,11 +577,13 @@ class TestUsageRanking:
         heavily_used = CanonicalRecallService._breakdown(_view(100), now, 0.5, 1.0)
         assert unused.total == heavily_used.total
 
-    def test_the_size_of_the_usage_effect_is_bounded(self) -> None:
-        """RCL-31c — pinning how large the contradiction actually is.
+    def test_relevance_keeps_the_weight_usage_gave_up(self) -> None:
+        """RCL-31c — the fix redistributes rather than just subtracting.
 
-        Whatever the resolution, it is worth knowing the effect is small: usage
-        can move a total score by at most the 0.03 weight it carries.
+        Dropping the term outright would have lowered every score by up to 0.03,
+        which silently changes what ``recall_min_score`` admits. The weight goes
+        to the lexical term instead — the signal the policy wants ranking to be
+        about — so a perfectly matching record still scores 1.0.
         """
 
         from datetime import UTC, datetime
@@ -624,7 +615,28 @@ class TestUsageRanking:
             CanonicalRecallService._breakdown(_view(100), now, 0.5, 1.0).total
             - CanonicalRecallService._breakdown(_view(0), now, 0.5, 1.0).total
         )
-        assert 0 < delta <= 0.031
+        assert delta == 0
+
+        # A record maximal on every remaining signal still reaches 1.0, so the
+        # scale did not shrink when usage stopped contributing. Without the
+        # redistribution this would top out at 0.97.
+        maximal = CanonicalMemoryView(
+            canonical_id=uuid4(),
+            owner_id=uuid4(),
+            memory_type=MemoryType.GOAL,
+            domain_key="global",
+            slot_key="goal:global:independent:x",
+            display_text=SKETCHING,
+            sensitivity=Sensitivity.NORMAL,
+            confidence=1.0,
+            importance=10,
+            pinned=True,
+            usage_count=0,
+            created_at=now,
+            updated_at=now,
+            last_confirmed_at=now,
+        )
+        assert CanonicalRecallService._breakdown(maximal, now, 1.0, 1.0).total == 1.0
 
 
 class TestSelectionLimits:
