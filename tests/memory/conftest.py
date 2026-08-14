@@ -10,6 +10,7 @@ keeps WAL and FTS5 behaving the way they do in the running app.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,75 @@ CRYPTO_SEED = b"neo-memory-test-seed-value-32bytes!!"
 # assertion is reproducible.  Wall-clock time in these tests means either
 # sleeping or writing something that passes today and fails at midnight.
 FROZEN_NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
+
+
+class NetworkBlockedInTests(RuntimeError):
+    """Raised when a test opens a socket the memory suite should never need."""
+
+
+def pytest_configure(config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "allow_network: this test genuinely needs a socket; states it in its own source",
+    )
+
+
+@pytest.fixture(autouse=True)
+def block_network(request) -> Iterator[None]:
+    """Fail any test that opens a socket, and name it.
+
+    Every external collaborator in this layer has a double, so a socket here is
+    always a mistake — but a quiet one.  Both sessions working on this suite hit
+    the same failure independently: a fixture built a real runtime, which probed
+    a live Ollama endpoint with a 300-second warmup timeout.  It looked fine
+    locally because a running service answers fast, so the dependency was
+    invisible precisely while it was harmless.  On a machine without Ollama the
+    suite went from 72 seconds to still-running at ten minutes, at 0% CPU.
+
+    **Attempts are recorded before the raise, and the test fails at teardown
+    even if it passed.**  Raising alone is not enough: code that catches
+    connection errors keeps the test green, and two health tests were doing
+    exactly that — passing via the failure path, with a round trip as the only
+    observable difference.  Recording is what turns "something connects" into
+    "these two tests, by name".
+
+    A test that genuinely needs a socket marks itself ``allow_network``, so the
+    exception is visible in its own source rather than in nobody noticing.
+    """
+
+    if request.node.get_closest_marker("allow_network"):
+        yield
+        return
+
+    attempts: list[object] = []
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def guarded_connect(self, address):
+        attempts.append(address)
+        raise NetworkBlockedInTests(f"network access attempted to {address!r}")
+
+    def guarded_connect_ex(self, address):
+        # connect_ex returns an error code rather than raising, so it would
+        # otherwise slip past a guard that only patches connect.
+        attempts.append(address)
+        raise NetworkBlockedInTests(f"network access attempted to {address!r}")
+
+    socket.socket.connect = guarded_connect
+    socket.socket.connect_ex = guarded_connect_ex
+    try:
+        yield
+    finally:
+        socket.socket.connect = original_connect
+        socket.socket.connect_ex = original_connect_ex
+
+    if attempts:
+        pytest.fail(
+            f"{request.node.nodeid} attempted {len(attempts)} network "
+            f"connection(s): {attempts}. Every external collaborator in this "
+            "layer has a double; add one, or mark the test 'allow_network' if "
+            "it genuinely needs a socket."
+        )
 
 
 def _build_engine(path: str) -> Engine:

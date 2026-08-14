@@ -1646,3 +1646,36 @@ sentence that agreed with its own table, and now a network call that succeeded. 
 guard is a cheap second source: it cannot tell you a test is meaningful, but it can tell you
 the test reached outside the process, which is something no assertion in the test itself will
 ever mention.
+
+---
+
+## 45b. The suite now proves it makes no network calls
+
+`tests/memory/conftest.py` has an autouse `block_network` fixture. Every external
+collaborator in this layer has a double, so a socket here is always a mistake — but a quiet
+one, and both sessions working on this suite hit it independently.
+
+**Why it records attempts rather than only raising.** Raising alone would have caught the
+first case (a runtime fixture probing a live Ollama endpoint with a 300-second warmup
+timeout) but not the second: two health tests called a real embedding provider, the provider
+*caught* the connection error and reported unhealthy, and the assertions still held. Those
+tests were green **via the failure path** — they would have passed with or without a model
+server, and the only observable difference was a round trip. So the fixture records each
+attempt and fails at teardown even when the test body passed. That is what turns "something
+connects" into "these two tests, by name".
+
+Both patterns are covered: a connection that raises fails immediately, and one that is
+swallowed fails at teardown. `connect_ex` is patched as well as `connect`, since it returns
+an error code rather than raising and would otherwise walk straight past a guard on
+`connect` alone.
+
+**The opt-out is a marker, not a config flag.** `@pytest.mark.allow_network` puts the
+exception in the test's own source, where a reviewer sees it, rather than in a settings file
+where nobody does.
+
+**Why this was worth the trouble.** On a machine with Ollama running, the dependency was
+invisible: the suite took 72 seconds and passed. Without it, 0% CPU and still running at ten
+minutes. The dependency was undetectable exactly while it was harmless, which is the same
+shape as the other two things caught today — an item count that was internally consistent
+and wrong, and a progress summary that was coherent and wrong. None had a second source. A
+socket guard is a second source that costs nothing per run.
