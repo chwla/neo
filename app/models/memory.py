@@ -127,6 +127,20 @@ def _sha256_check(column: str, name: str, *, nullable: bool = False) -> CheckCon
     )
 
 
+def _not_blank(column: str) -> str:
+    """SQL asserting a column holds something other than whitespace.
+
+    ``trim(X)`` with one argument strips **spaces only**, so a display text of a
+    single tab or newline satisfied ``length(trim(X)) > 0`` and was stored as a
+    blank memory.  The two-argument form takes the set of characters to strip,
+    so this names each whitespace character explicitly: space, tab, newline,
+    carriage return, vertical tab and form feed.
+    """
+
+    whitespace = "' ' || char(9) || char(10) || char(13) || char(11) || char(12)"
+    return f"length(trim({column}, {whitespace})) > 0"
+
+
 def _payload_shape_check(prefix: str, name: str) -> CheckConstraint:
     canonical = f"{prefix}canonical_payload"
     display = f"{prefix}display_text"
@@ -140,15 +154,15 @@ def _payload_shape_check(prefix: str, name: str) -> CheckConstraint:
     return CheckConstraint(
         "((sensitivity = 'normal' "
         f"AND {canonical} IS NOT NULL AND {display} IS NOT NULL "
-        f"AND length(trim({display})) > 0 "
+        f"AND {_not_blank(display)} "
         f"AND {encrypted_canonical} IS NULL AND {encrypted_display} IS NULL "
         f"AND {algorithm} IS NULL AND {key_version} IS NULL "
         f"AND {canonical_nonce} IS NULL AND {display_nonce} IS NULL AND {aad} IS NULL) "
         "OR (sensitivity = 'sensitive' "
         f"AND {canonical} IS NULL AND {display} IS NULL "
         f"AND {encrypted_canonical} IS NOT NULL AND {encrypted_display} IS NOT NULL "
-        f"AND {algorithm} IS NOT NULL AND length(trim({algorithm})) > 0 "
-        f"AND {key_version} IS NOT NULL AND length(trim({key_version})) > 0 "
+        f"AND {algorithm} IS NOT NULL AND {_not_blank(algorithm)} "
+        f"AND {key_version} IS NOT NULL AND {_not_blank(key_version)} "
         f"AND {canonical_nonce} IS NOT NULL AND {display_nonce} IS NOT NULL "
         f"AND {aad} IS NOT NULL))",
         name=name,
@@ -160,7 +174,7 @@ class MemoryOwnerBinding(MemoryBase):
     __table_args__ = (
         _uuid_check("owner_id", "ck_memory_owner_bindings_owner_uuid"),
         CheckConstraint(
-            "length(trim(database_identity)) > 0",
+            _not_blank("database_identity"),
             name="ck_memory_owner_bindings_database_identity",
         ),
         UniqueConstraint("database_identity", name="uq_memory_owner_bindings_database"),
@@ -315,7 +329,15 @@ class MemoryRecord(MemoryBase):
             "uq_memory_records_active_exclusive_slot",
             "owner_id",
             "scope_type",
-            "scope_project_id",
+            # COALESCE, not the bare column.  A unique index treats NULLs as
+            # distinct from each other, so including nullable `scope_project_id`
+            # directly disabled this index for every globally-scoped record --
+            # which is every name, preference, primary goal, current job and
+            # education.  Two contradictory active records could coexist in one
+            # exclusive slot.  Folding NULL to '' makes those rows compare equal
+            # and the constraint fire.  Project-scoped rows are unaffected: they
+            # already had a non-NULL value here.
+            text("COALESCE(scope_project_id, '')"),
             "subject_key",
             "memory_type",
             "domain_key",

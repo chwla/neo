@@ -288,28 +288,21 @@ class TestRecordPayloadShape:
             **factories.record_values(operation_id=operation_id, display_text=blank),
         )
 
-    @pytest.mark.parametrize("whitespace", ["\t", "\n", "\t\n "])
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: the non-blank display-text check uses SQLite trim(), "
-            "which strips spaces only. Tab- and newline-only display text "
-            "therefore passes. Remove this xfail when the check also trims "
-            "other whitespace."
-        ),
-    )
-    def test_whitespace_only_display_text_is_currently_accepted(
+    @pytest.mark.parametrize("whitespace", ["\t", "\n", "\r", "\x0b", "\x0c", "\t\n "])
+    def test_a_normal_record_rejects_whitespace_only_display_text(
         self, engine: Engine, whitespace: str
     ) -> None:
-        """SCH-11b — a gap found while writing SCH-11, recorded not patched.
+        """SCH-11b — fixed. `trim()` with one argument strips spaces only.
 
         ``length(trim(display_text)) > 0`` reads as "must not be blank", but
-        SQLite's one-argument ``trim()`` removes spaces and nothing else.  A
-        display text of a single tab has trimmed length 1 and is stored, so a
-        memory can exist with nothing renderable to show the user.
+        SQLite's one-argument ``trim()`` removes spaces and nothing else, so a
+        display text of a single tab had trimmed length 1 and was stored — a
+        memory with nothing renderable to show the user.
 
-        Cosmetic rather than dangerous — but the constraint does not mean what
-        it looks like it means, which is worth knowing.
+        The check now uses the two-argument form with every whitespace
+        character named explicitly. Parametrised over all six rather than the
+        original three, because the fix either handles the whole class or is
+        just a longer list of special cases.
         """
 
         operation_id = factories.insert_operation(engine)
@@ -421,43 +414,27 @@ class TestExclusiveSlotUniqueness:
         base.update(overrides)
         return base
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "REAL BUG: the unique index includes scope_project_id, which is NULL "
-            "for every global-scoped record. SQL treats NULLs as distinct in a "
-            "unique index, so the index never fires for global scope — where "
-            "almost every memory lives. Project-scoped records are protected; "
-            "global ones are not. See the docstring for the full explanation."
-        ),
-    )
     def test_two_active_records_cannot_share_an_exclusive_slot(self, engine: Engine) -> None:
-        """SCH-14 — you cannot prefer two different verbosities at once.
-
-        Except that at global scope, you currently can.
+        """SCH-14 — fixed. You cannot prefer two different verbosities at once.
 
         ``uq_memory_records_active_exclusive_slot`` covers
         ``(owner_id, scope_type, scope_project_id, subject_key, memory_type,
         domain_key, slot_key)`` with a partial predicate of
         ``status = 'active' AND cardinality = 'exclusive'``.
 
-        Every globally-scoped record has ``scope_project_id IS NULL``, and SQL
-        unique indexes treat NULLs as distinct from each other.  Two rows that
-        agree on all six other columns and are both NULL in the seventh are
-        therefore *not* duplicates as far as the index is concerned, and both
-        inserts succeed.
+        Revision 0003 added the nullable ``scope_project_id`` to that index, and
+        SQL unique indexes treat NULLs as distinct from each other.  Every
+        globally-scoped record has NULL there, so two rows agreeing on all six
+        other columns were *not* duplicates as far as the index was concerned
+        and both inserts succeeded.  The blast radius was every exclusive slot:
+        your name, every preference, the current primary goal per domain,
+        current employment, current education.
 
-        The blast radius is the exclusive slots: your name, every preference,
-        the current primary goal per domain, current employment, current
-        education.  Two contradictory active records can coexist, and recall
-        will surface whichever the ranking happens to prefer.
-
-        ``TestExclusiveSlotUniqueness.test_the_slot_is_project_scoped`` shows
-        the index working correctly when ``scope_project_id`` is non-NULL, which
-        is what makes the NULL semantics the clear cause.
-
-        The usual fix is a second partial index for the global case, or
-        COALESCE-ing the scope column to a sentinel string inside the index.
+        Revision 0004 rebuilds the index over ``COALESCE(scope_project_id, '')``
+        so those rows compare equal.  Project-scoped records already had a
+        non-NULL value and are unaffected, which
+        ``test_the_exclusive_slot_index_does_hold_within_a_project`` still
+        confirms.
         """
 
         factories.insert_record(engine, **self._exclusive())
@@ -1405,13 +1382,6 @@ class TestConstraintsSurviveUpdates:
                     .values(canonical_payload=None)
                 )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Same root cause as SCH-14: the exclusive-slot unique index does not "
-            "fire at global scope because scope_project_id is NULL."
-        ),
-    )
     def test_an_update_cannot_create_a_second_active_exclusive_record(self, engine: Engine) -> None:
         """SCH-14c — reactivating a superseded record must hit the index.
 

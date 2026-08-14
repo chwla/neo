@@ -427,7 +427,16 @@ class _JsonHttpExtractionProvider:
             raise ValueError("extraction_endpoint_required")
         if not model.strip():
             raise ValueError("extraction_model_required")
-        response_timeout = response_timeout_seconds or timeout_seconds or 120
+        # `is None` rather than an `or` chain: zero is falsy, so `or` treated an
+        # explicit 0 as "not supplied" and substituted the default before the
+        # range check below ever saw it.  Zero was the single out-of-range value
+        # that did not raise.
+        if response_timeout_seconds is not None:
+            response_timeout = response_timeout_seconds
+        elif timeout_seconds is not None:
+            response_timeout = timeout_seconds
+        else:
+            response_timeout = 120
         if not 1 <= connect_timeout_seconds <= 60:
             raise ValueError("extraction_connect_timeout_out_of_range")
         if not 1 <= response_timeout <= 600:

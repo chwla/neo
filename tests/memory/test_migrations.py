@@ -14,11 +14,11 @@ from sqlalchemy import inspect, text, update
 from sqlalchemy.engine import Engine
 
 from app.db.memory_migrations import (
+    ALL_MEMORY_REVISIONS,
     MEMORY_CURRENT_REVISION,
     MEMORY_LEDGER_TABLE,
     MEMORY_REVISION_0001,
-    MEMORY_REVISION_0002,
-    MEMORY_REVISION_0003,
+    MEMORY_REVISION_0004,
     MEMORY_TABLES,
     MemoryMigrationError,
     downgrade_memory,
@@ -26,9 +26,12 @@ from app.db.memory_migrations import (
     upgrade_memory,
 )
 from app.services.memory.diagnostics import schema_checksum
+from app.services.memory.taxonomy import Cardinality, MemoryType
 from tests.memory.conftest import OTHER_OWNER_ID, OWNER_ID
 
-ALL_REVISIONS = (MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003)
+# Imported rather than re-listed: a second copy here could agree with itself
+# while disagreeing with the module, which is how 0004 was half-added.
+ALL_REVISIONS = ALL_MEMORY_REVISIONS
 
 
 def _identity(engine: Engine) -> str:
@@ -213,6 +216,73 @@ class TestLedgerIntegrity:
         MemoryRecord.__table__.create(unmigrated_engine)
         with pytest.raises(MemoryMigrationError, match="unmanaged_memory_tables"):
             upgrade_memory(unmigrated_engine, owner_id=OWNER_ID, database_identity="fresh")
+
+
+class TestRevision0004:
+    """The exclusive-slot index fix, and the guard that runs before it."""
+
+    def test_the_index_folds_a_null_scope_to_a_comparable_value(self, engine: Engine) -> None:
+        """MIG-15 — the shape of the fixed index, read from the database itself.
+
+        Asserted against `sqlite_master` rather than the model, because the
+        model is what *should* have been true before revision 0004 as well. What
+        matters is the SQL the database is actually enforcing.
+        """
+
+        with engine.connect() as connection:
+            sql = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name = "
+                "'uq_memory_records_active_exclusive_slot'"
+            ).scalar()
+        assert "COALESCE(scope_project_id, '')" in sql
+
+    def test_the_migration_refuses_to_run_against_existing_duplicates(self, engine: Engine) -> None:
+        """MIG-16 — the guard that makes this safe to run on a live profile.
+
+        Creating a unique index fails if the data already violates it, and
+        SQLite's own error names neither the table nor the offending rows. Any
+        store that ran a multi-target forget before `EXC-19c` was fixed has
+        exactly those duplicates sitting in it, so this is not a hypothetical.
+
+        The migration therefore looks first and raises with the row ids grouped,
+        so whoever runs it can find and resolve them rather than reading a bare
+        "UNIQUE constraint failed".
+        """
+
+        from sqlalchemy import text as sql_text
+
+        from tests.memory import factories
+
+        identity = _identity(engine)
+        exclusive = {
+            "memory_type": MemoryType.IDENTITY,
+            "domain_key": "global",
+            "slot_key": "identity:global:name",
+            "cardinality": Cardinality.EXCLUSIVE,
+        }
+        first = factories.insert_record(engine, display_text="Soham", **exclusive)
+
+        # Insert the duplicate the way a pre-fix store acquired one: with the
+        # corrected index temporarily absent, which is the state revision 0004
+        # is about to migrate away from.
+        with engine.connect() as connection:
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"
+            )
+            connection.commit()
+        second = factories.insert_record(engine, display_text="Someone Else", **exclusive)
+        with engine.begin() as connection:
+            connection.execute(
+                sql_text("DELETE FROM memory_schema_migrations WHERE revision = :r"),
+                {"r": MEMORY_REVISION_0004},
+            )
+
+        with pytest.raises(MemoryMigrationError) as caught:
+            upgrade_memory(engine, owner_id=OWNER_ID, database_identity=identity)
+
+        message = str(caught.value)
+        assert "memory_exclusive_slot_duplicates_block_migration" in message
+        assert first in message and second in message
 
 
 class TestMigrationState:

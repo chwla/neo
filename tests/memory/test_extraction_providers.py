@@ -656,39 +656,41 @@ class TestTheProviderFactory:
                 response_timeout_seconds=response,
             )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: _JsonHttpExtractionProvider resolves the response timeout "
-            "with `response_timeout_seconds or timeout_seconds or 120`. Zero is "
-            "falsy, so it is replaced by the default before the 1..600 range check "
-            "ever sees it. Every other out-of-range value, including -1, is caught. "
-            "Remove this xfail when the resolution distinguishes 'not supplied' "
-            "from 'supplied as zero' (an `is None` check)."
-        ),
-    )
     def test_a_zero_response_timeout_is_refused_like_every_other_bad_value(self) -> None:
-        """EXT-21d — a gap found while writing EXT-21c, recorded not patched.
+        """EXT-21d — fixed. Zero was the one out-of-range value that did not raise.
 
-        The guard states that a response timeout must be between 1 and 600
-        seconds.  Zero is the single value outside that range which does not
-        raise: the ``or`` chain treats it as "not supplied" and substitutes 120.
+        The resolution used ``response_timeout_seconds or timeout_seconds or
+        120``, and zero is falsy, so an explicit 0 was replaced by the default
+        before the 1..600 range check ever saw it. Every other out-of-range
+        value, including -1, was caught.
 
-        Reachable from configuration.  ``MemorySettings.__post_init__`` validates
-        the input-char limit and the three recall limits but not either
-        extraction timeout, and ``factory.build_memory_runtime`` passes
-        ``settings.extraction_response_timeout_seconds`` straight into the
-        provider.  So setting it to 0 — the natural way to write "no limit" —
-        silently yields 120 seconds instead of the configuration error the range
-        check was written to produce.
+        Reachable from configuration: ``MemorySettings.__post_init__`` validates
+        the input-char limit and the three recall limits but neither extraction
+        timeout, and ``factory.build_memory_runtime`` passes the setting
+        straight into the provider. So 0 — the natural way to write "no limit" —
+        quietly meant 120 seconds instead of the configuration error the guard
+        was written to produce.
 
-        Minor in effect: the substituted value is the sane default, so nothing
-        breaks. It is recorded because a validator that misses exactly one value
-        is worse than no validator — it invites trust it hasn't earned.
+        Now resolved with explicit ``is None`` checks, which distinguish "not
+        supplied" from "supplied as zero".
         """
 
         with pytest.raises(ValueError, match="extraction_response_timeout_out_of_range"):
             DirectJsonExtractionProvider(ENDPOINT, model="test-model", response_timeout_seconds=0)
+
+    def test_an_unset_timeout_still_falls_back_to_the_default(self) -> None:
+        """EXT-21e — the other half, so the fix did not break the fallback.
+
+        Distinguishing zero from unset is only correct if unset still works:
+        omitting both arguments must still yield 120, and the legacy
+        ``timeout_seconds`` alias must still be honoured.
+        """
+
+        default = DirectJsonExtractionProvider(ENDPOINT, model="test-model")
+        assert default.response_timeout_seconds == 120
+
+        legacy = DirectJsonExtractionProvider(ENDPOINT, model="test-model", timeout_seconds=30)
+        assert legacy.response_timeout_seconds == 30
 
     def test_auto_mode_cannot_be_used_without_probing(self) -> None:
         """EXT-13d — `auto` is a request to decide, not a mode to send.

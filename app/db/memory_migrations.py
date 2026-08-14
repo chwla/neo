@@ -33,13 +33,32 @@ from app.models.memory import (
 MEMORY_REVISION_0001 = "0001_memory_core"
 MEMORY_REVISION_0002 = "0002_memory_derived_indexes"
 MEMORY_REVISION_0003 = "0003_memory_scopes"
-MEMORY_CURRENT_REVISION = MEMORY_REVISION_0003
+MEMORY_REVISION_0004 = "0004_memory_exclusive_slot_null_scope"
+# Every revision, in order, defined once.  This list was previously repeated in
+# four places and adding 0004 missed one of them -- the fast-path currency check
+# -- which silently skipped the new revision on any database that already had
+# 0003.  One definition, so a new revision cannot be half-added.
+ALL_MEMORY_REVISIONS = (
+    MEMORY_REVISION_0001,
+    MEMORY_REVISION_0002,
+    MEMORY_REVISION_0003,
+    MEMORY_REVISION_0004,
+)
+MEMORY_CURRENT_REVISION = ALL_MEMORY_REVISIONS[-1]
 # Revision checksums describe the schema at the time a revision shipped.  Keep
 # this value fixed: compiling the current ORM model would otherwise make every
 # existing 0001 ledger entry appear corrupt after a later column is added.
 _MEMORY_REVISION_0001_CHECKSUM = "c1808b6cacd6090fea76df53bd6d07903efb532f7b47bb0e64063e88cf7bf6db"
 MEMORY_LEDGER_TABLE = "memory_schema_migrations"
 MEMORY_FTS5_TABLE = "memory_fts_index"
+# Matches what SQLAlchemy emits for the model index, so a database reaching this
+# schema by migration and one created fresh from the model agree exactly.
+_EXCLUSIVE_SLOT_INDEX_SQL = (
+    "CREATE UNIQUE INDEX uq_memory_records_active_exclusive_slot "
+    "ON memory_records (owner_id, scope_type, COALESCE(scope_project_id, ''), "
+    "subject_key, memory_type, domain_key, slot_key) "
+    "WHERE status = 'active' AND cardinality = 'exclusive'"
+)
 _FTS5_CREATE_SQL = (
     f"CREATE VIRTUAL TABLE {MEMORY_FTS5_TABLE} USING fts5("
     "owner_id UNINDEXED, memory_id UNINDEXED, content_hash UNINDEXED, display_text)"
@@ -92,16 +111,27 @@ def _revision_checksum(revision: str) -> str:
     if revision == MEMORY_REVISION_0001:
         return _MEMORY_REVISION_0001_CHECKSUM
     if revision == MEMORY_REVISION_0003:
-        material = "\n".join((
-            revision,
-            "ALTER TABLE memory_records ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
-            "ALTER TABLE memory_records ADD COLUMN scope_project_id VARCHAR(80)",
-            "ALTER TABLE memory_candidates ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
-            "ALTER TABLE memory_candidates ADD COLUMN scope_project_id VARCHAR(80)",
-            "DROP INDEX uq_memory_records_active_exclusive_slot",
-            "CREATE UNIQUE INDEX uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'",
-            "CREATE INDEX ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)",
-        ))
+        material = "\n".join(
+            (
+                revision,
+                "ALTER TABLE memory_records ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+                "ALTER TABLE memory_records ADD COLUMN scope_project_id VARCHAR(80)",
+                "ALTER TABLE memory_candidates ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+                "ALTER TABLE memory_candidates ADD COLUMN scope_project_id VARCHAR(80)",
+                "DROP INDEX uq_memory_records_active_exclusive_slot",
+                "CREATE UNIQUE INDEX uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'",
+                "CREATE INDEX ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)",
+            )
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    if revision == MEMORY_REVISION_0004:
+        material = "\n".join(
+            (
+                revision,
+                "DROP INDEX uq_memory_records_active_exclusive_slot",
+                _EXCLUSIVE_SLOT_INDEX_SQL,
+            )
+        )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
     dialect = sqlite.dialect()
     tables = _core_tables if revision == MEMORY_REVISION_0001 else _derived_tables
@@ -129,10 +159,10 @@ def _read_applied(connection) -> dict[str, str]:
 
 
 def _validate_applied_revisions(applied: dict[str, str]) -> None:
-    unknown = set(applied) - {MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003}
+    unknown = set(applied) - set(ALL_MEMORY_REVISIONS)
     if unknown:
         raise MemoryMigrationError(f"unsupported_memory_revisions:{','.join(sorted(unknown))}")
-    for revision in (MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003):
+    for revision in ALL_MEMORY_REVISIONS:
         actual = applied.get(revision)
         if actual is not None and actual != _revision_checksum(revision):
             raise MemoryMigrationError("memory_revision_checksum_mismatch")
@@ -230,11 +260,7 @@ def _memory_schema_is_current(
     applied = _read_applied(connection)
     _validate_applied_revisions(applied)
     _validate_managed_tables(connection, applied=applied)
-    if {
-        MEMORY_REVISION_0001,
-        MEMORY_REVISION_0002,
-        MEMORY_REVISION_0003,
-    } - set(applied):
+    if set(ALL_MEMORY_REVISIONS) - set(applied):
         return False
     rows = connection.execute(select(MemoryOwnerBinding.__table__)).mappings().all()
     if not rows:
@@ -255,7 +281,6 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
     if connection.dialect.name != "sqlite":
         raise MemoryMigrationError("memory_migrations_require_sqlite")
 
-    
     existing = _existing_table_names(connection)
     ledger_exists = MEMORY_LEDGER_TABLE in existing
     if not ledger_exists:
@@ -309,14 +334,69 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
         for table_name in ("memory_records", "memory_candidates"):
             columns = {column["name"] for column in inspect(connection).get_columns(table_name)}
             if "scope_type" not in columns:
-                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'"))
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {table_name} ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'"
+                    )
+                )
             if "scope_project_id" not in columns:
-                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN scope_project_id VARCHAR(80)"))
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN scope_project_id VARCHAR(80)")
+                )
         connection.execute(text("DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"))
-        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)"))
-        connection.execute(_ledger.insert().values(revision=MEMORY_REVISION_0003, revision_checksum=_revision_checksum(MEMORY_REVISION_0003), applied_at=datetime.now(UTC)))
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)"
+            )
+        )
+        connection.execute(
+            _ledger.insert().values(
+                revision=MEMORY_REVISION_0003,
+                revision_checksum=_revision_checksum(MEMORY_REVISION_0003),
+                applied_at=datetime.now(UTC),
+            )
+        )
         applied[MEMORY_REVISION_0003] = _revision_checksum(MEMORY_REVISION_0003)
+
+    if MEMORY_REVISION_0004 not in applied:
+        # Revision 0003 added the nullable `scope_project_id` to this unique
+        # index.  A unique index treats NULLs as distinct, so the index stopped
+        # firing for every globally-scoped record -- names, preferences, primary
+        # goals, current job and education -- and two contradictory active
+        # records could occupy one exclusive slot.  Folding NULL to '' restores
+        # the guarantee; project-scoped rows already had a non-NULL value and
+        # are unaffected.
+        #
+        # Creating a unique index fails against data that already violates it,
+        # so any existing duplicates are reported by name rather than the raw
+        # SQLite error, which names neither the table nor the rows.
+        duplicates = connection.execute(
+            text(
+                "SELECT group_concat(id) FROM memory_records "
+                "WHERE status = 'active' AND cardinality = 'exclusive' "
+                "GROUP BY owner_id, scope_type, COALESCE(scope_project_id, ''), "
+                "subject_key, memory_type, domain_key, slot_key "
+                "HAVING count(*) > 1"
+            )
+        ).all()
+        if duplicates:
+            groups = "; ".join(str(row[0]) for row in duplicates)
+            raise MemoryMigrationError(f"memory_exclusive_slot_duplicates_block_migration:{groups}")
+        connection.execute(text("DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"))
+        connection.execute(text(_EXCLUSIVE_SLOT_INDEX_SQL))
+        connection.execute(
+            _ledger.insert().values(
+                revision=MEMORY_REVISION_0004,
+                revision_checksum=_revision_checksum(MEMORY_REVISION_0004),
+                applied_at=datetime.now(UTC),
+            )
+        )
+        applied[MEMORY_REVISION_0004] = _revision_checksum(MEMORY_REVISION_0004)
 
     _validate_managed_tables(connection, applied=applied)
     _bind_owner(connection, owner_id=owner_id, database_identity=database_identity)
@@ -326,11 +406,7 @@ def memory_migration_state(engine: Engine) -> MemoryMigrationState:
     with engine.connect() as connection:
         applied = _read_applied(connection)
         _validate_applied_revisions(applied)
-        ordered = tuple(
-            revision
-            for revision in (MEMORY_REVISION_0001, MEMORY_REVISION_0002, MEMORY_REVISION_0003)
-            if revision in applied
-        )
+        ordered = tuple(revision for revision in ALL_MEMORY_REVISIONS if revision in applied)
         owner_id = None
         database_identity = None
         if MemoryOwnerBinding.__tablename__ in _existing_table_names(connection):
