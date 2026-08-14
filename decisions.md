@@ -256,6 +256,8 @@ normal test.
 | **`RCL-21d`** | **The recall stemmer mangles `-es` plurals and doubled-consonant participles.** It strips a bare `s` but not the `es` plural, and doesn't undouble a final consonant. `sketches` → `sketche`, `running` → `runn` — neither matches `sketch` or `run`. | **User-visible.** These words aren't "left as written" as the docstring promises; they're transformed into forms that match nothing. It's the same failure mode as the "podcasting didn't match podcasts" bug this stemmer was written to fix. In this app specifically: "show me my sketches" reaches no memory that says "sketching". |
 | **`RCL-31b`** | **`policy.USAGE_AFFECTS_RANKING = False` is declared, never read, and contradicted by the scorer**, which gives usage a 0.03 weight in the lexical total. | **Design contradiction.** Ranking by usage creates a feedback loop — recalled memories get recalled more regardless of relevance — which is exactly what the constant appears to guard against. The effect is bounded at 0.03 of total score, but that's enough to reorder near-ties, which is where ranking decisions actually get made. Either the scorer drops the term or the constant should say `True`. |
 | **`EXC-19c`** | **A "forget" matching several memories removes only the first, and reports success.** `_apply_retraction` derives its idempotency key from `(owner, message_id, extractor_version, retraction.proposal_id)` — no target — but is called once per target in a loop. Every target computes the same key, so the second forget replays the first operation's record, finds it names a different memory, and returns FAILED. Both decisions carry the same `operation_id`. | **The most serious finding after SCH-14, and arguably worse in kind.** SCH-14 lets bad state exist; this *fails a deletion the user explicitly asked for and tells them it worked*. The comment above the loop says it was written to fix exactly this symptom — the loop was added, the key was not made per-target, so the original bug survives. The two interact: SCH-14 makes duplicate values more likely, and this makes them harder to remove. |
+| **`RTV-12`** | **Workspace retrieval is not scope-isolated.** Both guards in `MemoryRetriever.retrieve` use `and` between the scope-type and scope-id mismatch conditions, so an item is skipped only when **both** differ. Any two scopes sharing a `scope_type` — every pair of chats — see each other's items. *(Found by the parallel session; I verified it independently at `app/services/memory_retrieval/retriever.py:13-21`.)* | **An information boundary, not a correctness bug.** This subsystem stores user-pasted transcript content, so the leak is between one chat and another. Comparable in severity to SCH-14 and EXC-19c, and cheaper to fix than either: the guards need `or` instead of `and`. |
+| `RTV-09` | Renaming a workspace item returns 500. *(Parallel session's finding.)* | **User-visible but contained** — a failed rename, not lost data. |
 | **`SCH-14`** | **The unique index guaranteeing one active record per exclusive slot does not fire for globally-scoped memories.** The index covers `(owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key)`. Every global record has `scope_project_id IS NULL`, and SQL unique indexes treat NULLs as distinct — so two rows identical in all six other columns are not duplicates as far as the index is concerned. | **Serious.** This is the "one answer per question" guarantee, and it's off for your name, every preference, every current primary goal, current job, and current education. Two contradictory active records can coexist and recall returns whichever ranks higher. Project-scoped records *are* protected, which is what pins the cause. |
 | `CON-21b` | An `UpdateMemoryCommand` cannot survive `model_dump(mode="json")` → re-parse. A full dump writes `canonical_value: None`, which `MemoryUpdatePatch` rejects; `exclude_unset` drops the `operation` discriminator instead. Eight of nine commands round-trip; only `update` doesn't. | **Moderate, and reachable.** `mutations.py` stores exactly this dump in `memory_operations.normalized_command_json`, and `execute()` re-parses dicts through the same adapter. So the audit record of an update can't be replayed through the front door that wrote it. |
 | `POL-15e` | The sensitive-content address pattern matches a house number followed by `street/road/avenue/lane/drive/boulevard` — but not `Way`, `Court`, `Place`, `Terrace`, `Crescent`, `Close`, `Square`, or `Parkway`. | **Privacy gap.** A home address on a Court or a Way classifies as NORMAL, so it can be stored without the explicit request a home address is meant to require. |
@@ -1945,3 +1947,52 @@ assumption, not a fact**, and the Write result is where that assumption gets che
 Related, and the reason it did not compound: when a stray `test_zz_probe.py` appeared that
 I could not prove was mine, I left it rather than tidying it up. Deleting a file of
 uncertain ownership is the same error one step further along.
+
+---
+
+## 49b. Is the memory layer ready for actual usage? A straight answer
+
+The original goal was not a test count, it was readiness. So, plainly:
+
+**The canonical memory layer is ready, with three defects that should be fixed first.** The
+paths a user touches daily — storing a fact, recalling it, forgetting it, keeping a
+sensitive value private, running with no local model installed — are covered end to end and
+behave correctly. 2,100 tests pass across every tier.
+
+**Fix these three before daily reliance, in this order:**
+
+1. **`EXC-19c`** — a "forget" matching several memories removes only the first and reports
+   success. One line: put the target memory id in the idempotency key. First because it
+   fails a deletion the user explicitly asked for *and says it worked*, and because the
+   duplicates it leaves behind block the next fix.
+2. **`SCH-14`** — the exclusive-slot uniqueness index stops firing at global scope, so two
+   contradictory answers to "what is my name?" can coexist. Second because rebuilding a
+   unique index fails against data that already violates it, so the duplicates must be
+   cleared first. `inspect_memory_invariants` (`DIA-15`) finds them.
+3. **`RTV-12`** — workspace retrieval leaks items between chats. Independent of the other
+   two; fix whenever. `and` should be `or`.
+
+**The other eight findings are real but not blocking.** Two are user-visible annoyances
+(the stemmer missing `-es` plurals so "sketches" does not match "sketching"; "call me X"
+depending on the local model). The rest are narrow: a negation guard missing one phrasing,
+an address pattern missing some street suffixes, a blank-check that only strips spaces, a
+config validator that misses exactly one value, an unreachable failure code, and a command
+that cannot round-trip through JSON.
+
+**What is *not* covered, stated so it is not mistaken for coverage:**
+
+- The **application outside the memory layer** — 56,000 lines, 386 API operations, 20-odd
+  feature services — has no tests. `tests/APP_TEST_PLAN.md` surveys and risk-ranks it; the
+  deferred P0 band (profile isolation, the shell sandbox, patch application, workspace
+  paths, credentials) is where I would go next.
+- **Live model behaviour.** Every test scripts the model. That is deliberate — the suite
+  runs in 71 seconds with no Ollama and no network, and a socket guard now proves it — but
+  it means extraction quality is unverified. What is verified is that bad model output
+  cannot corrupt the store.
+- **Seven plan items** remain open, all in the other session's slice.
+
+**The most useful thing this exercise produced** is not the 2,100 tests. It is the eleven
+recorded defects, nine of which were invisible before — including two that had already been
+"fixed" once, with a comment asserting the fix. And the running lesson underneath: seven
+tests across two sessions were green while asserting nothing, every one caught by asking,
+after the green, *which of the ways this could pass actually happened.*
