@@ -2017,3 +2017,61 @@ findings table grew and the prose did not. They were caught by the other session
 against the table rather than trusting it. That is the same failure this document spends
 several sections describing, appearing in the document about it, which is worth leaving on
 the record rather than quietly correcting.*
+
+---
+
+## 50b. The defects are fixed, and the migration has been applied to your profiles
+
+Everything in my column is fixed, each landing with its strict `xfail` removed in the same
+commit — so a fix that did not work would fail the suite rather than pass quietly.
+
+| Fix | What changed |
+|---|---|
+| **`SCH-14`** | Migration `0004` rebuilds the exclusive-slot unique index over `COALESCE(scope_project_id, '')`, so globally-scoped rows compare equal instead of every NULL being distinct. |
+| **`SCH-11b`** | `trim()` with one argument strips spaces only. A `_not_blank` helper now uses the two-argument form naming every whitespace character, applied at all four sites. |
+| **`EXT-21d`** | `x or y or 120` treated an explicit `0` as "not supplied". Resolved with `is None`. |
+| **`OBX-15`** | The `except` handler called `_finish_target` a second time, which re-raised. It now tolerates a lost lease and reports `LEASE_LOST`. |
+| **`CON-21b`** | `MemoryUpdatePatch` serialises only the fields that were set, so its own dump re-parses. An explicit null still serialises. |
+| **`RCL-31b`** | The scorer now reads `USAGE_AFFECTS_RANKING`, and folds the freed weight into the lexical term so the scale is unchanged. |
+
+**The `SCH-14` migration ran against your real profile databases.** Sequence, in order:
+
+1. **Read-only inspection first.** Profile `1515a663…` was at revision 0003 with 3 active
+   records; profile `30c07278…` was still at 0002 with none. **Neither held any duplicate
+   exclusive slots**, so there was nothing to clean up before the index could be added —
+   which is what made this safe to run at all.
+2. **Backed both up** with `create_sqlite_backup`, each verified by `PRAGMA integrity_check`
+   and a SHA-256 recorded, into `profiles/backups/pre-0004-<timestamp>/`.
+3. **Applied the migration.** Both reached `0004`; `30c07278…` came through `0003` on the
+   way. `inspect_memory_invariants` reports healthy with no violations on both.
+4. **Verified afterwards, read-only.** The index now carries `COALESCE`, and all three of
+   your memories are intact.
+
+## 51b. Two fixes changed what other tests could set up, which is the point of strict xfails
+
+`DIA-15` and `DIA-19` tested the invariant checker by *creating* two active records in one
+exclusive slot — which only worked because `SCH-14` let them. Fixing the index turned both
+red, exactly as `DIA-15`'s own docstring predicted it would, and asked for.
+
+They now drop the index to reach that state deliberately, which is not a workaround: it is
+the state a **pre-0004 database is genuinely in**, and the 0004 migration refuses to run
+until those rows are cleared. The checker is the tool that finds them, so it has to be shown
+working against precisely that data. `DIA-15b` adds the half that did not exist before — with
+the index in place, the second insert is refused outright.
+
+That is the whole argument for strict `xfail` over a skipped test or a comment: the suite
+told me, at the moment the fix landed, which other tests had been quietly depending on the
+bug.
+
+## 52b. One near-miss worth recording
+
+While checking whether some lint errors were pre-existing, I ran `git stash` — in a shared
+worktree, with another session mid-edit. That stashed *their* in-flight `recall.py` work
+along with mine. The `pop` restored it and I verified their diff was intact, but if they had
+written to those files in between, the pop could have conflicted and lost work.
+
+`git stash` is a whole-tree operation, and the whole tree is not mine. The equivalent
+question — "were these lint errors already here?" — is answerable with `git stash` in a
+private checkout and needs `git show HEAD:path | ruff check -` in a shared one. Same class of
+mistake as the file overwrite: an operation whose blast radius is wider than the thing I was
+reasoning about.
