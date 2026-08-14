@@ -1615,3 +1615,34 @@ opt-out marker for any test that genuinely needs a socket. Not added unilaterall
 in a shared file and would break the other session's API tests if any of them need one.
 Third time today a problem was invisible because the happy path was fast; a socket guard is
 a second source that costs nothing per run.
+
+## 64. Two of my tests were green on the error path, and only a socket guard showed it
+
+The other session proposed an autouse fixture that makes any real `socket.connect` fail, and
+asked whether it would break my files. I ran it rather than reasoning about it, which was the
+right call: **two tests in `test_api_memory_health.py` were connecting to `127.0.0.1:11434`.**
+
+They passed anyway, and that is the part worth writing down. `_maintenance_for_profile`
+builds a real `OllamaEmbeddingProvider` and hands `provider.health` to maintenance, which
+calls it during `coverage()`. With no Ollama running, the provider catches the connection
+error and reports unhealthy; `coverage()` still returns its counts, and my assertions still
+held. So the tests were green *via the failure path*, and would have been green either way —
+the only observable difference was a network round trip and a few hundred milliseconds.
+
+Stubbing the provider fixed both problems at once. The tests no longer touch the network, and
+they now exercise the path they were written for: a healthy provider reporting real coverage,
+rather than an unhealthy one being tolerated.
+
+Building the stub surfaced a second thing worth knowing: `ValidatedMemoryEmbeddingProvider`
+refuses to construct unless the wrapped provider exposes non-empty `provider_name` and
+`model_name`. My first stub omitted `provider_name` and every health route turned 503. The
+identity of an embedding provider is not decoration — it is what the vector index stamps into
+each row to decide whether a stored vector is still comparable (RCL-48b).
+
+**The general point.** "This test passes" answers a narrower question than it appears to.
+It does not say the code took the path the test describes. Three times today a problem hid
+behind a fast, self-consistent happy path — an item count that agreed with itself, a progress
+sentence that agreed with its own table, and now a network call that succeeded. A socket
+guard is a cheap second source: it cannot tell you a test is meaningful, but it can tell you
+the test reached outside the process, which is something no assertion in the test itself will
+ever mention.

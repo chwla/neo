@@ -42,11 +42,42 @@ def _call(client: TestClient, method: str, path: str):
     return client.post(path, json={})
 
 
+class StubEmbeddingProvider:
+    """Stands in for `OllamaEmbeddingProvider` so no test opens a socket.
+
+    `_maintenance_for_profile` builds a real provider and hands `provider.health`
+    to maintenance, which calls it during `coverage()`. That is an HTTP GET to
+    the configured Ollama endpoint — so without this, two tests in this file
+    reached out to `127.0.0.1:11434`, and their result depended on whether a
+    model server happened to be running.
+
+    They still *passed* either way, because the provider swallows connection
+    errors and reports unhealthy. That is the dangerous shape: green on the
+    error path, and no signal that the intended path was never taken.
+    """
+
+    # `ValidatedMemoryEmbeddingProvider` reads both off the wrapped provider and
+    # refuses to construct without them.
+    provider_name = "stub"
+
+    def __init__(self, *, model_name: str = "stub-embed", base_url: str = "", timeout: float = 1.0):
+        self.model_name = model_name
+        self.base_url = base_url
+        self.timeout = timeout
+
+    def embed(self, text: str) -> list[float]:
+        return [0.1] * 8
+
+    def health(self) -> bool:
+        return True
+
+
 @pytest.fixture
 def profile(tmp_path, monkeypatch):
     """A guest profile whose database lives entirely under tmp_path."""
 
     factory._verified_memory_schemas.clear()
+    monkeypatch.setattr(health_routes, "OllamaEmbeddingProvider", StubEmbeddingProvider)
     root = tmp_path / "neo-data"
     root.mkdir()
     base = get_settings().model_copy(update={"data_dir": str(root)})
