@@ -1315,3 +1315,829 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .set-link-text small { overflow: hidden; color: #4d4d4d; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .set-link-arrow { flex: 0 0 auto; color: #333; font: 12px "JetBrains Mono", monospace; }
 .set-link:hover .set-link-arrow { color: var(--neo-green); }
+
+/* Labelled control for the settings dialogs. */
+.neo-field { display: grid; gap: 5px; margin-bottom: 12px; min-width: 0; }
+.neo-field-label { color: #4a4a4a; font: 600 9px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
+.neo-field > input, .neo-field > select, .neo-field > textarea { width: 100%; min-height: 34px; padding: 7px 9px; font-size: 12px; }
+.neo-field-hint { color: #444; font-size: 10.5px; line-height: 1.5; }
+.llm-number-fields .neo-field, .llm-capabilities .neo-field { margin-bottom: 0; flex: 1 1 140px; }
+
+/* ===========================================================================
+   Settings panels. The form rules above target bare `input`, which stretched
+   every checkbox to 100% x 34px (the large green blocks in LLM Providers and
+   Agents), and two panels hand-roll their dialog without .neo-dialog chrome.
+   =========================================================================== */
+input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0 0 auto; }
+.llm-config-form input[type="checkbox"],
+.agent-definition-form input[type="checkbox"],
+.memory-field input[type="checkbox"],
+.settings-section input[type="checkbox"],
+.llm-config-form input[type="radio"],
+.agent-definition-form input[type="radio"],
+.settings-section input[type="radio"] {
+  width: 14px;
+  min-height: 0;
+  padding: 0;
+}
+
+/* Hand-rolled dialogs (AgentSettings, ToolsSkillsSettings) get the same chrome. */
+.settings-dialog:not(.neo-dialog) {
+  width: min(1120px, 100%);
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .7);
+  padding: 0 24px 24px;
+}
+.modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--neo-line);
+  background: var(--neo-bg);
+}
+.modal-header h2 { margin: 0; color: var(--neo-text); font-size: 14px; font-weight: 600; }
+.modal-header > button {
+  border: 0;
+  background: transparent;
+  padding: 0 4px;
+  color: #555;
+  font: 18px "JetBrains Mono", monospace;
+  line-height: 1;
+}
+.modal-header > button:hover { color: var(--neo-green); }
+
+/* Section shells */
+.settings-section, .llm-config-list, .llm-config-form, .agent-definition-form, .agent-definition-list {
+  border-radius: 2px;
+  padding: 16px;
+}
+.settings-section h3, .llm-config-list h3, .agent-definition-list h3 {
+  margin: 0 0 10px;
+  color: #4a4a4a;
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.settings-section h3 + .agent-definition-list, .settings-section h3 + .llm-config-list { margin-top: 8px; }
+.dialog-caption { margin: 10px 0 0; color: #555; font-size: 12px; line-height: 1.6; }
+.settings-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 10px; }
+
+/* Action buttons inside panels, without touching list rows or .neo-button. */
+.settings-actions button,
+.dialog-actions button,
+.llm-card-actions button,
+.settings-section > button,
+.settings-section > form > button,
+.agent-definition-form > button,
+.llm-config-form > button {
+  min-height: 30px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: transparent;
+  padding: 0 12px;
+  color: #8a8a8a;
+  font: 9.5px "JetBrains Mono", monospace;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.settings-actions button:hover:not(:disabled),
+.dialog-actions button:hover:not(:disabled),
+.llm-card-actions button:hover:not(:disabled),
+.settings-section > button:hover:not(:disabled),
+.settings-section > form > button:hover:not(:disabled),
+.agent-definition-form > button:hover:not(:disabled),
+.llm-config-form > button:hover:not(:disabled) {
+  border-color: var(--neo-green);
+  color: var(--neo-green);
+}
+
+/* Stacked list rows: <button><strong/><span/><small/></button> */
+.agent-definition-list, .llm-config-list, .agentic-run-list { display: grid; gap: 3px; }
+.agent-definition-list > button,
+.llm-config-list > button,
+.agentic-run-list > button,
+.llm-model-row {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  border: 1px solid var(--neo-line);
+  border-left: 2px solid transparent;
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 9px 11px;
+  text-align: left;
+}
+.agent-definition-list > button:hover,
+.llm-config-list > button:hover,
+.agentic-run-list > button:hover,
+.llm-model-row:hover { border-left-color: var(--neo-green); background: rgba(255, 255, 255, .02); }
+.agent-definition-list > button > strong,
+.llm-config-list > button > strong,
+.agentic-run-list > button > strong { color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
+.agent-definition-list > button > span,
+.llm-config-list > button > span,
+.agentic-run-list > button > span { color: #5f5f5f; font-size: 11.5px; line-height: 1.5; }
+.agent-definition-list > button > small,
+.llm-config-list > button > small,
+.agentic-run-list > button > small { color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; letter-spacing: .05em; }
+.agent-definition-list > button.disabled { opacity: .5; }
+.agent-definition-list > p, .llm-config-list > p { margin: 0; color: #3f3f3f; font-size: 11.5px; }
+
+/* Checkbox rows read as one line, not a block with a floating box. */
+.llm-enabled-toggle, .llm-capabilities label, .agent-permission-row, .settings-section label.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8a8a8a;
+  font-size: 11.5px;
+}
+.llm-capabilities { gap: 14px; }
+.llm-number-fields > * { flex: 1 1 140px; }
+
+/* Provider/model/route cards */
+.llm-config-card { margin: 0 0 6px; border: 1px solid var(--neo-line); border-left: 2px solid transparent; border-bottom: 1px solid var(--neo-line); border-radius: 2px; background: var(--neo-bg); padding: 11px; }
+.llm-config-card.active { border-left-color: var(--neo-green); padding-left: 11px; }
+.llm-config-title strong { color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
+.llm-route-row { gap: 10px; }
+.llm-route-row > span:first-child, .llm-route-row > strong:first-child { color: #8a8a8a; font: 10px "JetBrains Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
+
+/* A label wrapping a checkbox is one line, not a stacked grid cell. */
+.agent-definition-form label:has(> input[type="checkbox"]),
+.llm-config-form label:has(> input[type="checkbox"]),
+.settings-section label:has(> input[type="checkbox"]),
+.agent-permissions label:has(> input[type="checkbox"]),
+.memory-field:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8a8a8a;
+  font-size: 11.5px;
+}
+
+.agent-permissions {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  padding: 12px 14px;
+}
+.agent-permissions legend {
+  padding: 0 6px;
+  color: #4a4a4a;
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.agent-permissions .task-help { margin: 0 0 4px; color: #4a4a4a; font-size: 11px; line-height: 1.5; }
+
+/* Lists fill from the top when their column is stretched by a taller sibling. */
+.agent-definition-list, .llm-config-list, .agentic-run-list { align-content: start; }
+.llm-settings-layout > *, .agent-settings-grid > *, .tools-settings-grid > * { align-self: start; }
+
+/* --- password field with reveal toggle ----------------------------------- */
+.password-field { display: grid; gap: 5px; min-width: 0; }
+.password-field-label { color: #4a4a4a; font: 600 9px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
+.password-field-control { position: relative; display: flex; align-items: center; }
+.password-field-control input { width: 100%; min-height: 36px; padding: 8px 38px 8px 10px; }
+.password-reveal {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: #4a4a4a;
+}
+.password-reveal svg { width: 15px; height: 15px; }
+.password-reveal:hover { color: var(--neo-green); }
+.password-reveal[aria-pressed="true"] { color: var(--neo-green); }
+.password-field-hint { color: #444; font-size: 10.5px; }
+.profile-form .password-field-label { color: #777; font-size: 12px; font-family: inherit; letter-spacing: 0; text-transform: none; font-weight: 400; }
+
+/* --- account settings ---------------------------------------------------- */
+.account-dialog { width: min(560px, 100%); }
+.account-section { display: grid; gap: 12px; margin-top: 14px; }
+.account-identity { display: flex; align-items: center; gap: 14px; }
+.account-avatar {
+  display: grid;
+  width: 60px;
+  height: 60px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  object-fit: cover;
+  color: var(--neo-green);
+  font: 600 18px "JetBrains Mono", monospace;
+}
+.account-identity-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.account-identity-actions button {
+  min-height: 28px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: transparent;
+  padding: 0 11px;
+  color: #8a8a8a;
+  font: 9.5px "JetBrains Mono", monospace;
+  letter-spacing: .06em;
+}
+.account-identity-actions button:hover:not(:disabled) { border-color: var(--neo-green); color: var(--neo-green); }
+.account-identity-actions small { flex-basis: 100%; color: #444; font-size: 10.5px; }
+.account-section .ws-save { justify-self: start; padding: 0 16px; }
+
+/* --- chat attachments ---------------------------------------------------- */
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 8px; }
+.chat-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 260px;
+  border: 1px solid var(--neo-line-bright);
+  border-left: 2px solid var(--neo-green);
+  border-radius: 2px;
+  background: var(--neo-panel);
+  padding: 5px 8px;
+  color: #b5b5b5;
+  font-size: 11.5px;
+}
+.chat-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-attachment small { flex: 0 0 auto; color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
+.chat-attachment button { border: 0; background: transparent; padding: 0 2px; color: #555; font-size: 13px; line-height: 1; }
+.chat-attachment button:hover { color: var(--neo-danger); }
+.chat-attach-error { margin-bottom: 8px; border-left: 2px solid var(--neo-danger); background: #160d0d; padding: 7px 9px; color: #d97974; font-size: 11px; }
+.chat-attach-button {
+  display: grid;
+  width: 34px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  align-self: flex-end;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: #4a4a4a;
+  transition: color .12s ease, background .12s ease;
+}
+.chat-attach-button svg { width: 15px; height: 15px; }
+.chat-attach-button:hover:not(:disabled) { background: rgba(57, 255, 20, .08); color: var(--neo-green); }
+.chat-attach-button:disabled { opacity: .4; }
+
+/* ===========================================================================
+   Panel interiors. These components shipped with structural class names that
+   had no CSS at all, so they rendered as raw 16px text with everything running
+   together. Selectors are explicit (no [class$=]) to keep the .ws-/.nw- systems
+   and the redesigned pages untouched.
+   =========================================================================== */
+
+/* --- shared: headers, eyebrows, headings -------------------------------- */
+.connector-modal-header, .provider-runtime-header, .agentic-header,
+.code-index-header, .agent-runs-header, .artifact-viewer-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.connector-eyebrow, .settings-kicker {
+  margin: 0 0 4px;
+  color: var(--neo-green);
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.connector-modal-header h2 { margin: 0 0 4px; color: var(--neo-text); font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.connector-modal-header > div > p:last-child { margin: 0; color: #555; font-size: 12px; line-height: 1.5; }
+.connector-section-heading, .connector-call-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 20px 0 10px;
+  border-bottom: 1px solid var(--neo-line);
+  padding-bottom: 8px;
+}
+.connector-section-heading.compact { margin-top: 14px; }
+.connector-section-heading h3, .connector-section-heading h4,
+.connector-call-heading h3, .connector-call-heading h4 {
+  margin: 0;
+  color: #cfcfcf;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.connector-section-heading p, .connector-call-heading p { margin: 2px 0 0; color: #4f4f4f; font-size: 11px; }
+.recovery-title, .test-runner-title, .git-title {
+  margin: 0 0 10px;
+  color: #4a4a4a;
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+/* --- shared: tabs -------------------------------------------------------- */
+.connector-tabs, .code-index-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--neo-line);
+  margin-bottom: 14px;
+}
+.connector-tabs button, .code-index-tabs button {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 0 13px;
+  color: #5a5a5a;
+  font: 10px "JetBrains Mono", monospace;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.connector-tabs button:hover, .code-index-tabs button:hover { color: #aaa; }
+.connector-tabs button.active, .code-index-tabs button.active { border-bottom-color: var(--neo-green); color: var(--neo-green); }
+.connector-tabs button > span {
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .06);
+  padding: 1px 5px;
+  font-size: 9px;
+}
+
+/* --- shared: two-column layouts ----------------------------------------- */
+.connector-layout, .connector-skills-layout, .test-runner-grid,
+.provider-runtime-grid, .agentic-grid, .agentic-detail-grid, .patch-snapshot-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+.agentic-grid, .patch-snapshot-grid, .provider-runtime-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.connector-form-grid, .connector-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.connector-field-wide { grid-column: 1 / -1; }
+
+/* --- shared: selectable side lists -------------------------------------- */
+.connector-list, .connector-tool-list, .connector-advanced-list, .connector-call-list,
+.agent-run-list, .agent-step-list, .artifact-list, .patch-application-list,
+.patch-file-list, .git-history, .git-operation-history, .recovery-events,
+.test-command, .code-index-results, .memory-results, .coding-agent-runs {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+}
+.connector-list > button, .connector-tool-list > *, .connector-advanced-list > *,
+.connector-call-list > *, .agent-run-list > button, .agent-step-list > button,
+.artifact-list > button, .patch-application-list > button, .patch-file-list > *,
+.git-history > *, .git-operation-history > *, .recovery-events > *,
+.code-index-results > button, .memory-results > *, .coding-agent-runs > button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--neo-line);
+  border-left: 2px solid transparent;
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 9px 11px;
+  color: #a5a5a5;
+  font-size: 12px;
+  text-align: left;
+}
+.connector-list > button:hover, .agent-run-list > button:hover, .artifact-list > button:hover,
+.patch-application-list > button:hover, .code-index-results > button:hover,
+.agent-step-list > button:hover, .coding-agent-runs > button:hover {
+  border-left-color: var(--neo-green);
+  background: rgba(255, 255, 255, .02);
+  color: #ddd;
+}
+.connector-list > button.selected, .agent-run-list > button.selected,
+.artifact-list > button.selected, .agent-step-list > button.selected {
+  border-color: var(--neo-line-bright);
+  border-left-color: var(--neo-green);
+  background: rgba(57, 255, 20, .05);
+}
+.connector-list > button > span:nth-child(2),
+.connector-tool-list > * > span:first-child { display: grid; min-width: 0; flex: 1; gap: 3px; }
+.connector-list strong, .connector-tool-list strong, .agent-run-list strong,
+.artifact-list strong, .patch-application-list strong, .code-index-results strong {
+  overflow: hidden;
+  color: #cfcfcf;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-list small, .connector-tool-list small, .agent-run-list small,
+.artifact-list small, .patch-application-list small, .code-index-results small {
+  color: var(--neo-faint);
+  font: 9px "JetBrains Mono", monospace;
+  letter-spacing: .04em;
+}
+.connector-tool-id { color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
+.connector-empty, .connector-help, .connector-safety-note {
+  margin: 0 0 10px;
+  color: #4a4a4a;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* --- shared: state dots and badges -------------------------------------- */
+.connector-state-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #3a3a3a;
+}
+.connector-state-dot.ready { background: var(--neo-green); box-shadow: 0 0 6px rgba(57, 255, 20, .5); }
+.connector-state-dot.error { background: var(--neo-danger); }
+.connector-state-dot.disabled { background: #333; }
+.connector-badge, .test-status, .git-status, .coding-agent-status,
+.patch-application-status, .git-checkpoint-status, .connector-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  padding: 2px 7px;
+  color: #7a7a7a;
+  font: 9px "JetBrains Mono", monospace;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.connector-badge.success, .test-status.passed, .git-status.clean { border-color: rgba(57, 255, 20, .32); color: var(--neo-green); }
+.connector-badge.danger, .test-status.failed { border-color: rgba(255, 59, 48, .35); color: #d97974; }
+.connector-badge.warning, .test-status.running { border-color: rgba(224, 168, 0, .35); color: #d9a441; }
+
+/* --- shared: toolbars, rows, detail panes -------------------------------- */
+.connector-toolbar, .agent-run-toolbar, .connector-title-row, .provider-row, .test-run-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.connector-toolbar > div:first-child { display: grid; gap: 3px; }
+.connector-toolbar strong { color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
+.connector-toolbar span { color: #4f4f4f; font-size: 11px; }
+.connector-detail, .connector-detail-hero, .connector-detail-section, .agentic-detail,
+.agentic-summary, .agentic-step-detail, .bundle-detail, .coding-agent-detail,
+.coding-agent-summary, .agentic-coding-summary, .git-checkpoint-detail,
+.patch-application-detail, .test-run-detail, .recovery-summary, .recovery-panel,
+.artifacts-panel, .code-index-panel, .symbol-awareness-panel, .lsp-panel,
+.provider-card, .connector-credential-summary, .related-memories, .memory-retrieval,
+.patch-applications, .test-runner, .git-checkpoints, .agentic-workspace,
+.connector-approval-page, .connector-settings, .connector-wizard {
+  min-width: 0;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-panel);
+  padding: 14px 16px;
+  color: var(--neo-body);
+}
+.connector-detail-hero { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.connector-detail-hero h3 { margin: 0 0 3px; color: var(--neo-text); font-size: 15px; font-weight: 600; }
+.connector-detail-hero p { margin: 0; color: #555; font-size: 11.5px; }
+.agentic-workspace, .patch-applications, .test-runner, .git-checkpoints,
+.recovery-panel, .artifacts-panel, .code-index-panel, .symbol-awareness-panel,
+.lsp-panel, .related-memories, .memory-retrieval { margin-bottom: 16px; }
+
+/* --- shared: buttons ----------------------------------------------------- */
+.connector-button, .coding-agent-buttons button, .coding-agent-action,
+.connector-inline-actions button, .connector-form-actions button,
+.connector-tool-controls button, .patch-apply-controls button,
+.agent-approval-actions button, .task-patch-action {
+  min-height: 30px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: transparent;
+  padding: 0 12px;
+  color: #8a8a8a;
+  font: 9.5px "JetBrains Mono", monospace;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.connector-button:hover:not(:disabled), .coding-agent-buttons button:hover:not(:disabled),
+.connector-inline-actions button:hover:not(:disabled),
+.connector-form-actions button:hover:not(:disabled),
+.connector-tool-controls button:hover:not(:disabled),
+.patch-apply-controls button:hover:not(:disabled),
+.agent-approval-actions button:hover:not(:disabled) {
+  border-color: var(--neo-green);
+  color: var(--neo-green);
+}
+.connector-button.primary {
+  border-color: rgba(57, 255, 20, .35);
+  background: rgba(57, 255, 20, .09);
+  color: var(--neo-green);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.connector-button.primary:hover:not(:disabled) { border-color: var(--neo-green); background: rgba(57, 255, 20, .16); }
+.connector-button.danger:hover:not(:disabled) { border-color: rgba(255, 59, 48, .4); color: var(--neo-danger); }
+.coding-agent-buttons, .connector-inline-actions, .connector-form-actions,
+.connector-tool-controls, .patch-apply-controls, .agent-approval-actions,
+.connector-disclosure { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+
+/* --- shared: forms ------------------------------------------------------- */
+.connector-auth-form, .git-checkpoint-form, .test-command-form, .agentic-start,
+.connector-tool-picker, .connector-choice { display: grid; gap: 10px; }
+.connector-choice-grid > button, .connector-choice {
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 12px;
+  text-align: left;
+}
+.connector-choice-grid > button:hover { border-color: var(--neo-green); }
+.connector-choice-grid > button strong { display: block; margin-bottom: 4px; color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
+.connector-choice-grid > button small { color: #4f4f4f; font-size: 11px; line-height: 1.5; }
+
+/* --- shared: notices, errors, code ------------------------------------- */
+.connector-notice, .settings-error, .connector-call-error, .chat-agent-error, .agent-failure {
+  border-left: 2px solid var(--neo-danger);
+  border-radius: 2px;
+  background: #160d0d;
+  padding: 9px 11px;
+  color: #d97974;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.connector-notice { border-left-color: rgba(57, 255, 20, .4); background: rgba(57, 255, 20, .05); color: #8fbf80; }
+.git-diff, .patch-file-diffs, .code-index-stats, .agentic-plan, .agent-artifacts,
+.git-changed-files, .patch-snapshot-downloads, .test-suggestions, .connector-tab-content {
+  min-width: 0;
+}
+.git-diff pre, .patch-file-diffs pre, .agentic-plan pre {
+  overflow: auto;
+  max-height: 380px;
+  border: 1px solid var(--neo-line);
+  border-left: 2px solid var(--neo-green);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 12px 14px;
+  color: #ccc;
+  font: 11.5px/1.6 "JetBrains Mono", monospace;
+}
+.agentic-phase, .agentic-timeline, .agent-run-objective, .agent-message,
+.task-completion-meta, .task-card-due, .task-card-updated, .connector-tool-id {
+  color: #5f5f5f;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.agentic-timeline { display: grid; gap: 6px; }
+
+@media (max-width: 900px) {
+  .connector-layout, .connector-skills-layout, .test-runner-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Labels that wrap a control stack their text above it. Checkbox and radio
+   labels stay on one line (handled by the :has rules above). */
+.neo-dialog label:has(> input:not([type="checkbox"]):not([type="radio"])),
+.neo-dialog label:has(> select),
+.neo-dialog label:has(> textarea),
+.settings-dialog label:has(> input:not([type="checkbox"]):not([type="radio"])),
+.settings-dialog label:has(> select),
+.settings-dialog label:has(> textarea),
+.settings-section label:has(> input:not([type="checkbox"]):not([type="radio"])),
+.settings-section label:has(> select),
+.settings-section label:has(> textarea),
+.agentic-start label, .connector-auth-form label, .test-command-form label,
+.git-checkpoint-form label, .connector-tool-picker label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: #4a4a4a;
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.neo-dialog label > input, .neo-dialog label > select, .neo-dialog label > textarea,
+.settings-dialog label > input, .settings-dialog label > select, .settings-dialog label > textarea,
+.settings-section label > input, .settings-section label > select, .settings-section label > textarea {
+  width: 100%;
+  min-height: 34px;
+  color: var(--neo-text);
+  font: 12px inherit;
+  font-family: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.neo-dialog label > textarea, .settings-dialog label > textarea, .settings-section label > textarea {
+  min-height: 72px;
+  padding: 9px 10px;
+  line-height: 1.6;
+  resize: vertical;
+}
+/* The checkbox exception has to outrank the stacking rule above. */
+.neo-dialog label:has(> input[type="checkbox"]),
+.settings-dialog label:has(> input[type="checkbox"]),
+.settings-section label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8a8a8a;
+  font: 11.5px "Space Grotesk", Inter, sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Panel body text defaults. Without these, bare <p>/<li>/<span> inherit the 16px
+   document size and end up louder than the headings above them. */
+.settings-section, .connector-detail, .connector-detail-section, .agentic-detail,
+.agentic-summary, .agentic-step-detail, .bundle-detail, .coding-agent-detail,
+.coding-agent-summary, .git-checkpoint-detail, .patch-application-detail,
+.test-run-detail, .recovery-summary, .recovery-panel, .artifacts-panel,
+.code-index-panel, .symbol-awareness-panel, .lsp-panel, .provider-card,
+.related-memories, .memory-retrieval, .patch-applications, .test-runner,
+.git-checkpoints, .agentic-workspace, .connector-approval-page, .connector-settings {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.settings-section > h2, .agentic-workspace h2, .connector-approval-page h2 {
+  margin: 0 0 4px;
+  color: var(--neo-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-section p, .agentic-workspace p, .bundle-detail p, .connector-detail p,
+.recovery-panel p, .artifacts-panel p, .test-runner p, .git-checkpoints p,
+.patch-applications p, .code-index-panel p, .lsp-panel p, .related-memories p,
+.memory-retrieval p, .provider-card p, .coding-agent-detail p {
+  margin: 0 0 8px;
+  color: #5f5f5f;
+  font-size: 11.5px;
+}
+.settings-section ul, .settings-section ol, .bundle-detail ul, .recovery-panel ul,
+.artifacts-panel ul, .test-runner ul, .git-checkpoints ul, .patch-applications ul {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.settings-section li, .bundle-detail li, .recovery-panel li, .artifacts-panel li,
+.test-runner li, .git-checkpoints li, .patch-applications li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 8px 10px;
+  color: #9a9a9a;
+  font-size: 11.5px;
+}
+.settings-section li > button:first-child {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #cfcfcf;
+  font-size: 12px;
+  text-align: left;
+}
+.settings-section li > button:first-child:hover { color: var(--neo-green); }
+.settings-section li button:not(:first-child) {
+  min-height: 24px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: transparent;
+  padding: 0 8px;
+  color: #8a8a8a;
+  font: 9px "JetBrains Mono", monospace;
+  letter-spacing: .05em;
+}
+.settings-section li button:not(:first-child):hover { border-color: var(--neo-green); color: var(--neo-green); }
+.settings-section pre, .bundle-detail pre, .connector-detail pre, .agentic-detail pre {
+  overflow: auto;
+  max-height: 360px;
+  border: 1px solid var(--neo-line);
+  border-left: 2px solid var(--neo-green);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 12px 14px;
+  color: #ccc;
+  font: 11.5px/1.6 "JetBrains Mono", monospace;
+  white-space: pre-wrap;
+}
+.settings-status { color: #7a9a70; font-size: 11.5px; }
+.task-help { color: #4a4a4a; font-size: 11px; line-height: 1.5; }
+
+/* ---------------------------------------------------------------------------
+   Dialog-wide catch-alls. Panels use many different root class names, so rather
+   than chase each one, set sane defaults for any bare element inside a dialog
+   body. Header rows and already-classed elements are excluded.
+   --------------------------------------------------------------------------- */
+.neo-dialog, .settings-dialog { font-size: 12px; line-height: 1.6; }
+.neo-dialog h2, .settings-dialog h2 {
+  margin: 0 0 4px;
+  color: var(--neo-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.neo-dialog h3, .settings-dialog h3,
+.neo-dialog h4, .settings-dialog h4 {
+  margin: 18px 0 9px;
+  color: #4a4a4a;
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.neo-dialog h3:first-child, .settings-dialog h3:first-child { margin-top: 0; }
+.neo-dialog p, .settings-dialog p { color: #5f5f5f; font-size: 11.5px; }
+.neo-dialog small, .settings-dialog small { color: var(--neo-faint); font-size: 10.5px; }
+
+/* Buttons that shipped with no class at all render as compact actions. The
+   dialog close button lives inside a header row, so it is excluded. */
+.neo-dialog :not(.dialog-title-row):not(.modal-header) > button:not([class]),
+.settings-dialog :not(.dialog-title-row):not(.modal-header) > button:not([class]) {
+  min-height: 28px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: transparent;
+  padding: 0 11px;
+  color: #8a8a8a;
+  font: 9.5px "JetBrains Mono", monospace;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.neo-dialog :not(.dialog-title-row):not(.modal-header) > button:not([class]):hover:not(:disabled),
+.settings-dialog :not(.dialog-title-row):not(.modal-header) > button:not([class]):hover:not(:disabled) {
+  border-color: var(--neo-green);
+  color: var(--neo-green);
+}
+
+/* Evaluation harness and provider runtime shells. */
+.provider-runtime, .provider-runtime-grid, .provider-table { min-width: 0; }
+.provider-runtime-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.provider-card { display: grid; align-content: start; gap: 6px; }
+.provider-card strong { color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
+.provider-table { display: grid; gap: 3px; }
+
+/* Remaining named elements that still had no rule. */
+.profile-unlock-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.profile-unlock-heading h2 { margin: 0 0 3px; color: var(--neo-text); font-size: 18px; }
+.profile-unlock-heading p { margin: 0; color: #555; font-size: 12px; }
+.profile-danger-button { border-color: rgba(255, 59, 48, .45) !important; color: var(--neo-danger) !important; }
+.profile-danger-button:hover:not(:disabled) { background: rgba(255, 59, 48, .1) !important; }
+.profile-card-guest .profile-guest-icon { color: #666; }
+.delete-copy { color: #9a9a9a; font-size: 12.5px; line-height: 1.6; }
+.delete-copy strong { display: block; margin-bottom: 6px; color: var(--neo-text); font-size: 13px; }
+
+.live-thinking-panel { margin: 10px 0 0; border-left: 1px solid rgba(57,255,20,.2); padding: 4px 0 4px 12px; color: #666; font-size: 13px; line-height: 1.6; }
+.live-answer { color: #dedede; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.pending-message-timer { color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
+
+.artifact-viewer, .patch-hash-review, .patch-git-checkpoint, .patch-test-runner,
+.coding-agent-patch, .llm-usage-section, .connector-confirm {
+  min-width: 0;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 12px 14px;
+  font-size: 11.5px;
+}
+.llm-registry-secondary { color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
+.agent-run-button { min-width: 88px; }
+
+.task-linked-list, .task-subtask-list { display: grid; gap: 3px; margin-bottom: 10px; }
+.task-linked-list > *, .task-subtask-list > * {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 8px 10px;
+  color: #a5a5a5;
+  font-size: 11.5px;
+  text-align: left;
+}
+.task-tags-input { width: 100%; min-height: 34px; padding: 7px 9px; }

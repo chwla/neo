@@ -25,6 +25,7 @@ import ProviderRuntime from "./ProviderRuntime.jsx";
 import EvaluationHarness from "./EvaluationHarness.jsx";
 import WorkspaceOrchestration from "./WorkspaceOrchestration.jsx";
 import Continuity from "./Continuity.jsx";
+import AccountSettings from "./AccountSettings.jsx";
 import ProfilePicker from "./ProfilePicker.jsx";
 import MemoryDialog from "./MemoryDialog.jsx";
 import {
@@ -216,6 +217,21 @@ function NavIcon({ name }) {
     <svg className="system-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {(paths[name] || paths.chat).map((path) => <path d={path} key={path} />)}
     </svg>
+  );
+}
+
+/**
+ * Labelled form control used across the settings dialogs. It was referenced in
+ * several dialogs but never defined, which made LLM Providers and Web Search
+ * throw `Field is not defined` and blank the whole app.
+ */
+function Field({ label, hint, children }) {
+  return (
+    <label className="neo-field">
+      <span className="neo-field-label">{label}</span>
+      {children}
+      {hint ? <small className="neo-field-hint">{hint}</small> : null}
+    </label>
   );
 }
 
@@ -604,6 +620,13 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
   );
 }
 
+function formatFileSize(value) {
+  if (!Number.isFinite(value)) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function ChatComposer({
   disabled,
   value,
@@ -633,8 +656,14 @@ function ChatComposer({
   onToggleAgentDetails,
   onSaveAgentRun,
   onRefreshAgentRun,
+  attachments = [],
+  onAttachFiles,
+  onRemoveAttachment,
+  attaching = false,
+  attachError = "",
 }) {
   const textareaRef = useRef(null);
+  const attachInputRef = useRef(null);
   const [showCodingWorkbench, setShowCodingWorkbench] = useState(false);
 
   const resizeComposer = useCallback(() => {
@@ -709,7 +738,57 @@ function ChatComposer({
             </div>
           )}
         </div>
+        {mode === "chatbot" && attachments.length > 0 ? (
+          <div className="chat-attachments">
+            {attachments.map((file) => (
+              <span className="chat-attachment" key={file.id}>
+                <span className="chat-attachment-name">
+                  {file.metadata?.relative_path || file.display_name}
+                </span>
+                <small>{formatFileSize(file.size_bytes)}</small>
+                <button
+                  type="button"
+                  onClick={() => onRemoveAttachment?.(file.id)}
+                  aria-label={`Remove ${file.display_name}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {mode === "chatbot" && attachError ? (
+          <div className="chat-attach-error">{attachError}</div>
+        ) : null}
         <form className="chat-input-form" onSubmit={onSubmit}>
+          {mode === "chatbot" ? (
+            <>
+              <input
+                ref={attachInputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(event) => {
+                  const picked = Array.from(event.target.files || []);
+                  event.target.value = "";
+                  if (picked.length) onAttachFiles?.(picked);
+                }}
+              />
+              <button
+                type="button"
+                className="chat-attach-button"
+                onClick={() => attachInputRef.current?.click()}
+                disabled={disabled || attaching}
+                title="Attach files"
+                aria-label="Attach files"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
+                </svg>
+              </button>
+            </>
+          ) : null}
           <textarea
             ref={textareaRef}
             value={value}
@@ -1279,7 +1358,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -1318,6 +1397,14 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
         ["Workspace Retrieval", "Searchable workspace history, scoring, and audit", onOpenMemoryRetrieval],
         ["Research", "Sources and research sessions", onOpenResearch],
         ["Notes", "Saved working notes", onOpenNotes],
+      ],
+    },
+    {
+      title: "Account",
+      icon: "shield",
+      description: "Your name, picture, password, and session.",
+      items: [
+        ["Account", "Name, profile picture, and password", onOpenAccount],
       ],
     },
     {
@@ -1390,13 +1477,17 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
   );
 }
 
-function NeoApp({ profile, onSwitchProfile }) {
+function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
   const [messages, setMessages] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  const [chatAttachments, setChatAttachments] = useState([]);
+  const [attachingFiles, setAttachingFiles] = useState(false);
+  const [attachError, setAttachError] = useState("");
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showProviderRuntime, setShowProviderRuntime] = useState(false);
   const [showEvaluationHarness, setShowEvaluationHarness] = useState(false);
@@ -1997,14 +2088,56 @@ function NeoApp({ profile, onSwitchProfile }) {
     }
   }
 
+  async function handleAttachFiles(files) {
+    setAttachingFiles(true);
+    setAttachError("");
+    try {
+      const uploaded = [];
+      for (const file of files) {
+        const data = await api.uploadFile(file);
+        uploaded.push(data.file);
+      }
+      setChatAttachments((current) => [...current, ...uploaded]);
+    } catch (error) {
+      setAttachError(errorMessage(error));
+    } finally {
+      setAttachingFiles(false);
+    }
+  }
+
+  function handleRemoveAttachment(fileId) {
+    setChatAttachments((current) => current.filter((file) => file.id !== fileId));
+  }
+
+  /**
+   * The chat API takes a single prompt string, so attached files travel as a bounded
+   * context block appended to the message. The upload itself is a real workspace file,
+   * so it stays available on the Files page afterwards.
+   */
+  function promptWithAttachments(prompt) {
+    if (!chatAttachments.length) return prompt;
+    const LIMIT = 4000;
+    const blocks = chatAttachments.map((file) => {
+      const name = file.metadata?.relative_path || file.display_name;
+      const text = file.extracted_text || "";
+      if (!text) return `--- Attached file: ${name} (no extractable text) ---`;
+      const clipped = text.slice(0, LIMIT);
+      return `--- Attached file: ${name} ---\n${clipped}${text.length > LIMIT ? "\n…(truncated)" : ""}`;
+    });
+    return `${prompt}\n\n${blocks.join("\n\n")}`;
+  }
+
   async function handleSendMessage(event) {
     event.preventDefault();
     const prompt = composerValue.trim();
     if (!prompt || sending) {
       return;
     }
+    const outgoing = promptWithAttachments(prompt);
     setComposerValue("");
-    await sendPrompt(prompt);
+    setChatAttachments([]);
+    setAttachError("");
+    await sendPrompt(outgoing);
   }
 
   async function handleStartChatAgent(event) {
@@ -2337,6 +2470,11 @@ function NeoApp({ profile, onSwitchProfile }) {
         </section>
 
         <ChatComposer
+          attachments={chatAttachments}
+          onAttachFiles={handleAttachFiles}
+          onRemoveAttachment={handleRemoveAttachment}
+          attaching={attachingFiles}
+          attachError={attachError}
           value={composerValue}
           onChange={setComposerValue}
           onSubmit={handleComposerSubmit}
@@ -2378,8 +2516,17 @@ function NeoApp({ profile, onSwitchProfile }) {
       </main>
       )}
 
+      {showAccount && (
+        <AccountSettings
+          profile={profile}
+          onProfileUpdated={onProfileUpdated}
+          onClose={() => setShowAccount(false)}
+        />
+      )}
+
       {showSettings && (
         <SettingsDialog
+          onOpenAccount={() => { setShowSettings(false); setShowAccount(true); }}
           onOpenAgentic={() => { setShowSettings(false); setShowAgentic(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
@@ -2517,5 +2664,5 @@ export default function App() {
   if (!profile) {
     return <ProfilePicker onSignedIn={setProfile} />;
   }
-  return <NeoApp profile={profile} onSwitchProfile={switchProfile} />;
+  return <NeoApp profile={profile} onProfileUpdated={setProfile} onSwitchProfile={switchProfile} />;
 }

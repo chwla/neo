@@ -115,6 +115,8 @@ export const api = {
   deleteAccountProfile: (id, password) => request(`/account-profiles/${id}`, { method: "DELETE", body: JSON.stringify({ password }) }),
   createGuestProfile: () => request("/account-profiles/guest", { method: "POST" }),
   endAccountProfileSession: () => request("/account-profiles/session/end", { method: "POST" }),
+  updateAccountProfile: (payload) =>
+    request("/account-profiles/me", { method: "PATCH", body: JSON.stringify(payload) }),
   webSearchPlan: (payload) => request("/web-search/plan", { method: "POST", body: JSON.stringify(payload) }),
   webSearchRun: (payload) => request("/web-search/run", { method: "POST", body: JSON.stringify(payload) }),
   webSearchRuns: () => request("/web-search/runs"),

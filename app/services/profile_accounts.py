@@ -301,11 +301,7 @@ def list_profiles() -> list[dict]:
 
 def create_profile(username: str, password: str, avatar_data: str | None = None) -> dict:
     initialize_profile_registry()
-    username = " ".join(username.split())
-    if not username:
-        raise HTTPException(status_code=422, detail="Username is required.")
-    if len(username) > 48:
-        raise HTTPException(status_code=422, detail="Username must be 48 characters or fewer.")
+    username = _normalize_username(username)
     if len(password) < 4:
         raise HTTPException(status_code=422, detail="Password must contain at least 4 characters.")
     profile_id = str(uuid.uuid4())
@@ -335,6 +331,84 @@ def create_profile(username: str, password: str, avatar_data: str | None = None)
         "avatar_data": avatar_data,
         "is_guest": False,
     }
+
+
+def _normalize_username(username: str) -> str:
+    username = " ".join(username.split())
+    if not username:
+        raise HTTPException(status_code=422, detail="Username is required.")
+    if len(username) > 48:
+        raise HTTPException(status_code=422, detail="Username must be 48 characters or fewer.")
+    return username
+
+
+def update_profile_account(
+    profile_id: str,
+    *,
+    username: str | None = None,
+    avatar_data: str | None = None,
+    clear_avatar: bool = False,
+    current_password: str | None = None,
+    new_password: str | None = None,
+) -> dict:
+    """Update one local account's display details or password.
+
+    A password change always re-verifies the current password; renaming or changing the
+    picture only needs the caller to already hold that profile's session.
+    """
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        row = conn.execute("SELECT * FROM account_profiles WHERE id = ?", (profile_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="That profile no longer exists.")
+
+        updates: dict[str, str | None] = {}
+
+        if username is not None:
+            updates["username"] = _normalize_username(username)
+
+        if clear_avatar:
+            updates["avatar_data"] = None
+        elif avatar_data is not None:
+            updates["avatar_data"] = _validate_avatar(avatar_data)
+
+        if new_password is not None:
+            if not current_password or not _verify_password(
+                current_password, row["password_salt"], row["password_hash"]
+            ):
+                raise HTTPException(
+                    status_code=401, detail="That password does not match this profile."
+                )
+            if len(new_password) < 4:
+                raise HTTPException(
+                    status_code=422, detail="Password must contain at least 4 characters."
+                )
+            salt, digest = _password_parts(new_password)
+            updates["password_salt"] = salt
+            updates["password_hash"] = digest
+
+        if not updates:
+            return public_profile(row)
+
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        try:
+            conn.execute(
+                f"UPDATE account_profiles SET {assignments} WHERE id = ?",
+                (*updates.values(), profile_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(
+                status_code=409, detail="That username is already in use on this device."
+            ) from exc
+
+        updated = conn.execute(
+            "SELECT * FROM account_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        return public_profile(updated)
+    finally:
+        conn.close()
 
 
 def authenticate(profile_id: str, password: str) -> dict:

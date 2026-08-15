@@ -19,6 +19,7 @@ from app.services.profile_accounts import (
     profile_for_session,
     revoke_profile_session,
     revoke_profile_sessions,
+    update_profile_account,
 )
 
 router = APIRouter(prefix="/account-profiles", tags=["account profiles"])
@@ -40,6 +41,16 @@ class UnlockRequest(BaseModel):
 
 class DeleteProfileRequest(UnlockRequest):
     """Password confirmation for irreversible local account deletion."""
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Partial update of the signed-in account. Omitted fields are left unchanged."""
+
+    username: str | None = Field(default=None, max_length=48)
+    avatar_data: str | None = None
+    clear_avatar: bool = False
+    current_password: str | None = Field(default=None, max_length=200)
+    new_password: str | None = Field(default=None, max_length=200)
 
 
 def session_for(request: Request) -> dict | None:
@@ -120,6 +131,44 @@ def remove_profile(
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.status_code = 204
     return response
+
+
+@router.patch("/me")
+def update_current_profile(
+    payload: ProfileUpdateRequest, request: Request, response: Response
+) -> dict:
+    """Edit the signed-in account. Scoped to the session so one profile cannot edit another."""
+    profile = session_for(request)
+    if profile is None:
+        raise HTTPException(status_code=401, detail="authenticated_profile_required")
+    if profile.get("is_guest"):
+        raise HTTPException(
+            status_code=400, detail="Guest sessions cannot be edited. Create a profile first."
+        )
+
+    updated = update_profile_account(
+        profile["id"],
+        username=payload.username,
+        avatar_data=payload.avatar_data,
+        clear_avatar=payload.clear_avatar,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
+
+    if payload.new_password is not None:
+        # A password change signs every other device out; this one keeps working.
+        revoke_profile_sessions(profile["id"])
+        token = create_profile_session(updated)
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            max_age=PERSISTENT_SESSION_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            path="/",
+        )
+    return {"profile": updated}
 
 
 @router.get("/session/current")

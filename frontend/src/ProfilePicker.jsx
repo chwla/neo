@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import PasswordField from "./PasswordField.jsx";
 
 function InitialsAvatar({ profile, large = false }) {
   if (profile.avatar_data) {
@@ -102,7 +103,7 @@ export default function ProfilePicker({ onSignedIn }) {
       {mode === "unlock" && selected && <form className="profile-form" onSubmit={unlock}>
         <button type="button" className="profile-back" onClick={() => setMode("choose")}>← All profiles</button>
         <div className="profile-unlock-heading"><InitialsAvatar profile={selected} large /><div><h2>{selected.username}</h2><p>Enter your password to continue.</p></div></div>
-        <label>Password<input ref={passwordInput} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
+        <PasswordField label="Password" inputRef={passwordInput} value={password} onChange={setPassword} autoComplete="current-password" required />
         <button className="neo-button" type="submit" disabled={busy}>{busy ? "Unlocking…" : "Unlock profile"}</button>
         <button type="button" className="profile-danger-link" onClick={() => { setPassword(""); setError(""); setMode("delete"); }} disabled={busy}>Delete this account</button>
       </form>}
@@ -110,7 +111,7 @@ export default function ProfilePicker({ onSignedIn }) {
       {mode === "delete" && selected && <form className="profile-form" onSubmit={deleteAccount}>
         <button type="button" className="profile-back" onClick={() => { setPassword(""); setMode("unlock"); }}>← Keep account</button>
         <div className="profile-unlock-heading"><InitialsAvatar profile={selected} large /><div><h2>Delete {selected.username}?</h2><p>This permanently removes its chats, memories, files, settings, and local credentials from this device.</p></div></div>
-        <label>Enter password to confirm<input ref={passwordInput} type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
+        <PasswordField label="Enter password to confirm" inputRef={passwordInput} value={password} onChange={setPassword} autoComplete="current-password" required />
         <button className="neo-button profile-danger-button" type="submit" disabled={busy}>{busy ? "Deleting…" : "Delete account permanently"}</button>
       </form>}
 
@@ -119,7 +120,7 @@ export default function ProfilePicker({ onSignedIn }) {
         <h2>Create a profile</h2><p>No email or verification needed. This profile stays only on this device.</p>
         <label className="profile-picture-input"><span>{avatarData ? <img src={avatarData} alt="Selected profile picture" className="profile-avatar profile-avatar-large" /> : "Add picture"}</span><input type="file" accept="image/*" onChange={handleAvatar} /> <em>Optional profile picture</em></label>
         <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" maxLength="48" required /></label>
-        <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength="4" required /><small>Use at least 4 characters.</small></label>
+        <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="new-password" minLength={4} required hint="Use at least 4 characters." />
         <button className="neo-button" type="submit" disabled={busy}>{busy ? "Creating…" : "Create profile"}</button>
       </form>}
     </section>
