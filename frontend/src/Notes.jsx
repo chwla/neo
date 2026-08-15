@@ -1,81 +1,108 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api.js";
 import FileAttachments from "./FileAttachments.jsx";
+import {
+  countWords,
+  formatAbsoluteTime,
+  formatRelativeTime,
+  mergeTags,
+  noteExcerpt,
+  parseTagInput,
+  renderMarkdown,
+} from "./notePresentation.js";
 
-function formatTime(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
+const ICON_PATHS = {
+  pin: ["M9 3h6l-1 6 4 3v2h-5l-1 7-1-7H6v-2l4-3z"],
+  archive: ["M3 5h18v4H3z", "M5 9v10h14V9", "M9 13h6"],
+  trash: ["M4 6h16", "M9 6V4h6v2", "m6 6 1 14h10l1-14"],
+  details: ["M3 4h18v16H3z", "M15 4v16"],
+  preview: ["M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"],
+  write: ["M4 20h4l10-10-4-4L4 16z", "m14 6 4 4"],
+  search: ["M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z", "m20 20-4-4"],
+  plus: ["M12 5v14", "M5 12h14"],
+  back: ["m15 5-7 7 7 7"],
+};
 
-function tagsToText(tags) {
-  return (tags || []).join(", ");
-}
-
-function textToTags(text) {
-  return text
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
+function Icon({ name, className = "" }) {
+  return (
+    <svg
+      className={`nw-icon ${className}`.trim()}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {(ICON_PATHS[name] || []).map((path) => (
+        <path d={path} key={path} />
+      ))}
+    </svg>
+  );
 }
 
 function draftFromNote(note) {
   return {
     title: note?.title || "",
     body: note?.body || "",
-    tagsText: tagsToText(note?.tags || []),
+    tags: [...(note?.tags || [])],
     summary: note?.summary || "",
   };
 }
 
 function noteChanged(draft, note) {
+  const tagsText = draft.tags.join(",");
   if (!note) {
-    return Boolean(draft.title.trim() || draft.body.trim() || draft.tagsText.trim() || draft.summary.trim());
+    return Boolean(draft.title.trim() || draft.body.trim() || tagsText || draft.summary.trim());
   }
   return (
     draft.title !== (note.title || "") ||
     draft.body !== (note.body || "") ||
-    draft.tagsText !== tagsToText(note.tags || []) ||
+    tagsText !== (note.tags || []).join(",") ||
     draft.summary !== (note.summary || "")
   );
 }
 
 export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = null }) {
   const [notes, setNotes] = useState([]);
-  const [tags, setTags] = useState([]);
   const [projects, setProjects] = useState([]);
   const [linkedProjects, setLinkedProjects] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [linkedTasks, setLinkedTasks] = useState([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState("");
-  const [tagFilter, setTagFilter] = useState("");
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedNote, setSelectedNote] = useState(null);
   const [draft, setDraft] = useState(draftFromNote(null));
+  const [tagInput, setTagInput] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [attachProjectId, setAttachProjectId] = useState("");
   const [attachTaskId, setAttachTaskId] = useState("");
-  const [expandedNoteIds, setExpandedNoteIds] = useState(() => new Set());
+  const [showDetails, setShowDetails] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const titleRef = useRef(null);
 
-  const dirty = useMemo(() => noteChanged(draft, isNew ? null : selectedNote), [draft, isNew, selectedNote]);
-
-  const loadTags = useCallback(async () => {
-    const data = await api.notesTags();
-    setTags(data.tags || []);
-  }, []);
+  const dirty = useMemo(
+    () => noteChanged(draft, isNew ? null : selectedNote) || Boolean(tagInput.trim()),
+    [draft, isNew, selectedNote, tagInput],
+  );
+  const editing = Boolean(selectedNote) || isNew;
+  const bodyWords = useMemo(() => countWords(draft.body), [draft.body]);
+  const previewHtml = useMemo(
+    () => (previewing ? renderMarkdown(draft.body) : ""),
+    [draft.body, previewing],
+  );
 
   const loadNotes = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.notesList({
         q: query.trim(),
-        tag: tagFilter,
         includeArchived,
         limit: 75,
       });
@@ -84,7 +111,7 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     } finally {
       setLoading(false);
     }
-  }, [includeArchived, query, tagFilter]);
+  }, [includeArchived, query]);
 
   const loadProjects = useCallback(async () => {
     const data = await api.projectsList({ limit: 100 });
@@ -101,10 +128,6 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
   }, [loadNotes]);
 
   useEffect(() => {
-    loadTags().catch(() => {});
-  }, [loadTags]);
-
-  useEffect(() => {
     loadProjects().catch(() => {});
   }, [loadProjects]);
 
@@ -119,6 +142,19 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     openExistingNote(initialNoteId);
   }, [initialNoteId]);
 
+  useEffect(() => {
+    function onKeyDown(event) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (editing && dirty && draft.body.trim()) {
+          saveNote();
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   function canLeaveCurrent() {
     return !dirty || window.confirm("Discard unsaved changes?");
   }
@@ -130,12 +166,18 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     setError("");
     setStatus("");
     try {
-      const [data, projectData, taskData] = await Promise.all([api.note(noteId), api.noteProjects(noteId), api.noteTasks(noteId)]);
+      const [data, projectData, taskData] = await Promise.all([
+        api.note(noteId),
+        api.noteProjects(noteId),
+        api.noteTasks(noteId),
+      ]);
       setSelectedNote(data.note);
       setLinkedProjects(projectData.projects || []);
       setLinkedTasks(taskData.tasks || []);
       setDraft(draftFromNote(data.note));
+      setTagInput("");
       setIsNew(false);
+      setPreviewing(false);
       setAttachProjectId("");
       setAttachTaskId("");
     } catch (err) {
@@ -151,17 +193,21 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     setLinkedProjects([]);
     setLinkedTasks([]);
     setDraft(draftFromNote(null));
+    setTagInput("");
     setIsNew(true);
+    setPreviewing(false);
     setStatus("Unsaved changes");
     setError("");
+    window.requestAnimationFrame(() => titleRef.current?.focus());
   }
 
   async function saveNote() {
     setError("");
+    const tagList = mergeTags(draft.tags, parseTagInput(tagInput));
     const payload = {
       title: draft.title,
       body: draft.body,
-      tags: textToTags(draft.tagsText),
+      tags: tagList,
       summary: draft.summary || null,
       source_type: selectedNote?.source_type || "manual",
       source_id: selectedNote?.source_id || null,
@@ -175,13 +221,17 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
         ? await api.createNote(payload)
         : await api.updateNote(selectedNote.id, payload);
       setSelectedNote(data.note);
-      const [projectData, taskData] = await Promise.all([api.noteProjects(data.note.id), api.noteTasks(data.note.id)]);
+      const [projectData, taskData] = await Promise.all([
+        api.noteProjects(data.note.id),
+        api.noteTasks(data.note.id),
+      ]);
       setLinkedProjects(projectData.projects || []);
       setLinkedTasks(taskData.tasks || []);
       setDraft(draftFromNote(data.note));
+      setTagInput("");
       setIsNew(false);
       setStatus("Saved");
-      await Promise.all([loadNotes(), loadTags()]);
+      await loadNotes();
     } catch (err) {
       setStatus("Unsaved changes");
       setError(err.message || "Failed to save note.");
@@ -224,9 +274,10 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
       setLinkedProjects([]);
       setLinkedTasks([]);
       setDraft(draftFromNote(null));
+      setTagInput("");
       setIsNew(false);
       setStatus("");
-      await Promise.all([loadNotes(), loadTags()]);
+      await loadNotes();
     } catch (err) {
       setError(err.message || "Failed to delete note.");
     }
@@ -237,13 +288,33 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     setStatus("Unsaved changes");
   }
 
-  function toggleNoteExpanded(noteId) {
-    setExpandedNoteIds((current) => {
-      const next = new Set(current);
-      if (next.has(noteId)) next.delete(noteId);
-      else next.add(noteId);
-      return next;
-    });
+  function commitTagInput() {
+    const incoming = parseTagInput(tagInput);
+    if (!incoming.length) {
+      setTagInput("");
+      return;
+    }
+    setDraft((current) => ({ ...current, tags: mergeTags(current.tags, incoming) }));
+    setTagInput("");
+    setStatus("Unsaved changes");
+  }
+
+  function handleTagKeyDown(event) {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      commitTagInput();
+      return;
+    }
+    if (event.key === "Backspace" && !tagInput && draft.tags.length) {
+      event.preventDefault();
+      setDraft((current) => ({ ...current, tags: current.tags.slice(0, -1) }));
+      setStatus("Unsaved changes");
+    }
+  }
+
+  function removeTag(tag) {
+    setDraft((current) => ({ ...current, tags: current.tags.filter((item) => item !== tag) }));
+    setStatus("Unsaved changes");
   }
 
   async function attachToProject() {
@@ -276,208 +347,358 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     (project) => !linkedProjects.some((linked) => linked.id === project.id),
   );
   const attachableTasks = tasks.filter((task) => !linkedTasks.some((linked) => linked.id === task.id));
+  const linkCount = linkedProjects.length + linkedTasks.length;
+  const filtered = Boolean(query.trim());
 
   return (
-    <main className="notes-layout">
-      <section className="notes-list-pane">
-        <div className="notes-header">
-          <button className="research-back" onClick={onBack} type="button">Chat</button>
-          <h2 className="notes-title">Notes</h2>
-        </div>
+    <div className="nw">
+      <aside className="nw-rail">
+        <header className="nw-rail-head">
+          <div className="nw-rail-top">
+            <button className="nw-back" type="button" onClick={onBack}>
+              <Icon name="back" />
+              Chat
+            </button>
+            <span className="nw-rail-count">
+              {loading ? "…" : `${total} note${total === 1 ? "" : "s"}`}
+            </span>
+          </div>
+          <h1 className="nw-rail-title">Notes</h1>
+          <button className="nw-new" type="button" onClick={startNewNote}>
+            <Icon name="plus" />
+            New note
+          </button>
+        </header>
 
-        <button className="notes-new-btn" type="button" onClick={startNewNote}>
-          New Note
-        </button>
-
-        <input
-          className="notes-search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search notes"
-        />
-
-        <div className="notes-filters">
-          <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
-            <option value="">All tags</option>
-            {tags.map((item) => (
-              <option key={item.tag} value={item.tag}>
-                {item.tag} ({item.count})
-              </option>
-            ))}
-          </select>
-          <label className="notes-archived-toggle">
+        <div className="nw-filters">
+          <div className="nw-search">
+            <Icon name="search" />
             <input
-              type="checkbox"
-              checked={includeArchived}
-              onChange={(event) => setIncludeArchived(event.target.checked)}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search notes"
+              aria-label="Search notes"
             />
-            Archived
-          </label>
+            {query && (
+              <button
+                className="nw-search-clear"
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="nw-filter-row">
+            <button
+              className={`nw-toggle ${includeArchived ? "on" : ""}`}
+              type="button"
+              aria-pressed={includeArchived}
+              onClick={() => setIncludeArchived((value) => !value)}
+            >
+              Archived
+            </button>
+          </div>
         </div>
 
-        <div className="notes-list-meta">{loading ? "Loading..." : `${total} note${total === 1 ? "" : "s"}`}</div>
-
-        <div className="notes-list">
+        <div className="nw-list">
           {notes.length === 0 ? (
-            <div className="notes-empty">
-              {query.trim() || tagFilter ? "No notes match your search." : "No notes yet. Create a note or save a research report."}
+            <div className="nw-list-empty">
+              {filtered ? (
+                <>
+                  <p>No notes match.</p>
+                  <button
+                    className="nw-link"
+                    type="button"
+                    onClick={() => setQuery("")}
+                  >
+                    Clear filters
+                  </button>
+                </>
+              ) : (
+                <p>No notes yet.</p>
+              )}
             </div>
           ) : (
             notes.map((note) => {
-              const expanded = expandedNoteIds.has(note.id);
+              const active = selectedNote?.id === note.id;
               return (
-                <article key={note.id} className={`notes-item-card ${expanded ? "expanded" : ""}`}>
-                  <button
-                    className={`notes-item ${selectedNote?.id === note.id ? "active" : ""}`}
-                    type="button"
-                    onClick={() => openExistingNote(note.id)}
-                  >
-                    <span className="notes-item-title">
-                      {note.pinned && <span className="notes-pin" title="Pinned">PIN</span>}
-                      {note.title}
-                    </span>
-                    <span className="notes-item-preview">{note.preview || note.body}</span>
-                    <span className="notes-item-tags">
-                      {(note.tags || []).slice(0, 4).map((tag) => (
-                        <span key={tag}>{tag}</span>
+                <button
+                  key={note.id}
+                  type="button"
+                  className={`nw-row ${active ? "active" : ""} ${note.archived ? "archived" : ""}`}
+                  onClick={() => openExistingNote(note.id)}
+                >
+                  <span className="nw-row-head">
+                    {note.pinned && <Icon name="pin" className="nw-row-pin" />}
+                    <span className="nw-row-title">{note.title || "Untitled"}</span>
+                    <time className="nw-row-time" title={formatAbsoluteTime(note.updated_at)}>
+                      {formatRelativeTime(note.updated_at)}
+                    </time>
+                  </span>
+                  <span className="nw-row-excerpt">{noteExcerpt(note)}</span>
+                  {(note.tags || []).length > 0 && (
+                    <span className="nw-row-tags">
+                      {(note.tags || []).slice(0, 3).map((tag) => (
+                        <span className="nw-chip small" key={tag}>
+                          {tag}
+                        </span>
                       ))}
+                      {(note.tags || []).length > 3 && (
+                        <span className="nw-row-more">+{note.tags.length - 3}</span>
+                      )}
                     </span>
-                    <span className="notes-item-time">{formatTime(note.updated_at)}</span>
-                  </button>
-                  <button
-                    className="notes-item-expand"
-                    type="button"
-                    aria-expanded={expanded}
-                    onClick={() => toggleNoteExpanded(note.id)}
-                  >
-                    {expanded ? "Collapse" : "Expand"}
-                  </button>
-                  {expanded && (
-                    <div className="notes-item-expanded-content">
-                      {note.summary && <p>{note.summary}</p>}
-                      <div>{note.body}</div>
-                    </div>
                   )}
-                </article>
+                </button>
               );
             })
           )}
         </div>
-      </section>
+      </aside>
 
-      <section className="notes-editor-pane">
-        {!selectedNote && !isNew ? (
-          <div className="notes-editor-empty">Select a note or create a new one.</div>
+      <section className="nw-main">
+        {!editing ? (
+          <div className="nw-blank">
+            <div className="nw-blank-mark">
+              <Icon name="write" />
+            </div>
+            <h2>Nothing open</h2>
+            <p>Pick a note from the list, or start a new one.</p>
+            <button className="nw-new" type="button" onClick={startNewNote}>
+              <Icon name="plus" />
+              New note
+            </button>
+            {error && <div className="nw-error">{error}</div>}
+          </div>
         ) : (
           <>
-            <div className="notes-editor-toolbar">
-              <span className={`notes-save-state ${dirty ? "dirty" : ""}`}>{dirty ? "Unsaved changes" : status || "Saved"}</span>
-              <button type="button" onClick={saveNote} disabled={!dirty || !draft.body.trim()}>
-                Save
-              </button>
-              {!isNew && (
-                <>
-                  <button type="button" onClick={pinSelected}>
-                    {selectedNote?.pinned ? "Unpin" : "Pin"}
+            <div className="nw-toolbar">
+              <div className="nw-toolbar-state">
+                <span className={`nw-dot ${dirty ? "dirty" : "clean"}`} />
+                <span className="nw-state-text">
+                  {dirty ? "Unsaved changes" : status || "Saved"}
+                </span>
+                {!isNew && selectedNote?.updated_at && (
+                  <span className="nw-meta" title={formatAbsoluteTime(selectedNote.updated_at)}>
+                    Edited {formatRelativeTime(selectedNote.updated_at)}
+                  </span>
+                )}
+                <span className="nw-meta">{bodyWords} words</span>
+                {selectedNote?.archived && <span className="nw-badge">Archived</span>}
+                {selectedNote?.pinned && <span className="nw-badge accent">Pinned</span>}
+              </div>
+
+              <div className="nw-toolbar-actions">
+                <div className="nw-segment">
+                  <button
+                    type="button"
+                    className={previewing ? "" : "on"}
+                    onClick={() => setPreviewing(false)}
+                  >
+                    <Icon name="write" />
+                    Write
                   </button>
-                  <button type="button" onClick={archiveSelected}>
-                    {selectedNote?.archived ? "Unarchive" : "Archive"}
+                  <button
+                    type="button"
+                    className={previewing ? "on" : ""}
+                    onClick={() => setPreviewing(true)}
+                  >
+                    <Icon name="preview" />
+                    Preview
                   </button>
-                  <button className="notes-danger-btn" type="button" onClick={deleteSelected}>
-                    Delete
-                  </button>
-                </>
-              )}
+                </div>
+
+                {!isNew && (
+                  <>
+                    <button className="nw-action" type="button" onClick={pinSelected}>
+                      <Icon name="pin" />
+                      {selectedNote?.pinned ? "Unpin" : "Pin"}
+                    </button>
+                    <button className="nw-action" type="button" onClick={archiveSelected}>
+                      <Icon name="archive" />
+                      {selectedNote?.archived ? "Unarchive" : "Archive"}
+                    </button>
+                    <button
+                      className={`nw-action ${showDetails ? "on" : ""}`}
+                      type="button"
+                      aria-pressed={showDetails}
+                      onClick={() => setShowDetails((value) => !value)}
+                    >
+                      <Icon name="details" />
+                      Links{linkCount ? ` (${linkCount})` : ""}
+                    </button>
+                    <button className="nw-action danger" type="button" onClick={deleteSelected}>
+                      <Icon name="trash" />
+                      Delete
+                    </button>
+                  </>
+                )}
+
+                <button
+                  className="nw-save"
+                  type="button"
+                  onClick={saveNote}
+                  disabled={!dirty || !draft.body.trim()}
+                  title="Save (⌘S)"
+                >
+                  Save
+                </button>
+              </div>
             </div>
 
-            {selectedNote?.source_type && selectedNote.source_type !== "manual" && (
-              <div className="notes-source">
-                <span>{selectedNote.source_type}</span>
-                {selectedNote.source_title && <strong>{selectedNote.source_title}</strong>}
-              </div>
-            )}
+            <div className={`nw-stage ${showDetails && !isNew ? "with-details" : ""}`}>
+              <div className="nw-doc">
+                {selectedNote?.source_type && selectedNote.source_type !== "manual" && (
+                  <div className="nw-source">
+                    <span className="nw-badge accent">{selectedNote.source_type}</span>
+                    {selectedNote.source_title && <span>{selectedNote.source_title}</span>}
+                  </div>
+                )}
 
-            {!isNew && (
-              <div className="notes-projects-box">
-                <div className="notes-projects-title">Projects</div>
-                <div className="notes-projects-list">
-                  {linkedProjects.length === 0 ? (
-                    <span>No linked projects.</span>
-                  ) : (
-                    linkedProjects.map((project) => (
-                      <span key={project.id}>{project.title}</span>
-                    ))
-                  )}
-                </div>
-                <div className="notes-projects-attach">
-                  <select value={attachProjectId} onChange={(event) => setAttachProjectId(event.target.value)}>
-                    <option value="">Attach to Project</option>
-                    {attachableProjects.map((project) => (
-                      <option key={project.id} value={project.id}>{project.title}</option>
-                    ))}
-                  </select>
-                  <button type="button" onClick={attachToProject} disabled={!attachProjectId}>
-                    Attach
-                  </button>
-                </div>
-              </div>
-            )}
+                <input
+                  ref={titleRef}
+                  className="nw-title-input"
+                  value={draft.title}
+                  onChange={(event) => updateDraft("title", event.target.value)}
+                  placeholder="Untitled note"
+                  maxLength={200}
+                  aria-label="Note title"
+                />
 
-            {!isNew && (
-              <div className="notes-projects-box notes-tasks-box">
-                <div className="notes-projects-title">Tasks</div>
-                <div className="notes-projects-list">
-                  {linkedTasks.length === 0 ? <span>No linked tasks.</span> : linkedTasks.map((task) => (
-                    <button type="button" key={task.id} onClick={() => onOpenTask?.(task.id)}>{task.title} · {task.status}</button>
+                <div className="nw-tags">
+                  {draft.tags.map((tag) => (
+                    <span className="nw-chip" key={tag}>
+                      {tag}
+                      <button
+                        type="button"
+                        onClick={() => removeTag(tag)}
+                        aria-label={`Remove tag ${tag}`}
+                      >
+                        ×
+                      </button>
+                    </span>
                   ))}
+                  <input
+                    className="nw-tag-input"
+                    value={tagInput}
+                    onChange={(event) => setTagInput(event.target.value)}
+                    onKeyDown={handleTagKeyDown}
+                    onBlur={commitTagInput}
+                    placeholder={draft.tags.length ? "Add tag" : "Add tags"}
+                    aria-label="Add tags"
+                  />
                 </div>
-                <div className="notes-projects-attach">
-                  <select value={attachTaskId} onChange={(event) => setAttachTaskId(event.target.value)}>
-                    <option value="">Attach to Task</option>
-                    {attachableTasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}
-                  </select>
-                  <button type="button" onClick={attachToTask} disabled={!attachTaskId}>Attach</button>
-                </div>
+
+                <input
+                  className="nw-summary-input"
+                  value={draft.summary}
+                  onChange={(event) => updateDraft("summary", event.target.value)}
+                  placeholder="One-line summary (optional)"
+                  aria-label="Summary"
+                />
+
+                {previewing ? (
+                  <div className="nw-preview">
+                    {draft.body.trim() ? (
+                      <div
+                        className="nw-preview-body"
+                        // Source is this user's own note, escaped by renderMarkdown.
+                        dangerouslySetInnerHTML={{ __html: previewHtml }}
+                      />
+                    ) : (
+                      <p className="nw-preview-empty">Nothing to preview yet.</p>
+                    )}
+                  </div>
+                ) : (
+                  <textarea
+                    className="nw-body-input"
+                    value={draft.body}
+                    onChange={(event) => updateDraft("body", event.target.value)}
+                    placeholder="Write in Markdown…"
+                    aria-label="Note body"
+                  />
+                )}
+
+                {error && <div className="nw-error">{error}</div>}
               </div>
-            )}
 
-            {!isNew && <FileAttachments linkType="note" targetId={selectedNote.id} onOpenFile={onOpenFile} />}
+              {showDetails && !isNew && (
+                <aside className="nw-detail">
+                  <section>
+                    <h3>Projects</h3>
+                    {linkedProjects.length === 0 ? (
+                      <p className="nw-detail-empty">Not linked to a project.</p>
+                    ) : (
+                      <div className="nw-detail-list">
+                        {linkedProjects.map((project) => (
+                          <span key={project.id}>{project.title}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="nw-detail-attach">
+                      <select
+                        value={attachProjectId}
+                        onChange={(event) => setAttachProjectId(event.target.value)}
+                        aria-label="Attach to project"
+                      >
+                        <option value="">Attach to project…</option>
+                        {attachableProjects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.title}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={attachToProject} disabled={!attachProjectId}>
+                        Add
+                      </button>
+                    </div>
+                  </section>
 
-            <input
-              className="notes-title-input"
-              value={draft.title}
-              onChange={(event) => updateDraft("title", event.target.value)}
-              placeholder="Title"
-              maxLength={200}
-            />
+                  <section>
+                    <h3>Tasks</h3>
+                    {linkedTasks.length === 0 ? (
+                      <p className="nw-detail-empty">Not linked to a task.</p>
+                    ) : (
+                      <div className="nw-detail-list">
+                        {linkedTasks.map((task) => (
+                          <button type="button" key={task.id} onClick={() => onOpenTask?.(task.id)}>
+                            {task.title}
+                            <em>{task.status}</em>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="nw-detail-attach">
+                      <select
+                        value={attachTaskId}
+                        onChange={(event) => setAttachTaskId(event.target.value)}
+                        aria-label="Attach to task"
+                      >
+                        <option value="">Attach to task…</option>
+                        {attachableTasks.map((task) => (
+                          <option key={task.id} value={task.id}>
+                            {task.title}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={attachToTask} disabled={!attachTaskId}>
+                        Add
+                      </button>
+                    </div>
+                  </section>
 
-            <input
-              className="notes-tags-input"
-              value={draft.tagsText}
-              onChange={(event) => updateDraft("tagsText", event.target.value)}
-              placeholder="Tags, separated by commas"
-            />
-
-            <textarea
-              className="notes-summary-input"
-              value={draft.summary}
-              onChange={(event) => updateDraft("summary", event.target.value)}
-              placeholder="Summary"
-              rows={2}
-            />
-
-            <textarea
-              className="notes-body-input"
-              value={draft.body}
-              onChange={(event) => updateDraft("body", event.target.value)}
-              placeholder="Write in Markdown"
-            />
-
-            {error && <div className="notes-error">{error}</div>}
+                  <FileAttachments
+                    linkType="note"
+                    targetId={selectedNote.id}
+                    onOpenFile={onOpenFile}
+                  />
+                </aside>
+              )}
+            </div>
           </>
         )}
-        {error && !selectedNote && !isNew && <div className="notes-error">{error}</div>}
       </section>
-    </main>
+    </div>
   );
 }

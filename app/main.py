@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -84,13 +84,45 @@ from app.services.tools.executor import ToolsService
 from app.services.web_search import initialize_web_search_tables
 from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
 
+# Reachable without a profile session by design: the profile picker itself (listing
+# profiles, registering, starting a guest, and unlocking are the sign-in steps, and
+# unlock/delete carry their own password check), plus the liveness and readiness
+# probes the container healthcheck calls.
+PUBLIC_API_PREFIXES = ("/api/account-profiles", "/api/health")
 
-class ProfileDatabaseMiddleware(BaseHTTPMiddleware):
-    """Route every authenticated profile request to its own local database."""
+# Only the JSON APIs are gated. The SPA shell, /assets, the service worker and the
+# docs live outside these prefixes and stay public, or the app could never load far
+# enough to show the profile picker.
+PROTECTED_PREFIXES = ("/api", "/web")
+
+
+def _within(path: str, prefixes: tuple[str, ...]) -> bool:
+    """Prefix match on whole path segments, so /api/health never matches /api/health-x."""
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+
+
+def requires_authenticated_profile(path: str) -> bool:
+    """Single source of truth for which paths are profile-owned."""
+    return _within(path, PROTECTED_PREFIXES) and not _within(path, PUBLIC_API_PREFIXES)
+
+
+class ProfileSessionMiddleware(BaseHTTPMiddleware):
+    """Authenticate the account-profile session, then bind the request to its database.
+
+    Authentication is enforced here rather than router by router: every profile-owned
+    API is covered by one rule, so a new router cannot ship unprotected by omission.
+    """
 
     async def dispatch(self, request, call_next):
+        # A CORS preflight carries no cookies; CORSMiddleware answers it.
+        if request.method == "OPTIONS":
+            return await call_next(request)
         session = session_for(request)
         if session is None:
+            if requires_authenticated_profile(request.url.path):
+                return JSONResponse(
+                    status_code=401, content={"detail": "authenticated_profile_required"}
+                )
             return await call_next(request)
         with profile_database(session["id"], guest=bool(session.get("is_guest"))):
             return await call_next(request)
@@ -110,7 +142,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(ProfileDatabaseMiddleware)
+    app.add_middleware(ProfileSessionMiddleware)
     app.include_router(accounts_router, prefix="/api")
     app.include_router(projects_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")

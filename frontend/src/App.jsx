@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import { api } from "./api.js";
 import Notes from "./Notes.jsx";
+import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
 import Research from "./Research.jsx";
 import Tasks from "./Tasks.jsx";
@@ -1282,6 +1283,7 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
   const groups = [
     {
       title: "Intelligence",
+      icon: "memory",
       description: "Models, behavior, and agent configuration.",
       items: [
         ["Agentic Runs", "Plan, execute, verify, and reflect", onOpenAgentic],
@@ -1296,6 +1298,7 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
     },
     {
       title: "Capabilities",
+      icon: "terminal",
       description: "Connected tools and runtime services.",
       items: [
         ["Tools & Skills", "Tool servers, definitions, and approvals", onOpenTools],
@@ -1307,6 +1310,7 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
     },
     {
       title: "Knowledge",
+      icon: "layers",
       description: "Stored context and research materials.",
       items: [
         ["Memory", "Durable personal context", onOpenMemory],
@@ -1318,6 +1322,7 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
     },
     {
       title: "Workspace",
+      icon: "folder",
       description: "Projects, work tracking, and portability.",
       items: [
         ["Projects", "Organize related chats and work", onOpenProjects],
@@ -1329,25 +1334,25 @@ function SettingsDialog({ onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOp
 
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
-      <div className="settings-intro">
-        <p className="settings-kicker">Control center</p>
+      <div className="set-intro">
+        <h3>Control center</h3>
         <p>Configure Neo without leaving your workspace.</p>
       </div>
-      <div className="settings-menu" aria-label="Settings categories">
+      <div className="set-grid" aria-label="Settings categories">
         {groups.map((group) => (
-          <section className="settings-menu-group" key={group.title}>
-            <header>
-              <h3>{group.title}</h3>
-              <p>{group.description}</p>
-            </header>
-            <div className="settings-menu-links">
+          <section className="set-group" key={group.title}>
+            <div className="set-group-head">
+              <WorkspaceIcon name={group.icon} />
+              <h4>{group.title}</h4>
+            </div>
+            <div className="set-links">
               {group.items.map(([title, description, onClick]) => (
-                <button className="settings-link" type="button" onClick={onClick} key={title}>
-                  <span>
+                <button className="set-link" type="button" onClick={onClick} key={title}>
+                  <span className="set-link-text">
                     <strong>{title}</strong>
                     <small>{description}</small>
                   </span>
-                  <span className="settings-link-arrow" aria-hidden="true">→</span>
+                  <span className="set-link-arrow" aria-hidden="true">→</span>
                 </button>
               ))}
             </div>

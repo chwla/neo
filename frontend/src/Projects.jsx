@@ -4,6 +4,7 @@ import { api } from "./api.js";
 import FileAttachments from "./FileAttachments.jsx";
 import Repos from "./Repos.jsx";
 import RelatedMemories from "./RelatedMemories.jsx";
+import Icon from "./WorkspaceIcon.jsx";
 
 const STATUSES = ["active", "paused", "completed", "archived"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -67,6 +68,7 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState("overview");
 
   const dirty = useMemo(
     () => projectChanged(draft, isNew ? null : selectedProject),
@@ -277,66 +279,100 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
   }
 
   const attachableNotes = notes.filter((note) => !linkedNotes.some((linked) => linked.id === note.id));
+  const editing = Boolean(selectedProject) || isNew;
+  const filtered = Boolean(query.trim() || tagFilter || statusFilter);
+  const openTasks = projectTasks.filter((task) => !["done", "archived"].includes(task.status));
+  const blockedTasks = projectTasks.filter((task) => task.status === "blocked");
+  const doneTasks = projectTasks.filter((task) => task.status === "done");
+
+  const TABS = [
+    ["overview", "Overview", null],
+    ["tasks", "Tasks", projectTasks.length],
+    ["notes", "Notes", linkedNotes.length],
+    ["files", "Files", null],
+    ["repos", "Repos", null],
+  ];
 
   return (
-    <main className="projects-layout">
-      <section className="projects-list-pane">
-        <div className="projects-header">
-          <button className="research-back" onClick={onBack} type="button">Chat</button>
-          <h2 className="projects-title">Projects</h2>
+    <div className="ws">
+      <aside className="ws-rail">
+        <header className="ws-rail-head">
+          <div className="ws-rail-top">
+            <button className="ws-back" type="button" onClick={onBack}>
+              <Icon name="back" />
+              Chat
+            </button>
+            <span className="ws-rail-count">
+              {loading ? "…" : `${total} project${total === 1 ? "" : "s"}`}
+            </span>
+          </div>
+          <h1 className="ws-rail-title">Projects</h1>
+          <button className="ws-primary" type="button" onClick={startNewProject}>
+            <Icon name="plus" />
+            New project
+          </button>
+        </header>
+
+        <div className="ws-filters">
+          <div className="ws-search">
+            <Icon name="search" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search projects"
+              aria-label="Search projects"
+            />
+            {query && (
+              <button className="ws-search-clear" type="button" onClick={() => setQuery("")} aria-label="Clear search">
+                ×
+              </button>
+            )}
+          </div>
+          <div className="ws-filter-row">
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              aria-label="Filter by status"
+            >
+              <option value="">All statuses</option>
+              {STATUSES.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+            <button
+              className={`ws-toggle ${includeArchived ? "on" : ""}`}
+              type="button"
+              aria-pressed={includeArchived}
+              onClick={() => setIncludeArchived((value) => !value)}
+            >
+              Archived
+            </button>
+          </div>
         </div>
 
-        <button className="projects-new-btn" type="button" onClick={startNewProject}>
-          New Project
-        </button>
-
-        <input
-          className="projects-search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search projects"
-        />
-
-        <div className="projects-filters">
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-            <option value="">All statuses</option>
-            {STATUSES.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
-          <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
-            <option value="">All tags</option>
-            {projectTags.map((item) => (
-              <option key={item.tag} value={item.tag}>{item.tag} ({item.count})</option>
-            ))}
-          </select>
-        </div>
-
-        <label className="projects-archived-toggle">
-          <input
-            type="checkbox"
-            checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
-          />
-          Archived
-        </label>
-
-        <div className="projects-list-meta">
-          {loading ? "Loading..." : `${total} project${total === 1 ? "" : "s"}`}
-        </div>
-
-        <div className="projects-list">
+        <div className="ws-list">
           {projects.length === 0 ? (
-            <div className="projects-empty">
-              {query.trim() || tagFilter || statusFilter
-                ? "No projects match your search."
-                : "No projects yet. Create a project to organize notes and research."}
+            <div className="ws-list-empty">
+              {filtered ? (
+                <>
+                  <p>No projects match.</p>
+                  <button
+                    className="ws-link"
+                    type="button"
+                    onClick={() => { setQuery(""); setTagFilter(""); setStatusFilter(""); }}
+                  >
+                    Clear filters
+                  </button>
+                </>
+              ) : (
+                <p>No projects yet.</p>
+              )}
             </div>
           ) : (
             projects.map((project) => (
               <a
                 key={project.id}
-                className={`projects-item ${selectedProject?.id === project.id ? "active" : ""}`}
+                className={`ws-row ${selectedProject?.id === project.id ? "active" : ""} ${project.archived ? "dim" : ""}`}
                 href={`/projects/${encodeURIComponent(project.id)}`}
                 onClick={(event) => {
                   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -344,174 +380,266 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
                   openProject(project.id);
                 }}
               >
-                <span className="projects-item-title">
-                  {project.pinned && <span className="projects-pin" title="Pinned">PIN</span>}
-                  {project.title}
+                <span className="ws-row-head">
+                  {project.pinned && <Icon name="pin" className="ws-row-pin" />}
+                  <span className="ws-row-title">{project.title}</span>
+                  <time className="ws-row-time">{formatTime(project.updated_at)}</time>
                 </span>
-                <span className="projects-item-preview">{project.preview || project.description}</span>
-                <span className="projects-item-meta">
-                  <strong>{project.status}</strong>
-                  <span>{project.priority}</span>
-                  {project.linked_notes_count > 0 && <span>{project.linked_notes_count} notes</span>}
-                </span>
-                <span className="projects-item-tags">
-                  {(project.tags || []).slice(0, 4).map((tag) => (
-                    <span key={tag}>{tag}</span>
+                {(project.preview || project.description) && (
+                  <span className="ws-row-excerpt">{project.preview || project.description}</span>
+                )}
+                <span className="ws-row-meta">
+                  <span className={`ws-badge ${statusTone(project.status)}`}>{project.status}</span>
+                  <span className="ws-badge mute">{project.priority}</span>
+                  {project.linked_notes_count > 0 && (
+                    <span className="ws-row-more">{project.linked_notes_count} notes</span>
+                  )}
+                  {(project.tags || []).slice(0, 2).map((tag) => (
+                    <span className="ws-chip" key={tag}>{tag}</span>
                   ))}
                 </span>
-                <span className="projects-item-time">{formatTime(project.updated_at)}</span>
               </a>
             ))
           )}
         </div>
-      </section>
+      </aside>
 
-      <section className="projects-editor-pane">
-        {!selectedProject && !isNew ? (
-          <div className="projects-editor-empty">Select a project or create a new one.</div>
+      <section className="ws-main">
+        {!editing ? (
+          <div className="ws-blank">
+            <div className="ws-blank-mark"><Icon name="folder" /></div>
+            <h2>No project open</h2>
+            <p>Pick a project from the list, or create one to group notes, tasks, files and repositories.</p>
+            <button className="ws-primary" type="button" onClick={startNewProject}>
+              <Icon name="plus" />
+              New project
+            </button>
+            {error && <div className="ws-error">{error}</div>}
+          </div>
         ) : (
           <>
-            <div className="projects-editor-toolbar">
-              <span className={`projects-save-state ${dirty ? "dirty" : ""}`}>
-                {dirty ? "Unsaved changes" : status || "Saved"}
-              </span>
-              <button type="button" onClick={saveProject} disabled={!dirty || !draft.title.trim()}>
-                Save
-              </button>
-              {!isNew && (
-                <>
-                  <button type="button" onClick={pinSelected}>
-                    {selectedProject?.pinned ? "Unpin" : "Pin"}
-                  </button>
-                  <button type="button" onClick={archiveSelected}>
-                    {selectedProject?.archived ? "Unarchive" : "Archive"}
-                  </button>
-                  <button className="projects-danger-btn" type="button" onClick={deleteSelected}>
-                    Delete
-                  </button>
-                </>
-              )}
+            <div className="ws-toolbar">
+              <div className="ws-toolbar-state">
+                <span className={`ws-dot ${dirty ? "dirty" : ""}`} />
+                <span className="ws-state-text">{dirty ? "Unsaved changes" : status || "Saved"}</span>
+                {!isNew && selectedProject?.updated_at && (
+                  <span className="ws-meta">Edited {formatTime(selectedProject.updated_at)}</span>
+                )}
+                {selectedProject?.archived && <span className="ws-badge">Archived</span>}
+                {selectedProject?.pinned && <span className="ws-badge accent">Pinned</span>}
+              </div>
+              <div className="ws-toolbar-actions">
+                {!isNew && (
+                  <>
+                    <button className="ws-action" type="button" onClick={pinSelected}>
+                      <Icon name="pin" />
+                      {selectedProject?.pinned ? "Unpin" : "Pin"}
+                    </button>
+                    <button className="ws-action" type="button" onClick={archiveSelected}>
+                      <Icon name="archive" />
+                      {selectedProject?.archived ? "Unarchive" : "Archive"}
+                    </button>
+                    <button className="ws-action danger" type="button" onClick={deleteSelected}>
+                      <Icon name="trash" />
+                      Delete
+                    </button>
+                  </>
+                )}
+                <button
+                  className="ws-save"
+                  type="button"
+                  onClick={saveProject}
+                  disabled={!dirty || !draft.title.trim()}
+                >
+                  Save
+                </button>
+              </div>
             </div>
-
-            <input
-              className="projects-title-input"
-              value={draft.title}
-              onChange={(event) => updateDraft("title", event.target.value)}
-              placeholder="Project title"
-              maxLength={200}
-            />
-
-            <textarea
-              className="projects-description-input"
-              value={draft.description}
-              onChange={(event) => updateDraft("description", event.target.value)}
-              placeholder="Description"
-              rows={5}
-            />
-
-            <div className="projects-editor-grid">
-              <select value={draft.status} onChange={(event) => updateDraft("status", event.target.value)}>
-                {STATUSES.map((item) => (
-                  <option key={item} value={item}>{item}</option>
-                ))}
-              </select>
-              <select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value)}>
-                {PRIORITIES.map((item) => (
-                  <option key={item} value={item}>{item}</option>
-                ))}
-              </select>
-            </div>
-
-            <input
-              className="projects-tags-input"
-              value={draft.tagsText}
-              onChange={(event) => updateDraft("tagsText", event.target.value)}
-              placeholder="Tags, separated by commas"
-            />
 
             {!isNew && (
-              <section className="projects-linked-notes project-tasks-section">
-                <div className="projects-section-title">Tasks</div>
-                <div className="project-task-counts">
-                  <span>{projectTasks.filter((task) => !["done", "archived"].includes(task.status)).length} open</span>
-                  <span>{projectTasks.filter((task) => task.status === "blocked").length} blocked</span>
-                  <span>{projectTasks.filter((task) => task.status === "done").length} completed</span>
-                </div>
-                <button type="button" onClick={createTaskForProject}>New Task for this Project</button>
-                {projectTasks.length === 0 ? (
-                  <div className="projects-empty small">No tasks linked to this project.</div>
-                ) : (
-                  <div className="project-task-list">
-                    {projectTasks.slice(0, 8).map((task) => (
-                      <button type="button" key={task.id} onClick={() => onOpenTask?.(task.id)}>
-                        <strong>{task.title}</strong><span>{task.status} · {task.priority}</span>
+              <nav className="ws-tabs" aria-label="Project sections">
+                {TABS.map(([key, label, count]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`ws-tab ${tab === key ? "on" : ""}`}
+                    aria-pressed={tab === key}
+                    onClick={() => setTab(key)}
+                  >
+                    {label}
+                    {count ? <span className="ws-tab-count">{count}</span> : null}
+                  </button>
+                ))}
+              </nav>
+            )}
+
+            <div className="ws-stage">
+              <div className="ws-doc">
+                {(isNew || tab === "overview") && (
+                  <>
+                    <input
+                      className="ws-title-input"
+                      value={draft.title}
+                      onChange={(event) => updateDraft("title", event.target.value)}
+                      placeholder="Untitled project"
+                      maxLength={200}
+                      aria-label="Project title"
+                    />
+
+                    <div className="ws-field-row">
+                      <label className="ws-field">
+                        <span>Status</span>
+                        <select value={draft.status} onChange={(event) => updateDraft("status", event.target.value)}>
+                          {STATUSES.map((item) => (
+                            <option key={item} value={item}>{item}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="ws-field">
+                        <span>Priority</span>
+                        <select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value)}>
+                          {PRIORITIES.map((item) => (
+                            <option key={item} value={item}>{item}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="ws-field">
+                        <span>Tags</span>
+                        <input
+                          value={draft.tagsText}
+                          onChange={(event) => updateDraft("tagsText", event.target.value)}
+                          placeholder="comma separated"
+                        />
+                      </label>
+                    </div>
+
+                    <textarea
+                      className="ws-textarea"
+                      value={draft.description}
+                      onChange={(event) => updateDraft("description", event.target.value)}
+                      placeholder="What is this project about?"
+                      aria-label="Project description"
+                    />
+
+                    {!isNew && (
+                      <section className="ws-section">
+                        <div className="ws-section-head">
+                          <h3 className="ws-section-title">At a glance</h3>
+                        </div>
+                        <div className="ws-row-meta">
+                          <span className="ws-badge">{openTasks.length} open</span>
+                          <span className={`ws-badge ${blockedTasks.length ? "warn" : "mute"}`}>
+                            {blockedTasks.length} blocked
+                          </span>
+                          <span className="ws-badge mute">{doneTasks.length} done</span>
+                          <span className="ws-badge mute">{linkedNotes.length} notes</span>
+                        </div>
+                      </section>
+                    )}
+                  </>
+                )}
+
+                {!isNew && tab === "tasks" && (
+                  <section className="ws-section">
+                    <div className="ws-section-head">
+                      <h3 className="ws-section-title">Tasks</h3>
+                      <button className="ws-action" type="button" onClick={createTaskForProject}>
+                        <Icon name="plus" />
+                        New task
                       </button>
-                    ))}
-                  </div>
+                    </div>
+                    {projectTasks.length === 0 ? (
+                      <p className="ws-empty-line">No tasks linked to this project.</p>
+                    ) : (
+                      <div className="ws-tiles">
+                        {projectTasks.map((task) => (
+                          <button type="button" key={task.id} className="ws-tile" onClick={() => onOpenTask?.(task.id)}>
+                            <strong>{task.title}</strong>
+                            <span className={`ws-badge ${taskTone(task.status)}`}>{task.status}</span>
+                            <span>{task.priority}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
                 )}
-              </section>
-            )}
 
-            {!isNew && (
-              <>
-                <FileAttachments linkType="project" targetId={selectedProject.id} onOpenFile={onOpenFile} />
-                <RelatedMemories scopeType="project" scopeId={selectedProject.id} />
-              </>
-            )}
-
-            {!isNew && (
-              <Repos projectId={selectedProject.id} onOpenFile={onOpenFile} compact />
-            )}
-
-            {!isNew && (
-              <section className="projects-linked-notes">
-                <div className="projects-section-title">Linked Notes</div>
-                <div className="projects-attach-row">
-                  <select value={attachNoteId} onChange={(event) => setAttachNoteId(event.target.value)}>
-                    <option value="">Select note</option>
-                    {attachableNotes.map((note) => (
-                      <option key={note.id} value={note.id}>{note.title}</option>
-                    ))}
-                  </select>
-                  <button type="button" onClick={attachSelectedNote} disabled={!attachNoteId}>
-                    Attach
-                  </button>
-                </div>
-
-                {linkedNotes.length === 0 ? (
-                  <div className="projects-empty small">
-                    No notes attached yet. Attach notes or save research reports to this project.
-                  </div>
-                ) : (
-                  <div className="projects-linked-list">
-                    {linkedNotes.map((note) => (
-                      <article key={note.id} className="projects-linked-note">
-                        <div className="projects-linked-note-main">
-                          <strong>{note.title}</strong>
-                          <span>{note.preview || note.summary || note.body}</span>
-                          <div className="projects-item-tags">
-                            {(note.tags || []).slice(0, 5).map((tag) => (
-                              <span key={tag}>{tag}</span>
-                            ))}
+                {!isNew && tab === "notes" && (
+                  <section className="ws-section">
+                    <div className="ws-section-head">
+                      <h3 className="ws-section-title">Linked notes</h3>
+                    </div>
+                    {linkedNotes.length === 0 ? (
+                      <p className="ws-empty-line">
+                        No notes attached yet. Attach a note or save a research report to this project.
+                      </p>
+                    ) : (
+                      <div className="ws-tiles">
+                        {linkedNotes.map((note) => (
+                          <div className="ws-tile" key={note.id}>
+                            <strong>{note.title}</strong>
+                            <small>{formatTime(note.updated_at)}</small>
+                            <span className="ws-tile-actions">
+                              <button className="ws-action" type="button" onClick={() => onOpenNote?.(note.id)}>
+                                Open
+                              </button>
+                              <button className="ws-action danger" type="button" onClick={() => detachNote(note.id)}>
+                                Detach
+                              </button>
+                            </span>
                           </div>
-                          <small>{formatTime(note.updated_at)}</small>
-                        </div>
-                        <div className="projects-linked-note-actions">
-                          <button type="button" onClick={() => onOpenNote?.(note.id)}>Open Note</button>
-                          <button type="button" onClick={() => detachNote(note.id)}>Detach</button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="ws-attach">
+                      <select
+                        value={attachNoteId}
+                        onChange={(event) => setAttachNoteId(event.target.value)}
+                        aria-label="Attach a note"
+                      >
+                        <option value="">Attach a note…</option>
+                        {attachableNotes.map((note) => (
+                          <option key={note.id} value={note.id}>{note.title}</option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={attachSelectedNote} disabled={!attachNoteId}>
+                        Attach
+                      </button>
+                    </div>
+                  </section>
                 )}
-              </section>
-            )}
 
-            {error && <div className="projects-error">{error}</div>}
+                {!isNew && tab === "files" && (
+                  <>
+                    <FileAttachments linkType="project" targetId={selectedProject.id} onOpenFile={onOpenFile} />
+                    <RelatedMemories scopeType="project" scopeId={selectedProject.id} />
+                  </>
+                )}
+
+                {!isNew && tab === "repos" && (
+                  <Repos projectId={selectedProject.id} onOpenFile={onOpenFile} compact />
+                )}
+
+                {error && <div className="ws-error">{error}</div>}
+              </div>
+            </div>
           </>
         )}
-        {error && !selectedProject && !isNew && <div className="projects-error">{error}</div>}
       </section>
-    </main>
+    </div>
   );
+}
+
+function statusTone(status) {
+  if (status === "active") return "accent";
+  if (status === "paused") return "warn";
+  if (status === "archived") return "mute";
+  return "";
+}
+
+function taskTone(status) {
+  if (status === "done") return "accent";
+  if (status === "blocked") return "danger";
+  if (status === "doing") return "warn";
+  return "mute";
 }
