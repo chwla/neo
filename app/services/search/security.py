@@ -11,6 +11,9 @@ PRIVATE_NETWORKS = (
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
+    # RFC 6598 carrier-grade NAT: is_private is False for this range, but it is not
+    # publicly routable and is a legitimate pivot target.
+    ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
@@ -45,24 +48,38 @@ def resolve_hostname_ips(hostname: str) -> list[ipaddress._BaseAddress]:
     return resolved
 
 
-def is_public_http_url(url: str) -> bool:
+def public_http_addresses(url: str) -> list[ipaddress._BaseAddress] | None:
+    """The public addresses ``url`` resolves to, or ``None`` if it must not be fetched.
+
+    Returning the addresses lets the caller pin exactly what was approved, so the
+    connection cannot be made to a different address than the one validated.
+    """
+
     try:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
-            return False
+            return None
         host = (parsed.hostname or "").strip()
         if not host:
-            return False
+            return None
         lower = host.lower()
         if lower in {"localhost", "metadata", "metadata.google.internal"}:
-            return False
+            return None
         if lower.endswith((".local", ".localhost", ".internal", ".lan", ".intranet")):
-            return False
+            return None
         try:
-            return not is_private_address(ipaddress.ip_address(host))
+            literal = ipaddress.ip_address(host)
         except ValueError:
             pass
+        else:
+            return None if is_private_address(literal) else [literal]
         addresses = resolve_hostname_ips(host)
-        return bool(addresses) and not any(is_private_address(address) for address in addresses)
+        if not addresses or any(is_private_address(address) for address in addresses):
+            return None
+        return addresses
     except Exception:
-        return False
+        return None
+
+
+def is_public_http_url(url: str) -> bool:
+    return public_http_addresses(url) is not None

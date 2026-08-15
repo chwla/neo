@@ -1127,9 +1127,14 @@ def delete_chat(
         and memory_enabled
         and not memory_incognito
     ):
-        runtime = build_memory_runtime(profile)
-        for message in store.list_chat_messages(chat_id):
-            if message.role == "user":
+        # Collect the work first: building the runtime probes the configured model, so
+        # a chat with no user messages must not pay for a loop body that never runs.
+        user_messages = [
+            message for message in store.list_chat_messages(chat_id) if message.role == "user"
+        ]
+        if user_messages:
+            runtime = build_memory_runtime(profile)
+            for message in user_messages:
                 _detach_sources_for_message(runtime, store.db, message.id, reason="deletion")
     store.delete_chat(chat_id)
     store.db.commit()

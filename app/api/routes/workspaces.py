@@ -10,6 +10,19 @@ def svc():
     return WorkspaceService()
 
 
+def _require(service, wid: str):
+    """404 for an unknown workspace, matching ``GET /{wid}``.
+
+    Routes that recompute readiness insert rows, so an unguarded call on a ghost
+    identifier both crashes and leaves orphan records behind.
+    """
+
+    workspace = service.get(wid)
+    if not workspace:
+        raise HTTPException(404, "Workspace not found")
+    return workspace
+
+
 class Create(BaseModel):
     name: str
     goal: str
@@ -72,17 +85,23 @@ def get(wid: str):
 
 @router.patch("/{wid}")
 def patch(wid: str, p: dict):
-    return svc().update(wid, **p)
+    s = svc()
+    _require(s, wid)
+    return s.update(wid, **p)
 
 
 @router.delete("/{wid}", status_code=204)
 def delete(wid: str):
-    svc().delete(wid)
+    s = svc()
+    _require(s, wid)
+    s.delete(wid)
 
 
 @router.post("/{wid}/plan")
 def plan(wid: str):
-    return svc().generate_plan(wid)
+    s = svc()
+    _require(s, wid)
+    return s.generate_plan(wid)
 
 
 @router.get("/{wid}/graph")
@@ -132,17 +151,23 @@ def artifact(wid: str, p: Artifact):
 
 @router.get("/{wid}/readiness")
 def readiness(wid: str):
-    return {"checks": svc().readiness(wid)}
+    s = svc()
+    _require(s, wid)
+    return {"checks": s.readiness(wid)}
 
 
 @router.post("/{wid}/readiness/recompute")
 def recompute(wid: str):
-    return {"checks": svc().readiness(wid, True)}
+    s = svc()
+    _require(s, wid)
+    return {"checks": s.readiness(wid, True)}
 
 
 @router.get("/{wid}/health")
 def health(wid: str):
-    return svc().health(wid)
+    s = svc()
+    _require(s, wid)
+    return s.health(wid)
 
 
 @router.post("/{wid}/link")
@@ -162,4 +187,6 @@ def memory(wid: str):
 
 @router.get("/{wid}/report")
 def report(wid: str):
-    return svc().report(wid)
+    s = svc()
+    _require(s, wid)
+    return s.report(wid)

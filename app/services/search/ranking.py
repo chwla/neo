@@ -112,7 +112,6 @@ OFFICIAL_DOMAINS = {
     "sonypictures.com",
     "sonypictures.in",
     "x.ai",
-    "www.anthropic.com",
     "www.bcci.tv",
     "www.icc-cricket.com",
     "www.marvel.com",
@@ -314,8 +313,6 @@ def relevant_fetched_page(
 
 def expanded_aliases(token: str) -> list[str]:
     aliases = {
-        "anthropic": ["anthropic", "claude"],
-        "claude": ["claude", "anthropic"],
         "facebook": ["facebook", "meta"],
         "meta": ["meta", "facebook"],
         "openai": ["openai", "chatgpt"],
@@ -373,7 +370,6 @@ def is_low_quality_result(result: SearchResult) -> bool:
     domain = parsed.netloc.lower()
     if path in {"", "home"} and domain not in {
         "openai.com",
-        "www.anthropic.com",
         "nextjs.org",
         "about.fb.com",
     }:

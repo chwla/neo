@@ -62,6 +62,25 @@ FORBIDDEN = {
 }
 INSTALL = {"install", "add"}
 ENV_DUMP = {"env", "printenv", "set"}
+# The allowlist gates *which* program may run; these gate what it may be told to do.
+# Several allowlisted read-only tools spawn processes or write files through their own
+# flags, needing no shell at all, so they slip past FORBIDDEN and the SHELL check.
+DANGEROUS_FLAGS: dict[str, frozenset[str]] = {
+    "find": frozenset(
+        {
+            "-exec",
+            "-execdir",
+            "-ok",
+            "-okdir",
+            "-delete",
+            "-fprintf",
+            "-fprint",
+            "-fprint0",
+            "-fls",
+        }
+    ),
+    "rg": frozenset({"--pre", "--hostname-bin"}),
+}
 
 
 def validate(command: list[str], category: str, cwd: str) -> dict:
@@ -86,6 +105,11 @@ def validate(command: list[str], category: str, cwd: str) -> dict:
             x in {"fetch", "pull", "push", "clone", "remote"} for x in command[1:]
         ):
             reasons.append("remote Git operations are forbidden")
+        dangerous = DANGEROUS_FLAGS.get(executable, frozenset())
+        for arg in command[1:]:
+            # Match both "--flag value" and "--flag=value" spellings.
+            if arg.lower() in dangerous or arg.split("=", 1)[0].lower() in dangerous:
+                reasons.append(f"flag '{arg.split('=', 1)[0]}' is forbidden for '{command[0]}'")
         for arg in command:
             norm = arg.replace("\\", "/")
             if any(token in arg for token in SHELL):

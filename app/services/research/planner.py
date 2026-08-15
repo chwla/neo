@@ -284,16 +284,24 @@ def generate_followup_queries(
     if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
         intent = classify_topic_intent(user_query)
         if intent:
+            # Followups are written from the entities detected in the question, so any
+            # pair of tools gets the same treatment.
+            labels = [
+                intent.normalized_entities.get(slug, slug) for slug in intent.tools
+            ] or [user_query]
+            pair = " vs ".join(labels[:2])
             followups: list[str] = []
             for gap in gaps[:3]:
-                if "pricing" in gap.lower() or "price" in gap.lower():
-                    followups.append("Cursor AI Pro vs OpenAI Codex Pro pricing comparison")
-                elif "cursor" in gap.lower():
-                    followups.append("Cursor AI editor official documentation agent features")
-                elif "codex" in gap.lower():
-                    followups.append("OpenAI Codex CLI cloud coding agent official docs")
+                gap_lower = gap.lower()
+                if "pricing" in gap_lower or "price" in gap_lower:
+                    followups.append(f"{pair} pricing plans comparison")
+                    continue
+                # "Missing <label>-specific evidence" — target that tool directly.
+                matched = next((lbl for lbl in labels if lbl.lower() in gap_lower), None)
+                if matched:
+                    followups.append(f"{matched} official documentation features")
                 else:
-                    followups.append(f"Cursor AI vs OpenAI Codex {gap.split()[-1]}")
+                    followups.append(f"{pair} {gap.split()[-1]}")
             return filter_offtopic_ai_coding_queries(list(dict.fromkeys(followups)))[:4]
 
     entity_hint = _extract_entity_hint(user_query)

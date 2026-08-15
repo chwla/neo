@@ -2530,7 +2530,6 @@ class NeoChatService:
     def _source_priority(self, url: str) -> int:
         domain = urlparse(url).netloc.lower().removeprefix("www.")
         official_domains = {
-            "anthropic.com",
             "bcci.tv",
             "icc-cricket.com",
             "marvel.com",
@@ -2780,8 +2779,8 @@ ENTITY_CLUSTER_PATTERNS: list[tuple[str, list[re.Pattern[str]]]] = [
         "AI/Technology",
         [
             re.compile(
-                r"\b(ai|artificial intelligence|model|llm|anthropic|openai|"
-                r"claude|gpt|machine learning|neural|fable\s+\d)\b",
+                r"\b(ai|artificial intelligence|model|llm|openai|"
+                r"gpt|machine learning|neural|fable\s+\d)\b",
                 re.IGNORECASE,
             )
         ],

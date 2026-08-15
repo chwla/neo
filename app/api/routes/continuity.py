@@ -55,22 +55,34 @@ def get(bid: str):
 
 @router.get("/bundles/{bid}/manifest")
 def manifest(bid: str):
-    return s().get(bid)["manifest"]
+    bundle = s().get(bid)
+    if not bundle:
+        raise HTTPException(404, "Continuity bundle not found.")
+    return bundle["manifest"]
 
 
 @router.get("/bundles/{bid}/references")
 def refs(bid: str):
-    return {"references": s().report(bid)["reference_graph_summary"]}
+    try:
+        return {"references": s().report(bid)["reference_graph_summary"]}
+    except LookupError as e:
+        raise HTTPException(404, str(e))
 
 
 @router.get("/bundles/{bid}/validation")
 def validation(bid: str):
-    return s().validate(bid)
+    try:
+        return s().validate(bid)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
 
 
 @router.get("/bundles/{bid}/report")
 def report(bid: str):
-    return s().report(bid)
+    try:
+        return s().report(bid)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
 
 
 @router.post("/validate-references")

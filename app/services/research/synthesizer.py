@@ -19,7 +19,10 @@ from app.services.research.product_intent import (
 )
 from app.services.research.topic_intent import (
     TOPIC_AI_CODING_TOOLS,
+    TopicIntent,
+    entity_evidence_category,
     is_low_quality_ai_coding_source,
+    is_official_source_for_entity,
     is_preferred_ai_coding_source,
 )
 from app.services.research.types import (
@@ -128,16 +131,17 @@ If no evidence for a subquestion, write: "No reliable evidence was found for thi
 Only if query involves comparison, choices, or recommendations.
 For AI coding tool comparisons, use this table format with real content (NEVER use "..." placeholders):
 
-| Dimension | Cursor | Codex | Evidence |
+| Dimension | {first tool name} | {second tool name} | Evidence |
 | --- | --- | --- | --- |
 | Product type | {value from evidence} | {value from evidence} | [1][2] |
 | Best use case | ... | ... | [1][3] |
 | Pricing / plan model | ... | ... | [2][4] |
 
+Use the actual tool names from the question as the column headers.
 Required dimensions: Product type, Best use case, Workflow, Strengths, Weaknesses, Pricing / plan model,
 Local vs cloud behavior, Codebase context/indexing, Agent autonomy, Privacy/control, Recommended user.
 If evidence is missing for a dimension, write "Not enough evidence found." for that cell.
-Do NOT discuss SQL cursor, UI cursor, manuscript codex, or historical origins.
+Discuss only the software tools themselves, never unrelated meanings of their names.
 
 If not applicable, write: "Not applicable."
 
@@ -231,9 +235,9 @@ def synthesize_report(
         entities = " vs ".join(plan.normalized_entities.values()) or user_query
         mode_instruction += (
             f"\n\nTOPIC INTENT: AI coding tools comparison ({entities}). "
-            "Compare Cursor AI editor/IDE vs OpenAI Codex/Codex CLI as software development tools. "
-            "Do NOT discuss SQL cursor, UI cursor, manuscript codex, historical origins, "
-            "data storage, literature, or philosophy. "
+            f"Compare {entities} strictly as software development tools. "
+            "Treat every tool name as the software product only — ignore unrelated "
+            "dictionary, historical, hardware or user-interface meanings of those names. "
             "Section 6 MUST be a comparison table with columns for each tool and real evidence-backed values."
         )
 
@@ -483,39 +487,56 @@ def _ai_coding_coverage(
     evidence: list[ResearchEvidenceChunk],
     sources: list[ResearchSource],
 ) -> dict:
-    """Assess official source and entity coverage for AI coding comparisons."""
+    """Assess official source and entity coverage for coding-tool comparisons.
+
+    Entity-agnostic: "entity A" and "entity B" are simply the first two tools detected
+    in the question, whichever tools those are.
+    """
     cited_source_ids = {e.source_id for e in evidence}
     relevant_sources = [s for s in sources if s.id in cited_source_ids and s.fetched]
 
-    has_cursor_official = any(
-        is_preferred_ai_coding_source(s) and "cursor.com" in (s.domain or "").lower()
-        for s in relevant_sources
-    )
-    has_codex_official = any(
-        is_preferred_ai_coding_source(s)
-        and ("openai.com" in (s.domain or "").lower() or "github.com" in (s.domain or "").lower())
-        for s in relevant_sources
-    )
+    intent = _coding_intent_from_plan(plan)
+    tools = intent.tools
+
+    def entity_official(index: int) -> bool:
+        if index >= len(tools):
+            return False
+        slug = tools[index]
+        label = intent.normalized_entities.get(slug, slug)
+        return any(is_official_source_for_entity(s, slug, label) for s in relevant_sources)
+
+    def entity_evidence(index: int) -> bool:
+        if index >= len(tools):
+            return False
+        category = entity_evidence_category(index)
+        return any(e.evidence_category in (category, "comparison_evidence") for e in evidence)
+
     has_comparison = any(e.evidence_category == "comparison_evidence" for e in evidence)
-    has_cursor_ev = any(
-        e.evidence_category in ("cursor_evidence", "comparison_evidence") for e in evidence
-    )
-    has_codex_ev = any(
-        e.evidence_category in ("codex_evidence", "comparison_evidence") for e in evidence
-    )
     low_quality_count = sum(1 for s in relevant_sources if is_low_quality_ai_coding_source(s))
-    official_count = sum(1 for s in relevant_sources if is_preferred_ai_coding_source(s))
+    official_count = sum(
+        1 for s in relevant_sources if is_preferred_ai_coding_source(s, intent)
+    )
 
     return {
-        "has_cursor_official": has_cursor_official,
-        "has_codex_official": has_codex_official,
+        "has_entity_a_official": entity_official(0),
+        "has_entity_b_official": entity_official(1),
         "has_comparison": has_comparison,
-        "has_cursor_ev": has_cursor_ev,
-        "has_codex_ev": has_codex_ev,
+        "has_entity_a_ev": entity_evidence(0),
+        "has_entity_b_ev": entity_evidence(1),
         "low_quality_count": low_quality_count,
         "official_count": official_count,
         "relevant_sources": len(relevant_sources),
     }
+
+
+def _coding_intent_from_plan(plan: ResearchPlan) -> TopicIntent:
+    """Rebuild the detected-entity view of a coding-tool plan for scoring helpers."""
+    return TopicIntent(
+        topic_intent=plan.topic_intent or TOPIC_AI_CODING_TOOLS,
+        tools=list(plan.comparison_tools or []),
+        normalized_entities=dict(plan.normalized_entities or {}),
+        comparison_query=plan.comparison_query,
+    )
 
 
 def _generic_comparison_coverage(
@@ -657,18 +678,18 @@ def _compute_confidence(
         and sources is not None
     ):
         cov = _ai_coding_coverage(plan, evidence, sources)
-        if not cov["has_cursor_ev"] or not cov["has_codex_ev"]:
+        if not cov["has_entity_a_ev"] or not cov["has_entity_b_ev"]:
             return "Low"
         high_ok = (
-            cov["has_cursor_official"]
-            and cov["has_codex_official"]
+            cov["has_entity_a_official"]
+            and cov["has_entity_b_official"]
             and cov["has_comparison"]
             and cov["official_count"] >= 2
             and cov["low_quality_count"] <= cov["relevant_sources"] // 2
         )
         if high_ok and report_mode == "full":
             return "High"
-        if cov["has_cursor_ev"] and cov["has_codex_ev"] and cov["official_count"] >= 1:
+        if cov["has_entity_a_ev"] and cov["has_entity_b_ev"] and cov["official_count"] >= 1:
             return "Medium"
         return "Low"
 
@@ -738,11 +759,11 @@ def _compute_evidence_grade(
         and sources is not None
     ):
         cov = _ai_coding_coverage(plan, evidence, sources)
-        if cov["has_cursor_official"] and cov["has_codex_official"] and cov["has_comparison"]:
+        if cov["has_entity_a_official"] and cov["has_entity_b_official"] and cov["has_comparison"]:
             return "Strong"
-        if cov["has_cursor_ev"] and cov["has_codex_ev"]:
+        if cov["has_entity_a_ev"] and cov["has_entity_b_ev"]:
             return "Moderate"
-        if cov["has_cursor_ev"] or cov["has_codex_ev"]:
+        if cov["has_entity_a_ev"] or cov["has_entity_b_ev"]:
             return "Weak"
         return "Insufficient"
 
@@ -823,9 +844,9 @@ def _decide_report_mode(
 
     if plan and plan.topic_intent == TOPIC_AI_CODING_TOOLS:
         cov = _ai_coding_coverage(plan, evidence, sources)
-        if not cov["has_cursor_ev"] or not cov["has_codex_ev"]:
+        if not cov["has_entity_a_ev"] or not cov["has_entity_b_ev"]:
             return "partial" if mode != "insufficient" else "insufficient"
-        if not (cov["has_cursor_official"] and cov["has_codex_official"]):
+        if not (cov["has_entity_a_official"] and cov["has_entity_b_official"]):
             return "partial"
 
     if plan and plan.topic_intent == TOPIC_PRODUCT_COMPARISON and plan.comparison_query:

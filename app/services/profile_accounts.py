@@ -545,6 +545,7 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
         from app.services.command_sandbox import initialize_command_sandbox_tables
         from app.services.context_memory import initialize_context_memory_tables
         from app.services.continuity import initialize_continuity_tables
+        from app.services.evaluation import initialize_evaluation_tables
         from app.services.files.store import initialize_workspace_file_tables
         from app.services.git.store import initialize_git_tables
         from app.services.github import initialize_github_tables
@@ -592,6 +593,7 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
             initialize_web_search_tables,
             initialize_workspace_orchestration_tables,
             initialize_continuity_tables,
+            initialize_evaluation_tables,
         ):
             initializer()
         # Seed/reconcile provider defaults while profile storage is being

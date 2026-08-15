@@ -163,7 +163,8 @@ class ToolsService:
             raise ToolValidationError("Tool call not found.")
         if call["approval_status"] != "pending":
             raise ToolValidationError("Tool call is not awaiting approval.")
-        store.update_call(call_id, {"approval_status": "approved"})
+        if store.claim_call_for_approval(call_id) is None:
+            raise ToolValidationError("Tool call is not awaiting approval.")
         return ToolCall(**self._execute(call_id))
 
     def reject_call(self, call_id: str, reason: str | None = None) -> ToolCall:

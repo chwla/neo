@@ -110,6 +110,39 @@ def list_runs(workspace_id: str | None = None, limit: int = 100) -> list[dict]:
         conn.close()
 
 
+def claim_for_execution(run_id: str, started_at: str) -> dict | None:
+    """Atomically transition one approved run to ``running``.
+
+    Checking the status and then updating it in a separate statement let concurrent
+    callers all pass the check, so a single approval authorised one execution per
+    caller. Selecting and transitioning inside ``BEGIN IMMEDIATE`` admits exactly one
+    winner and returns ``None`` to every loser -- the same pattern
+    ``consume_oauth_state`` already uses.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM workspace_command_runs WHERE id=? AND status='approved' AND approved=1",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE workspace_command_runs SET status='running', started_at=? WHERE id=?",
+            (started_at, run_id),
+        )
+        conn.commit()
+        claimed = dict(row)
+        claimed["status"] = "running"
+        claimed["started_at"] = started_at
+        return _row(claimed)
+    finally:
+        conn.close()
+
+
 def update(run_id: str, updates: dict) -> dict | None:
     values = dict(updates)
     for key in ("command", "policy_decision", "redaction_summary"):

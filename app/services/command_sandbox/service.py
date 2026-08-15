@@ -41,8 +41,12 @@ class CommandSandboxService:
         if item["status"] != "approved" or not item["approved"]:
             raise ValueError("Command execution requires explicit approval.")
         workspace = self.workspace_root(item["workspace_id"])
+        # Resolved before the claim so an invalid cwd fails without stranding the run
+        # in "running".
         cwd = self.resolve_cwd(workspace, item["cwd"])
-        item = store.update(run_id, {"status": "running", "started_at": store.now_iso()})
+        item = store.claim_for_execution(run_id, store.now_iso())
+        if item is None:
+            raise ValueError("Command execution requires explicit approval.")
         result = run(item["command"], cwd, item["timeout_ms"])
         stdout, stdout_redaction = redact_output(result["stdout_text"])
         stderr, stderr_redaction = redact_output(result["stderr_text"])

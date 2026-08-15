@@ -317,8 +317,10 @@ class CodingAgentOrchestrator:
         require_pending(action)
         run = self._run(action["coding_run_id"])
         now = store.now_iso()
-        store.update_action(action_id, {"status": "approved", "decided_at": now, "updated_at": now})
-        store.update_action(action_id, {"status": "executing", "updated_at": store.now_iso()})
+        claimed = store.claim_action_for_execution(action_id, now)
+        if claimed is None:
+            raise ValueError("This action request is no longer pending.")
+        action = claimed
         self._decide_waiting_step(run["agent_run_id"], "approved")
         try:
             result = self._execute(action, run, options)

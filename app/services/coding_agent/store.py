@@ -247,6 +247,38 @@ def update_action(action_id: str, updates: dict) -> dict | None:
     return _update("workspace_agent_action_requests", action_id, updates, ACTION_JSON, _action)
 
 
+def claim_action_for_execution(action_id: str, now: str) -> dict | None:
+    """Atomically move one pending action to ``executing``.
+
+    Checking "is it pending?" and then updating it in separate steps let every
+    concurrent approver pass the check and execute the action. Action types include
+    ``apply_patch``, so a single approval could apply the same patch to a repository
+    repeatedly. ``BEGIN IMMEDIATE`` admits exactly one winner; losers get ``None``.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM workspace_agent_action_requests WHERE id=? AND status='pending'",
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE workspace_agent_action_requests SET status='executing', decided_at=?, "
+            "updated_at=? WHERE id=?",
+            (now, now, action_id),
+        )
+        conn.commit()
+        claimed = dict(row)
+        claimed.update({"status": "executing", "decided_at": now, "updated_at": now})
+        return _action(claimed)
+    finally:
+        conn.close()
+
+
 def cancel_pending_actions(coding_run_id: str) -> None:
     now = now_iso()
     conn = _connect()

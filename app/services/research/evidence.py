@@ -22,6 +22,7 @@ from app.services.research.topic_intent import (
     ai_coding_entity_terms,
     classify_evidence_category,
     classify_topic_intent,
+    entity_index_for_category,
     is_low_quality_ai_coding_source,
     is_preferred_ai_coding_source,
     source_is_offtopic_for_ai_coding,
@@ -193,7 +194,9 @@ def filter_irrelevant_sources(
                 src.fetch_error = reject_reason
                 src.text = ""
                 continue
-            if is_low_quality_ai_coding_source(src) and not is_preferred_ai_coding_source(src):
+            if is_low_quality_ai_coding_source(src) and not is_preferred_ai_coding_source(
+                src, intent
+            ):
                 src.quality_score = max(0.0, src.quality_score - 2.0)
 
         if product_intent:
@@ -324,18 +327,20 @@ def identify_gaps(
 
     if plan.topic_intent == TOPIC_AI_CODING_TOOLS:
         tools = plan.comparison_tools or []
-        tool_evidence: dict[str, list] = {t: [] for t in tools}
+        # Categories are positional (entity A, entity B, ...), so this works for any
+        # tool name, including multi-word ones.
+        tool_evidence: dict[int, list] = {index: [] for index in range(len(tools))}
         for chunk in evidence:
             cat = chunk.evidence_category
             if cat == "comparison_evidence":
-                for t in tools:
-                    tool_evidence.setdefault(t, []).append(chunk)
-            elif cat.endswith("_evidence"):
-                slug = cat.replace("_evidence", "")
-                if slug in tool_evidence:
-                    tool_evidence[slug].append(chunk)
-        for tool in tools:
-            if not tool_evidence.get(tool):
+                for index in tool_evidence:
+                    tool_evidence[index].append(chunk)
+                continue
+            index = entity_index_for_category(cat)
+            if index is not None and index in tool_evidence:
+                tool_evidence[index].append(chunk)
+        for index, tool in enumerate(tools):
+            if not tool_evidence.get(index):
                 label = plan.normalized_entities.get(tool, tool)
                 gaps.append(f"Missing {label}-specific evidence")
         if not any(c.evidence_category == "comparison_evidence" for c in evidence):
@@ -409,7 +414,7 @@ def _extract_from_source(
             evidence_category = classify_evidence_category(para, source, intent)
             if evidence_category == "irrelevant":
                 continue
-            if is_preferred_ai_coding_source(source):
+            if is_preferred_ai_coding_source(source, intent):
                 quality_boost = 1.5
         elif plan.comparison_query and plan.normalized_entities:
             evidence_category = _classify_generic_comparison_evidence(para, source, plan)

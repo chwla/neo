@@ -11,13 +11,14 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from app.core.config import get_settings
-from app.services.search.security import is_public_http_url
+from app.services.search.security import public_http_addresses
 from app.services.search.types import (
     EvidenceChunk,
     FetchedPage,
     QueryRelevanceProfile,
     SearchResult,
 )
+from app.services.tools.security import pin_addresses
 
 SUPPORTED_CONTENT_TYPES = {
     "application/json",
@@ -323,22 +324,30 @@ class WebPageFetcher:
         response: requests.Response | None = None
         try:
             for _ in range(6):
-                if not self._allowed_url(current):
+                approved = self._approved_addresses(current)
+                if approved is None:
                     return FetchedPage(
                         url=current,
                         domain=urlparse(current).netloc or domain,
                         error="Blocked unsafe redirect.",
                     )
-                response = requests.get(
-                    current,
-                    headers={
-                        "User-Agent": self.user_agent,
-                        "Accept": "text/html,application/xhtml+xml,text/plain,application/json",
-                    },
-                    stream=True,
-                    timeout=self.timeout_seconds,
-                    allow_redirects=False,
-                )
+                # Search results are attacker-influenced, so this path is at least as
+                # exposed to DNS rebinding as user-configured connectors: connect only
+                # to the addresses this URL was just validated against.
+                host = (urlparse(current).hostname or "").rstrip(".").lower()
+                with pin_addresses(host, approved):
+                    response = requests.get(
+                        current,
+                        headers={
+                            "User-Agent": self.user_agent,
+                            "Accept": (
+                                "text/html,application/xhtml+xml,text/plain,application/json"
+                            ),
+                        },
+                        stream=True,
+                        timeout=self.timeout_seconds,
+                        allow_redirects=False,
+                    )
                 if getattr(response, "status_code", 200) not in {301, 302, 303, 307, 308}:
                     break
                 location = response.headers.get("location")
@@ -425,13 +434,22 @@ class WebPageFetcher:
         return page
 
     def _allowed_url(self, url: str) -> bool:
+        return self._approved_addresses(url) is not None
+
+    def _approved_addresses(self, url: str):
+        """Validated public addresses for ``url``, or ``None`` when it must not be fetched.
+
+        One resolution serves both the decision and the pin, so there is no window in
+        which the address that was approved differs from the one connected to.
+        """
+
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return False
+            return None
         path = parsed.path.lower()
         if path.endswith(UNSUPPORTED_EXTENSIONS):
-            return False
-        return is_public_http_url(url)
+            return None
+        return public_http_addresses(url)
 
 
 def fetch_pages(results: list[SearchResult], max_pages: int) -> list[FetchedPage]:

@@ -471,6 +471,38 @@ def update_call(call_id: str, updates: dict) -> dict | None:
     return _update("workspace_tool_calls", call_id, updates, _CALL_JSON, get_call)
 
 
+def claim_call_for_approval(call_id: str) -> dict | None:
+    """Atomically move one pending call to ``approved``.
+
+    Reading the call, checking ``approval_status`` and updating it in separate steps let
+    every concurrent approver pass the check, so one approval could fire a connector
+    write repeatedly -- and those side effects leave the machine. Selecting and
+    transitioning inside ``BEGIN IMMEDIATE`` admits exactly one winner, following
+    ``consume_oauth_state``.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM workspace_tool_calls WHERE id=? AND approval_status='pending'",
+            (call_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE workspace_tool_calls SET approval_status='approved' WHERE id=?",
+            (call_id,),
+        )
+        conn.commit()
+        claimed = dict(row)
+        claimed["approval_status"] = "approved"
+        return _call(claimed)
+    finally:
+        conn.close()
+
+
 def upsert_connector_credential(item: dict) -> dict:
     now = item.get("created_at") or now_iso()
     values = {
