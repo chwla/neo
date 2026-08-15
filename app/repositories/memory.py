@@ -217,7 +217,10 @@ class MemoryRepository:
         else:
             statement = statement.where(
                 (MemoryRecord.scope_type == "global")
-                | ((MemoryRecord.scope_type == "project") & (MemoryRecord.scope_project_id == project_id))
+                | (
+                    (MemoryRecord.scope_type == "project")
+                    & (MemoryRecord.scope_project_id == project_id)
+                )
             )
         return statement
 
@@ -249,7 +252,13 @@ class MemoryRepository:
         if project_id is None:
             conditions.append(MemoryRecord.scope_type == "global")
         else:
-            conditions.append((MemoryRecord.scope_type == "global") | ((MemoryRecord.scope_type == "project") & (MemoryRecord.scope_project_id == project_id)))
+            conditions.append(
+                (MemoryRecord.scope_type == "global")
+                | (
+                    (MemoryRecord.scope_type == "project")
+                    & (MemoryRecord.scope_project_id == project_id)
+                )
+            )
         inactive = self._session.scalar(
             select(func.count())
             .select_from(MemoryRecord)
@@ -302,7 +311,9 @@ class MemoryRepository:
     ) -> MemoryRecord | None:
         identifier = canonical_uuid(memory_id)
         return self._session.scalar(
-            self.eligible_records_statement(now=now, project_id=project_id).where(MemoryRecord.id == identifier)
+            self.eligible_records_statement(now=now, project_id=project_id).where(
+                MemoryRecord.id == identifier
+            )
         )
 
     def get_owner_record_any_lifecycle(self, memory_id: str) -> MemoryRecord | None:
@@ -365,7 +376,9 @@ class MemoryRepository:
             return []
         if len(slots) > 50 or not 1 <= limit <= 100:
             raise ValueError("trusted_slot_query_out_of_range")
-        statement = self.eligible_records_statement(now=now, project_id=project_id).where(MemoryRecord.slot_key.in_(slots))
+        statement = self.eligible_records_statement(now=now, project_id=project_id).where(
+            MemoryRecord.slot_key.in_(slots)
+        )
         return list(
             self._session.scalars(
                 statement.order_by(

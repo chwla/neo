@@ -15,10 +15,10 @@ from app.services.profile_accounts import (
     create_profile_session,
     delete_guest,
     delete_profile,
+    list_profiles,
     profile_for_session,
     revoke_profile_session,
     revoke_profile_sessions,
-    list_profiles,
 )
 
 router = APIRouter(prefix="/account-profiles", tags=["account profiles"])
@@ -58,7 +58,9 @@ def _start_session(response: Response, profile: dict) -> None:
         token = secrets.token_urlsafe(32)
         with _session_lock:
             _sessions[token] = profile
-        response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False, path="/")
+        response.set_cookie(
+            SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False, path="/"
+        )
         return
     token = create_profile_session(profile)
     response.set_cookie(

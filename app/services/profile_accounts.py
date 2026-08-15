@@ -398,7 +398,9 @@ def revoke_profile_session(token: str) -> None:
     initialize_profile_registry()
     conn = _connect_registry()
     try:
-        conn.execute("DELETE FROM profile_sessions WHERE token_hash = ?", (_session_token_hash(token),))
+        conn.execute(
+            "DELETE FROM profile_sessions WHERE token_hash = ?", (_session_token_hash(token),)
+        )
         conn.commit()
     finally:
         conn.close()
@@ -549,8 +551,8 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
         from app.services.files.store import initialize_workspace_file_tables
         from app.services.git.store import initialize_git_tables
         from app.services.github import initialize_github_tables
-        from app.services.llm_registry.store import initialize_llm_registry_tables
         from app.services.llm_registry.service import LLMRegistryService
+        from app.services.llm_registry.store import initialize_llm_registry_tables
         from app.services.lsp import initialize_lsp_tables
         from app.services.memory_retrieval import initialize_memory_retrieval_tables
         from app.services.notes.store import initialize_notes_tables

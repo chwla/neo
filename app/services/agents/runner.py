@@ -20,7 +20,6 @@ from app.services.patches import PatchProposalRequest, PatchProposalService
 from app.services.rules.resolver import RuleResolver
 from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.tasks import TasksService
-from app.services.test_runner.service import TestRunnerContextService
 from app.services.web_search import WebSearchService
 
 
@@ -220,6 +219,10 @@ class AgentRunner:
                 )
 
     def _read_context(self, run: dict) -> str:
+        # Deferred: app.services.test_runner.service imports app.services.agents, so a
+        # module-level import here makes the cycle depend on which side is imported first.
+        from app.services.test_runner.service import TestRunnerContextService
+
         tasks_service = TasksService()
         result = tasks_service.read_task(run["task_id"])
         if result is None:

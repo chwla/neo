@@ -92,7 +92,11 @@ def _scope(payload: MemoryCreateRequest, db: Session) -> tuple[str, str | None, 
         return "global", None, None
     if not payload.project_id:
         raise HTTPException(status_code=422, detail="project_scope_requires_project")
-    project = db.scalar(select(Project).where(Project.id == int(payload.project_id))) if payload.project_id.isdigit() else None
+    project = (
+        db.scalar(select(Project).where(Project.id == int(payload.project_id)))
+        if payload.project_id.isdigit()
+        else None
+    )
     if project is None:
         raise HTTPException(status_code=422, detail="project_scope_project_not_found")
     return "project", str(project.id), project.name
@@ -101,8 +105,16 @@ def _scope(payload: MemoryCreateRequest, db: Session) -> tuple[str, str | None, 
 def _scope_response(row: MemoryRecord | MemoryCandidate | None, db: Session) -> dict[str, Any]:
     if row is None or row.scope_type != "project" or not row.scope_project_id:
         return {"type": "global"}
-    project = db.scalar(select(Project).where(Project.id == int(row.scope_project_id))) if row.scope_project_id.isdigit() else None
-    return {"type": "project", "project_id": row.scope_project_id, "project_name": project.name if project else "Deleted project"}
+    project = (
+        db.scalar(select(Project).where(Project.id == int(row.scope_project_id)))
+        if row.scope_project_id.isdigit()
+        else None
+    )
+    return {
+        "type": "project",
+        "project_id": row.scope_project_id,
+        "project_name": project.name if project else "Deleted project",
+    }
 
 
 def _default_slot(payload: MemoryCreateRequest, mutation_id: str) -> tuple[str, Cardinality]:

@@ -335,13 +335,16 @@ def build_candidate(
         for retraction in group_retractions
         for span in retraction.source_spans
     )
+    project_scoped = bool(
+        request.active_project_id and proposal.memory_type_hint is MemoryType.PROJECT
+    )
     candidate = ValidatedCandidateProposal(
         proposal_id=candidate_id,
         intent=CandidateIntent.REPLACE if group_retractions else CandidateIntent.ASSERT,
         subject_key="user",
         memory_type=proposal.memory_type_hint,
-        scope_type=("project" if request.active_project_id and proposal.memory_type_hint is MemoryType.PROJECT else "global"),
-        scope_project_id=(request.active_project_id if request.active_project_id and proposal.memory_type_hint is MemoryType.PROJECT else None),
+        scope_type="project" if project_scoped else "global",
+        scope_project_id=request.active_project_id if project_scoped else None,
         domain_key=domain,
         slot_key=slot_key,
         cardinality=cardinality,

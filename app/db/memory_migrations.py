@@ -114,13 +114,19 @@ def _revision_checksum(revision: str) -> str:
         material = "\n".join(
             (
                 revision,
-                "ALTER TABLE memory_records ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+                "ALTER TABLE memory_records ADD COLUMN scope_type VARCHAR(16) "
+                "NOT NULL DEFAULT 'global'",
                 "ALTER TABLE memory_records ADD COLUMN scope_project_id VARCHAR(80)",
-                "ALTER TABLE memory_candidates ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'",
+                "ALTER TABLE memory_candidates ADD COLUMN scope_type VARCHAR(16) "
+                "NOT NULL DEFAULT 'global'",
                 "ALTER TABLE memory_candidates ADD COLUMN scope_project_id VARCHAR(80)",
                 "DROP INDEX uq_memory_records_active_exclusive_slot",
-                "CREATE UNIQUE INDEX uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'",
-                "CREATE INDEX ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)",
+                "CREATE UNIQUE INDEX uq_memory_records_active_exclusive_slot "
+                "ON memory_records (owner_id, scope_type, scope_project_id, subject_key, "
+                "memory_type, domain_key, slot_key) "
+                "WHERE status = 'active' AND cardinality = 'exclusive'",
+                "CREATE INDEX ix_memory_records_owner_scope ON memory_records "
+                "(owner_id, status, scope_type, scope_project_id)",
             )
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -336,7 +342,8 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
             if "scope_type" not in columns:
                 connection.execute(
                     text(
-                        f"ALTER TABLE {table_name} ADD COLUMN scope_type VARCHAR(16) NOT NULL DEFAULT 'global'"
+                        f"ALTER TABLE {table_name} ADD COLUMN scope_type "
+                        "VARCHAR(16) NOT NULL DEFAULT 'global'"
                     )
                 )
             if "scope_project_id" not in columns:
@@ -346,12 +353,16 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
         connection.execute(text("DROP INDEX IF EXISTS uq_memory_records_active_exclusive_slot"))
         connection.execute(
             text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_records_active_exclusive_slot ON memory_records (owner_id, scope_type, scope_project_id, subject_key, memory_type, domain_key, slot_key) WHERE status = 'active' AND cardinality = 'exclusive'"
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_records_active_exclusive_slot "
+                "ON memory_records (owner_id, scope_type, scope_project_id, subject_key, "
+                "memory_type, domain_key, slot_key) "
+                "WHERE status = 'active' AND cardinality = 'exclusive'"
             )
         )
         connection.execute(
             text(
-                "CREATE INDEX IF NOT EXISTS ix_memory_records_owner_scope ON memory_records (owner_id, status, scope_type, scope_project_id)"
+                "CREATE INDEX IF NOT EXISTS ix_memory_records_owner_scope "
+                "ON memory_records (owner_id, status, scope_type, scope_project_id)"
             )
         )
         connection.execute(

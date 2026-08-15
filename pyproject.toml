@@ -34,6 +34,21 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# tests/ is currently absent, so pytest falls back to scanning the repo root. Keep that
+# scan out of application code: app/api/routes/test_runner.py is a route module, not a
+# test, and importing it as one trips an import cycle that never occurs in normal use.
+norecursedirs = [
+    ".*",
+    "app",
+    "build",
+    "data",
+    "dist",
+    "frontend",
+    "node_modules",
+    "profiles",
+    "venv",
+    "*.egg-info",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
