@@ -2141,3 +2141,13 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-align: left;
 }
 .task-tags-input { width: 100%; min-height: 34px; padding: 7px 9px; }
+
+/* Stop control: same footprint as the send button so the composer does not shift. */
+.chat-input-form .stop-button {
+  border-color: var(--neo-danger);
+  background: transparent;
+  color: var(--neo-danger);
+}
+.chat-input-form .stop-button svg { width: 14px; height: 14px; fill: currentColor; }
+.chat-input-form .stop-button:hover:not(:disabled) { background: var(--neo-danger); color: var(--neo-bg); }
+.chat-input-form .stop-button:disabled { opacity: .5; }

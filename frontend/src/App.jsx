@@ -661,6 +661,9 @@ function ChatComposer({
   onRemoveAttachment,
   attaching = false,
   attachError = "",
+  generating = false,
+  onStop,
+  stopping = false,
 }) {
   const textareaRef = useRef(null);
   const attachInputRef = useRef(null);
@@ -816,8 +819,23 @@ function ChatComposer({
                 aria-label="Start Agent" title="Start Agent">Start</NeoButton>
             </div>
           ) : (
-            <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
-              aria-label="Send message" title="Send message">{"\u2191"}</NeoButton>
+            generating ? (
+              <button
+                type="button"
+                className="send-button stop-button"
+                onClick={onStop}
+                disabled={stopping}
+                aria-label="Stop generating"
+                title="Stop generating"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                </svg>
+              </button>
+            ) : (
+              <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
+                aria-label="Send message" title="Send message">{"\u2191"}</NeoButton>
+            )
           )}
         </form>
         {mode === "agent" && !value.trim() ? (
@@ -1544,6 +1562,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [streamingAssistant, setStreamingAssistant] = useState(null);
   const [generationChatId, setGenerationChatId] = useState(null);
   const [activeGenerationId, setActiveGenerationId] = useState(null);
@@ -1717,6 +1736,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           if (!cancelled) {
             setActiveGenerationId(null);
             setSending(false);
+            setStopping(false);
+            setGenerationStartedAt(null);
+            setGenerationChatId(null);
+            setStreamingAssistant(null);
+            await refreshSidebar();
+          }
+          return;
+        }
+        if (generation.status === "cancelled") {
+          await loadChat(activeChat.id, { history: "none" });
+          if (!cancelled) {
+            setActiveGenerationId(null);
+            setSending(false);
+            setStopping(false);
             setGenerationStartedAt(null);
             setGenerationChatId(null);
             setStreamingAssistant(null);
@@ -2157,6 +2190,18 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     return `${prompt}\n\n${blocks.join("\n\n")}`;
   }
 
+  async function handleStopGeneration() {
+    if (!activeGenerationId || !activeChat?.id || stopping) return;
+    setStopping(true);
+    try {
+      await api.cancelChatGeneration(activeChat.id, activeGenerationId);
+      // The poll loop sees "cancelled" and tears the streaming state down.
+    } catch (error) {
+      setStopping(false);
+      setStatusError(`Could not stop the response: ${errorMessage(error)}`);
+    }
+  }
+
   async function handleSendMessage(event) {
     event.preventDefault();
     const prompt = composerValue.trim();
@@ -2500,6 +2545,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         </section>
 
         <ChatComposer
+          generating={sending && Boolean(activeGenerationId)}
+          onStop={handleStopGeneration}
+          stopping={stopping}
           attachments={chatAttachments}
           onAttachFiles={handleAttachFiles}
           onRemoveAttachment={handleRemoveAttachment}

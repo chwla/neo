@@ -530,6 +530,34 @@ def _update_leased_generation(
     return True
 
 
+def _persist_cancelled_partial(
+    db, generation_id: str, partial_response: str, thinking: str
+) -> None:
+    """Save a stopped response so the user keeps what had already been written."""
+
+    generation = db.get(ChatGeneration, generation_id)
+    if generation is None or generation.status != "cancelled":
+        return
+    if generation.assistant_message_id or not partial_response.strip():
+        return
+    message = ChatMessage(
+        chat_id=generation.chat_id,
+        role="assistant",
+        content=partial_response,
+        thinking=thinking or None,
+        finish_reason="cancelled",
+        generation_id=generation.id,
+        provider_name=generation.provider_name,
+        model_name=generation.model_name,
+    )
+    db.add(message)
+    db.flush()
+    generation.assistant_message_id = message.id
+    generation.reply = partial_response
+    generation.partial_response = partial_response
+    db.commit()
+
+
 def _run_chat_generation(profile: dict, generation_id: str) -> None:
     """Finish a response independently of the browser connection."""
 
@@ -629,6 +657,9 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                     lease_token,
                     **values,
                 ):
+                    # The lease is gone. If the user stopped this response, keep the text
+                    # generated so far instead of discarding it.
+                    _persist_cancelled_partial(db, generation_id, partial_response, thinking)
                     return
 
             generation = db.get(ChatGeneration, generation_id)
@@ -939,6 +970,34 @@ def get_chat_generation(
         raise HTTPException(status_code=404, detail="Chat generation not found")
     _recover_generation(request, store, generation)
     store.db.refresh(generation)
+    return _generation_read(generation)
+
+
+@router.post(
+    "/chats/{chat_id}/generations/{generation_id}/cancel", response_model=ChatGenerationRead
+)
+def cancel_chat_generation(
+    chat_id: int,
+    generation_id: str,
+    store: StoreDependency,
+) -> ChatGenerationRead:
+    """Stop an in-flight response.
+
+    Flipping the row out of "running" is enough: every worker write is guarded by a lease
+    that requires that status, so the worker gives up at its next event rather than being
+    killed mid-write.
+    """
+    _get_required_chat(store, chat_id)
+    ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+    generation = store.db.get(ChatGeneration, generation_id)
+    if generation is None or generation.chat_id != chat_id:
+        raise HTTPException(status_code=404, detail="Chat generation not found")
+    if generation.status in {"queued", "running"}:
+        generation.status = "cancelled"
+        generation.status_detail = "Stopped"
+        generation.completed_at = datetime.now(UTC)
+        store.db.commit()
+        store.db.refresh(generation)
     return _generation_read(generation)
 
 

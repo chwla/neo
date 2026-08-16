@@ -552,6 +552,8 @@ export const api = {
   activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
   chatGeneration: (chatId, generationId) =>
     request(`/chats/${chatId}/generations/${generationId}`),
+  cancelChatGeneration: (chatId, generationId) =>
+    request(`/chats/${chatId}/generations/${generationId}/cancel`, { method: "POST" }),
   llms: () => request("/llms"),
   selectLlm: (id) =>
     request("/llms/active/select", { method: "PUT", body: JSON.stringify({ id }) }),
