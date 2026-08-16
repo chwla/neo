@@ -37,7 +37,10 @@ class Settings(BaseSettings):
     openai_compat_api_key_ref: str = Field(default="OPENAI_API_KEY")
     openai_compat_model: str = Field(default="")
     chat_timeout_seconds: int = Field(default=240)
-    chat_num_predict: int = Field(default=512)
+    # Reasoning models spend part of this budget thinking before they emit any answer:
+    # gemma4 uses ~550 tokens on reasoning alone, so a 512 budget hit the cap before
+    # writing a word and every retry repeated it.
+    chat_num_predict: int = Field(default=2048)
     chat_history_turns: int = Field(default=8, ge=1, le=24)
     llm_config_path: str = Field(default="neo_llms.json")
     workspace_files_dir: str = Field(default="data/workspace_files")
@@ -48,7 +51,7 @@ class Settings(BaseSettings):
     workspace_repo_max_file_bytes: int = Field(default=1024 * 1024, ge=1)
     workspace_file_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
     workspace_extracted_text_max_chars: int = Field(default=500_000, ge=1)
-    simple_chat_num_predict: int = Field(default=256)
+    simple_chat_num_predict: int = Field(default=1024)
     default_timezone: str = Field(default="UTC")
     memory_enabled: bool = Field(default=True)
     memory_extraction_enabled: bool = Field(default=True)

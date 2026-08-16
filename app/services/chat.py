@@ -1288,12 +1288,13 @@ class NeoChatService:
                 ]
                 continuation = ""
                 continuation_metadata: dict[str, Any] = {}
+                # Grow the budget each round. Repeating the same cap makes a model that
+                # overspends on reasoning fail identically every time.
+                retry_budget = min(output_budget * (continuation_count + 1), 8192)
                 for event in self.ollama.chat_stream(
                     continuation_messages,
                     temperature=0.2,
-                    # Continuing with the default cap starves a long answer: the first
-                    # call may be allowed 2500 tokens and every continuation only 512.
-                    num_predict=output_budget,
+                    num_predict=retry_budget,
                 ):
                     if event["type"] == "chunk":
                         continuation += str(event.get("content") or "")
@@ -2786,7 +2787,7 @@ class NeoChatService:
                 ),
             ]
             result = self.ollama.chat_with_metadata(
-                follow_up, temperature=0.2, num_predict=num_predict
+                follow_up, temperature=0.2, num_predict=min(num_predict * (attempts + 1), 8192)
             )
             content = _append_without_overlap(content, result.content)
             prompt_tokens += result.prompt_tokens or 0
