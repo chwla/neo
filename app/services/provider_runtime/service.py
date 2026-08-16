@@ -13,7 +13,7 @@ from app.services.provider_runtime.budget import context_check, estimate_tokens
 from app.services.provider_runtime.errors import safe_error
 from app.services.provider_runtime.health import check
 from app.services.provider_runtime.rate_limits import decision
-from app.services.provider_runtime.redaction import safe_value
+from app.services.provider_runtime.redaction import safe_stream_text, safe_value
 from app.services.provider_runtime.retries import MAX_RETRIES, backoff_ms, retryable
 from app.services.provider_runtime.router import select
 from app.services.provider_runtime.streaming import cancel, clear, start
@@ -286,15 +286,13 @@ class ProviderRuntimeService:
     def _partial(self, request_id: str, partial: str) -> None:
         current = store.get_request(request_id) or {}
         metadata = current.get("metadata") or {}
-        safe, _ = safe_value(partial)
-        metadata["partial_response"] = safe
+        metadata["partial_response"] = safe_stream_text(partial)
         store.update_request(request_id, metadata=metadata)
 
     def _thinking(self, request_id: str, thinking: str) -> None:
         current = store.get_request(request_id) or {}
         metadata = current.get("metadata") or {}
-        safe, _ = safe_value(thinking)
-        metadata["thinking"] = safe
+        metadata["thinking"] = safe_stream_text(thinking)
         store.update_request(request_id, metadata=metadata)
 
     def _finish(
@@ -318,8 +316,7 @@ class ProviderRuntimeService:
         if partial is not None:
             metadata["partial_response"] = partial
         if thinking:
-            safe_thinking, _ = safe_value(thinking)
-            metadata["thinking"] = safe_thinking
+            metadata["thinking"] = safe_stream_text(thinking)
         if finish_reason:
             metadata["finish_reason"] = finish_reason
         store.update_request(

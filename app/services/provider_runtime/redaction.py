@@ -9,6 +9,8 @@ _SECRET = re.compile(
 )
 _ABS_PATH = re.compile(r"(?:/Users/[^\s]+|/home/[^\s]+|[A-Za-z]:\\[^\s]+)")
 _SENSITIVE_KEYS = {"api_key", "secret", "token", "authorization", "cookie", "password", "headers"}
+#: Generous ceiling for a streamed answer; it exists only to bound the audit row.
+_STREAM_LIMIT = 400_000
 
 
 def safe_text(value: Any, limit: int = 4_000) -> tuple[str, dict[str, int | bool]]:
@@ -22,6 +24,20 @@ def safe_text(value: Any, limit: int = 4_000) -> tuple[str, dict[str, int | bool
         "secret_redactions": secrets,
         "path_redactions": paths,
     }
+
+
+def safe_stream_text(value: Any) -> str:
+    """Redact a streamed answer without reshaping it.
+
+    ``safe_text`` exists for audit metadata: it collapses whitespace and clips at 4 000
+    characters. Applying it to the user-facing answer truncated long replies mid-word and
+    flattened every newline, so markdown arrived as one unbroken paragraph. Secrets and
+    absolute paths are still removed here; nothing else about the text changes.
+    """
+    raw = str(value or "")
+    text = _SECRET.sub("[REDACTED]", raw)
+    text = _ABS_PATH.sub("[workspace path]", text)
+    return text[:_STREAM_LIMIT]
 
 
 def safe_value(value: Any) -> tuple[Any, dict[str, int | bool]]:

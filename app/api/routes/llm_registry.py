@@ -58,6 +58,17 @@ def delete_provider(provider_id: str) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/providers/{provider_id}/discover")
+def discover_provider_models(provider_id: str) -> dict:
+    """Register any model the provider already serves that the registry is missing."""
+    try:
+        return _service().discover_provider_models(provider_id)
+    except ConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (ValueError, LookupError) as exc:
+        _raise(exc)
+
+
 @router.get("/models")
 def list_models(provider_id: str | None = None) -> dict:
     items = _service().list_models(provider_id)

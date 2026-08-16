@@ -25,7 +25,7 @@ from app.services.coding_agent.service import CodingAgentService
 from app.services.context import ContextPackage
 from app.services.files.service import WorkspaceFilesService
 from app.services.git.service import GitContextService
-from app.services.llm import ChatTurn, LLMClient, LLMMessage
+from app.services.llm import ChatTurn, LLMChatResult, LLMClient, LLMMessage
 from app.services.memory.contracts import SourceKind
 from app.services.memory.direct_answer import DirectMemoryAnswerService
 from app.services.memory.extraction_contracts import (
@@ -606,9 +606,8 @@ class NeoChatService:
         route_name = "web_search" if web_context.needed else "chat"
         trace_id = None
         try:
-            result = self.ollama.chat_with_metadata(
+            result = self._generate_complete(
                 messages,
-                temperature=0.2,
                 num_predict=self._num_predict(prompt, context),
             )
             if web_context.citations and not self._has_web_citation_marker(
@@ -1241,15 +1240,21 @@ class NeoChatService:
         buffer_for_validation = bool(web_context.needed)
         if buffer_for_validation:
             yield {"type": "status", "content": "Reading and validating evidence"}
+        output_budget = self._num_predict(prompt, context)
+        # What the client has actually received. Continuation text is accumulated but not
+        # streamed, so this is the only reliable way to know whether the browser is showing
+        # the whole answer or just the first call's output.
+        streamed_reply = ""
         try:
             for event in self.ollama.chat_stream(
                 messages,
                 temperature=0.2,
-                num_predict=self._num_predict(prompt, context),
+                num_predict=output_budget,
             ):
                 if event["type"] == "chunk":
                     raw_reply += event["content"]
                     if not buffer_for_validation:
+                        streamed_reply += event["content"]
                         yield event
                     continue
                 if event["type"] == "thinking":
@@ -1264,9 +1269,15 @@ class NeoChatService:
                     "type": "status",
                     "content": "Continuing a response that reached the model limit",
                 }
+                # An assistant turn with no text carries nothing to continue from, and some
+                # providers reject empty turns outright.
                 continuation_messages = [
                     *messages,
-                    LLMMessage(role="assistant", content=raw_reply),
+                    *(
+                        [LLMMessage(role="assistant", content=raw_reply)]
+                        if raw_reply.strip()
+                        else []
+                    ),
                     LLMMessage(
                         role="user",
                         content=(
@@ -1280,7 +1291,9 @@ class NeoChatService:
                 for event in self.ollama.chat_stream(
                     continuation_messages,
                     temperature=0.2,
-                    num_predict=self.settings.chat_num_predict,
+                    # Continuing with the default cap starves a long answer: the first
+                    # call may be allowed 2500 tokens and every continuation only 512.
+                    num_predict=output_budget,
                 ):
                     if event["type"] == "chunk":
                         continuation += str(event.get("content") or "")
@@ -1367,7 +1380,7 @@ class NeoChatService:
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
         memory_extraction = {"status": "scheduled", "source_message_id": str(routing_message_id)}
-        if buffer_for_validation or reply != raw_reply:
+        if buffer_for_validation or reply != streamed_reply:
             yield {"type": "replace", "content": reply}
         thinking = (
             final_metadata.get("thinking")
@@ -2716,7 +2729,84 @@ class NeoChatService:
             "final_answer_included_sources": bool(final_answer and "Sources:" in final_answer),
         }
 
+    #: Tokens an English word costs. Measured against local models: a 1500-word answer
+    #: ran ~2400 tokens on qwen3-coder and overran 2550 on the wordier gemma4, so this
+    #: carries deliberate headroom. Overshooting costs nothing -- generation stops at the
+    #: end of the answer -- while undershooting truncates mid-sentence.
+    _TOKENS_PER_WORD = 2.3
+    #: Ceiling for an explicitly requested length, so one prompt cannot exhaust the context.
+    _MAX_REQUESTED_PREDICT = 6144
+
+    @staticmethod
+    def _requested_output_tokens(prompt: str) -> int | None:
+        """Tokens needed for an explicit length request such as "in about 1500 words".
+
+        Without this every long-form request is capped at ``chat_num_predict`` and comes
+        back truncated no matter how many continuations run.
+        """
+        match = re.search(r"\b(\d{2,5})\s*[- ]?\s*words?\b", prompt.lower())
+        if not match:
+            return None
+        words = int(match.group(1))
+        if words < 50:
+            return None
+        return int(
+            min(words * NeoChatService._TOKENS_PER_WORD, NeoChatService._MAX_REQUESTED_PREDICT)
+        )
+
+    def _generate_complete(
+        self, messages: list[LLMMessage], *, num_predict: int
+    ) -> LLMChatResult:
+        """Generate, continuing when the model stops because it hit the output limit.
+
+        The streaming path already does this. Without it here a long answer comes back
+        silently truncated mid-word, because the caller has no way to tell a finished
+        answer from one that ran out of room.
+        """
+        result = self.ollama.chat_with_metadata(
+            messages, temperature=0.2, num_predict=num_predict
+        )
+        content = result.content
+        prompt_tokens = result.prompt_tokens or 0
+        completion_tokens = result.completion_tokens or 0
+        duration_ms = result.duration_ms or 0
+
+        attempts = 0
+        while result.finish_reason == "length" and attempts < 2:
+            attempts += 1
+            follow_up = [
+                *messages,
+                *([LLMMessage(role="assistant", content=content)] if content.strip() else []),
+                LLMMessage(
+                    role="user",
+                    content=(
+                        "Continue the same answer exactly where it stopped. "
+                        "Do not repeat earlier text. Finish the requested answer."
+                    ),
+                ),
+            ]
+            result = self.ollama.chat_with_metadata(
+                follow_up, temperature=0.2, num_predict=num_predict
+            )
+            content = _append_without_overlap(content, result.content)
+            prompt_tokens += result.prompt_tokens or 0
+            completion_tokens += result.completion_tokens or 0
+            duration_ms += result.duration_ms or 0
+
+        return result.model_copy(
+            update={
+                "content": content,
+                "prompt_tokens": prompt_tokens or None,
+                "completion_tokens": completion_tokens or None,
+                "total_tokens": (prompt_tokens + completion_tokens) or None,
+                "duration_ms": duration_ms or None,
+            }
+        )
+
     def _num_predict(self, prompt: str, context: ContextPackage) -> int:
+        requested = self._requested_output_tokens(prompt)
+        if requested:
+            return max(requested, self.settings.chat_num_predict)
         has_memory = bool(
             context.profile
             or context.preferences

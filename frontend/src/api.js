@@ -572,6 +572,8 @@ export const api = {
   deleteLlmProvider: (id) => request(`/llm/providers/${encodeURIComponent(id)}`, {
     method: "DELETE",
   }),
+  discoverLlmModels: (providerId) =>
+    request(`/llm/providers/${encodeURIComponent(providerId)}/discover`, { method: "POST" }),
   llmModels: (providerId = "") => request(
     `/llm/models${providerId ? `?provider_id=${encodeURIComponent(providerId)}` : ""}`,
   ),

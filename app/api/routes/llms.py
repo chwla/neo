@@ -30,6 +30,11 @@ def _registry() -> LLMRegistry:
 
 @router.get("", response_model=LLMListResponse)
 def list_llms() -> LLMListResponse:
+    # The chat picker is the one LLM endpoint normal use always hits, so initialise the
+    # registry here too. Otherwise a profile only discovers its Ollama models once someone
+    # opens Settings, and a newly pulled model stays invisible in chat. Both the stored
+    # marker and the in-process guard keep this to a single attempt per provider.
+    LLMRegistryService()
     configs, active_id = _registry().list()
     return LLMListResponse(active_id=active_id, llms=[item.public_dict() for item in configs])
 
@@ -54,7 +59,10 @@ def select_active_llm(request: ActiveLLMRequest) -> LLMListResponse:
         configs, active_id = registry.select(request.id)
     except (ValueError, LookupError, RuntimeError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    LLMRegistryService().ensure_defaults()
+    service = LLMRegistryService()
+    selected = next((item for item in configs if item.id == active_id), None)
+    if selected is not None:
+        service.bind_chat_route(selected.model, selected.base_url)
     return LLMListResponse(active_id=active_id, llms=[item.public_dict() for item in configs])
 
 

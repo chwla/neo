@@ -8,7 +8,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from app.core.config import get_settings
+from app.services.llm import LLMConfig, LLMRegistry
 from app.services.llm_registry import store
 from app.services.llm_registry.types import (
     ModelCreate,
@@ -17,6 +20,10 @@ from app.services.llm_registry.types import (
     ProviderUpdate,
     RouteUpdate,
 )
+
+# Providers already attempted in this process, so an unreachable Ollama costs one
+# short timeout per provider per process rather than one per request.
+_DISCOVERY_ATTEMPTED: set[str] = set()
 
 DEFAULT_ROUTES = (
     "chat",
@@ -126,6 +133,34 @@ class LLMRegistryService:
                 )
         self._refresh_environment_default()
         self._migrate_legacy_json()
+        self._autodiscover_once()
+
+    def _autodiscover_once(self) -> None:
+        """Register whatever the local Ollama already serves, once per provider.
+
+        Without this a user who pulls a new model has to find the Sync button before it
+        appears anywhere in Neo. Failures are silent: discovery is a convenience, and a
+        stopped Ollama must never stop the registry from initialising.
+        """
+        settings = get_settings()
+        for provider in self.list_providers():
+            if provider.get("provider_type") != "ollama" or not provider.get("enabled"):
+                continue
+            metadata = provider.get("metadata") or {}
+            if metadata.get("discovery_completed"):
+                continue
+            key = f"{settings.database_url}::{provider['id']}"
+            if key in _DISCOVERY_ATTEMPTED:
+                continue
+            _DISCOVERY_ATTEMPTED.add(key)
+            try:
+                self.discover_provider_models(provider["id"], timeout=2)
+            except Exception:  # noqa: BLE001 - convenience path, never fatal
+                continue
+            self.update_provider(
+                provider["id"],
+                ProviderUpdate(metadata={**metadata, "discovery_completed": True}),
+            )
 
     def _refresh_environment_default(self) -> None:
         """Keep only automatically-created Ollama defaults aligned with the container.
@@ -176,6 +211,19 @@ class LLMRegistryService:
                     ),
                 )
 
+    def _already_served(self, legacy: dict[str, Any]) -> bool:
+        """True when some registered provider on the same endpoint already has this model."""
+        model_name = str(legacy.get("model") or "").strip()
+        base_url = str(legacy.get("base_url") or "").rstrip("/")
+        if not model_name or not base_url:
+            return False
+        for provider in self.list_providers():
+            if str(provider.get("base_url") or "").rstrip("/") != base_url:
+                continue
+            if any(item["model_name"] == model_name for item in self.list_models(provider["id"])):
+                return True
+        return False
+
     def _migrate_legacy_json(self) -> None:
         path = Path(get_settings().llm_config_path)
         if not path.is_file():
@@ -210,6 +258,10 @@ class LLMRegistryService:
                 continue
             provider_type = str(legacy.get("provider") or "ollama")
             if provider_type not in {"ollama", "openai_compatible"}:
+                continue
+            if self._already_served(legacy):
+                # A picker entry for a model an existing provider already serves. Importing
+                # it would create a second provider for the same endpoint.
                 continue
             try:
                 provider = self.create_provider(
@@ -273,9 +325,21 @@ class LLMRegistryService:
         data["id"] = data["id"] or str(uuid.uuid4())
         data.update(created_at=now, updated_at=now)
         try:
-            return store.insert_provider(data)
+            provider = store.insert_provider(data)
         except sqlite3.IntegrityError as exc:
             raise ValueError("Provider id already exists.") from exc
+        if provider.get("default_model"):
+            # Otherwise "Add provider" leaves you with a provider you cannot actually pick.
+            self.create_model(
+                ModelCreate(
+                    provider_id=provider["id"],
+                    model_name=str(provider["default_model"]),
+                    display_name=str(provider["default_model"]),
+                    enabled=bool(provider.get("enabled", True)),
+                    metadata={"source": "provider_default"},
+                )
+            )
+        return provider
 
     def update_provider(self, provider_id: str, request: ProviderUpdate) -> dict[str, Any]:
         current = self.get_provider(provider_id)
@@ -308,29 +372,231 @@ class LLMRegistryService:
     def create_model(self, request: ModelCreate) -> dict[str, Any]:
         if not self.get_provider(request.provider_id):
             raise LookupError("LLM provider not found.")
+        existing = next(
+            (
+                item
+                for item in self.list_models(request.provider_id)
+                if item["model_name"] == request.model_name
+            ),
+            None,
+        )
+        if existing:
+            # Adding a model the provider already has is a no-op rather than an error, so
+            # discovery, the legacy import, and the Add model form cannot duplicate rows.
+            self._sync_model_to_picker(existing)
+            return existing
         now = store.now_iso()
         data = request.model_dump()
         data["id"] = data["id"] or str(uuid.uuid4())
         data.update(created_at=now, updated_at=now)
         try:
-            return store.insert_model(data)
+            created = store.insert_model(data)
         except sqlite3.IntegrityError as exc:
             raise ValueError("Model id already exists.") from exc
+        self._sync_model_to_picker(created)
+        return created
+
+    # Model names an Ollama install reports as embedders rather than chat models.
+    _EMBEDDING_HINTS = ("embed", "bge", "gte", "minilm")
+
+    def discover_provider_models(self, provider_id: str, *, timeout: int = 5) -> dict[str, Any]:
+        """Register any model the provider already serves but the registry does not know.
+
+        Existing rows are never modified, so a rediscovery is safe to repeat and cannot
+        clobber capability flags or display names the user has edited.
+        """
+        provider = self.get_provider(provider_id)
+        if not provider:
+            raise LookupError("LLM provider not found.")
+        if provider.get("provider_type") != "ollama":
+            raise ValueError("Model discovery is only supported for Ollama providers.")
+        base_url = (provider.get("base_url") or "").rstrip("/")
+        if not base_url:
+            raise ValueError("This provider has no endpoint configured.")
+
+        try:
+            response = requests.get(f"{base_url}/api/tags", timeout=timeout)
+            response.raise_for_status()
+            served = response.json().get("models", [])
+        except requests.RequestException as exc:
+            raise ConnectionError(f"Could not reach {base_url}.") from exc
+
+        known = {row["model_name"] for row in self.list_models(provider_id)}
+        settings = get_settings()
+        added: list[dict[str, Any]] = []
+
+        for item in served:
+            name = (item.get("name") or "").strip()
+            if not name or name in known:
+                continue
+            details = item.get("details") or {}
+            is_embedding = any(hint in name.lower() for hint in self._EMBEDDING_HINTS)
+            added.append(
+                self.create_model(
+                    ModelCreate(
+                        id=_slug(f"{provider_id}-{name}", str(uuid.uuid4())),
+                        provider_id=provider_id,
+                        model_name=name,
+                        display_name=name,
+                        max_output_tokens=None if is_embedding else settings.chat_num_predict,
+                        supports_embeddings=is_embedding,
+                        enabled=True,
+                        metadata={
+                            "source": "ollama_discovery",
+                            "parameter_size": details.get("parameter_size"),
+                            "quantization_level": details.get("quantization_level"),
+                            "family": details.get("family"),
+                        },
+                    )
+                )
+            )
+            known.add(name)
+
+        # Mirror every chat model, not just the new ones, so a registry model that is
+        # missing from the picker is repaired rather than skipped.
+        picker_added = self._mirror_to_picker(provider, self.list_models(provider_id))
+
+        return {
+            "added": added,
+            "already_registered": sorted(known - {model["model_name"] for model in added}),
+            "picker_added": picker_added,
+        }
+
+    def bind_chat_route(self, model_name: str, base_url: str | None) -> bool:
+        """Point the chat route at this model so the picker actually selects it.
+
+        The composer dropdown writes the legacy active_id, but generation resolves its
+        model through the registry route. Without this the dropdown can say one model
+        while a different one answers.
+        """
+        wanted = (base_url or "").rstrip("/")
+        for provider in self.list_providers():
+            if wanted and str(provider.get("base_url") or "").rstrip("/") != wanted:
+                continue
+            for model in self.list_models(provider["id"]):
+                if model["model_name"] != model_name or not model.get("enabled"):
+                    continue
+                self.update_route(
+                    "chat",
+                    RouteUpdate(
+                        provider_id=provider["id"],
+                        model_id=model["id"],
+                        metadata={"source": "picker_selection"},
+                    ),
+                )
+                return True
+        return False
+
+    def _picker_id(self, provider_id: str, model_name: str) -> str:
+        return _slug(f"{provider_id}-{model_name}", "llm")
+
+    def _sync_model_to_picker(self, model: dict[str, Any]) -> None:
+        """Add or refresh this model's entry in the chat picker.
+
+        The picker is a separate legacy store, so without this a model added through
+        Settings is invisible in chat -- it shows in the registry but cannot be selected.
+        """
+        provider = self.get_provider(model["provider_id"])
+        if not provider or provider.get("provider_type") not in {"ollama", "openai_compatible"}:
+            return
+        if model.get("supports_embeddings"):
+            return
+        base_url = str(provider.get("base_url") or "").rstrip("/")
+        if not base_url:
+            return
+
+        settings = get_settings()
+        config_id = self._picker_id(provider["id"], model["model_name"])
+        entry = LLMConfig(
+            id=config_id,
+            name=str(provider.get("name") or "LLM"),
+            provider=str(provider["provider_type"]),
+            model=str(model["model_name"]),
+            base_url=base_url,
+            api_key_env=provider.get("api_key_ref") or None,
+            enabled=bool(model.get("enabled", True)) and bool(provider.get("enabled", True)),
+            timeout_seconds=int(provider.get("timeout_seconds") or settings.chat_timeout_seconds),
+            num_predict=int(model.get("max_output_tokens") or settings.chat_num_predict),
+        )
+
+        registry = LLMRegistry()
+        configs, active_id = registry.load()
+        configs = [item for item in configs if item.id != config_id and item.model != entry.model]
+        configs.append(entry)
+        if not any(item.enabled for item in configs):
+            return
+        registry.save(configs, active_id)
+
+    def _remove_model_from_picker(self, model: dict[str, Any]) -> None:
+        config_id = self._picker_id(model["provider_id"], model["model_name"])
+        registry = LLMRegistry()
+        configs, active_id = registry.load()
+        remaining = [item for item in configs if item.id != config_id]
+        if len(remaining) == len(configs) or not any(item.enabled for item in remaining):
+            # Never leave the picker empty; the registry requires one enabled entry.
+            return
+        registry.save(remaining, active_id)
+
+    def _mirror_to_picker(
+        self, provider: dict[str, Any], models: list[dict[str, Any]]
+    ) -> list[str]:
+        """Mirror discovered chat models into the legacy picker list.
+
+        The chat model picker reads the legacy JSON registry, not this one, so a model
+        registered here is invisible in chat until it also has a picker entry.
+        """
+        chat_models = [model for model in models if not model["supports_embeddings"]]
+        if not chat_models:
+            return []
+
+        registry = LLMRegistry()
+        configs, active_id = registry.load()
+        known = {config.model for config in configs}
+        settings = get_settings()
+        added: list[str] = []
+
+        for model in chat_models:
+            name = model["model_name"]
+            if name in known:
+                continue
+            configs.append(
+                LLMConfig(
+                    id=_slug(f"{provider['id']}-{name}", str(uuid.uuid4())),
+                    name=str(provider.get("name") or "Ollama"),
+                    provider="ollama",
+                    model=name,
+                    base_url=str(provider.get("base_url") or settings.ollama_url),
+                    timeout_seconds=int(
+                        provider.get("timeout_seconds") or settings.chat_timeout_seconds
+                    ),
+                    num_predict=settings.chat_num_predict,
+                )
+            )
+            known.add(name)
+            added.append(name)
+
+        if added:
+            registry.save(configs, active_id)
+        return added
 
     def update_model(self, model_id: str, request: ModelUpdate) -> dict[str, Any]:
         if not self.get_model(model_id):
             raise LookupError("LLM model not found.")
         updates = request.model_dump(exclude_unset=True)
         updates["updated_at"] = store.now_iso()
-        return store.update_row("workspace_llm_models", "model", model_id, updates)
+        updated = store.update_row("workspace_llm_models", "model", model_id, updates)
+        self._sync_model_to_picker(updated)
+        return updated
 
     def delete_model(self, model_id: str) -> None:
-        if not self.get_model(model_id):
+        model = self.get_model(model_id)
+        if not model:
             raise LookupError("LLM model not found.")
         try:
             store.delete_row("workspace_llm_models", model_id)
         except sqlite3.IntegrityError as exc:
             raise ValueError("Model is referenced by a route; disable it instead.") from exc
+        self._remove_model_from_picker(model)
 
     def list_routes(self) -> list[dict[str, Any]]:
         return store.list_rows("workspace_llm_routes", "route", "route_name")

@@ -1083,6 +1083,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState(null);
+  const [discoveringId, setDiscoveringId] = useState(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
 
@@ -1204,6 +1205,26 @@ function LLMSettingsDialog({ onClose, onChanged }) {
     }
   }
 
+  async function discoverModels(provider) {
+    setDiscoveringId(provider.id);
+    setError("");
+    setStatus("");
+    try {
+      const result = await api.discoverLlmModels(provider.id);
+      await load();
+      const names = (result.added || []).map((model) => model.model_name);
+      setStatus(
+        names.length
+          ? `Registered ${names.length} model${names.length === 1 ? "" : "s"}: ${names.join(", ")}.`
+          : "No new models. Everything this provider serves is already registered.",
+      );
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setDiscoveringId(null);
+    }
+  }
+
   async function testProvider(provider) {
     const model = registry.models.find((item) => item.provider_id === provider.id && item.enabled);
     if (!model) { setError("Add an enabled model before testing this provider."); return; }
@@ -1281,6 +1302,15 @@ function LLMSettingsDialog({ onClose, onChanged }) {
                   <NeoButton onClick={() => testProvider(provider)} disabled={testingId === provider.id}>
                     {testingId === provider.id ? "Testing..." : "Health"}
                   </NeoButton>
+                  {provider.provider_type === "ollama" && (
+                    <NeoButton
+                      onClick={() => discoverModels(provider)}
+                      disabled={discoveringId === provider.id}
+                      title="Register models this provider already serves"
+                    >
+                      {discoveringId === provider.id ? "Syncing..." : "Sync models"}
+                    </NeoButton>
+                  )}
                   <NeoButton onClick={() => editProvider(provider)}>Edit</NeoButton>
                   <NeoButton onClick={() => toggleProvider(provider)}>
                     {provider.enabled ? "Disable" : "Enable"}
