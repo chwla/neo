@@ -8,7 +8,12 @@ MAX_BACKOFF_MS = 4000
 
 
 def retryable(exc: Exception) -> bool:
-    return classify(exc) in {"timeout", "rate_limited", "transient_network"}
+    return classify(exc) in {
+        "timeout",
+        "rate_limited",
+        "transient_network",
+        "provider_unavailable",
+    }
 
 
 def backoff_ms(attempt: int) -> int:

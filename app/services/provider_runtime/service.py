@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -15,7 +16,7 @@ from app.services.provider_runtime.budget import (
     estimate_tokens,
     fit_context,
 )
-from app.services.provider_runtime.errors import safe_error
+from app.services.provider_runtime.errors import safe_error, user_message
 from app.services.provider_runtime.health import check
 from app.services.provider_runtime.rate_limits import decision
 from app.services.provider_runtime.redaction import safe_stream_text, safe_value
@@ -24,6 +25,10 @@ from app.services.provider_runtime.router import select
 from app.services.provider_runtime.streaming import cancel, clear, start
 from app.services.provider_runtime.types import RuntimeResult
 from app.services.provider_runtime.usage import summary
+
+#: Provider failures are recorded here in full. Everything the caller sees instead
+#: carries only the one safe sentence from ``user_message``.
+_LOG = logging.getLogger("neo.provider_runtime")
 
 
 class ProviderRuntimeService:
@@ -258,8 +263,17 @@ class ProviderRuntimeService:
                     finish_reason=finish_reason,
                 )
             except Exception as exc:
-                category, message, error_redaction = safe_error(exc)
+                category, detail, error_redaction = safe_error(exc)
                 redaction = error_redaction
+                _LOG.warning(
+                    "provider_request_failed request=%s route=%s provider=%s model=%s category=%s",
+                    request["id"],
+                    route["route_name"],
+                    provider["provider_type"],
+                    model["model_name"],
+                    category,
+                    exc_info=exc,
+                )
                 fallback_chain.append(f"{provider['id']}:{category}")
                 if retryable(exc) and attempts < MAX_RETRIES:
                     time.sleep(backoff_ms(attempts) / 1000)
@@ -285,19 +299,30 @@ class ProviderRuntimeService:
                             finish_reason=result.finish_reason,
                         )
                     except Exception as retry_exc:
-                        category, message, redaction = safe_error(retry_exc)
+                        category, detail, redaction = safe_error(retry_exc)
+                        _LOG.warning(
+                            "provider_retry_failed request=%s route=%s category=%s",
+                            request["id"],
+                            route["route_name"],
+                            category,
+                            exc_info=retry_exc,
+                        )
                 if category == "auth_or_config":
                     break
+        # ``message`` is what the caller is allowed to render, so it is derived from the
+        # category rather than from the provider's own text. The provider's text stays in
+        # ``detail``, which reaches the logs and the audit row's metadata and stops there.
         return self._finish(
             request["id"],
             "failed",
             route,
             category,
-            message,
+            user_message(category, route.get("provider")),
             attempts,
             fallback_chain,
             redaction,
             latency=int((time.perf_counter() - started) * 1000),
+            detail=detail,
         )
 
     def _partial(self, request_id: str, partial: str) -> None:
@@ -328,10 +353,15 @@ class ProviderRuntimeService:
         partial=None,
         thinking=None,
         finish_reason=None,
+        detail=None,
     ) -> RuntimeResult:
         metadata = (store.get_request(request_id) or {}).get("metadata") or {}
         if partial is not None:
             metadata["partial_response"] = partial
+        if detail:
+            # The provider's own words, kept for whoever debugs the failure. ``message``
+            # is the only field a caller may show, so this never travels with it.
+            metadata["error_detail"] = detail
         if thinking:
             metadata["thinking"] = safe_stream_text(thinking)
         if finish_reason:
@@ -367,6 +397,7 @@ class ProviderRuntimeService:
             redaction_summary=redaction,
             finish_reason=finish_reason,
             error_category=category,
+            error_detail=detail or "",
         )
 
     def start_stream(self, **kwargs) -> dict:

@@ -4,15 +4,37 @@ from collections.abc import Iterator
 from typing import Any
 
 from app.services.llm import BaseLLMClient, LLMChatResult, LLMMessage
-from app.services.provider_runtime.errors import ContextTooLargeError
+from app.services.provider_runtime.errors import (
+    ContextTooLargeError,
+    ProviderFailure,
+    user_message,
+)
 from app.services.provider_runtime.service import ProviderRuntimeService
 
 
-def _failure(message: str, category: str | None, fallback: str) -> Exception:
-    text = message or fallback
+def _failure(
+    message: str,
+    category: str | None,
+    fallback: str,
+    *,
+    detail: str = "",
+    provider: str = "",
+) -> Exception:
+    """Turn a failed runtime request into an exception that is safe to surface.
+
+    ``message`` is written by the runtime, never by the provider, so it can be shown as
+    it stands. Carrying the runtime's category onto the exception is what lets the
+    caller answer "Ollama is unavailable" rather than reporting an internal fault.
+    """
+
     if category == "context_too_large":
-        return ContextTooLargeError(text)
-    return RuntimeError(text)
+        return ContextTooLargeError(message or fallback)
+    return ProviderFailure(
+        message or user_message(category, provider) or fallback,
+        category=category or "provider_error",
+        detail=detail,
+        provider=provider,
+    )
 
 
 class ProviderRuntimeClient(BaseLLMClient):
@@ -54,6 +76,8 @@ class ProviderRuntimeClient(BaseLLMClient):
                 result.content,
                 result.error_category,
                 "Provider runtime request failed safely.",
+                detail=result.error_detail,
+                provider=str(result.route.get("provider") or ""),
             )
         request = self.runtime.request(result.request_id) or {}
         thinking = (request.get("metadata") or {}).get("thinking")
@@ -133,4 +157,6 @@ class ProviderRuntimeClient(BaseLLMClient):
                 str(session.get("error_message") or ""),
                 session.get("error_category"),
                 "Provider stream failed safely.",
+                detail=str((session.get("metadata") or {}).get("error_detail") or ""),
+                provider=str(session.get("provider_name") or ""),
             )

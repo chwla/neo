@@ -32,7 +32,12 @@ from app.services.memory.contracts import DetachMemorySourceCommand, TargetRevis
 from app.services.memory.factory import build_memory_runtime
 from app.services.memory_chat import build_chat_memory_runtime
 from app.services.profile_accounts import database_identity_for_profile, profile_database
-from app.services.provider_runtime.errors import ContextTooLargeError
+from app.services.provider_runtime.errors import (
+    ContextTooLargeError,
+    ProviderFailure,
+    classify,
+    user_message,
+)
 from app.services.rules.resolver import RuleResolver
 from app.services.rules.types import RuleResolveRequest
 
@@ -43,6 +48,9 @@ GENERATION_LEASE_SECONDS = 120
 _GENERATION_THREADS: set[str] = set()
 _GENERATION_THREADS_LOCK = Lock()
 _GENERATION_LOG = logging.getLogger("neo.chat.generation")
+#: Where a failed send records what actually went wrong. The response carries only
+#: the safe sentence, so this is the only place the provider's own text survives.
+_CHAT_LOG = logging.getLogger("neo.chat")
 
 
 def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMClient:
@@ -52,40 +60,87 @@ def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMCl
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+#: HTTP status per provider failure category. A provider that is simply not answering is
+#: 503 rather than 502: nothing served the request, and the client may retry it as it is.
+_FAILURE_STATUS = {
+    "provider_unavailable": 503,
+    "timeout": 504,
+    "transient_network": 503,
+    "rate_limited": 429,
+    "auth_or_config": 502,
+    "unsupported_capability": 502,
+}
+_FAILURE_HEADLINE = {
+    "provider_unavailable": "Model unavailable",
+    "timeout": "Model timed out",
+    "transient_network": "Model unreachable",
+    "rate_limited": "Rate limited",
+    "auth_or_config": "Model not configured",
+    "unsupported_capability": "Model unsupported",
+}
+
+
 def _chat_failure(exc: Exception, config_id: str | None = None) -> tuple[int, str, str]:
+    """Reduce any send failure to a status, a short headline, and one safe sentence.
+
+    Nothing derived from the exception's own text is returned. A provider error carries
+    the host, port and urllib3 frames that produced it, and every one of these three
+    values is rendered verbatim by the UI, so the sentence is chosen from the failure's
+    category instead. The exception itself goes to the log, where it belongs.
+    """
+
     if isinstance(exc, ContextTooLargeError):
         # The message is simply bigger than the model can read. That is a limit the user
-        # can act on, not an internal fault, so it must not read as one.
+        # can act on, not an internal fault, so it must not read as one. The text is
+        # Neo's own sentence about token counts, not the provider's.
         return 413, "Message too long", str(exc)
-    if isinstance(exc, (requests.RequestException, ProviderConfigurationError)):
-        # This runs on the failure path, so it must never raise on its own.
-        # ``get`` rejects an unknown or disabled configuration, which would
-        # otherwise mask the real provider error and leave the generation row
-        # stuck without a terminal status.
-        try:
-            config = LLMRegistry().get(config_id)
-        except Exception:
-            return (
-                502,
-                "Provider failed",
-                f"The provider did not finish the response. Details: {exc}",
-            )
+    if isinstance(exc, ProviderFailure):
+        _CHAT_LOG.warning(
+            "chat_provider_failure category=%s provider=%s detail=%s",
+            exc.category,
+            exc.provider or "unknown",
+            exc.detail or str(exc),
+        )
         return (
-            502,
-            "Provider failed",
-            (
-                f"{config.name} did not finish the response. Expected {config.model} "
-                f"at {config.base_url} within {config.timeout_seconds} seconds. "
-                f"Details: {exc}"
-            ),
+            _FAILURE_STATUS.get(exc.category, 502),
+            _FAILURE_HEADLINE.get(exc.category, "Provider failed"),
+            str(exc),
+        )
+    if isinstance(exc, (requests.RequestException, ProviderConfigurationError)):
+        # A provider reached directly, outside the runtime client. Classify it the same
+        # way so the user reads the same sentence either way.
+        category = classify(exc)
+        provider = _provider_type_for(config_id)
+        _CHAT_LOG.warning(
+            "chat_provider_failure category=%s provider=%s", category, provider, exc_info=exc
+        )
+        return (
+            _FAILURE_STATUS.get(category, 502),
+            _FAILURE_HEADLINE.get(category, "Provider failed"),
+            user_message(category, provider),
         )
     if isinstance(exc, ProviderUsagePersistenceError):
+        _CHAT_LOG.exception("chat_usage_persistence_failed")
         return (
             500,
             "Neo persistence failed",
-            f"Neo could not persist provider usage data. Details: {exc}",
+            "Neo could not record this response. Try again.",
         )
-    return 500, "Chat failed", f"Neo chat failed internally. Details: {exc}"
+    _CHAT_LOG.exception("chat_failed_unexpectedly")
+    return 500, "Chat failed", "Neo could not finish this response. Try again."
+
+
+def _provider_type_for(config_id: str | None) -> str:
+    """The provider's type, for wording only — never its name, URL, or model.
+
+    This runs on the failure path, so it must never raise on its own: an unknown or
+    disabled configuration would otherwise mask the provider error being reported.
+    """
+
+    try:
+        return LLMRegistry().get(config_id).provider
+    except Exception:
+        return ""
 
 
 class ChatRead(BaseModel):
@@ -699,6 +754,15 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 # a traceback for it would bury the failures that do need attention.
                 _GENERATION_LOG.info(
                     "Chat generation %s exceeded the model context: %s", generation_id, exc
+                )
+            elif isinstance(exc, ProviderFailure):
+                # The provider runtime already logged this one with its original
+                # traceback; a stopped Ollama is not a defect in the worker.
+                _GENERATION_LOG.info(
+                    "Chat generation %s ended on a provider failure (%s): %s",
+                    generation_id,
+                    exc.category,
+                    exc.detail or exc,
                 )
             else:
                 _GENERATION_LOG.exception(

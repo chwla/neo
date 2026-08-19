@@ -45,3 +45,6 @@ class RuntimeResult(BaseModel):
     redaction_summary: dict[str, Any] = Field(default_factory=dict)
     finish_reason: str | None = None
     error_category: str | None = None
+    #: The provider's own failure text, for the logs. ``content`` carries the sentence
+    #: the user is shown; this one must never be rendered.
+    error_detail: str = ""
