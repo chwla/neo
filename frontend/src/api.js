@@ -628,6 +628,8 @@ export const api = {
         memory_incognito: context.memoryIncognito ?? false,
       }),
     }),
+  searchChats: (query, limit = 30) =>
+    request(`/chats/search?${new URLSearchParams({ q: query, limit: String(limit) })}`),
   renameChat: (chatId, title) =>
     request(`/chats/${chatId}`, {
       method: "PATCH",

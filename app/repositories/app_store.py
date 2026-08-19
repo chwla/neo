@@ -3,13 +3,29 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import exists, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.chat import Chat, ChatMessage
 from app.models.enums import ProjectStatus
 from app.models.project import Project
+
+
+def _like_pattern(value: str) -> str:
+    """Escape LIKE wildcards so a query containing % or _ matches literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _snippet(content: str, query: str, window: int = 70) -> str:
+    """A short excerpt centred on the match, so the reason for the hit is visible."""
+    flat = " ".join(content.split())
+    position = flat.lower().find(query.lower())
+    if position == -1:
+        return flat[: window * 2] + ("..." if len(flat) > window * 2 else "")
+    start = max(0, position - window // 2)
+    end = min(len(flat), position + len(query) + window)
+    return ("..." if start > 0 else "") + flat[start:end] + ("..." if end < len(flat) else "")
 
 
 class AppStore:
@@ -56,6 +72,56 @@ class AppStore:
         if with_messages_only:
             statement = statement.where(exists().where(ChatMessage.chat_id == Chat.id))
         return list(self.db.scalars(statement))
+
+    def search_chats(self, query: str, limit: int = 30) -> list[dict]:
+        """Find chats by title or by the text of any message they contain.
+
+        Returns one entry per chat with the first matching message, so a hit found deep
+        in a conversation can show why it matched instead of only a title.
+        """
+        cleaned = " ".join(query.split())
+        if not cleaned:
+            return []
+        pattern = f"%{_like_pattern(cleaned)}%"
+        title_match = Chat.title.ilike(pattern, escape="\\")
+        message_match = exists().where(
+            and_(ChatMessage.chat_id == Chat.id, ChatMessage.content.ilike(pattern, escape="\\"))
+        )
+        chats = list(
+            self.db.scalars(
+                select(Chat)
+                .where(Chat.archived.is_(False), or_(title_match, message_match))
+                .order_by(Chat.updated_at.desc(), Chat.id.desc())
+                .limit(limit)
+            )
+        )
+        if not chats:
+            return []
+
+        # One query for every hit rather than one per chat, then keep the earliest
+        # matching message for each.
+        matches: dict[int, ChatMessage] = {}
+        for message in self.db.scalars(
+            select(ChatMessage)
+            .where(
+                ChatMessage.chat_id.in_([chat.id for chat in chats]),
+                ChatMessage.content.ilike(pattern, escape="\\"),
+            )
+            .order_by(ChatMessage.chat_id, ChatMessage.created_at, ChatMessage.id)
+        ):
+            matches.setdefault(message.chat_id, message)
+
+        results = []
+        for chat in chats:
+            message = matches.get(chat.id)
+            results.append(
+                {
+                    "chat": chat,
+                    "snippet": _snippet(message.content, cleaned) if message else None,
+                    "matched_title": cleaned.lower() in chat.title.lower(),
+                }
+            )
+        return results
 
     def list_chat_messages(self, chat_id: int) -> list[ChatMessage]:
         return list(

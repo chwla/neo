@@ -118,6 +118,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .sidebar-section-actions { gap: 4px; }
 .sidebar-section-toggle { display: grid; width: 18px; height: 18px; place-items: center; border: 0; background: transparent; color: #444; padding: 0; font: 12px "JetBrains Mono", monospace; }
 .sidebar-section-toggle:hover { color: var(--neo-green); }
+/* The section label doubles as the collapse control, so it inherits the header's type
+   rather than looking like a button sitting inside the header. */
+.sidebar-section-collapse { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 0; color: inherit; font: inherit; letter-spacing: inherit; }
+.sidebar-section-collapse:hover { color: var(--neo-green); }
+.sidebar-section-caret { display: inline-block; width: 8px; font-size: 9px; line-height: 1; }
+
 .sidebar-caption { margin: 5px 20px; color: #444; font-size: 11px; }
 .sidebar-spacer { flex: 1; min-height: 22px; }
 

@@ -439,12 +439,31 @@ function Sidebar({
         </form>
       )}
 
+      {/* The label names what the controls act on: this header owns the project list,
+          and CHATS below is its own section. Collapsing lives on the label itself so the
+          only button left is "+", which can no longer be confused with the toggle. */}
       <div className="sidebar-section sidebar-section-row">
-        <span>RECENT</span>
-        <span className="sidebar-section-actions">
-          <button className="sidebar-section-toggle" type="button" aria-label="Create project" title="Create project" onClick={onToggleProjectForm}>+</button>
-          <button className="sidebar-section-toggle" type="button" aria-label={projectsCollapsed ? "Show projects" : "Hide projects"} title={projectsCollapsed ? "Show projects" : "Hide projects"} onClick={() => setProjectsCollapsed((collapsed) => !collapsed)}>{projectsCollapsed ? "+" : "−"}</button>
-        </span>
+        <button
+          className="sidebar-section-collapse"
+          type="button"
+          aria-expanded={!projectsCollapsed}
+          title={projectsCollapsed ? "Show projects" : "Hide projects"}
+          onClick={() => setProjectsCollapsed((collapsed) => !collapsed)}
+        >
+          <span className="sidebar-section-caret" aria-hidden="true">
+            {projectsCollapsed ? "\u25B8" : "\u25BE"}
+          </span>
+          PROJECTS
+        </button>
+        <button
+          className="sidebar-section-toggle"
+          type="button"
+          aria-label="Create project"
+          title="Create project"
+          onClick={onToggleProjectForm}
+        >
+          +
+        </button>
       </div>
       {projectsCollapsed ? null : filteredProjects.length === 0 ? (
         <p className="sidebar-caption">No projects yet.</p>
@@ -2108,24 +2127,47 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (!pendingDelete) {
       return;
     }
+    const target = pendingDelete;
     setStatusError("");
+
     try {
-      if (pendingDelete.type === "chat") {
-        await api.deleteChat(pendingDelete.id, { memoryEnabled, memoryIncognito });
-        if (activeChat?.id === pendingDelete.id) {
+      if (target.type === "chat") {
+        await api.deleteChat(target.id, { memoryEnabled, memoryIncognito });
+      } else {
+        await api.deleteProject(target.id);
+      }
+    } catch (error) {
+      setStatusError(errorMessage(error));
+      return;
+    }
+
+    // The row is gone, so the dialog has done its job. Closing it here rather than
+    // after the follow-up below is what stops a failure in that follow-up from leaving
+    // a confirmed deletion on screen, which read as "delete did nothing" and invited
+    // repeated DELETEs for a row that no longer existed.
+    setPendingDelete(null);
+
+    try {
+      if (target.type === "chat") {
+        if (activeChat?.id === target.id) {
           await createActiveChat(selectedProjectId);
         }
       } else {
-        await api.deleteProject(pendingDelete.id);
-        if (selectedProjectId === pendingDelete.id || activeChat?.project_id === pendingDelete.id) {
+        if (selectedProjectId === target.id || activeChat?.project_id === target.id) {
           await createActiveChat(null);
         }
         setSelectedProjectId(null);
       }
-      setPendingDelete(null);
-      await refreshSidebar();
     } catch (error) {
       setStatusError(errorMessage(error));
+    } finally {
+      // Opening a replacement chat is a convenience; the sidebar still has to lose the
+      // deleted row even when that convenience fails.
+      try {
+        await refreshSidebar();
+      } catch (error) {
+        setStatusError(errorMessage(error));
+      }
     }
   }
 
