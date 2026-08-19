@@ -110,9 +110,17 @@ class BaseLLMClient:
 
 
 class OllamaClient(BaseLLMClient):
-    def __init__(self, model: str, base_url: str, timeout: int, num_predict: int) -> None:
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        timeout: int,
+        num_predict: int,
+        num_ctx: int | None = None,
+    ) -> None:
         self.model, self.base_url = model, base_url.rstrip("/")
         self.timeout, self.num_predict = timeout, num_predict
+        self.num_ctx = num_ctx
 
     def is_available(self) -> bool:
         try:
@@ -131,7 +139,16 @@ class OllamaClient(BaseLLMClient):
             return False
 
     def _options(self, temperature: float, num_predict: int | None) -> dict[str, Any]:
-        return {"temperature": temperature, "num_predict": num_predict or self.num_predict}
+        options: dict[str, Any] = {
+            "temperature": temperature,
+            "num_predict": num_predict or self.num_predict,
+        }
+        if self.num_ctx:
+            # Ollama defaults to a small context (4096 as of 0.32) and silently drops the
+            # oldest tokens past it. Sizing the window to the request keeps a long prompt
+            # intact instead of answering a quietly truncated version of it.
+            options["num_ctx"] = self.num_ctx
+        return options
 
     def chat_with_metadata(
         self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None

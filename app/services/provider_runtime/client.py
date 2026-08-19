@@ -4,7 +4,15 @@ from collections.abc import Iterator
 from typing import Any
 
 from app.services.llm import BaseLLMClient, LLMChatResult, LLMMessage
+from app.services.provider_runtime.errors import ContextTooLargeError
 from app.services.provider_runtime.service import ProviderRuntimeService
+
+
+def _failure(message: str, category: str | None, fallback: str) -> Exception:
+    text = message or fallback
+    if category == "context_too_large":
+        return ContextTooLargeError(text)
+    return RuntimeError(text)
 
 
 class ProviderRuntimeClient(BaseLLMClient):
@@ -42,7 +50,11 @@ class ProviderRuntimeClient(BaseLLMClient):
             metadata={"temperature": temperature},
         )
         if result.status != "completed":
-            raise RuntimeError(result.content or "Provider runtime request failed safely.")
+            raise _failure(
+                result.content,
+                result.error_category,
+                "Provider runtime request failed safely.",
+            )
         request = self.runtime.request(result.request_id) or {}
         thinking = (request.get("metadata") or {}).get("thinking")
         self.last_metadata = {
@@ -117,4 +129,8 @@ class ProviderRuntimeClient(BaseLLMClient):
                 **self.last_metadata,
             }
         else:
-            raise RuntimeError(session.get("error_message") or "Provider stream failed safely.")
+            raise _failure(
+                str(session.get("error_message") or ""),
+                session.get("error_category"),
+                "Provider stream failed safely.",
+            )

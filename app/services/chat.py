@@ -29,6 +29,7 @@ from app.services.llm import ChatTurn, LLMChatResult, LLMClient, LLMMessage
 from app.services.memory.contracts import SourceKind
 from app.services.memory.direct_answer import DirectMemoryAnswerService
 from app.services.memory.extraction_contracts import (
+    EXTRACTION_WINDOW_MAX_CHARS,
     ConversationRole,
     CurrentTurnOverride,
     ExtractionMode,
@@ -1505,6 +1506,10 @@ class NeoChatService:
         transport: str,
         mode: ExtractionMode,
     ) -> ExtractionRequest:
+        # Extraction reads a bounded window, so a very long message is trimmed to fit
+        # rather than rejected. The hash below covers the trimmed text, keeping the
+        # recorded provenance aligned with what extraction actually saw.
+        extraction_message = prompt[:EXTRACTION_WINDOW_MAX_CHARS]
         supporting = tuple(
             TrustedConversationMessage(
                 message_id=str(item.id),
@@ -1514,10 +1519,10 @@ class NeoChatService:
             for item in history[-12:]
             if item.role in {"user", "assistant"} and item.id != message_id
         )
-        total = len(prompt)
+        total = len(extraction_message)
         bounded: list[TrustedConversationMessage] = []
         for item in reversed(supporting):
-            if total + len(item.content) > 12_000:
+            if total + len(item.content) > EXTRACTION_WINDOW_MAX_CHARS:
                 continue
             bounded.append(item)
             total += len(item.content)
@@ -1530,7 +1535,7 @@ class NeoChatService:
             active_project_name=self.active_project_name,
             session_id=f"profile:{self.memory_runtime.execution.profile_id}",
             message_id=str(message_id),
-            user_message=prompt,
+            user_message=extraction_message,
             supporting_window=tuple(bounded),
             explicit_memory_intent=bool(
                 re.search(r"\b(?:remember|save|forget|correct|changed my mind)\b", prompt, re.I)
@@ -1538,7 +1543,7 @@ class NeoChatService:
             incognito=self.memory_runtime.execution.is_incognito,
             memory_enabled=self.memory_enabled,
             mode=mode,
-            source_content_hash=ExtractionRequest.content_hash(prompt),
+            source_content_hash=ExtractionRequest.content_hash(extraction_message),
         )
 
     def _run_extraction(
@@ -2344,7 +2349,14 @@ class NeoChatService:
 
     def _with_web_citations(self, reply: str, web_context: WebContext | None) -> str:
         body = _strip_llm_sources_block(reply)
-        if web_context is None or not web_context.needed or not web_context.citations:
+        if web_context is None or not web_context.needed:
+            # No web search was involved, so a link here is ordinary content — a repo or
+            # documentation URL the user asked for — not a citation claiming evidence.
+            # Deleting those corrupted normal answers, so they are left alone.
+            return self._strip_orphan_citation_markers(body)
+        if not web_context.citations:
+            # A search was attempted but produced nothing citable, so any source URL the
+            # model offers cannot be backed by evidence and is dropped.
             body = self._strip_orphan_citation_markers(body)
             return _strip_fabricated_urls(body, set())
         valid_urls = {citation.url for citation in web_context.citations}
@@ -2986,21 +2998,35 @@ def _price_query_clarification(query: str) -> str | None:
     )
 
 
+_MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\(\s*(https?://[^\s)]+)\s*\)")
+_BARE_URL = re.compile(r"https?://\S+")
+
+
 def _strip_fabricated_urls(reply: str, valid_urls: set[str]) -> str:
-    """Remove inline URLs from answer body that are not in the valid citation set."""
-    if not valid_urls:
-        return re.sub(r"https?://\S+", "", reply).strip()
+    """Remove inline URLs from an answer body that are not in the valid citation set.
+
+    Only reached once a web search has actually run, so an uncited URL here is a
+    source the model invented rather than ordinary content.
+
+    A Markdown link collapses to its own label instead of losing only the target:
+    deleting the URL alone left ``[label](`` behind, which reads as broken output and
+    renders as literal text.
+    """
+
+    def _cited(url: str) -> bool:
+        trimmed = url.rstrip(".,;:)>]")
+        if trimmed in valid_urls:
+            return True
+        return any(trimmed.startswith(valid) or valid.startswith(trimmed) for valid in valid_urls)
+
+    def _replace_link(match: re.Match) -> str:
+        return match.group(0) if _cited(match.group(2)) else match.group(1)
 
     def _replace_url(match: re.Match) -> str:
-        url = match.group(0).rstrip(".,;:)>]")
-        if url in valid_urls:
-            return match.group(0)
-        for valid in valid_urls:
-            if url.startswith(valid) or valid.startswith(url):
-                return match.group(0)
-        return ""
+        return match.group(0) if _cited(match.group(0)) else ""
 
-    cleaned = re.sub(r"https?://\S+", _replace_url, reply)
+    cleaned = _MARKDOWN_LINK.sub(_replace_link, reply)
+    cleaned = _BARE_URL.sub(_replace_url, cleaned)
     cleaned = re.sub(r" {2,}", " ", cleaned)
     return cleaned.strip()
 

@@ -31,6 +31,7 @@ from app.services.memory.contracts import DetachMemorySourceCommand, TargetRevis
 from app.services.memory.factory import build_memory_runtime
 from app.services.memory_chat import build_chat_memory_runtime
 from app.services.profile_accounts import database_identity_for_profile, profile_database
+from app.services.provider_runtime.errors import ContextTooLargeError
 from app.services.rules.resolver import RuleResolver
 from app.services.rules.types import RuleResolveRequest
 
@@ -51,6 +52,10 @@ def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMCl
 
 
 def _chat_failure(exc: Exception, config_id: str | None = None) -> tuple[int, str, str]:
+    if isinstance(exc, ContextTooLargeError):
+        # The message is simply bigger than the model can read. That is a limit the user
+        # can act on, not an internal fault, so it must not read as one.
+        return 413, "Message too long", str(exc)
     if isinstance(exc, (requests.RequestException, ProviderConfigurationError)):
         # This runs on the failure path, so it must never raise on its own.
         # ``get`` rejects an unknown or disabled configuration, which would
@@ -675,11 +680,18 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 )
         except Exception as exc:
             db.rollback()
-            _GENERATION_LOG.exception(
-                "Chat generation %s failed for profile %s",
-                generation_id,
-                profile.get("id"),
-            )
+            if isinstance(exc, ContextTooLargeError):
+                # A prompt over the limit is a user-facing outcome, not a defect. Logging
+                # a traceback for it would bury the failures that do need attention.
+                _GENERATION_LOG.info(
+                    "Chat generation %s exceeded the model context: %s", generation_id, exc
+                )
+            else:
+                _GENERATION_LOG.exception(
+                    "Chat generation %s failed for profile %s",
+                    generation_id,
+                    profile.get("id"),
+                )
             _status_code, status_detail, error = _chat_failure(exc, llm_id)
             _update_leased_generation(
                 db,

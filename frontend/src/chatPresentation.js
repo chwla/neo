@@ -1,3 +1,17 @@
+import { renderMarkdown } from "./markdown.js";
+
+/**
+ * Chat bodies are Markdown, whoever wrote them.
+ *
+ * A user pasting a fenced block expects the same code block the model gets, so both
+ * roles go through one renderer rather than one side rendering and the other showing
+ * raw syntax. The renderer escapes before it emits any tag, so model output is no
+ * more trusted here than it was as plain text.
+ */
+export function renderMessageHtml(content) {
+  return renderMarkdown(content);
+}
+
 export function formatTokens(message) {
   return Number.isFinite(message.total_tokens) ? `${message.total_tokens} tokens` : null;
 }

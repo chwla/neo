@@ -9,7 +9,12 @@ from typing import Any
 from app.services.llm import LLMMessage
 from app.services.llm_registry.providers import build_client
 from app.services.provider_runtime import store
-from app.services.provider_runtime.budget import context_check, estimate_tokens
+from app.services.provider_runtime.budget import (
+    DEFAULT_CONTEXT_WINDOW,
+    context_check,
+    estimate_tokens,
+    fit_context,
+)
 from app.services.provider_runtime.errors import safe_error
 from app.services.provider_runtime.health import check
 from app.services.provider_runtime.rate_limits import decision
@@ -130,7 +135,11 @@ class ProviderRuntimeService:
                 "blocked",
                 route,
                 "context_too_large",
-                "Context budget exceeded; compact non-safety context first.",
+                (
+                    f"This conversation needs about {budget['required_tokens']:,} tokens, "
+                    f"but {route['model']} only holds {budget['context_window']:,}. "
+                    f"{budget['suggestion']}"
+                ),
                 0,
                 [],
                 redaction,
@@ -173,7 +182,13 @@ class ProviderRuntimeService:
                 targets.append((provider, model, True))
         for provider, model, _fallback in targets:
             try:
-                client = build_client(provider, model, num_predict=max_tokens)
+                # The fallback model has its own window, so size the request against the
+                # model actually about to serve it rather than reusing the primary's.
+                num_ctx = fit_context(
+                    budget["required_tokens"],
+                    model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
+                )
+                client = build_client(provider, model, num_predict=max_tokens, num_ctx=num_ctx)
                 if stream:
                     partial = ""
                     thinking = ""
@@ -250,7 +265,9 @@ class ProviderRuntimeService:
                     time.sleep(backoff_ms(attempts) / 1000)
                     attempts += 1
                     try:
-                        client = build_client(provider, model, num_predict=max_tokens)
+                        client = build_client(
+                            provider, model, num_predict=max_tokens, num_ctx=num_ctx
+                        )
                         result = client.chat_with_metadata(messages, num_predict=max_tokens)
                         return self._finish(
                             request["id"],
@@ -349,6 +366,7 @@ class ProviderRuntimeService:
             fallback_chain=fallback,
             redaction_summary=redaction,
             finish_reason=finish_reason,
+            error_category=category,
         )
 
     def start_stream(self, **kwargs) -> dict:

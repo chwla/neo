@@ -147,7 +147,13 @@ class LLMRegistryService:
             if provider.get("provider_type") != "ollama" or not provider.get("enabled"):
                 continue
             metadata = provider.get("metadata") or {}
-            if metadata.get("discovery_completed"):
+            # A profile that finished discovery before context windows were recorded still
+            # needs one more pass, otherwise its models keep the conservative default and
+            # long prompts are rejected against a limit the model does not actually have.
+            missing_context = any(
+                not model.get("context_window") for model in self.list_models(provider["id"])
+            )
+            if metadata.get("discovery_completed") and not missing_context:
                 continue
             key = f"{settings.database_url}::{provider['id']}"
             if key in _DISCOVERY_ATTEMPTED:
@@ -399,6 +405,47 @@ class LLMRegistryService:
     # Model names an Ollama install reports as embedders rather than chat models.
     _EMBEDDING_HINTS = ("embed", "bge", "gte", "minilm")
 
+    @staticmethod
+    def _served_context_window(base_url: str, model_name: str, timeout: int) -> int | None:
+        """Ask Ollama how much context this model actually reads.
+
+        The key is namespaced by architecture (``qwen3moe.context_length``,
+        ``gemma4.context_length``), so match on the suffix rather than guessing the
+        family. Returns None when the provider is unreachable or reports nothing usable:
+        an unknown window falls back to a conservative default, which is a smaller
+        problem than recording a wrong one.
+        """
+        try:
+            response = requests.post(
+                f"{base_url}/api/show", json={"model": model_name}, timeout=timeout
+            )
+            response.raise_for_status()
+            info = response.json().get("model_info") or {}
+        except (requests.RequestException, ValueError):
+            return None
+        for key, value in info.items():
+            if key.endswith(".context_length") and isinstance(value, int) and value > 0:
+                return value
+        return None
+
+    def _backfill_context_windows(self, provider: dict[str, Any], timeout: int) -> list[str]:
+        """Fill in the window for models registered before it was recorded.
+
+        Only rows that have no window are touched, so a value the user set by hand
+        survives every rediscovery.
+        """
+        base_url = (provider.get("base_url") or "").rstrip("/")
+        repaired: list[str] = []
+        for model in self.list_models(provider["id"]):
+            if model.get("context_window"):
+                continue
+            window = self._served_context_window(base_url, model["model_name"], timeout)
+            if not window:
+                continue
+            self.update_model(model["id"], ModelUpdate(context_window=window))
+            repaired.append(model["model_name"])
+        return repaired
+
     def discover_provider_models(self, provider_id: str, *, timeout: int = 5) -> dict[str, Any]:
         """Register any model the provider already serves but the registry does not know.
 
@@ -438,6 +485,7 @@ class LLMRegistryService:
                         provider_id=provider_id,
                         model_name=name,
                         display_name=name,
+                        context_window=self._served_context_window(base_url, name, timeout),
                         max_output_tokens=None if is_embedding else settings.chat_num_predict,
                         supports_embeddings=is_embedding,
                         enabled=True,
@@ -452,6 +500,8 @@ class LLMRegistryService:
             )
             known.add(name)
 
+        context_repaired = self._backfill_context_windows(provider, timeout)
+
         # Mirror every chat model, not just the new ones, so a registry model that is
         # missing from the picker is repaired rather than skipped.
         picker_added = self._mirror_to_picker(provider, self.list_models(provider_id))
@@ -460,6 +510,7 @@ class LLMRegistryService:
             "added": added,
             "already_registered": sorted(known - {model["model_name"] for model in added}),
             "picker_added": picker_added,
+            "context_repaired": context_repaired,
         }
 
     def bind_chat_route(self, model_name: str, base_url: str | None) -> bool:

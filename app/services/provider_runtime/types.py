@@ -44,3 +44,4 @@ class RuntimeResult(BaseModel):
     fallback_chain: list[str] = Field(default_factory=list)
     redaction_summary: dict[str, Any] = Field(default_factory=dict)
     finish_reason: str | None = None
+    error_category: str | None = None

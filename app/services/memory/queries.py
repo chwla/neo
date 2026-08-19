@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.memory.contracts import Sensitivity
 from app.services.memory.extraction_contracts import CurrentTurnOverride
@@ -22,6 +22,11 @@ from app.services.memory.versions import (
 
 class RecallContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+
+# Upper bound on a recall search key. Long enough that trimming never changes which
+# memories match, short enough to keep tokenizing and embedding cheap.
+RECALL_TEXT_MAX_CHARS = 12_000
 
 
 class RecallMode(StrEnum):
@@ -103,12 +108,26 @@ class CanonicalMemoryView(RecallContractModel):
 
 class RecallQuery(RecallContractModel):
     context: MemoryQueryContext
-    text: str = Field(default="", max_length=12_000)
+    text: str = Field(default="", max_length=RECALL_TEXT_MAX_CHARS)
     canonical_id: UUID | None = None
     memory_type: MemoryType | None = None
     domain_key: str | None = Field(default=None, max_length=200)
     slot_key: str | None = Field(default=None, max_length=400)
     trusted_slot_keys: tuple[str, ...] = Field(default=(), max_length=50)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def clamp_text(cls, value: object) -> object:
+        """Trim an over-long query instead of rejecting it.
+
+        This field is a search key, not content: it is tokenized for lexical matching,
+        handed to FTS, and embedded. None of those need the whole message, and the
+        embedding model's own window is far smaller than this cap. Rejecting instead
+        meant a user pasting a long message got a failed turn rather than a reply.
+        """
+        if isinstance(value, str) and len(value) > RECALL_TEXT_MAX_CHARS:
+            return value[:RECALL_TEXT_MAX_CHARS]
+        return value
 
     @model_validator(mode="after")
     def deterministic_selector_required(self) -> RecallQuery:

@@ -32,6 +32,7 @@ import {
   formatDuration,
   formatResponseKind,
   formatTokens,
+  renderMessageHtml,
   splitGeneratedText,
 } from "./chatPresentation.js";
 
@@ -537,7 +538,11 @@ function ChatMessage({
           </form>
         ) : (
           <>
-            <div className="chat-content">{message.content}</div>
+            {/* Escaped by renderMessageHtml before any tag is emitted. */}
+            <div
+              className="chat-content"
+              dangerouslySetInnerHTML={{ __html: renderMessageHtml(message.content) }}
+            />
             {message.failed && (
               <div className="chat-message-status">Not sent. Edit and try again.</div>
             )}
@@ -614,7 +619,14 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
         <div className="thinking-panel live-thinking-panel">
           {hasThinking ? generation.thinking : (generation?.statusDetail || "Waiting for response...")}
         </div>
-        {hasContent && <div className="chat-content live-answer">{generation.content}</div>}
+        {hasContent && (
+          // Rendered while streaming too, so a code block does not appear only once the
+          // closing fence arrives. Escaped by renderMessageHtml.
+          <div
+            className="chat-content live-answer"
+            dangerouslySetInnerHTML={{ __html: renderMessageHtml(generation.content) }}
+          />
+        )}
       </div>
     </article>
   );

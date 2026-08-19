@@ -6,6 +6,15 @@ from app.services.llm_registry.providers import ProviderConfigurationError
 from app.services.provider_runtime.redaction import safe_text
 
 
+class ContextTooLargeError(RuntimeError):
+    """The request cannot fit in the model's context window.
+
+    Carried as its own type so the caller can answer with the limit instead of
+    reporting an internal failure: the user asked for something too big, which is a
+    normal outcome rather than a bug in Neo.
+    """
+
+
 def classify(exc: Exception) -> str:
     message = str(exc).lower()
     if isinstance(exc, ProviderConfigurationError) or any(

@@ -83,6 +83,12 @@ class LifecycleHint(StrEnum):
     RESTORE = "restore"
 
 
+# Total characters of conversation an extraction request may carry: the user message
+# plus its supporting window. Callers clamp to this before hashing, so the recorded
+# content hash always describes the text extraction actually read.
+EXTRACTION_WINDOW_MAX_CHARS = 12_000
+
+
 class TrustedConversationMessage(ExtractionContractModel):
     message_id: str = Field(min_length=1, max_length=200)
     role: ConversationRole
@@ -100,7 +106,7 @@ class ExtractionRequest(ExtractionContractModel):
     active_project_name: str | None = Field(default=None, max_length=255)
     session_id: str = Field(min_length=1, max_length=200)
     message_id: str = Field(min_length=1, max_length=200)
-    user_message: str = Field(min_length=1, max_length=12_000)
+    user_message: str = Field(min_length=1, max_length=EXTRACTION_WINDOW_MAX_CHARS)
     supporting_window: tuple[TrustedConversationMessage, ...] = Field(default=(), max_length=12)
     explicit_memory_intent: bool = False
     incognito: bool = False
@@ -128,7 +134,7 @@ class ExtractionRequest(ExtractionContractModel):
         total_chars = len(self.user_message) + sum(
             len(item.content) for item in self.supporting_window
         )
-        if total_chars > 12_000:
+        if total_chars > EXTRACTION_WINDOW_MAX_CHARS:
             raise ValueError("bounded_conversation_window_exceeded")
         return self
 

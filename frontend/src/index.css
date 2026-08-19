@@ -188,10 +188,38 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .neo-chat-message.user .message-bubble::before { content: "›"; grid-row: 1 / span 3; color: var(--neo-green); font: 14px/1.6 "JetBrains Mono", monospace; }
 .neo-chat-message.assistant .message-bubble { padding-top: 26px; }
 .neo-chat-message.assistant .message-bubble::before { content: "■  NEO"; position: absolute; top: 0; left: 0; width: 100%; border-bottom: 1px solid var(--neo-line); padding-bottom: 8px; color: var(--neo-green); font: 600 10px "JetBrains Mono", monospace; letter-spacing: .08em; }
-.chat-content { white-space: pre-wrap; overflow-wrap: anywhere; color: #dedede; font-size: 14px; line-height: 1.7; }
+.chat-content { overflow-wrap: anywhere; color: #dedede; font-size: 14px; line-height: 1.7; }
 .neo-chat-message.user .chat-content { color: #bbb; line-height: 1.6; }
 .chat-content pre, pre { overflow: auto; border: 1px solid var(--neo-line); border-left: 2px solid var(--neo-green); border-radius: 2px; background: var(--neo-panel); padding: 14px 16px; color: #ccc; font: 12px/1.6 "JetBrains Mono", monospace; white-space: pre-wrap; }
 .chat-content code, code { border-radius: 2px; background: rgba(57,255,20,.055); padding: 1px 5px; color: var(--neo-green); font: 12px "JetBrains Mono", monospace; }
+/* Chat bodies are rendered Markdown, so the block tags need the spacing the plain-text
+   node used to get from white-space alone. Soft line breaks stay meaningful in chat,
+   hence pre-wrap on the paragraph rather than the container. */
+.chat-content > *:first-child { margin-top: 0; }
+.chat-content > *:last-child { margin-bottom: 0; }
+.chat-content p { margin: 0 0 13px; white-space: pre-wrap; }
+.chat-content h1 { font-size: 20px; }
+.chat-content h2 { font-size: 17px; }
+.chat-content h3 { font-size: 15px; }
+.chat-content h4, .chat-content h5, .chat-content h6 { font-size: 13px; }
+.chat-content h1, .chat-content h2, .chat-content h3,
+.chat-content h4, .chat-content h5, .chat-content h6 { margin: 18px 0 9px; color: #ededed; }
+.chat-content ul, .chat-content ol { margin: 0 0 13px; padding-left: 22px; }
+/* Nested lists sit tight against their parent item instead of opening a new block. */
+.chat-content li > ul, .chat-content li > ol { margin: 4px 0 0; }
+.chat-content li { margin-bottom: 5px; }
+.chat-content blockquote { margin: 0 0 13px; border-left: 2px solid rgba(57,255,20,.3); padding: 2px 0 2px 12px; color: #999; }
+.chat-content hr { border: 0; border-top: 1px solid var(--neo-line); margin: 20px 0; }
+.chat-content a { color: var(--neo-green); text-decoration: underline; text-underline-offset: 2px; }
+.chat-content pre { margin: 0 0 13px; }
+/* A fenced block is already styled by its <pre>; the inline-code chrome would other-
+   wise tint and pad the whole block. */
+.chat-content pre code { border-radius: 0; background: none; padding: 0; color: inherit; font: inherit; }
+/* A wide table scrolls inside its own wrapper rather than stretching the message. */
+.chat-content table { display: block; overflow-x: auto; width: max-content; max-width: 100%; margin: 0 0 13px; border-collapse: collapse; font-size: 13px; }
+.chat-content th, .chat-content td { border: 1px solid var(--neo-line); padding: 7px 12px; text-align: left; vertical-align: top; }
+.chat-content th { background: var(--neo-panel); color: var(--neo-green); font: 600 11px "JetBrains Mono", monospace; letter-spacing: .04em; }
+.chat-content tbody tr:nth-child(even) { background: rgba(255,255,255,.017); }
 .message-meta { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; border-top: 1px solid #141414; padding-top: 8px; color: #3b3b3b; font: 10px "JetBrains Mono", monospace; }
 .message-actions { display: flex; gap: 10px; margin-top: 8px; }
 .message-actions button { border: 0; background: transparent; padding: 0; color: #3b3b3b; font: 9px "JetBrains Mono", monospace; letter-spacing: .04em; }

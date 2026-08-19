@@ -47,7 +47,7 @@ class MockClient(BaseLLMClient):
         yield {"type": "done", "total_tokens": 0, "duration_ms": 0}
 
 
-def build_client(provider: dict, model: dict, *, timeout=None, num_predict=None):
+def build_client(provider: dict, model: dict, *, timeout=None, num_predict=None, num_ctx=None):
     if not provider.get("enabled") or not model.get("enabled"):
         return DisabledClient(model.get("model_name") or "disabled")
     provider_type = provider["provider_type"]
@@ -65,7 +65,9 @@ def build_client(provider: dict, model: dict, *, timeout=None, num_predict=None)
         "num_predict": num_predict or model.get("max_output_tokens") or 160,
     }
     if provider_type == "ollama":
-        return OllamaClient(**common)
+        # Only Ollama takes a context size per request; the OpenAI-compatible API has no
+        # equivalent option and infers the window from the model.
+        return OllamaClient(**common, num_ctx=num_ctx)
     if provider_type == "openai_compatible":
         key_ref = provider.get("api_key_ref")
         api_key = os.getenv(key_ref) if key_ref else None
