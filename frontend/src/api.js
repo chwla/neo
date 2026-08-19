@@ -628,6 +628,11 @@ export const api = {
         memory_incognito: context.memoryIncognito ?? false,
       }),
     }),
+  renameChat: (chatId, title) =>
+    request(`/chats/${chatId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
   deleteChat: (chatId, context = {}) => {
     const params = new URLSearchParams({
       memory_enabled: String(context.memoryEnabled ?? true),

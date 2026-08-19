@@ -182,6 +182,19 @@ class ChatSendRequest(BaseModel):
         return value.strip() if value is not None else None
 
 
+class ChatRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+    @field_validator("title")
+    @classmethod
+    def require_nonblank_title(cls, value: str) -> str:
+        # A title of only whitespace collapses to nothing in the sidebar, so it is
+        # rejected the same way a blank prompt is.
+        if not value.strip():
+            raise ValueError("title_must_not_be_blank")
+        return value
+
+
 class ChatMessageUpdateRequest(BaseModel):
     content: str = Field(min_length=1)
     memory_enabled: bool = True
@@ -1178,6 +1191,14 @@ def rerun_edited_chat_message(
         user_message_id=message_id,
     )
     return ChatGenerationStartResponse(generation=_generation_read(generation))
+
+
+@router.patch("/chats/{chat_id}", response_model=ChatRead)
+def rename_chat(chat_id: int, request: ChatRenameRequest, store: StoreDependency) -> ChatRead:
+    _get_required_chat(store, chat_id)
+    chat = store.rename_chat(chat_id, request.title)
+    store.db.commit()
+    return ChatRead.model_validate(chat)
 
 
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)

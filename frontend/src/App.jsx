@@ -265,6 +265,92 @@ function Modal({ title, children, onClose, wide = false, className = "" }) {
   );
 }
 
+/**
+ * One chat in the sidebar, owning its own rename editing state.
+ *
+ * The two lists (loose chats and chats inside a project) differ only in class names,
+ * so they share this row rather than growing two copies of the rename flow.
+ */
+function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteChat, onRenameChat }) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(chat.title);
+
+  function startRename() {
+    setDraft(chat.title);
+    setRenaming(true);
+  }
+
+  function cancelRename() {
+    setDraft(chat.title);
+    setRenaming(false);
+  }
+
+  function submitRename(event) {
+    event.preventDefault();
+    const cleaned = draft.trim();
+    // Closing an untouched field, or one emptied by mistake, keeps the old title
+    // instead of reporting an error the user did not ask for.
+    if (cleaned && cleaned !== chat.title) {
+      onRenameChat(chat, cleaned);
+    }
+    setRenaming(false);
+  }
+
+  if (renaming) {
+    return (
+      <div className={`${classes.item} ${isActive ? "active" : ""}`} data-chat-id={chat.id}>
+        <form className="chat-rename-form" onSubmit={submitRename}>
+          <input
+            className="chat-rename-input"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+            onBlur={submitRename}
+            aria-label={`Rename chat ${chat.title}`}
+            maxLength={120}
+            autoFocus
+          />
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${classes.item} ${isActive ? "active" : ""}`} data-chat-id={chat.id}>
+      <button
+        className="chat-item-rename"
+        type="button"
+        title="Rename chat"
+        aria-label={`Rename chat ${chat.title}`}
+        onClick={startRename}
+      >
+        &#9998;
+      </button>
+      <a
+        className={classes.link}
+        href={href}
+        onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
+      >
+        {chat.title}
+      </a>
+      <button
+        className={classes.delete}
+        type="button"
+        title="Delete chat"
+        aria-label={`Delete chat ${chat.title}`}
+        onClick={() => onDeleteChat(chat)}
+      >
+        X
+      </button>
+    </div>
+  );
+}
+
 function Sidebar({
   sidebar,
   activeChatId,
@@ -275,6 +361,7 @@ function Sidebar({
   onNewChat,
   onOpenChat,
   onDeleteChat,
+  onRenameChat,
   onDeleteProject,
   onOpenSettings,
   onOpenChatHome,
@@ -392,27 +479,20 @@ function Sidebar({
               + New Chat
             </button>
             {project.chats.map((chat) => (
-              <div
-                className={`project-chat-item ${chat.id === activeChatId ? "active" : ""}`}
+              <SidebarChatRow
                 key={chat.id}
-              >
-                <a
-                  className="project-chat-link"
-                  href={chatPermalink(chat.id, project.id)}
-                  onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
-                >
-                  {chat.title}
-                </a>
-                <button
-                  className="project-chat-delete"
-                  type="button"
-                  title="Delete chat"
-                  aria-label={`Delete chat ${chat.title}`}
-                  onClick={() => onDeleteChat(chat)}
-                >
-                  X
-                </button>
-              </div>
+                chat={chat}
+                href={chatPermalink(chat.id, project.id)}
+                isActive={chat.id === activeChatId}
+                classes={{
+                  item: "project-chat-item",
+                  link: "project-chat-link",
+                  delete: "project-chat-delete",
+                }}
+                onOpenChat={onOpenChat}
+                onDeleteChat={onDeleteChat}
+                onRenameChat={onRenameChat}
+              />
             ))}
           </details>
         ))
@@ -423,28 +503,16 @@ function Sidebar({
         <p className="sidebar-caption">No chats yet.</p>
       ) : (
         filteredChats.map((chat) => (
-          <div
-            className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
+          <SidebarChatRow
             key={chat.id}
-            data-chat-id={chat.id}
-          >
-            <a
-              className="chat-item-title"
-              href={chatPermalink(chat.id)}
-              onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
-            >
-              {chat.title}
-            </a>
-            <button
-              className="chat-item-delete"
-              type="button"
-              title="Delete chat"
-              aria-label="Delete chat"
-              onClick={() => onDeleteChat(chat)}
-            >
-              X
-            </button>
-          </div>
+            chat={chat}
+            href={chatPermalink(chat.id)}
+            isActive={chat.id === activeChatId}
+            classes={{ item: "chat-item", link: "chat-item-title", delete: "chat-item-delete" }}
+            onOpenChat={onOpenChat}
+            onDeleteChat={onDeleteChat}
+            onRenameChat={onRenameChat}
+          />
         ))
       )}
 
@@ -2006,6 +2074,19 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     }
   }
 
+  async function handleRenameChat(chat, title) {
+    setStatusError("");
+    try {
+      const updated = await api.renameChat(chat.id, title);
+      // The header reads from activeChat, so the open conversation retitles immediately
+      // rather than waiting for the next sidebar load.
+      setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
+      await refreshSidebar();
+    } catch (error) {
+      setStatusError(errorMessage(error));
+    }
+  }
+
   function handleDeleteChat(chat) {
     setPendingDelete({
       type: "chat",
@@ -2414,6 +2495,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onNewChat={handleNewChat}
         onOpenChat={handleOpenChat}
         onDeleteChat={handleDeleteChat}
+        onRenameChat={handleRenameChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={() => {

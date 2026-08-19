@@ -145,6 +145,19 @@ class AppStore:
         title = " ".join(prompt.strip().split())
         chat.title = title[:54] + "..." if len(title) > 57 else title or "New chat"
 
+    def rename_chat(self, chat_id: int, title: str) -> Chat | None:
+        """Apply a title the user chose.
+
+        Unlike the automatic titling above this overwrites whatever is there, including
+        a title derived from the first prompt: an explicit rename is the whole point.
+        """
+        chat = self.get_chat(chat_id)
+        if chat is None:
+            return None
+        chat.title = " ".join(title.split())
+        self.db.flush()
+        return chat
+
     def delete_chat(self, chat_id: int) -> None:
         chat = self.get_chat(chat_id)
         if chat is not None:

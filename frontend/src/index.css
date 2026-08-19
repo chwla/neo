@@ -127,13 +127,21 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .project-folder summary:hover { background: rgba(255,255,255,.025); color: #888; }
 .project-folder-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--neo-green); }
 .project-folder-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px "JetBrains Mono", monospace; letter-spacing: .05em; text-transform: uppercase; }
-.project-folder-delete, .project-chat-delete, .chat-item-delete { border: 0; background: transparent; color: #333; opacity: 0; font: 9px "JetBrains Mono", monospace; }
+.project-folder-delete, .project-chat-delete, .chat-item-delete { border: 0; background: transparent; color: #fff; opacity: 0; font: 9px "JetBrains Mono", monospace; }
 .project-folder:hover .project-folder-delete, .project-chat-item:hover .project-chat-delete, .chat-item:hover .chat-item-delete { opacity: 1; }
 .project-folder-delete:hover, .project-chat-delete:hover, .chat-item-delete:hover { color: var(--neo-danger); }
+/* Rename sits beside delete and reveals on the same hover, so a row shows either both
+   controls or neither. */
+.chat-item-rename { flex: 0 0 13px; width: 13px; border: 0; background: transparent; padding: 0; color: #fff; opacity: 0; font: 10px "JetBrains Mono", monospace; text-align: left; }
+.project-chat-item:hover .chat-item-rename, .chat-item:hover .chat-item-rename { opacity: 1; }
+.chat-item-rename:hover { color: var(--neo-green); }
+.chat-rename-form { min-width: 0; flex: 1; display: flex; }
+.chat-rename-input { min-width: 0; flex: 1; border: 1px solid var(--neo-green); border-radius: 2px; background: var(--neo-bg); padding: 2px 6px; color: #ededed; font: 12px "JetBrains Mono", monospace; }
+.chat-rename-input:focus { outline: none; }
 .project-folder-new-chat { margin: 2px 6px 2px 20px; border: 0; background: transparent; color: #444; font-size: 11px; }
 .project-folder-new-chat:hover { color: var(--neo-green); }
-.project-chat-item, .chat-item { display: flex; align-items: center; min-height: 30px; margin: 1px 0 1px 14px; border-left: 2px solid transparent; border-radius: 0 2px 2px 0; padding: 0 6px 0 10px; }
-.chat-item { margin: 1px 8px; padding-left: 12px; }
+.project-chat-item, .chat-item { display: flex; align-items: center; min-height: 30px; margin: 1px 0 1px 14px; border-left: 2px solid transparent; border-radius: 0 2px 2px 0; padding: 0 6px 0 2px; }
+.chat-item { margin: 1px 8px; padding-left: 2px; }
 .project-chat-item:hover, .chat-item:hover { background: rgba(255,255,255,.025); }
 .project-chat-item.active, .chat-item.active { border-left-color: var(--neo-green); background: rgba(57,255,20,.04); }
 .project-chat-link, .chat-item-title { min-width: 0; flex: 1; overflow: hidden; color: #777; font-size: 12px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
