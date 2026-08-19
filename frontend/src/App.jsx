@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import { createRequestId, createSendGuard } from "./sendGuard.js";
 import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
@@ -45,13 +46,6 @@ function errorMessage(error) {
     return "";
   }
   return error.message || String(error);
-}
-
-function clientRequestId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function browserChatContext() {
@@ -1627,6 +1621,10 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
 function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
+  // Held in a ref, not state, so a second click in the same tick is refused before
+  // React has had a chance to re-render the disabled button.
+  const sendGuardRef = useRef(createSendGuard());
+
   const [messages, setMessages] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
@@ -1661,6 +1659,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
   const [sending, setSending] = useState(false);
+
+  // Releasing here ties the lock to the rendered state, so it is exactly a synchronous
+  // prefix of `sending`: every path that ends a send frees it, and none can leave it
+  // stuck.
+  useEffect(() => {
+    if (!sending) {
+      sendGuardRef.current.release();
+    }
+  }, [sending]);
   const [stopping, setStopping] = useState(false);
   const [streamingAssistant, setStreamingAssistant] = useState(null);
   const [generationChatId, setGenerationChatId] = useState(null);
@@ -2213,7 +2220,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         message.id,
         cleaned,
         selectedLlmId || null,
-        clientRequestId(),
+        createRequestId(),
         { ...browserChatContext(), memoryEnabled, memoryIncognito },
       );
       setMessages((current) => {
@@ -2237,7 +2244,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   }
 
   async function sendPrompt(prompt) {
+    // `sending` catches a send started by another flow (a rerun, or a generation resumed
+    // after reload). It cannot catch a second click in the same tick, because it only
+    // becomes true on the next render -- that window is what the guard closes.
     if (!prompt || sending) {
+      return;
+    }
+    const requestId = sendGuardRef.current.begin();
+    if (requestId === null) {
       return;
     }
 
@@ -2267,7 +2281,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         chat.id,
         prompt,
         selectedLlmId || null,
-        clientRequestId(),
+        requestId,
         { ...browserChatContext(), memoryEnabled, memoryIncognito },
       );
       setActiveGenerationId(result.generation.id);

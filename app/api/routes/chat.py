@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from threading import Lock, Thread
@@ -773,18 +774,16 @@ def _start_chat_generation(
         raise HTTPException(status_code=401, detail="Choose a profile to continue.")
     chat = _get_required_chat(store, chat_id)
     ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+    cleaned_prompt = payload.prompt.strip()
     if payload.client_request_id:
-        existing = store.db.scalar(
-            select(ChatGeneration).where(
-                ChatGeneration.chat_id == chat.id,
-                ChatGeneration.client_request_id == payload.client_request_id,
-            )
-        )
+        # Same key space as the synchronous path, so a key cannot be spent twice across
+        # the two, and scoped like the unique index rather than by chat.
+        existing = _generation_for_client_request(store, payload.client_request_id)
         if existing is not None:
+            _require_matching_claim(existing, chat.id, cleaned_prompt, payload.client_request_id)
             _recover_generation(request, store, existing)
             return existing
     generation_id = str(uuid.uuid4())
-    cleaned_prompt = payload.prompt.strip()
     if user_message_id is None:
         user_message = store.add_chat_message(
             chat.id,
@@ -829,13 +828,13 @@ def _start_chat_generation(
     except IntegrityError:
         store.db.rollback()
         if payload.client_request_id:
-            existing = store.db.scalar(
-                select(ChatGeneration).where(
-                    ChatGeneration.chat_id == chat.id,
-                    ChatGeneration.client_request_id == payload.client_request_id,
-                )
-            )
+            # Match the unique index, which spans the profile database rather than one
+            # chat. A chat-scoped lookup here missed the blocking row and re-raised.
+            existing = _generation_for_client_request(store, payload.client_request_id)
             if existing is not None:
+                _require_matching_claim(
+                    existing, chat.id, cleaned_prompt, payload.client_request_id
+                )
                 _recover_generation(request, store, existing)
                 return existing
         raise
@@ -904,6 +903,191 @@ def get_chat(chat_id: int, store: StoreDependency) -> ChatThreadRead:
     return _thread_payload(store, chat_id)
 
 
+# A generation still doing work must not be replayed as if it had an answer.
+_ACTIVE_GENERATION_STATUSES = frozenset({"queued", "running", "streaming"})
+# How long a concurrent duplicate waits for the original before giving up on it.
+SYNC_IDEMPOTENCY_WAIT_SECONDS = 180
+
+
+def _generation_for_client_request(store: AppStore, client_request_id: str):
+    """Find the row holding this idempotency key.
+
+    Deliberately not scoped by chat: the unique index spans ``client_request_id`` across
+    the whole profile database, so a chat-scoped lookup would miss a row that still
+    blocks the insert and turn a reused key into an integrity error.
+    """
+    return store.db.scalar(
+        select(ChatGeneration).where(ChatGeneration.client_request_id == client_request_id)
+    )
+
+
+def _require_matching_claim(
+    generation: ChatGeneration, chat_id: int, prompt: str, client_request_id: str
+) -> None:
+    """An idempotency key names one request; reusing it for another is a client error.
+
+    Returning the first request's answer for a different prompt would be worse than
+    failing, so this conflicts explicitly rather than replying with unrelated output.
+    """
+    if generation.chat_id != chat_id or (generation.prompt or "").strip() != prompt:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"client_request_id '{client_request_id}' was already used for a different "
+                "prompt or chat in this profile. Send a new client_request_id."
+            ),
+        )
+
+
+def _await_terminal_generation(
+    store: AppStore,
+    generation: ChatGeneration,
+    timeout: float = SYNC_IDEMPOTENCY_WAIT_SECONDS,
+) -> ChatGeneration:
+    """Wait out an in-flight original so a duplicate converges on its result."""
+    deadline = time.monotonic() + timeout
+    while generation.status in _ACTIVE_GENERATION_STATUSES and time.monotonic() < deadline:
+        time.sleep(0.2)
+        # Ending the read transaction is what lets the next read observe the commit made
+        # by the connection that owns the claim.
+        store.db.rollback()
+        refreshed = store.db.get(ChatGeneration, generation.id)
+        if refreshed is None:
+            break
+        generation = refreshed
+    return generation
+
+
+def _acquire_sync_claim(
+    store: AppStore, chat: Chat, payload: ChatSendRequest, prompt: str
+) -> tuple[ChatGeneration | None, ChatGeneration | None]:
+    """Claim the key, or hand back the generation that already owns it.
+
+    The claim is committed before any model work begins. That is what makes the unique
+    index effective against a concurrent duplicate: the loser of the race sees a
+    committed row and reuses it instead of starting a second generation.
+    """
+    key = payload.client_request_id
+    existing = _generation_for_client_request(store, key)
+    if existing is not None:
+        _require_matching_claim(existing, chat.id, prompt, key)
+        return None, existing
+
+    generation = ChatGeneration(
+        id=str(uuid.uuid4()),
+        chat_id=chat.id,
+        prompt=prompt,
+        llm_id=payload.llm_id,
+        client_request_id=key,
+        status="running",
+        status_detail="Running",
+        timezone=payload.timezone,
+        locale=payload.locale,
+        metadata_json=json.dumps(
+            {
+                "memory_enabled": payload.memory_enabled,
+                "memory_incognito": payload.memory_incognito,
+                "transport": "sync",
+            }
+        ),
+        worker_id=PROCESS_WORKER_ID,
+        attempt_count=1,
+        started_at=datetime.now(UTC),
+    )
+    store.db.add(generation)
+    try:
+        store.db.commit()
+    except IntegrityError:
+        # Another request committed the same key first; adopt its row.
+        store.db.rollback()
+        existing = _generation_for_client_request(store, key)
+        if existing is None:
+            raise
+        _require_matching_claim(existing, chat.id, prompt, key)
+        return None, existing
+    store.db.refresh(generation)
+    return generation, None
+
+
+def _replay_sync_send(
+    store: AppStore, chat_id: int, generation: ChatGeneration, client_request_id: str
+) -> ChatSendResponse:
+    """Return the original turn's outcome without creating a second one."""
+    generation = _await_terminal_generation(store, generation)
+    if generation.status in _ACTIVE_GENERATION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A request with client_request_id '{client_request_id}' is still running. "
+                "Retry once it finishes."
+            ),
+        )
+    if generation.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                generation.error
+                or f"The original request for client_request_id '{client_request_id}' failed."
+            ),
+        )
+    payload = _thread_payload(store, chat_id)
+    return ChatSendResponse(
+        chat=payload.chat,
+        messages=payload.messages,
+        reply=generation.reply or "",
+        web_debug={},
+    )
+
+
+def _release_sync_claim(store: AppStore, generation: ChatGeneration) -> None:
+    """Drop the claim after a failure so the same key may be retried."""
+    try:
+        store.db.rollback()
+        store.db.delete(generation)
+        store.db.commit()
+    except Exception:  # noqa: BLE001 - never mask the original failure
+        store.db.rollback()
+
+
+def _complete_sync_claim(
+    store: AppStore,
+    generation: ChatGeneration,
+    chat_id: int,
+    reply: str,
+    baseline_message_id: int,
+    client_request_id: str,
+) -> None:
+    """Record the outcome and tie the new turn to the claim.
+
+    The chat service creates the message rows itself and returns only the reply text, so
+    the new turn is identified here by id. This is also what puts ``generation_id`` and
+    ``client_request_id`` on a synchronous turn, which previously carried neither.
+    """
+    created = [
+        message for message in store.list_chat_messages(chat_id) if message.id > baseline_message_id
+    ]
+    user_message = next((item for item in created if item.role == "user"), None)
+    assistant_message = next((item for item in reversed(created) if item.role == "assistant"), None)
+    if user_message is not None:
+        metadata = _json_object(user_message.metadata_json)
+        metadata.update({"generation_id": generation.id, "client_request_id": client_request_id})
+        user_message.metadata_json = json.dumps(metadata, default=str, sort_keys=True)
+        generation.user_message_id = user_message.id
+    if assistant_message is not None:
+        assistant_message.generation_id = generation.id
+        generation.assistant_message_id = assistant_message.id
+    generation.status = "completed"
+    generation.status_detail = "Completed"
+    generation.reply = reply
+    generation.completed_at = datetime.now(UTC)
+    store.db.commit()
+
+
+def _latest_message_id(store: AppStore, chat_id: int) -> int:
+    messages = store.list_chat_messages(chat_id)
+    return messages[-1].id if messages else 0
+
+
 @router.post("/chats/{chat_id}/messages", response_model=ChatSendResponse)
 def send_chat_message(
     chat_id: int,
@@ -912,6 +1096,19 @@ def send_chat_message(
     store: StoreDependency,
 ) -> ChatSendResponse:
     chat = _get_required_chat(store, chat_id)
+    cleaned_prompt = request.prompt.strip()
+
+    # A client_request_id makes the send idempotent. The claim is taken and committed
+    # before any model work, so a duplicate — whether it arrives after the first
+    # finished or concurrently with it — reuses that turn instead of creating another.
+    claim: ChatGeneration | None = None
+    if request.client_request_id:
+        ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+        claim, replay = _acquire_sync_claim(store, chat, request, cleaned_prompt)
+        if replay is not None:
+            return _replay_sync_send(store, chat_id, replay, request.client_request_id)
+
+    baseline_message_id = _latest_message_id(store, chat_id)
     rule_result = RuleResolver().resolve(
         RuleResolveRequest(
             context_type="chat",
@@ -938,8 +1135,20 @@ def send_chat_message(
             locale=request.locale,
         )
     except Exception as exc:
+        if claim is not None:
+            # A failed send consumes no key, so the client may retry the same one.
+            _release_sync_claim(store, claim)
         status_code, _status_detail, detail = _chat_failure(exc, request.llm_id)
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    if claim is not None:
+        _complete_sync_claim(
+            store,
+            claim,
+            chat_id,
+            reply,
+            baseline_message_id,
+            request.client_request_id,
+        )
     payload = _thread_payload(store, chat_id)
     return ChatSendResponse(
         chat=payload.chat,
