@@ -16,8 +16,13 @@ from app.services.search.content import (
     fetch_pages,
     untrusted_context_message,
 )
-from app.services.search.intent import resolve_search_intent
+from app.services.search.intent import CHANGE_QUESTION, resolve_search_intent
 from app.services.search.providers import ProviderRegistry, WebSearchProvider
+from app.services.search.query_planner import (
+    SearchPlan,
+    fallback_provider_query,
+    plan_query,
+)
 from app.services.search.ranking import build_relevance_profile, rank_results, relevant_fetched_page
 from app.services.search.types import (
     ComprehensiveSearchResult,
@@ -74,6 +79,7 @@ class WebSearchService:
         fetcher: WebPageFetcher | None = None,
         citation_formatter: CitationFormatter | None = None,
         decision: WebSearchDecisionService | None = None,
+        llm: LLMClient | None = None,
     ) -> None:
         self.settings = get_settings()
         self.registry = ProviderRegistry()
@@ -81,6 +87,7 @@ class WebSearchService:
         self.fetcher = fetcher or WebPageFetcher()
         self.citation_formatter = citation_formatter or CitationFormatter()
         self.decision = decision or WebSearchDecisionService()
+        self.llm = llm
         self._uses_custom_dependencies = provider is not None or fetcher is not None
 
     def should_search(self, query: str) -> WebSearchDecision:
@@ -93,7 +100,13 @@ class WebSearchService:
             )
         return decision
 
-    def search(self, query: str, max_results: int | None = None) -> WebSearchResponse:
+    def search(
+        self,
+        query: str,
+        max_results: int | None = None,
+        *,
+        hint: str | None = None,
+    ) -> WebSearchResponse:
         if self._uses_custom_dependencies:
             if not self.settings.web_search_enabled:
                 return WebSearchResponse(
@@ -101,11 +114,12 @@ class WebSearchService:
                     provider="disabled",
                     error="Web search is disabled in this runtime.",
                 )
-            rewritten_query = provider_query(query)
+            plan = plan_query(query, llm=self.llm, hint=hint)
+            rewritten_query = plan.provider_query
             limit = min(max_results or self.settings.web_search_max_results, 10)
             try:
                 response = self.provider.search(
-                    rewritten_query, limit, _time_filter_for_query(query)
+                    rewritten_query, limit, _plan_time_filter(plan, query, None)
                 )
             except TypeError:
                 response = self.provider.search(rewritten_query, limit)  # type: ignore[call-arg]
@@ -113,7 +127,7 @@ class WebSearchService:
             response.provider_query = rewritten_query
             return response
         options = SearchOptions(max_results=max_results)
-        return _run_provider_chain(query, options)
+        return _run_provider_chain(query, options, llm=self.llm, hint=hint)
 
     def fetch(self, url: str) -> FetchedPage:
         return self.fetcher.fetch(url)
@@ -123,29 +137,32 @@ class WebSearchService:
         query: str,
         options: SearchOptions | dict[str, object] | None = None,
     ) -> ComprehensiveSearchResult:
-        return comprehensive_web_search(query, options)
+        return comprehensive_web_search(query, options, llm=self.llm)
 
-    def build_context_forced(self, query: str) -> WebContext:
+    def build_context_forced(self, query: str, *, hint: str | None = None) -> WebContext:
         """Build web context, forcing search regardless of decision service."""
-        return self._build_context_inner(query)
+        return self._build_context_inner(query, hint=hint)
 
-    def build_context(self, query: str) -> WebContext:
+    def build_context(self, query: str, *, hint: str | None = None) -> WebContext:
         decision = self.should_search(query)
         if not decision.needed:
             return WebContext(query=query, needed=False, warning=decision.reason)
-        return self._build_context_inner(query)
+        return self._build_context_inner(query, hint=hint)
 
-    def _build_context_inner(self, query: str) -> WebContext:
+    def _build_context_inner(self, query: str, *, hint: str | None = None) -> WebContext:
         if self._uses_custom_dependencies:
-            return self._build_context_with_dependencies(query)
+            return self._build_context_with_dependencies(query, hint=hint)
 
+        # time_filter is deliberately left unset: the planner decides the window,
+        # falling back to _time_filter_for_query only when it could not.
         result = comprehensive_web_search(
             query,
             SearchOptions(
                 max_results=self.settings.web_search_max_results,
                 max_pages=self.settings.web_fetch_max_pages,
-                time_filter=_time_filter_for_query(query),
             ),
+            llm=self.llm,
+            hint=hint,
         )
         search = WebSearchResponse(
             query=query,
@@ -163,7 +180,7 @@ class WebSearchService:
                 if isinstance(item, dict)
             ],
         )
-        answer_mode = _answer_mode(query)
+        answer_mode = result.answer_mode or _answer_mode(query)
         warning = None
         if result.errors:
             warning = result.errors[0]
@@ -182,16 +199,23 @@ class WebSearchService:
             warning=warning,
         )
 
-    def _provider_query(self, query: str) -> str:
-        return provider_query(query)
+    def _provider_query(self, query: str, *, hint: str | None = None) -> str:
+        return provider_query(query, llm=self.llm, hint=hint)
 
-    def _build_context_with_dependencies(self, query: str) -> WebContext:
-        search = self.search(query, self.settings.web_search_max_results)
+    def _build_context_with_dependencies(
+        self, query: str, *, hint: str | None = None
+    ) -> WebContext:
+        search = self.search(query, self.settings.web_search_max_results, hint=hint)
         if search.error or not search.results:
             return WebContext(query=query, needed=True, search=search, warning=search.error)
 
-        profile = build_relevance_profile(query, search.provider_query or provider_query(query))
-        answer_mode = _answer_mode(query)
+        plan = plan_query(query, llm=self.llm, hint=hint)
+        profile = build_relevance_profile(
+            query,
+            search.provider_query or plan.provider_query,
+            subject_terms=plan.subject_terms,
+        )
+        answer_mode = _plan_answer_mode(plan, query)
         ranked_results = rank_results(profile, search.results)
         if not ranked_results:
             return WebContext(
@@ -252,24 +276,32 @@ class WebSearchService:
 def comprehensive_web_search(
     query: str,
     options: SearchOptions | dict[str, object] | None = None,
+    *,
+    llm: LLMClient | None = None,
+    hint: str | None = None,
 ) -> ComprehensiveSearchResult:
     settings = get_settings()
     opts = options if isinstance(options, SearchOptions) else SearchOptions(**(options or {}))
-    rewritten_query = provider_query(query)
     max_results = min(opts.max_results or settings.web_search_max_results, 10)
     max_pages = min(
         opts.max_pages if opts.max_pages is not None else settings.web_fetch_max_pages, 5
     )
+    # Checked before planning: a disabled search must not pay for a model call,
+    # and "disabled" is the default configuration.
     if not settings.web_search_enabled:
         return ComprehensiveSearchResult(
             query=query,
             provider_used="disabled",
-            rewritten_query=rewritten_query,
+            rewritten_query=fallback_provider_query(query),
+            answer_mode=_answer_mode(query),
             errors=["Web search is disabled in this runtime."],
         )
 
-    profile = build_relevance_profile(query, rewritten_query)
-    answer_mode = _answer_mode(query)
+    plan = plan_query(query, llm=llm, hint=hint)
+    rewritten_query = plan.provider_query
+    profile = build_relevance_profile(query, rewritten_query, subject_terms=plan.subject_terms)
+    answer_mode = _plan_answer_mode(plan, query)
+    time_filter = _plan_time_filter(plan, query, opts.time_filter)
     release_query = resolve_search_intent(query).kind == SearchIntentKind.RELEASE_DATE
     attempted: dict[str, str] = {}
     provider_attempts: list[dict[str, object]] = []
@@ -282,7 +314,7 @@ def comprehensive_web_search(
         last_provider = provider.name
         provider_started = time.perf_counter()
         try:
-            search = provider.search(rewritten_query, max_results, opts.time_filter)
+            search = provider.search(rewritten_query, max_results, time_filter)
         except Exception as exc:
             attempted[provider.name] = f"search failed: {exc}"
             provider_attempts.append(
@@ -333,7 +365,7 @@ def comprehensive_web_search(
             profile=profile,
             answer_mode=answer_mode,
             max_pages=max_pages,
-            time_filter=opts.time_filter,
+            time_filter=time_filter,
         )
         if not candidate.citations or not candidate.evidence_chunks:
             attempted[provider.name] = (
@@ -420,6 +452,7 @@ def comprehensive_web_search(
         rewritten_query=rewritten_query,
         raw_results=last_raw_results,
         ranked_results=last_ranked_results,
+        answer_mode=answer_mode,
         warnings=[] if had_provider_error_only else [GROUNDING_FAILURE_MESSAGE],
         errors=(
             ["All configured search providers failed or returned no usable evidence."]
@@ -430,7 +463,7 @@ def comprehensive_web_search(
             "attempted_providers": attempted,
             "provider_attempts": provider_attempts,
             "fetch_max_pages": max_pages,
-            "time_filter": opts.time_filter,
+            "time_filter": time_filter,
         },
     )
 
@@ -498,6 +531,7 @@ def _build_verified_search_result(
         structured_sources=structured_sources,
         citations=citations,
         model_context=build_evidence_pack(indexed_chunks, answer_mode),
+        answer_mode=answer_mode,
         debug={
             "fetch_max_pages": max_pages,
             "time_filter": time_filter,
@@ -505,10 +539,16 @@ def _build_verified_search_result(
     )
 
 
-def _run_provider_chain(query: str, options: SearchOptions) -> WebSearchResponse:
+def _run_provider_chain(
+    query: str,
+    options: SearchOptions,
+    *,
+    llm: LLMClient | None = None,
+    hint: str | None = None,
+) -> WebSearchResponse:
     settings = get_settings()
     registry = ProviderRegistry()
-    rewritten_query = provider_query(query)
+    rewritten_query = provider_query(query, llm=llm, hint=hint)
     limit = min(options.max_results or settings.web_search_max_results, 10)
     attempted: dict[str, str] = {}
     provider_attempts: list[dict[str, object]] = []
@@ -558,196 +598,9 @@ def _run_provider_chain(query: str, options: SearchOptions) -> WebSearchResponse
     )
 
 
-def provider_query(query: str) -> str:
-    cleaned = " ".join(query.split())
-    wants_india = bool(re.search(r"\b(india|indian|in india)\b", query, flags=re.IGNORECASE))
-    cleaned = re.sub(r"^(hi|hello|hey)\s+neo[:,\s-]*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^(hi|hello|hey)[:,\s-]*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(
-        r"^(can you |could you |please )?"
-        r"(search|search the web|search online|look up|lookup|find|google)"
-        r"( for| about)?[:,\s-]*",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(
-        r"\b(please\s+)?("
-        r"look up|lookup|search the web for|search web for|search for|web search for|"
-        r"verify|fact check"
-        r")\b[:,\s-]*",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    ne_match = re.match(
-        r"^how many (seasons?|episodes?|parts?) "
-        r"(?:does|did|do|has|have|is|are|of) (.+?)(?:\s+have)?$",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if ne_match:
-        return f"{ne_match.group(2).strip()} {ne_match.group(1)} count"
-    creator_match = re.match(
-        r"^who (?:created|wrote|directed|produced|made|built|developed|started|launched) (.+)$",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if creator_match:
-        return f"{creator_match.group(1).strip()} creator writer director"
-    creators_match = re.match(
-        r"^who (?:are|were|is|was) the (?:original |founding )?"
-        r"(?:creator|writer|director|founder|developer|maker|team)s? "
-        r"(?:of|behind) (.+)$",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if creators_match:
-        return f"{creators_match.group(1).strip()} creators founders original team"
-    cleaned = re.sub(r"^(what|when|where|who|how)\s+is\s+the\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(
-        r"^(what|when|where|who|how)\s+(?:is|are|does|do)\s+", "", cleaned, flags=re.IGNORECASE
-    )
-    cleaned = re.sub(
-        r"\bindian cricket team(?:'s)?\b", "India cricket team", cleaned, flags=re.IGNORECASE
-    )
-    cleaned = re.sub(
-        r"\binvincible\s+s(\d+)\b", r"Invincible season \1", cleaned, flags=re.IGNORECASE
-    )
-    cleaned = cleaned.strip(" .?!")
-    if re.search(r"\bavengers\s+doomsday\b", cleaned, flags=re.IGNORECASE):
-        if re.search(
-            r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE
-        ):
-            if wants_india:
-                return "Avengers Doomsday India release date"
-            return "Avengers Doomsday release date"
-        return "Avengers Doomsday movie"
-    if re.search(
-        r"\b(spiderman|spider-man|spider man)\s+brand\s+new\s+day\b", cleaned, flags=re.IGNORECASE
-    ):
-        if re.search(
-            r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE
-        ):
-            if wants_india:
-                return "Spider-Man Brand New Day India release date"
-            return "Spider-Man Brand New Day movie release date"
-        return "Spider-Man Brand New Day movie"
-    if re.search(
-        r"\b(spiderman|spider-man|spider man)\b", cleaned, flags=re.IGNORECASE
-    ) and re.search(
-        r"\b(new|next|upcoming)\s+(?:(?:spiderman|spider-man|spider man)\s+)?movie\b",
-        cleaned,
-        flags=re.IGNORECASE,
-    ):
-        if re.search(
-            r"\b(release|released|releasing|premiere|date|when)\b",
-            query,
-            flags=re.IGNORECASE,
-        ):
-            if wants_india:
-                return "new Spider-Man movie India release date"
-            return "new Spider-Man movie release date"
-        return "new Spider-Man movie"
-    if re.search(r"\b(?:the\s+)?odyssey\b", cleaned, flags=re.IGNORECASE) and re.search(
-        r"\b(release|released|releasing|premiere|date|when)\b",
-        query,
-        flags=re.IGNORECASE,
-    ):
-        if wants_india:
-            return "The Odyssey India release date"
-        return "The Odyssey release date"
-    if re.search(r"\binvincible\s+season\s+\d+\b", cleaned, flags=re.IGNORECASE):
-        season = re.search(
-            r"\binvincible\s+season\s+(?P<season>\d+)\b", cleaned, flags=re.IGNORECASE
-        ).group("season")
-        if re.search(r"\b(about|plot|story)\b", query, flags=re.IGNORECASE):
-            return f"Invincible season {season} plot official"
-        if re.search(r"\b(episode|episodes|how many|count)\b", query, flags=re.IGNORECASE):
-            return f"Invincible season {season} episode count official"
-        return f"Invincible season {season} official"
-    if re.search(r"\binvincible\b", cleaned, flags=re.IGNORECASE) and re.search(
-        r"\b(kirkman|planning|planned|how many seasons?|seasons?)\b",
-        query,
-        flags=re.IGNORECASE,
-    ):
-        return "Robert Kirkman Invincible planned seasons"
-    if re.search(r"\bgod of war\b", cleaned, flags=re.IGNORECASE):
-        if re.search(
-            r"\b(release|released|releasing|premiere|date|when|coming out)\b",
-            query,
-            flags=re.IGNORECASE,
-        ):
-            return "God of War next game release date official"
-        if re.search(r"\b(news|latest|recent|updates)\b", query, flags=re.IGNORECASE):
-            return "God of War next game latest news official"
-        return "God of War next game"
-    if re.search(r"\bsupergirl\b", cleaned, flags=re.IGNORECASE):
-        if re.search(
-            r"\b(release|released|releasing|premiere|date|when|coming out)\b",
-            query,
-            flags=re.IGNORECASE,
-        ):
-            return "Supergirl movie release date"
-        if re.search(r"\b(news|latest|recent|updates)\b", query, flags=re.IGNORECASE):
-            return "Supergirl movie latest news"
-        return "Supergirl movie"
-    if re.search(
-        r"\bdune\s+(?:part\s+)?3|dune:\s*part\s+three|dune\s+part\s+three\b",
-        cleaned,
-        flags=re.IGNORECASE,
-    ):
-        if re.search(
-            r"\b(release|released|releasing|premiere|date|when)\b", query, flags=re.IGNORECASE
-        ):
-            if wants_india:
-                return "Dune Part Three India release date"
-            return "Dune Part Three release date"
-        return "Dune Part Three movie"
-    if re.search(r"\bchess\s+(?:world\s*cup|worldcup)\b", cleaned, flags=re.IGNORECASE):
-        if re.search(r"\b(next|upcoming|schedule|when)\b", query, flags=re.IGNORECASE):
-            return "next FIDE Chess World Cup date location"
-        return "FIDE Chess World Cup"
-    if re.search(r"\bchess\s+world\s+champion\b", cleaned, flags=re.IGNORECASE):
-        return "current world chess champion FIDE"
-    tv_match = re.match(
-        r"^(.+?)\s+(?:tv|television)\s+series\b.*$",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if tv_match:
-        show = tv_match.group(1).strip()
-        return f"{show} TV series seasons episodes overview"
-    if re.search(r"\bIndia cricket team\b", cleaned, flags=re.IGNORECASE) and re.search(
-        r"\b(upcoming|next|match|schedule|fixture|fixtures)\b",
-        cleaned,
-        flags=re.IGNORECASE,
-    ):
-        return "India cricket team upcoming match schedule"
-    if re.search(r"\bnext\.?js\b", cleaned, flags=re.IGNORECASE) and re.search(
-        r"\b(latest|version|release)\b",
-        cleaned,
-        flags=re.IGNORECASE,
-    ):
-        return "Next.js latest version npm"
-    match = re.match(
-        r"^(latest|current|recent)\s+(news|updates|headlines)\s+(?:on|about|for)\s+(.+)$",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        return f"{match.group(3)} {match.group(1)} {match.group(2)}"
-    match = re.match(
-        r"^(latest|current|recent)\s+(.+?)\s+(news|updates|headlines)$",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        return f"{match.group(2)} {match.group(1)} {match.group(3)}"
-    match = re.match(r"^(latest|current|recent)\s+(.+)$", cleaned, flags=re.IGNORECASE)
-    if match:
-        return f"{match.group(2)} {match.group(1)}"
-    return cleaned
+def provider_query(query: str, *, llm: LLMClient | None = None, hint: str | None = None) -> str:
+    """The search string for ``query``, planned by the model where available."""
+    return plan_query(query, llm=llm, hint=hint).provider_query
 
 
 def build_evidence_pack(chunks: list[EvidenceChunk], answer_mode: str) -> str:
@@ -962,6 +815,28 @@ class WebAnswerService:
         return "\n".join(lines)
 
 
+def _plan_answer_mode(plan: SearchPlan, query: str) -> str:
+    """Prefer the planner's answer mode, falling back to the keyword heuristic."""
+    if plan.source == "model" and plan.answer_mode in {"fact_lookup", "news_summary", "overview"}:
+        return plan.answer_mode
+    return _answer_mode(query)
+
+
+def _plan_time_filter(plan: SearchPlan, query: str, explicit: str | None) -> str | None:
+    """Resolve the freshness window for a search.
+
+    An explicit caller-supplied window always wins. Otherwise a model-authored
+    plan is trusted *including* its ``None`` -- deciding that a changelog needs no
+    freshness window is exactly the judgement the planner exists to make, so the
+    keyword heuristic must not override it.
+    """
+    if explicit is not None:
+        return explicit
+    if plan.source == "model":
+        return plan.time_filter
+    return _time_filter_for_query(query)
+
+
 def _answer_mode(query: str) -> str:
     lowered = query.lower()
     if re.search(r"\b(latest|newest)\b", lowered) and not re.search(
@@ -989,6 +864,12 @@ def _answer_mode(query: str) -> str:
 
 def _time_filter_for_query(query: str) -> str | None:
     lowered = query.lower()
+    # "What changed in the latest X release?" is not a request for today's news:
+    # the answer is a changelog that may be weeks or months old. Letting "latest"
+    # force a one-day window here hid every correct source on the providers that
+    # honour the filter.
+    if CHANGE_QUESTION.search(query) is not None:
+        return None
     if any(
         term in lowered
         for term in ("today", "latest", "breaking", "right now", "currently", "newest")

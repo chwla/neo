@@ -52,6 +52,23 @@ _RELEASE_SIGNAL = re.compile(
     r"coming out|launch(?: date|ed|es|ing)?)\b",
     re.IGNORECASE,
 )
+# The word "release" alone is not a request for a date. "What changed in the
+# latest React release?" is a changelog question, and routing it to the
+# release-date pipeline made it demand a date that no source could supply.
+_RELEASE_DATE_QUESTION = re.compile(
+    r"(?:\bwhen\b|\bwhat date\b|\brelease date\b|\blaunch date\b|"
+    r"\bpremiere date\b|\bcoming out\b|\bout yet\b|\bdrops?\b|"
+    r"\bhow long until\b)",
+    re.IGNORECASE,
+)
+# "What changed / what's new in X" can never be answered from training data, so
+# it is an external-information request no matter what the model router thinks.
+CHANGE_QUESTION = re.compile(
+    r"(?:\bwhat(?:\'s|s)?\s+(?:has\s+)?(?:recently\s+)?(?:changed|new)\b|"
+    r"\bwhat\s+changed\b|\bchangelog\b|\brelease notes\b|"
+    r"\bnew\s+(?:features?|changes?)\s+in\b)",
+    re.IGNORECASE,
+)
 _CONNECTOR_SIGNAL = re.compile(
     r"^\s*(?:(?:can|could|would)\s+you\s+|please\s+)?"
     r"(?:use|call|invoke|run|execute|query)\s+(?:the\s+)?"
@@ -154,6 +171,10 @@ USER: What is the current price of NVIDIA stock?
 JSON: {"route":"web","confidence":0.96}
 USER: Is SQLite WAL safe for a local app?
 JSON: {"route":"direct","confidence":0.82}
+USER: What changed in the latest React release?
+JSON: {"route":"web","confidence":0.95}
+USER: What is new in Python 3.13?
+JSON: {"route":"web","confidence":0.93}
 """
 
 _ROUTE_DECISION_JSON = re.compile(r"\{\s*\"route\".*?\}", re.DOTALL)
@@ -295,6 +316,18 @@ class SearchIntentResolver:
                 cleaned,
                 "Explicit online lookup request.",
                 0.99,
+                timezone=timezone,
+                locale=locale,
+                decision_source="structured",
+            )
+
+        if CHANGE_QUESTION.search(cleaned) and _CURRENT_WEB_SIGNAL.search(cleaned):
+            return self._result(
+                SearchIntentKind.GENERAL_WEB,
+                original,
+                cleaned,
+                "Asks what changed in something current; needs external sources.",
+                0.95,
                 timezone=timezone,
                 locale=locale,
                 decision_source="structured",
@@ -558,6 +591,8 @@ class SearchIntentResolver:
     ) -> ResolvedSearchIntent | None:
         if _RELEASE_SIGNAL.search(query) is None:
             return None
+        if _RELEASE_DATE_QUESTION.search(query) is None:
+            return None
 
         entity = self._release_entity(query)
         declared_entity = re.search(
@@ -616,6 +651,8 @@ class SearchIntentResolver:
             flags=re.IGNORECASE,
         ).strip(" .,?!")
         cleaned = re.sub(r"^(?:the\s+)?", "", cleaned, flags=re.IGNORECASE)
+        if re.match(r"^(?:what|who|how|why|which)\b", cleaned, flags=re.IGNORECASE):
+            return None
         return cleaned or None
 
     @staticmethod

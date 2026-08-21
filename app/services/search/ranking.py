@@ -101,6 +101,8 @@ OFFICIAL_DOMAINS = {
     "apple.com",
     "about.fb.com",
     "bcci.tv",
+    "react.dev",
+    "www.react.dev",
     "icc-cricket.com",
     "marvel.com",
     "nextjs.org",
@@ -160,12 +162,52 @@ INDIA_SOURCE_DOMAINS = {
     "www.timesnownews.com",
 }
 
+NON_DISCRIMINATIVE_TERMS = {
+    "added",
+    "announced",
+    "change",
+    "changed",
+    "changes",
+    "current",
+    "currently",
+    "difference",
+    "differences",
+    "improved",
+    "improvement",
+    "improvements",
+    "info",
+    "information",
+    "latest",
+    "new",
+    "newest",
+    "news",
+    "official",
+    "officially",
+    "recent",
+    "recently",
+    "release",
+    "released",
+    "releases",
+    "releasing",
+    "update",
+    "updated",
+    "updates",
+    "upcoming",
+    "version",
+    "versions",
+}
+
 MIN_FETCH_RELEVANCE_SCORE = 4.0
 MIN_CONTEXT_RELEVANCE_SCORE = 8.0
 MIN_READABLE_TEXT_CHARS = 80
 
 
-def build_relevance_profile(query: str, provider_query: str) -> QueryRelevanceProfile:
+def build_relevance_profile(
+    query: str,
+    provider_query: str,
+    *,
+    subject_terms: list[str] | None = None,
+) -> QueryRelevanceProfile:
     normalized_query = normalize_for_relevance(f"{query} {provider_query}")
     raw_tokens = [
         token
@@ -195,12 +237,27 @@ def build_relevance_profile(query: str, provider_query: str) -> QueryRelevancePr
         terms=tokens,
         aliases=aliases,
         requires_freshness=requires_freshness,
+        subject_terms=[term for term in (subject_terms or []) if term in tokens],
     )
+
+
+def minimum_term_hits_for(profile: QueryRelevanceProfile) -> int:
+    """How many query terms a result must contain to be considered on topic.
+
+    Only *discriminative* terms count towards the threshold. "What changed in the
+    latest React release?" is about one thing -- React -- so demanding two matches
+    would reject every correct result, because no React page says "changed" or
+    "official" in its title.
+    """
+    counted = profile.subject_terms or [
+        term for term in profile.terms if term not in NON_DISCRIMINATIVE_TERMS
+    ]
+    return 2 if len(counted) >= 3 else 1
 
 
 def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) -> list[SearchResult]:
     scored = [score_result(profile, result) for result in results]
-    minimum_term_hits = 2 if len(profile.terms) >= 3 else 1
+    minimum_term_hits = minimum_term_hits_for(profile)
     relevant = [
         result
         for result in scored

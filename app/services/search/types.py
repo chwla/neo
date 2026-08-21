@@ -113,6 +113,9 @@ class QueryRelevanceProfile(BaseModel):
     terms: list[str]
     aliases: list[str]
     requires_freshness: bool = False
+    # Terms the planner identified as the actual topic. When present these decide
+    # how many term matches a result needs; see rank_results.
+    subject_terms: list[str] = Field(default_factory=list)
 
 
 class SearchOptions(BaseModel):
@@ -141,6 +144,7 @@ class ComprehensiveSearchResult(BaseModel):
     structured_sources: list[StructuredSource] = Field(default_factory=list)
     citations: list[SourceCitation] = Field(default_factory=list)
     model_context: str = ""
+    answer_mode: str = ""
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     debug: dict[str, object] = Field(default_factory=dict)

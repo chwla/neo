@@ -146,7 +146,7 @@ class NeoChatService:
             memory_orchestrator,
             enabled=(self.memory_enabled and self.memory_direct_answers_enabled),
         )
-        self.web_search = WebSearchService()
+        self.web_search = WebSearchService(llm=self.ollama)
         self.project_context = ProjectContextService()
         self.recovery = RecoveryService()
         self.task_context = TaskContextService()
@@ -508,11 +508,10 @@ class NeoChatService:
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
         }:
-            web_query = self._web_query_with_memory_region(
-                search_intent.resolved_query,
-                context,
+            web_query = self._web_query_with_memory_region(prompt, context)
+            web_context = self.web_search.build_context_forced(
+                web_query, hint=search_intent.resolved_query
             )
-            web_context = self.web_search.build_context_forced(web_query)
         else:
             web_query = prompt
             web_context = WebContext(query=prompt, needed=False)
@@ -1069,12 +1068,11 @@ class NeoChatService:
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
         }:
-            web_query = self._web_query_with_memory_region(
-                search_intent.resolved_query,
-                context,
-            )
+            web_query = self._web_query_with_memory_region(prompt, context)
             yield {"type": "status", "content": "Searching trusted sources"}
-            web_context = self.web_search.build_context_forced(web_query)
+            web_context = self.web_search.build_context_forced(
+                web_query, hint=search_intent.resolved_query
+            )
         else:
             web_query = prompt
             web_context = WebContext(query=prompt, needed=False)
@@ -2410,10 +2408,25 @@ class NeoChatService:
             return _strip_fabricated_urls(body, set())
         valid_urls = {citation.url for citation in web_context.citations}
         body = _strip_fabricated_urls(body, valid_urls)
-        citations = self.citation_formatter.format_citations(web_context.citations)
+        citations = self._citations_for_body(body, web_context)
         if not citations:
             return self._strip_orphan_citation_markers(body)
         return f"{body.strip()}\n\n{citations}"
+
+    def _citations_for_body(self, body: str, web_context: WebContext) -> str:
+        """Format only the sources the answer actually cites.
+
+        Listing every fetched page implies the answer rests on all of them. It
+        also reads as padding: a four-line answer citing [1] and [2] would still
+        print a third source it never used. Indices are left as they are rather
+        than renumbered, so the markers already written in the body stay valid
+        and a gap simply means that source went uncited.
+        """
+        referenced = _referenced_citation_indices(body)
+        cited = [citation for citation in web_context.citations if citation.index in referenced]
+        # An uncited answer should not silently lose its sources; callers guard
+        # this path with _has_web_citation_marker, so this is belt and braces.
+        return self.citation_formatter.format_citations(cited or web_context.citations)
 
     def _strip_orphan_citation_markers(self, reply: str) -> str:
         cleaned = re.sub(r"\s*\[(?:\d{1,2})(?:\s*,\s*\d{1,2})*\]", "", reply)
@@ -2456,17 +2469,7 @@ class NeoChatService:
                 "evidence to answer that."
             )
         if web_context.answer_mode in {"news_summary", "overview"}:
-            lines = [
-                "Here are the source-backed updates I found:"
-                if web_context.answer_mode == "news_summary"
-                else "Here is what the sources say:",
-            ]
-            for chunk in web_context.evidence_chunks[:4]:
-                lines.append(f"- {_clean_snippet_text(chunk.text[:420])} [{chunk.source_index}]")
-            citations = self.citation_formatter.format_citations(web_context.citations)
-            if citations:
-                lines.extend(["", citations])
-            return "\n".join(lines)
+            return self._evidence_digest(grounded_prompt, web_context)
         return (
             "I searched the web but could not find sufficiently reliable evidence to answer that."
         )
@@ -2510,37 +2513,41 @@ class NeoChatService:
                     "temperature from them. Please try again or specify the city and date."
                 )
             return None
-        if web_context.answer_mode in {"news_summary", "overview"}:
-            clusters = _cluster_evidence_by_entity(prompt, web_context.evidence_chunks)
-            if len(clusters) > 1:
-                lines = ["I found results for multiple topics:"]
-                for cluster_label, cluster_chunks in clusters.items():
-                    lines.append(f"\n**{cluster_label}:**")
-                    for chunk in cluster_chunks[:2]:
-                        lines.append(
-                            f"- {_clean_snippet_text(chunk.text[:350])} [{chunk.source_index}]"
-                        )
-                citations = self.citation_formatter.format_citations(web_context.citations)
-                if citations:
-                    lines.extend(["", citations])
-                return "\n".join(lines)
-            heading = (
+        # news_summary and overview deliberately fall through to the model.
+        # Rendering the evidence chunks straight out reads as extracted snippets
+        # rather than an answer; summarising them is what the model is for. The
+        # deterministic rendering is kept in _evidence_digest and used by
+        # _web_generation_fallback when generation fails or skips its citations,
+        # which is the same shape fact_lookup already relies on.
+        return None
+
+    def _evidence_digest(self, prompt: str, web_context: WebContext) -> str:
+        """Render evidence chunks directly, for when generation cannot be used."""
+        clusters = _cluster_evidence_by_entity(prompt, web_context.evidence_chunks)
+        if len(clusters) > 1:
+            lines = ["I found results for multiple topics:"]
+            for cluster_label, cluster_chunks in clusters.items():
+                lines.append(f"\n**{cluster_label}:**")
+                for chunk in cluster_chunks[:2]:
+                    lines.append(
+                        f"- {_clean_snippet_text(chunk.text[:350])} [{chunk.source_index}]"
+                    )
+        else:
+            lines = [
                 "Here are the source-backed updates I found:"
                 if web_context.answer_mode == "news_summary"
                 else "Here is what the sources say:"
-            )
-            lines = [heading]
+            ]
             chunks = sorted(
                 web_context.evidence_chunks,
                 key=lambda chunk: (self._source_priority(chunk.source_url), -chunk.relevance_score),
             )
             for chunk in chunks[:4]:
                 lines.append(f"- {_clean_snippet_text(chunk.text[:420])} [{chunk.source_index}]")
-            citations = self.citation_formatter.format_citations(web_context.citations)
-            if citations:
-                lines.extend(["", citations])
-            return "\n".join(lines)
-        return None
+        citations = self._citations_for_body("\n".join(lines), web_context)
+        if citations:
+            lines.extend(["", citations])
+        return "\n".join(lines)
 
     def _format_fact_answer(self, prompt: str, fact: FactResult) -> str:
         """Format a structured fact extraction result into a user-facing answer."""
@@ -2991,6 +2998,14 @@ def _cluster_evidence_by_entity(query: str, chunks: list) -> dict[str, list]:
             non_general[largest].append(chunk)
 
     return non_general
+
+
+def _referenced_citation_indices(text: str) -> set[int]:
+    """Citation numbers the text actually cites, including grouped [1, 2] markers."""
+    indices: set[int] = set()
+    for group in re.findall(r"\[((?:\d{1,2})(?:\s*,\s*\d{1,2})*)\]", text):
+        indices.update(int(number) for number in re.findall(r"\d{1,2}", group))
+    return indices
 
 
 def _strip_llm_sources_block(reply: str) -> str:

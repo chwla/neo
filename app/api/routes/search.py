@@ -5,7 +5,7 @@ from time import perf_counter
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.core.config import get_settings
+from app.core.config import get_base_settings, get_settings
 from app.services.search import (
     ComprehensiveSearchResult,
     ProviderRegistry,
@@ -98,12 +98,18 @@ def update_search_config(request: SearchConfigUpdateRequest) -> dict[str, object
     if provider == "tavily" and not (tavily_key or settings.web_search_api_key):
         raise HTTPException(status_code=422, detail="Tavily requires TAVILY_API_KEY.")
 
-    settings.web_search_provider = provider
+    # Writes must go to the process-wide settings object, not to what
+    # get_settings() hands back: with a session active that is a per-profile
+    # model_copy, so mutating it updated a throwaway and the change vanished on
+    # return. Every caller of this endpoint is authenticated, so the copy was
+    # always the one being written to and the endpoint was always a no-op.
+    runtime = get_base_settings()
+    runtime.web_search_provider = provider
     # The setting can be changed from a runtime that started with search disabled.
     # Keep the enable flag in sync so selecting a working provider actually activates it.
-    settings.web_search_enabled = provider != "disabled"
-    settings.searxng_instance = searxng_instance
-    settings.tavily_api_key = tavily_key or None
+    runtime.web_search_enabled = provider != "disabled"
+    runtime.searxng_instance = searxng_instance
+    runtime.tavily_api_key = tavily_key or None
     return search_config()
 
 
