@@ -17,11 +17,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEO_FRONTEND_DIR=/app/app/static \
     NEO_ENVIRONMENT=production \
     NEO_CONNECTOR_MASTER_KEY_FILE=/app/data/secrets/connector-master-key \
-    NEO_SEARCH_PROVIDER=duckduckgo \
-    NEO_WEB_SEARCH_FALLBACK_PROVIDERS=bing_html \
+    NEO_SEARCH_PROVIDER=searxng \
+    NEO_WEB_SEARCH_FALLBACK_PROVIDERS=duckduckgo,bing_html \
     NEO_LLM_PROVIDER=ollama \
     NEO_DEFAULT_MODEL=qwen3-coder:30b \
-    NEO_SEARXNG_URL=http://127.0.0.1:8080 \
+    NEO_SEARXNG_URL=http://searxng:8080 \
     OLLAMA_BASE_URL=http://host.docker.internal:11434
 
 WORKDIR /app

@@ -1,0 +1,43 @@
+# SearXNG configuration for Neo's local search backend.
+#
+# Two settings here are load-bearing and easy to lose in an upgrade:
+#
+#   search.formats must include "json". Stock SearXNG serves HTML only and
+#   answers format=json with 403, which is exactly the request Neo's
+#   SearXNGSearchProvider makes (app/services/search/providers.py).
+#
+#   server.limiter must stay false. The bot limiter treats Neo's server-side
+#   requests as automated traffic -- because they are -- and blocks them.
+#
+# This instance is reachable only on Neo's private compose network; it is not
+# published to the host. secret_key signs the web UI's preference cookies and
+# plays no part in the JSON API that Neo uses.
+use_default_settings: true
+
+general:
+  instance_name: "Neo Search"
+  debug: false
+
+server:
+  secret_key: "neo-local-searxng"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+engines:
+  - name: google
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: github
+    disabled: false
