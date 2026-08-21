@@ -21,6 +21,7 @@ class MemorySettings:
     extraction_provider: str = ""
     extraction_endpoint: str = ""
     extraction_model: str = ""
+    two_stage_extraction_enabled: bool = True
     extraction_connect_timeout_seconds: int = 5
     extraction_response_timeout_seconds: int = 120
     extraction_warmup_timeout_seconds: int = 300
@@ -78,6 +79,7 @@ class MemorySettings:
             # uninstalled built-in default and every model-backed extraction
             # failed with "model not found".
             extraction_model=settings.memory_extraction_model or settings.default_model,
+        two_stage_extraction_enabled=settings.memory_extraction_two_stage,
             extraction_connect_timeout_seconds=settings.memory_extraction_connect_timeout_seconds,
             extraction_response_timeout_seconds=settings.memory_extraction_response_timeout_seconds,
             extraction_warmup_timeout_seconds=settings.memory_extraction_warmup_timeout_seconds,

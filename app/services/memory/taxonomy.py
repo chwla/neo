@@ -301,6 +301,24 @@ def resolve_domain(
     raise TaxonomyError("unknown_domain_requires_grounded_topic")
 
 
+# The attributes that describe *who the user is* rather than something they
+# mentioned.  Two layers need the same answer and must not drift apart: recall
+# lets these reach a query they share no word with ("who am i" against "Soham"),
+# and the correction resolver treats restating one as an update rather than as a
+# contradiction to review.  Deliberately enumerated, not derived from the slot
+# grammar, so nothing a model invents can join the set.
+CORE_IDENTITY_SLOT_KEYS = frozenset(
+    {
+        "identity:global:name",
+        "identity:global:age",
+        "identity:global:origin",
+        "identity:global:employer",
+        "identity:global:occupation",
+        "identity:global:current_location",
+    }
+)
+
+
 def _entity_component(entity_id: UUID | str | None) -> str:
     if entity_id is None:
         raise TaxonomyError("additive_memory_requires_entity_id")

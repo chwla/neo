@@ -10,7 +10,19 @@ from app.services.memory.queries import (
     RecallPromptSelection,
     RecallQuery,
 )
-from app.services.memory.taxonomy import MemoryType
+from app.services.memory.taxonomy import CORE_IDENTITY_SLOT_KEYS, MemoryType
+
+# "Who am I" names no attribute, so every keyword rule below missed it and the
+# question that most obviously belongs to this service was the one it declined to
+# answer.  It is not a broad request either — somebody asking who they are wants
+# their profile, not their goals and preferences — so it is routed to the core
+# identity slots as a group.
+_IDENTITY_PROFILE_QUESTION = re.compile(
+    r"\bwho\s+(?:am\s+i|i\s+am)\b"
+    r"|\btell\s+me\s+about\s+my\s*self\b"
+    r"|\bdescribe\s+me\b",
+    re.IGNORECASE,
+)
 
 
 class DirectMemoryAnswerService:
@@ -35,10 +47,17 @@ class DirectMemoryAnswerService:
         if not context.memory_enabled or context.incognito:
             return None
         lowered = query.casefold()
-        broad = bool(re.search(r"\b(?:what do you remember|show|list|summari[sz]e)\b", lowered))
+        broad = bool(
+            re.search(
+                r"\b(?:what do you remember|what do you know about me"
+                r"|show|list|summari[sz]e)\b",
+                lowered,
+            )
+        )
         if not broad and not self._is_personal_memory_question(lowered):
             return None
-        memory_type = self._memory_type(lowered)
+        profile_question = bool(_IDENTITY_PROFILE_QUESTION.search(lowered))
+        memory_type = MemoryType.IDENTITY if profile_question else self._memory_type(lowered)
         if memory_type is None and not broad:
             return None
         mode = RecallMode.BROAD if broad else RecallMode.DETERMINISTIC
@@ -47,7 +66,11 @@ class DirectMemoryAnswerService:
                 context=context.model_copy(update={"mode": mode}),
                 text=query,
                 memory_type=memory_type,
-                trusted_slot_keys=self._trusted_slots(lowered),
+                trusted_slot_keys=(
+                    tuple(sorted(CORE_IDENTITY_SLOT_KEYS))
+                    if profile_question
+                    else self._trusted_slots(lowered)
+                ),
             ),
             purpose="direct_answer",
         )

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     memory_semantic_recall_enabled: bool = Field(default=True)
     memory_index_worker_enabled: bool = Field(default=True)
     memory_incognito: bool = Field(default=False)
+    memory_extraction_two_stage: bool = Field(default=True)
     memory_extraction_provider: str = Field(default="ollama")
     memory_extraction_endpoint: str = Field(default="")
     memory_extraction_model: str = Field(default="")

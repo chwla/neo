@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -30,10 +31,13 @@ from app.models.memory import (
     MemoryVectorPoint,
 )
 
+_LOG = logging.getLogger("neo.memory.migrations")
+
 MEMORY_REVISION_0001 = "0001_memory_core"
 MEMORY_REVISION_0002 = "0002_memory_derived_indexes"
 MEMORY_REVISION_0003 = "0003_memory_scopes"
 MEMORY_REVISION_0004 = "0004_memory_exclusive_slot_null_scope"
+MEMORY_REVISION_0005 = "0005_memory_vector_blob"
 # Every revision, in order, defined once.  This list was previously repeated in
 # four places and adding 0004 missed one of them -- the fast-path currency check
 # -- which silently skipped the new revision on any database that already had
@@ -43,8 +47,11 @@ ALL_MEMORY_REVISIONS = (
     MEMORY_REVISION_0002,
     MEMORY_REVISION_0003,
     MEMORY_REVISION_0004,
+    MEMORY_REVISION_0005,
 )
 MEMORY_CURRENT_REVISION = ALL_MEMORY_REVISIONS[-1]
+
+_VECTOR_BLOB_COLUMN_SQL = "ALTER TABLE memory_vector_points ADD COLUMN vector_blob BLOB"
 # Revision checksums describe the schema at the time a revision shipped.  Keep
 # this value fixed: compiling the current ORM model would otherwise make every
 # existing 0001 ledger entry appear corrupt after a later column is added.
@@ -139,8 +146,12 @@ def _revision_checksum(revision: str) -> str:
             )
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    if revision == MEMORY_REVISION_0005:
+        material = "\n".join((revision, _VECTOR_BLOB_COLUMN_SQL))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
     dialect = sqlite.dialect()
     tables = _core_tables if revision == MEMORY_REVISION_0001 else _derived_tables
+    tables = tuple(_table_as_of(table, revision) for table in tables)
     statements = [str(CreateTable(table).compile(dialect=dialect)) for table in tables]
     if revision == MEMORY_REVISION_0002:
         statements.append(_FTS5_CREATE_SQL)
@@ -149,8 +160,60 @@ def _revision_checksum(revision: str) -> str:
             str(CreateIndex(index).compile(dialect=dialect))
             for index in sorted(table.indexes, key=lambda item: item.name or "")
         )
-    material = "\n".join((revision, *statements))
+    material = "\n".join((revision, *(_canonical_ddl(item) for item in statements)))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _canonical_ddl(statement: str) -> str:
+    """Reduce a DDL statement to an order-independent form.
+
+    ``Table.constraints`` is a set, so SQLAlchemy emits CHECK and UNIQUE clauses
+    in whatever order that set iterates, and the compiled text -- and therefore
+    the checksum -- was not stable across processes or across a metadata copy.
+    Every existing database eventually recorded a checksum the next run could not
+    reproduce and refused to open with ``memory_revision_checksum_mismatch``,
+    which reads as schema drift when nothing about the schema had changed.
+
+    Sorting the lines keeps the checksum sensitive to which columns and
+    constraints exist while making it blind to the order they were serialised in,
+    which is the only thing that was actually varying.
+    """
+
+    lines = [line.strip().rstrip(",") for line in statement.splitlines() if line.strip()]
+    return "\n".join(sorted(lines))
+
+
+# Columns a later revision adds to a table that an earlier revision created.  A
+# revision's checksum is compiled from the live model, so declaring `vector_blob`
+# on `MemoryVectorPoint` silently changed the recorded checksum of revision 0002
+# and every existing database failed validation with
+# `memory_revision_checksum_mismatch` on the next start.  A checksum has to
+# describe the schema as of its own revision, so later columns are stripped before
+# compiling anything earlier than the revision that introduced them.
+_COLUMNS_ADDED_BY_REVISION: dict[str, tuple[tuple[str, str], ...]] = {
+    MEMORY_REVISION_0005: (("memory_vector_points", "vector_blob"),),
+}
+
+
+def _table_as_of(table, revision: str):
+    """Return the table as this revision defined it, without later columns."""
+
+    position = ALL_MEMORY_REVISIONS.index(revision)
+    later = [
+        column
+        for added_in, columns in _COLUMNS_ADDED_BY_REVISION.items()
+        if ALL_MEMORY_REVISIONS.index(added_in) > position
+        for table_name, column in columns
+        if table_name == table.name
+    ]
+    if not later:
+        return table
+    snapshot = table.to_metadata(MetaData())
+    for name in later:
+        column = snapshot.c.get(name)
+        if column is not None:
+            snapshot._columns.remove(column)
+    return snapshot
 
 
 def _existing_table_names(connection) -> set[str]:
@@ -164,14 +227,25 @@ def _read_applied(connection) -> dict[str, str]:
     return {str(row.revision): str(row.revision_checksum) for row in rows}
 
 
+def _stale_checksum_revisions(applied: dict[str, str]) -> tuple[str, ...]:
+    return tuple(
+        revision
+        for revision in ALL_MEMORY_REVISIONS
+        if applied.get(revision) is not None
+        and applied[revision] != _revision_checksum(revision)
+    )
+
+
 def _validate_applied_revisions(applied: dict[str, str]) -> None:
     unknown = set(applied) - set(ALL_MEMORY_REVISIONS)
     if unknown:
         raise MemoryMigrationError(f"unsupported_memory_revisions:{','.join(sorted(unknown))}")
-    for revision in ALL_MEMORY_REVISIONS:
-        actual = applied.get(revision)
-        if actual is not None and actual != _revision_checksum(revision):
-            raise MemoryMigrationError("memory_revision_checksum_mismatch")
+    # A database already at 0005 was written by a build with the canonical
+    # checksum, so any mismatch there is real drift and is still refused.  Only a
+    # database predating 0005 can carry a checksum from the unstable
+    # serialisation, and it is healed once, below, as part of that upgrade.
+    if MEMORY_REVISION_0005 in applied and _stale_checksum_revisions(applied):
+        raise MemoryMigrationError("memory_revision_checksum_mismatch")
 
 
 def _validate_managed_tables(connection, *, applied: dict[str, str]) -> None:
@@ -268,6 +342,9 @@ def _memory_schema_is_current(
     _validate_managed_tables(connection, applied=applied)
     if set(ALL_MEMORY_REVISIONS) - set(applied):
         return False
+    if _stale_checksum_revisions(applied):
+        # Take the writable path so the recorded checksums can be rewritten.
+        return False
     rows = connection.execute(select(MemoryOwnerBinding.__table__)).mappings().all()
     if not rows:
         return False
@@ -306,6 +383,22 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
     applied = _read_applied(connection)
     _validate_applied_revisions(applied)
     _validate_managed_tables(connection, applied=applied)
+
+    stale = _stale_checksum_revisions(applied) if MEMORY_REVISION_0005 not in applied else ()
+    if stale:
+        # The recorded value was produced by an unstable serialisation, not by a
+        # different schema: the tables validated just above.  Refusing to open was
+        # losing every memory in databases whose structure was entirely correct,
+        # so the checksum is rewritten to its canonical form instead.
+        _LOG.warning("memory_revision_checksum_rewritten revisions=%s", ",".join(stale))
+        for revision in stale:
+            checksum = _revision_checksum(revision)
+            connection.execute(
+                _ledger.update()
+                .where(_ledger.c.revision == revision)
+                .values(revision_checksum=checksum)
+            )
+            applied[revision] = checksum
 
     if MEMORY_REVISION_0001 not in applied:
         for table in _core_tables:
@@ -408,6 +501,35 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
             )
         )
         applied[MEMORY_REVISION_0004] = _revision_checksum(MEMORY_REVISION_0004)
+
+    if MEMORY_REVISION_0005 not in applied:
+        # Vectors were stored only as JSON text, so every recall parsed each 768
+        # float array in Python and scored it one multiply at a time -- about 1.3
+        # seconds per search at five thousand memories, paid on every turn.  The
+        # blob holds the same numbers as packed float32 for a vectorised scan.
+        #
+        # Nullable and additive: existing rows keep working through the JSON
+        # fallback in the index and are refilled as they are next written, so no
+        # backfill has to succeed for the upgrade to be safe.
+        # A database created fresh builds this table from the model, which already
+        # declares the column, while one created before 0005 does not.  Both must
+        # end at the same schema, so add it only when it is genuinely absent.
+        existing = {
+            row[1]
+            for row in connection.execute(
+                text("PRAGMA table_info(memory_vector_points)")
+            ).all()
+        }
+        if "vector_blob" not in existing:
+            connection.execute(text(_VECTOR_BLOB_COLUMN_SQL))
+        connection.execute(
+            _ledger.insert().values(
+                revision=MEMORY_REVISION_0005,
+                revision_checksum=_revision_checksum(MEMORY_REVISION_0005),
+                applied_at=datetime.now(UTC),
+            )
+        )
+        applied[MEMORY_REVISION_0005] = _revision_checksum(MEMORY_REVISION_0005)
 
     _validate_managed_tables(connection, applied=applied)
     _bind_owner(connection, owner_id=owner_id, database_identity=database_identity)

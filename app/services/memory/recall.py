@@ -37,7 +37,7 @@ from app.services.memory.queries import (
     RecallScoreDiagnostic,
 )
 from app.services.memory.settings import MemorySettings
-from app.services.memory.taxonomy import MemoryType
+from app.services.memory.taxonomy import CORE_IDENTITY_SLOT_KEYS, MemoryType
 from app.services.memory.versions import (
     EMBEDDING_IDENTITY_VERSION,
     VECTOR_METADATA_VERSION,
@@ -51,18 +51,9 @@ TOKENIZER_VERSION = "neo.memory.tokenizer.unicode-word.v1"
 # lexical gate hides exactly the facts a personal assistant most needs.  These
 # few durable, single-valued identity slots are therefore always eligible for
 # recall; they still compete on score, so a genuinely relevant memory outranks
-# them.  The set is deliberately small and enumerated rather than derived, so
-# ordinary memories can never enter through it.
-CORE_IDENTITY_SLOT_KEYS = frozenset(
-    {
-        "identity:global:name",
-        "identity:global:age",
-        "identity:global:origin",
-        "identity:global:employer",
-        "identity:global:occupation",
-        "identity:global:current_location",
-    }
-)
+# them.  The set lives in ``taxonomy`` because the correction resolver reads the
+# same list; the import above re-binds the name here, so callers that already
+# read it from this module are unaffected.
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 

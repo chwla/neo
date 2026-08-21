@@ -916,6 +916,9 @@ class MemoryVectorPoint(MemoryBase):
     provider_version: Mapped[str] = mapped_column(String(80), nullable=False)
     dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     vector_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # Packed float32 of the same vector.  Nullable because rows written before
+    # revision 0005 have only the JSON, and the index falls back to it.
+    vector_blob: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     metadata_version: Mapped[str] = mapped_column(String(80), nullable=False)
     derived_schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
     embedding_document_version: Mapped[str] = mapped_column(String(80), nullable=False)

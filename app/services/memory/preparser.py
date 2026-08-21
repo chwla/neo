@@ -57,6 +57,37 @@ _PURE_LOCATION_RETRACTION = re.compile(
     r"^I\s+no\s+longer\s+live\s+in\s+(?P<old>[^.]+)\.?$",
     re.IGNORECASE,
 )
+# A retraction with nothing to put in its place.  The compound forms above pair
+# "I no longer want X" with "I want Y" and the location form is handled on its
+# own, but somebody who has simply stopped wanting something says only the first
+# half — and that fell through to the model, so the goal survived a request to
+# drop it whenever the model was unavailable or read the sentence as a new goal.
+#
+# Safe to decide here for the same reason the location form is: the user spells
+# out the value, so this deletes only what they wrote.  A named value matching
+# nothing stored still resolves to review rather than to a deletion.
+_PURE_GOAL_RETRACTION = re.compile(
+    r"^I\s+no\s+longer\s+want\s+(?:to\s+)?(?P<old>[^.]+?)\.?$",
+    re.IGNORECASE,
+)
+_PURE_PREFERENCE_RETRACTION = re.compile(
+    r"^I\s+(?:do\s+not|don'?t)\s+prefer\s+(?P<old>.+?)\s+anymore\.?$",
+    re.IGNORECASE,
+)
+# "Can you remember that I'm vegetarian?" is a memory command wearing a question
+# mark, and the question guard below dropped every one of them.  Politeness is
+# how a great many people phrase an instruction, so this is not a rare shape.
+#
+# Two things keep it from swallowing genuine questions.  The complement must be
+# introduced by "that" or a colon, which rules out "can you remember what I said"
+# and "do you remember my name"; and it must itself begin with a first-person
+# statement, which rules out "can you remember that thing I mentioned".
+_QUESTION_MEMORY_COMMAND = re.compile(
+    r"^(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"(?:remember|save|note|memorise|memorize)\s+(?:that\s+|:\s*)"
+    r"(?P<value>I\b[^?]+?)\s*\??$",
+    re.IGNORECASE,
+)
 _CURRENT_LOCATION = re.compile(
     r"^(?:I\s+(?:currently\s+)?live\s+in|My\s+current\s+city\s+is)\s+"
     r"(?P<value>[^.?!]+)\.?$",
@@ -160,11 +191,70 @@ _HYPOTHETICAL = re.compile(
     r"\b(?:maybe|perhaps|might|could|someday|if I|imagine)\b",
     re.IGNORECASE,
 )
+# A firm, present-tense statement about the user.  "could" is a hypothetical
+# marker but also ordinary conversational filler, so "I work at Stripe, could be
+# worth noting" was discarded whole for a word in its trailing aside.  Only a
+# hedge that appears *before* the assertion governs it: "Maybe I am a designer" is
+# still hypothetical, while a fact stated outright and then commented on is not.
+_DURABLE_ASSERTION = re.compile(
+    r"\b(?:I am an?|I'm an?|I work as|I work at|I work for|I live in|I prefer|"
+    r"my name is)\b",
+    re.IGNORECASE,
+)
+
+
+def _hedged_before_assertion(text: str) -> bool:
+    """Return whether a hypothetical marker governs the statement that follows."""
+
+    hedge = _HYPOTHETICAL.search(text)
+    if hedge is None:
+        return False
+    assertion = _DURABLE_ASSERTION.search(text)
+    return assertion is None or hedge.start() < assertion.start()
 _THIRD_PARTY = re.compile(
     r"^(?:My friend|My colleague|My partner|He|She|They)\b",
     re.IGNORECASE,
 )
 _AMBIGUOUS_PRONOUN = re.compile(r"^(?:That|It|This)\b", re.IGNORECASE)
+
+# "Forget my name" names the *attribute* to clear, not the value stored in it.
+# Every other forget the user writes spells the value out ("forget that I live
+# in Berlin"), which is what the retraction resolver matches on, so an attribute
+# reference resolved to no target and quietly became a review item — the memory
+# stayed, and the assistant went on using the name it had just been asked to
+# drop.  Naming the slot here lets the resolver find the one record occupying it.
+#
+# Each phrase must be the whole of what is being forgotten: "forget my name" is
+# a slot reference, "forget my name is Soham" is a value the resolver can match
+# on its own, and it must not be re-routed here.
+_IDENTITY_ATTRIBUTE_TARGETS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(?:my\s+)?(?:full\s+)?name$", re.IGNORECASE), "name"),
+    (re.compile(r"^(?:my\s+)?age$|^how\s+old\s+I\s+am$", re.IGNORECASE), "age"),
+    (
+        re.compile(r"^(?:my\s+)?(?:hometown|origin)$|^where\s+I(?:'m|\s+am)\s+from$",
+                   re.IGNORECASE),
+        "origin",
+    ),
+    (re.compile(r"^(?:my\s+)?(?:employer|company)$", re.IGNORECASE), "employer"),
+    (re.compile(r"^(?:my\s+)?(?:job|occupation|profession)$", re.IGNORECASE), "occupation"),
+    (
+        re.compile(r"^(?:my\s+)?(?:city|location|address)$|^where\s+I\s+live$",
+                   re.IGNORECASE),
+        "current_location",
+    ),
+)
+
+
+def _identity_attribute_slot(value: str) -> str | None:
+    """The identity slot a forget names outright, or ``None`` for a value."""
+
+    cleaned = _clean(value)
+    for pattern, slot in _IDENTITY_ATTRIBUTE_TARGETS:
+        if pattern.fullmatch(cleaned):
+            return slot
+    return None
+
+
 
 
 def _clean(value: str) -> str:
@@ -175,6 +265,22 @@ def _has_multiple_statements(value: str) -> bool:
     """Keep whole-message ignore rules from masking mixed prose fallback."""
 
     return bool(re.search(r"[.!?]\s+\S", value))
+
+
+def _remembered_domain(value: str) -> str | None:
+    """The domain an explicit "remember ..." names, or ``None`` if unclear.
+
+    Shared by the plain and question-shaped grammars so the two cannot drift:
+    the same sentence must land in the same domain however politely it is asked.
+    """
+
+    if re.search(r"\b(?:python|rust|programming|code)\b", value, re.I):
+        return "software_development"
+    if re.search(r"\b(?:learn|learning|study)\b", value, re.I):
+        return "learning"
+    if re.search(r"\b(?:video|youtube|reels)\b", value, re.I):
+        return "video_creation"
+    return None
 
 
 def _video_verb(value: str) -> str:
@@ -408,7 +514,35 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
             reason="third_party_subject",
             third_party=True,
         )
-    if _HYPOTHETICAL.search(text) and not _has_multiple_statements(text):
+    # Checked ahead of the hypothetical and temporary guards, because the polite
+    # opener trips them on its own: "could" is hypothetical language, and every
+    # "could you remember that ..." was discarded on the strength of that word
+    # alone.  The guards still apply to what is actually being stored — the
+    # captured value is re-tested against both — so "can you remember that I
+    # might move to Berlin?" and "... that I have a headache right now?" fall
+    # through to them exactly as the bare statements would.
+    question_command = _QUESTION_MEMORY_COMMAND.fullmatch(text)
+    if question_command:
+        value = question_command.group("value")
+        if not _HYPOTHETICAL.search(value) and not _TEMPORARY.search(value):
+            return PreparseResult(
+                kind=PreparseKind.DETERMINISTIC_ASSERTION,
+                reason="explicit_remember_grammar",
+                assertions=(
+                    _span(
+                        request,
+                        question_command,
+                        "value",
+                        memory_type=MemoryType.KNOWLEDGE,
+                        domain=_remembered_domain(value),
+                        additive=True,
+                    ),
+                ),
+                explicit_memory_intent=True,
+                deterministic=_remembered_domain(value) is not None,
+            )
+
+    if _hedged_before_assertion(text) and not _has_multiple_statements(text):
         return PreparseResult(
             kind=PreparseKind.IGNORE,
             reason="hypothetical_language",
@@ -581,10 +715,24 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
             "erase permanently": LifecycleHint.ERASE_PERMANENTLY,
             "restore": LifecycleHint.RESTORE,
         }[action]
+        attribute_slot = _identity_attribute_slot(lifecycle.group("value"))
         return PreparseResult(
             kind=PreparseKind.EXPLICIT_LIFECYCLE,
-            reason="explicit_lifecycle_grammar",
-            retractions=(_span(request, lifecycle, "value"),),
+            reason=(
+                "explicit_identity_attribute_lifecycle_grammar"
+                if attribute_slot
+                else "explicit_lifecycle_grammar"
+            ),
+            retractions=(
+                _span(
+                    request,
+                    lifecycle,
+                    "value",
+                    memory_type=MemoryType.IDENTITY if attribute_slot else None,
+                    domain="global" if attribute_slot else None,
+                    slot=attribute_slot,
+                ),
+            ),
             lifecycle_hint=hint,
             explicit_memory_intent=True,
             deterministic=True,
@@ -728,6 +876,37 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
             deterministic=True,
         )
 
+    goal_retraction = _PURE_GOAL_RETRACTION.fullmatch(text)
+    if goal_retraction:
+        return PreparseResult(
+            kind=PreparseKind.EXPLICIT_LIFECYCLE,
+            reason="grounded_goal_retraction",
+            retractions=(
+                _span(request, goal_retraction, "old", memory_type=MemoryType.GOAL),
+            ),
+            lifecycle_hint=LifecycleHint.ARCHIVE,
+            explicit_memory_intent=True,
+            deterministic=True,
+        )
+
+    preference_retraction = _PURE_PREFERENCE_RETRACTION.fullmatch(text)
+    if preference_retraction:
+        return PreparseResult(
+            kind=PreparseKind.EXPLICIT_LIFECYCLE,
+            reason="grounded_preference_retraction",
+            retractions=(
+                _span(
+                    request,
+                    preference_retraction,
+                    "old",
+                    memory_type=MemoryType.PREFERENCE,
+                ),
+            ),
+            lifecycle_hint=LifecycleHint.ARCHIVE,
+            explicit_memory_intent=True,
+            deterministic=True,
+        )
+
     additive = _ADDITIVE_GOALS.fullmatch(text)
     if additive:
         return PreparseResult(
@@ -835,15 +1014,7 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
 
     remember = _REMEMBER.fullmatch(text)
     if remember:
-        remembered = remember.group("value")
-        if re.search(r"\b(?:python|rust|programming|code)\b", remembered, re.I):
-            domain = "software_development"
-        elif re.search(r"\b(?:learn|learning|study)\b", remembered, re.I):
-            domain = "learning"
-        elif re.search(r"\b(?:video|youtube|reels)\b", remembered, re.I):
-            domain = "video_creation"
-        else:
-            domain = None
+        domain = _remembered_domain(remember.group("value"))
         return PreparseResult(
             kind=PreparseKind.DETERMINISTIC_ASSERTION,
             reason="explicit_remember_grammar",

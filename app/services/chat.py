@@ -1675,7 +1675,6 @@ class NeoChatService:
                     assistant_message_id=assistant_message_id,
                     result=result,
                 )
-                self._build_memory_indexes()
             except Exception as exc:
                 _ROUTING_LOG.exception(
                     "memory_extraction_failed chat_id=%s message_id=%s",
@@ -1695,6 +1694,15 @@ class NeoChatService:
                         chat_id,
                         message_id,
                     )
+            finally:
+                # Indexing ran only on the success path, so a turn that extracted
+                # nothing — or failed — left the outbox untouched.  Because the queue
+                # is drained by nothing else, one such turn stranded every earlier
+                # write: profiles still hold `pending` events whose records were
+                # written weeks ago and were never searchable.  Draining here means
+                # any turn that reaches extraction clears the backlog, whatever this
+                # turn itself produced.
+                self._build_memory_indexes()
 
         Thread(
             target=run,
@@ -1782,6 +1790,7 @@ class NeoChatService:
                 "status": "completed",
                 "saved_durable_memories": saved,
                 "forgotten_memories": forgotten,
+                **self._extraction_reason_metadata(result),
             }
             message.metadata_json = json.dumps(metadata, sort_keys=True)
             if saved:
@@ -1791,6 +1800,46 @@ class NeoChatService:
                 )
                 current = (message.thinking or "").strip()
                 message.thinking = f"{current}\n\n{summary}" if current else summary
+
+    @staticmethod
+    def _extraction_reason_metadata(result) -> dict[str, object]:
+        """Summarise why a completed extraction stored nothing.
+
+        ``saved_durable_memories: 0`` reads identically whether the turn held no
+        facts, the model returned an empty response, its output failed schema
+        validation, or policy rejected every candidate.  The coordinator already
+        builds an ``ExtractionDiagnostic`` carrying that answer, then files it in an
+        in-memory deque that is rebuilt each turn and never read — so a fully broken
+        extractor looked exactly like a quiet one for weeks.
+
+        Only bounded codes and counts are copied here, never model output or user
+        text, because this lands in chat metadata the user can read.
+        """
+
+        diagnostic = getattr(result, "diagnostic", None)
+        summary = getattr(result, "model_summary", None)
+        if diagnostic is None:
+            return {}
+        reasons = tuple(getattr(diagnostic, "reason_codes", ()) or ())
+        schema_errors = tuple(getattr(diagnostic, "schema_error_codes", ()) or ())
+        status = getattr(result, "status", None)
+        payload: dict[str, object] = {
+            "extraction_status": getattr(status, "value", status),
+            "parse_outcome": getattr(diagnostic, "parse_outcome", None),
+            "proposal_count": getattr(diagnostic, "proposal_count", None),
+            "accepted_count": getattr(diagnostic, "accepted_count", None),
+            "rejected_count": getattr(diagnostic, "rejected_count", None),
+            "review_count": getattr(diagnostic, "review_count", None),
+        }
+        if reasons:
+            payload["reason_codes"] = list(reasons[:20])
+        if schema_errors:
+            payload["schema_error_codes"] = list(schema_errors[:20])
+        if summary is not None:
+            payload["model_called"] = getattr(summary, "called", None)
+            payload["model_assertion_count"] = getattr(summary, "assertion_count", None)
+            payload["model_exclusion_count"] = getattr(summary, "exclusion_count", None)
+        return {key: value for key, value in payload.items() if value is not None}
 
     def _build_memory_indexes(self) -> None:
         """Index memories just written so semantic recall can actually find them.

@@ -31,6 +31,7 @@ from app.services.memory.model_schema import (
 )
 from app.services.memory.policy import classify_sensitivity
 from app.services.memory.taxonomy import (
+    CORE_IDENTITY_SLOT_KEYS,
     Cardinality,
     InitialDomain,
     MemoryType,
@@ -481,6 +482,40 @@ class DeterministicCorrectionResolver:
             and item.domain_key == proposal.domain_key
             and item.slot_key == proposal.slot_key
         )
+        # Restating a core identity attribute *is* the correction.  Names,
+        # ages, cities, employers and occupations each hold exactly one current
+        # value, and "I live in Lisbon" from someone recorded in Berlin has no
+        # second reading: they moved.  Sending it to review instead left the
+        # stale value in the exclusive slot and, because these slots are always
+        # eligible for recall, made it the answer to "what city do I live in?"
+        # indefinitely — the user restates the fact, is told it is understood,
+        # and keeps being called by their old name.
+        #
+        # This is the opposite of the goal case immediately below, where "now I
+        # want X" implies the old goal is finished but never says so, and acting
+        # on that inference would delete something the user did not retract.  A
+        # goal is one of many a person may hold at once; an identity attribute
+        # is single-valued by definition, so there is nothing to infer.
+        #
+        # Guarded three ways: the slot must be in the enumerated core set, so a
+        # model-invented identity dimension cannot reach this path; exactly one
+        # record may occupy it, so an ambiguous target still goes to review; and
+        # the replacement supersedes rather than erases, so the previous value
+        # stays recoverable.  Low-confidence proposals are separately held for
+        # review by the coordinator, which is why no confidence test is needed
+        # here.
+        if (
+            proposal.cardinality is Cardinality.EXCLUSIVE
+            and len(occupied) == 1
+            and proposal.memory_type is MemoryType.IDENTITY
+            and proposal.slot_key in CORE_IDENTITY_SLOT_KEYS
+        ):
+            return CorrectionResolution(
+                CorrectionResolutionKind.REPLACE,
+                "restated_core_identity_attribute",
+                occupied,
+            )
+
         if proposal.cardinality is Cardinality.EXCLUSIVE and occupied:
             return CorrectionResolution(
                 CorrectionResolutionKind.NEEDS_REVIEW,
@@ -515,6 +550,26 @@ class DeterministicCorrectionResolver:
             item for item in eligible if _contains_phrase(hint, _fold(item.canonical_value))
         )
         if not matches:
+            # A forget that names a core identity attribute rather than its
+            # value — "forget my name" — has nothing for the value comparison
+            # above to match, because the user never wrote "Soham".  The slot
+            # they named holds exactly one thing by construction, so when one
+            # record occupies it there is no ambiguity left to review.
+            #
+            # Kept to the enumerated core attributes and to a single occupant:
+            # anything else, including a slot hint a model invented, still goes
+            # to review rather than deleting on a guess.
+            if proposal.slot_hint and len(eligible) == 1:
+                named = eligible[0]
+                if (
+                    named.memory_type is MemoryType.IDENTITY
+                    and named.slot_key in CORE_IDENTITY_SLOT_KEYS
+                ):
+                    return CorrectionResolution(
+                        CorrectionResolutionKind.RETRACT,
+                        "named_core_identity_attribute",
+                        eligible,
+                    )
             return CorrectionResolution(
                 CorrectionResolutionKind.NEEDS_REVIEW,
                 "retraction_target_ambiguous_or_missing",

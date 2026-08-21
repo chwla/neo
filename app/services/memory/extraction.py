@@ -14,21 +14,36 @@ from time import monotonic
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from app.services.memory.contracts import Sensitivity
 from app.services.memory.extraction_contracts import ModelExtractionInput
-from app.services.memory.model_schema import ModelProposalResponse
+from app.services.memory.model_schema import (
+    DurabilityHint,
+    ModelProposalResponse,
+    SubjectHint,
+)
+from app.services.memory.taxonomy import CORE_IDENTITY_SLOT_KEYS, MemoryType
 
 MAX_PROVIDER_RESPONSE_BYTES = 128_000
 MAX_SANITIZED_ERROR_CHARS = 240
 PROMPT_VERSION = "memory-extraction-schema-v2-fields"
+TWO_STAGE_PROMPT_VERSION = "memory-extraction-two-stage-v1"
+
+# The identity attributes recall privileges, taken from the slot keys themselves so
+# the extractor cannot propose an attribute the fast path does not recognise.
+_IDENTITY_KEYS = frozenset(
+    key.removeprefix("identity:global:") for key in CORE_IDENTITY_SLOT_KEYS
+)
 SYNTHETIC_PROBE_INPUT = "PHASE4_OLLAMA_SYNTHETIC_CAPABILITY_PROBE"
 
 OLLAMA_SYSTEM_INSTRUCTION = """You are a bounded memory proposal extractor.
 Return exactly one JSON object matching the supplied schema. Do not return prose,
 markdown, analysis, or reasoning. Use only user-authored spans supplied in the input.
 Never invent owner IDs, canonical memory IDs, lifecycle state, database operations,
-or trusted predecessor IDs. A proposal is untrusted until deterministic grounding,
-taxonomy, sensitivity, and correction policy accept it. Exclude temporary,
-hypothetical, third-party, assistant-authored, and unsupported claims.
+or trusted predecessor IDs. Every proposal you return is independently re-checked
+downstream by grounding, taxonomy, sensitivity, and correction policy, so propose the
+fact and let those layers decide whether it is kept. Use the exclusions array only for
+a statement that is temporary, hypothetical, about a third party, or authored by the
+assistant; a statement the user makes about themselves is a proposal, not an exclusion.
 
 Every memory belongs to exactly one of six fields. Choose memory_type_hint so the
 fact lands in the right field:
@@ -47,7 +62,27 @@ that stays true for the user everywhere is never a "project" fact: preferences,
 goals, profile details and events belong to their own field even when the user
 happens to mention them while working on a project."""
 
-OLLAMA_JSON_MODE_CONTRACT = """JSON mode response contract:
+# What to extract, in every request mode.  This guidance used to live inside the JSON
+# mode contract below, so schema mode — which `auto` selects whenever Ollama advertises
+# grammar support — never received it.  The model then saw only the terse instruction
+# above and returned zero assertions for every implicitly stated fact.  Grammar mode
+# constrains the response *shape*; nothing but this text constrains the response
+# *content*, so it must be sent regardless of mode.
+OLLAMA_EXTRACTION_CONTRACT = """Extraction contract:
+Stable first-person identity, work/tool facts, preferences, recurring activities,
+ongoing goals, and projects are durable assertions even when
+explicit_memory_intent is false. Temporary, hypothetical, question, and
+third-party statements are not durable assertions. For a durable assertion,
+copy the input message_id and cite the shortest exact supporting substring with
+zero-based start/end character offsets and an identical quoted_text. typed_value
+and display_hint must be supported by that exact quoted span.
+For example, in the text "I use Python for work.", the durable knowledge value
+"Python" is supported by quoted_text "Python" at start 6 and end 12, with
+domain_hint "software_development", durability "durable", and
+sensitivity_hint "normal".
+Use empty arrays when there are no matching proposals."""
+
+OLLAMA_JSON_SHAPE_CONTRACT = """JSON mode response contract:
 Return exactly these top-level keys: schema_version, assertions, retractions, exclusions.
 schema_version must be 1 and the other three values must be JSON arrays.
 Assertion objects may contain only: proposal_id, source_spans, subject_hint,
@@ -68,19 +103,27 @@ and confidence.
 Exclusion objects may contain only: proposal_id, reason.
 Source span objects may contain only: message_id, start, end, quoted_text.
 Never add wrapper keys such as proposal, memory, result, reasoning, explanation,
-action, operation, target_id, memory_id, owner_id, or canonical_id.
-Stable first-person identity, work/tool facts, preferences, recurring activities,
-ongoing goals, and projects are durable assertions even when
-explicit_memory_intent is false. Temporary, hypothetical, question, and
-third-party statements are not durable assertions. For a durable assertion,
-copy the input message_id and cite the shortest exact supporting substring with
-zero-based start/end character offsets and an identical quoted_text. typed_value
-and display_hint must be supported by that exact quoted span.
-For example, in the text "I use Python for work.", the durable knowledge value
-"Python" is supported by quoted_text "Python" at start 6 and end 12, with
-domain_hint "software_development", durability "durable", and
-sensitivity_hint "normal".
-Use empty arrays when there are no matching proposals."""
+action, operation, target_id, memory_id, owner_id, or canonical_id."""
+
+
+def proposal_response_schema() -> dict[str, Any]:
+    """Return the response schema with every top-level key required.
+
+    Pydantic omits a field from ``required`` when it has a default, and all four
+    top-level fields default to empty.  A grammar built from that schema therefore
+    accepts ``{}``, and a constrained model takes the cheapest path the grammar
+    allows: ``qwen3-coder:30b`` returned ``{"exclusions": []}`` — one key, no
+    assertions — for every message, because emitting nothing was valid.  Forcing the
+    keys to be required makes the grammar demand an ``assertions`` array, so the model
+    has to decide what belongs in it instead of declining to answer.
+
+    The defaults stay in place for parsing, so a response that omits a key is still
+    accepted on the way back in; this only constrains generation.
+    """
+
+    schema = ModelProposalResponse.model_json_schema()
+    schema["required"] = ["schema_version", "assertions", "retractions", "exclusions"]
+    return schema
 
 
 class ExtractionProviderKind(StrEnum):
@@ -567,7 +610,7 @@ class DirectJsonExtractionProvider(_JsonHttpExtractionProvider):
                 "input": request.model_dump(mode="json"),
                 "response_format": {
                     "type": "json_schema",
-                    "json_schema": ModelProposalResponse.model_json_schema(),
+                    "json_schema": proposal_response_schema(),
                 },
                 "temperature": 0,
                 "stream": False,
@@ -648,13 +691,13 @@ class OllamaChatExtractionProvider(_JsonHttpExtractionProvider):
     @staticmethod
     def _format_for(mode: OllamaRequestMode) -> str | dict[str, Any]:
         if mode is OllamaRequestMode.SCHEMA:
-            return ModelProposalResponse.model_json_schema()
+            return proposal_response_schema()
         return "json"
 
     def _payload(self, request: ModelExtractionInput) -> dict[str, Any]:
-        system_instruction = OLLAMA_SYSTEM_INSTRUCTION
+        system_instruction = f"{OLLAMA_SYSTEM_INSTRUCTION}\n{OLLAMA_EXTRACTION_CONTRACT}"
         if self.request_mode is OllamaRequestMode.JSON:
-            system_instruction = f"{system_instruction}\n{OLLAMA_JSON_MODE_CONTRACT}"
+            system_instruction = f"{system_instruction}\n{OLLAMA_JSON_SHAPE_CONTRACT}"
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -773,6 +816,279 @@ class OllamaChatExtractionProvider(_JsonHttpExtractionProvider):
                 *(item.content for item in request.supporting_window),
             ),
         )
+
+
+TWO_STAGE_FACT_INSTRUCTION = """You extract durable facts about the user from their message.
+
+Return JSON: {"facts": [{"fact": "...", "quote": "...", "value": "..."}]}
+
+For each fact:
+- "fact": one short sentence about the user, third person, starting with "User".
+- "quote": the exact words COPIED CHARACTER-FOR-CHARACTER from the user's message that
+  state this fact. It must appear verbatim in the message. Never rephrase it.
+- "value": the specific thing being remembered, copied from the message (a name, place,
+  tool, role, or short phrase).
+
+Extract facts even when the user did not ask you to remember anything.
+Include: identity, job, employer, role, location, preferences, ongoing goals, projects,
+skills, relationships, recurring activities.
+Exclude: questions, temporary states or moods, hypotheticals, facts about other people,
+and anything the assistant said.
+If there is nothing durable, return {"facts": []}.
+
+Examples:
+Message: "Hi, my name is John. I am a software engineer."
+Output: {"facts": [
+  {"fact": "User's name is John", "quote": "my name is John", "value": "John"},
+  {"fact": "User is a software engineer", "quote": "I am a software engineer",
+   "value": "software engineer"}]}
+
+Message: "what's the weather like?"
+Output: {"facts": []}
+
+Message: "I'm really tired today"
+Output: {"facts": []}"""
+
+TWO_STAGE_CLASSIFY_INSTRUCTION = """Classify one fact about the user.
+
+Return JSON: {"memory_type": "...", "identity_key": null}
+
+memory_type is exactly one of:
+identity, preference, goal, project, education, employment, activity, event, knowledge
+
+Use "identity" for who the user durably is: their name, age, origin, employer,
+occupation, or where they currently live.
+When memory_type is "identity", identity_key is exactly one of:
+name, age, origin, employer, occupation, current_location
+For every other memory_type, identity_key is null.
+
+Examples:
+Fact: "User's name is John"           -> {"memory_type":"identity","identity_key":"name"}
+Fact: "User is a software engineer" -> {"memory_type":"identity","identity_key":"occupation"}
+Fact: "User works at Stripe"          -> {"memory_type":"identity","identity_key":"employer"}
+Fact: "User lives in Berlin" -> {"memory_type":"identity","identity_key":"current_location"}
+Fact: "User prefers dark mode"        -> {"memory_type":"preference","identity_key":null}
+Fact: "User wants to learn Portuguese" -> {"memory_type":"goal","identity_key":null}"""
+
+_FACTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["facts"],
+    "properties": {
+        "facts": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["fact", "quote", "value"],
+                "properties": {
+                    "fact": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
+_CLASSIFY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["memory_type", "identity_key"],
+    "properties": {
+        "memory_type": {
+            "type": "string",
+            "enum": [item.value for item in MemoryType],
+        },
+        "identity_key": {
+            "type": ["string", "null"],
+            "enum": [None, *sorted(_IDENTITY_KEYS)],
+        },
+    },
+}
+
+
+class TwoStageOllamaChatExtractionProvider(OllamaChatExtractionProvider):
+    """Ask the model what is worth remembering, then how to file it.
+
+    The single-call contract required one grammar-constrained pass to choose a
+    nine-way type, a domain, a slot, a typed value, a display string, a durability,
+    a confidence, a sensitivity *and* character offsets whose quoted text matched
+    the source byte for byte.  Local models answer that badly: they returned a
+    classification object in ``typed_value`` and a taxonomy label such as
+    ``"location"`` in ``display_hint``, so a correctly understood sentence still
+    produced an unusable memory.  Constrained decoding makes this worse rather
+    than better — the grammar guarantees the shape, never the meaning.
+
+    Splitting it lets each call be easy.  Stage A asks only for short natural
+    sentences plus the words the user actually wrote, which local models get right
+    across colloquial phrasings the deterministic grammars never matched.  Stage B
+    asks only for one enum per fact, which is where ``identity:global:employer``
+    finally comes from, so a question sharing no words with the stored value can
+    still reach it.
+
+    Offsets are computed here from the returned quote rather than requested from
+    the model, so grounding keeps the exact-span guarantee it always had while the
+    model is never asked to count characters.
+    """
+
+    def _chat_json(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        forbidden_texts: Sequence[str],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "format": schema if self.request_mode is OllamaRequestMode.SCHEMA else "json",
+            "options": {"temperature": 0},
+        }
+        if self.capabilities.think_field_supported:
+            payload["think"] = False
+        if self.capabilities.num_predict_option_supported:
+            payload["options"]["num_predict"] = 2048
+        if self.capabilities.keep_alive_supported:
+            payload["keep_alive"] = "10m"
+        status, body = self._post(payload, forbidden_texts=forbidden_texts)
+        decoded = self._decode_response(status, body, forbidden_texts=forbidden_texts)
+        raw = decoded.raw_output
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        try:
+            parsed = json.loads(text) if isinstance(text, str) else text
+        except (TypeError, ValueError):
+            raise ExtractionModelError(
+                "malformed_model_json",
+                metadata=decoded.metadata,
+            ) from None
+        if not isinstance(parsed, dict):
+            raise ExtractionModelError("malformed_model_json", metadata=decoded.metadata)
+        return parsed
+
+    def extract(self, request: ModelExtractionInput) -> ExtractionModelResponse:
+        forbidden = (
+            request.user_message,
+            *(item.content for item in request.supporting_window),
+        )
+        facts_payload = self._chat_json(
+            system=TWO_STAGE_FACT_INSTRUCTION,
+            user=request.user_message,
+            schema=_FACTS_SCHEMA,
+            forbidden_texts=forbidden,
+        )
+        assertions: list[dict[str, Any]] = []
+        raw_facts = facts_payload.get("facts")
+        for index, item in enumerate(raw_facts if isinstance(raw_facts, list) else []):
+            if len(assertions) >= request.maximum_candidates:
+                break
+            proposal = self._assertion_for(request, item, index)
+            if proposal is not None:
+                assertions.append(proposal)
+        output = {
+            "schema_version": 1,
+            "assertions": assertions,
+            "retractions": [],
+            "exclusions": [],
+        }
+        return ExtractionModelResponse(
+            raw_output=json.dumps(output, ensure_ascii=False),
+            model_version=self.model,
+            prompt_version=TWO_STAGE_PROMPT_VERSION,
+            metadata=_content_metadata(
+                self.provider_kind,
+                json.dumps(output, ensure_ascii=False).encode("utf-8"),
+                http_status=200,
+                response_envelope_shape="ollama_two_stage_v1",
+            ),
+        )
+
+    def _assertion_for(
+        self,
+        request: ModelExtractionInput,
+        item: object,
+        index: int,
+    ) -> dict[str, Any] | None:
+        """Turn one extracted fact into a proposal, or drop it if it is not grounded.
+
+        A quote the model did not copy verbatim is discarded rather than repaired.
+        Locating it ourselves is what keeps the span honest, and a quote we cannot
+        find is exactly the case where the model has started paraphrasing.
+        """
+
+        if not isinstance(item, Mapping):
+            return None
+        fact = str(item.get("fact") or "").strip()
+        quote = str(item.get("quote") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not fact or not quote:
+            return None
+        message = request.user_message
+        start = message.find(quote)
+        if start < 0:
+            return None
+        if not value or value not in message:
+            value = quote
+        memory_type, identity_key = self._classify(fact)
+        proposal: dict[str, Any] = {
+            "proposal_id": f"fact-{index}",
+            "source_spans": [
+                {
+                    "message_id": request.message_id,
+                    "start": start,
+                    "end": start + len(quote),
+                    "quoted_text": quote,
+                }
+            ],
+            "subject_hint": SubjectHint.USER.value,
+            "memory_type_hint": memory_type,
+            "typed_value": value,
+            "display_hint": fact,
+            "durability": DurabilityHint.DURABLE.value,
+            "confidence": 0.9,
+            "sensitivity_hint": Sensitivity.NORMAL.value,
+        }
+        if identity_key is not None:
+            proposal["slot_hint"] = identity_key
+        return proposal
+
+    def _classify(self, fact: str) -> tuple[str, str | None]:
+        """Return the taxonomy type for one fact, defaulting to a storable type.
+
+        A classification failure must not lose the fact: ``knowledge`` is the
+        catch-all the taxonomy already uses for a durable statement that fits no
+        richer field, so an unusable answer here costs precision, not the memory.
+        """
+
+        try:
+            payload = self._chat_json(
+                system=TWO_STAGE_CLASSIFY_INSTRUCTION,
+                user=f"Fact: {fact}",
+                schema=_CLASSIFY_SCHEMA,
+                forbidden_texts=(),
+            )
+        except ExtractionModelError:
+            return MemoryType.KNOWLEDGE.value, None
+        raw_type = payload.get("memory_type")
+        try:
+            memory_type = MemoryType(str(raw_type)).value
+        except ValueError:
+            return MemoryType.KNOWLEDGE.value, None
+        identity_key = payload.get("identity_key")
+        if memory_type != MemoryType.IDENTITY.value:
+            return memory_type, None
+        if not isinstance(identity_key, str) or identity_key not in _IDENTITY_KEYS:
+            # An identity fact with no usable attribute would land in
+            # ``identity:global:profile_fact``, an exclusive slot every unlabelled
+            # identity fact would then fight over, each overwriting the last.
+            return MemoryType.KNOWLEDGE.value, None
+        return memory_type, identity_key
 
 
 def _ollama_api_endpoint(chat_endpoint: str, leaf: str) -> str:
@@ -928,7 +1244,7 @@ def probe_ollama_provider(
 
     # A tiny schema can pass even when Ollama's grammar compiler rejects the
     # complete production schema. Probe the exact schema extraction will use.
-    probe_schema = ModelProposalResponse.model_json_schema()
+    probe_schema = proposal_response_schema()
 
     def supports(
         update: dict[str, Any],
@@ -1006,6 +1322,7 @@ def build_extraction_model_provider(
     ollama_request_mode: OllamaRequestMode | str = OllamaRequestMode.SCHEMA,
     ollama_capabilities: OllamaCapabilities | None = None,
     transport: JsonHttpTransport | None = None,
+    two_stage: bool = False,
 ) -> ExtractionModelProvider:
     try:
         kind = ExtractionProviderKind(provider)
@@ -1022,7 +1339,10 @@ def build_extraction_model_provider(
     if kind is ExtractionProviderKind.DIRECT_JSON:
         return DirectJsonExtractionProvider(endpoint, **common)
     if kind is ExtractionProviderKind.OLLAMA:
-        return OllamaChatExtractionProvider(
+        provider_class = (
+            TwoStageOllamaChatExtractionProvider if two_stage else OllamaChatExtractionProvider
+        )
+        return provider_class(
             endpoint,
             request_mode=ollama_request_mode,
             capabilities=ollama_capabilities,

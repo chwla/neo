@@ -208,6 +208,7 @@ def build_memory_runtime(profile: dict) -> MemoryRuntime:
             response_timeout_seconds=settings.extraction_response_timeout_seconds,
             ollama_request_mode=request_mode,
             ollama_capabilities=capabilities,
+            two_stage=settings.two_stage_extraction_enabled,
         )
     extraction = MemoryExtractionCoordinator(
         chat,

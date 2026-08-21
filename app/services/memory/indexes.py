@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import numpy as _numpy
 from sqlalchemy import delete, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -338,6 +339,7 @@ class SqliteMemoryVectorIndex:
                 "provider_version": provider.provider_version,
                 "dimension": len(values),
                 "vector_json": json.dumps(values, separators=(",", ":")),
+                "vector_blob": _pack_vector(values),
                 "metadata_version": VECTOR_METADATA_VERSION,
                 "derived_schema_version": document.schema_version,
                 "embedding_document_version": embedding.version,
@@ -375,6 +377,7 @@ class SqliteMemoryVectorIndex:
     def search(self, query_vector: Sequence[float], owner_id: str, limit: int):
         bounded_limit = min(max(1, int(limit)), 500)
         vector = [float(item) for item in query_vector]
+        query = _numpy_query(vector)
         best: list[tuple[float, int, VectorCandidate]] = []
         with self._sessions() as session:
             rows = session.scalars(
@@ -384,8 +387,7 @@ class SqliteMemoryVectorIndex:
                 .execution_options(yield_per=100)
             )
             for row in rows:
-                stored = json.loads(row.vector_json)
-                score = _cosine(vector, stored)
+                score = _score_row(row, vector, query)
                 candidate = VectorCandidate(
                     owner_id=UUID(row.owner_id),
                     memory_id=UUID(row.memory_id),
@@ -494,6 +496,47 @@ class SqliteMemoryVectorIndex:
             healthy=healthy,
             failure_code=None if healthy else "vector_unavailable",
         )
+
+
+def _pack_vector(values: Sequence[float]) -> bytes:
+    """Pack a vector as little-endian float32 for the vectorised scan."""
+
+    return _numpy.asarray(values, dtype="<f4").tobytes()
+
+
+def _numpy_query(vector: Sequence[float]):
+    """Return the L2-normalised query, or ``None`` when it cannot be scored."""
+
+    if not vector:
+        return None
+    query = _numpy.asarray(vector, dtype="<f4")
+    norm = float(_numpy.linalg.norm(query))
+    if not norm:
+        return None
+    return query / norm
+
+
+def _score_row(row, vector: Sequence[float], query) -> float:
+    """Cosine against one stored point, preferring the packed representation.
+
+    Scoring read ``vector_json`` and multiplied element by element in Python, so
+    a recall parsed every stored array on every turn: about 1.3 seconds at five
+    thousand memories, on a code path that runs before each reply.  The blob is
+    the same numbers without the parse, and numpy does the arithmetic in one
+    call.  Rows written before revision 0005 have no blob, so the original path
+    stays as the fallback rather than requiring a backfill to have run.
+    """
+
+    blob = getattr(row, "vector_blob", None)
+    if blob and query is not None:
+        stored = _numpy.frombuffer(blob, dtype="<f4")
+        if stored.size != query.size:
+            return 0
+        norm = float(_numpy.linalg.norm(stored))
+        if not norm:
+            return 0
+        return max(-1.0, min(1.0, float(stored @ query) / norm))
+    return _cosine(vector, json.loads(row.vector_json))
 
 
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:

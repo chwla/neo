@@ -194,8 +194,16 @@ def _contains_complete_card_number(text: str) -> bool:
 # Anchored to the start of a sentence so it reads an instruction rather than a
 # mention.  Unanchored, "what do you remember about my goals?" matched and every
 # recall question was treated as a memory write.
+#
+# The polite forms are included deliberately.  "Can you remember that I'm
+# vegetarian?" is an explicit instruction to store something, but it opens with an
+# interrogative and ends in a question mark, so the sentence loop below skipped it
+# and the clearest possible request to remember was the one shape guaranteed to be
+# dropped.  Anchoring still holds: "what do you remember about my goals?" does not
+# start with one of these verbs and so continues to be treated as a recall query.
 _MEMORY_COMMAND = re.compile(
-    r"^\s*(?:please\s+)?(?:remember|memorise|memorize|forget|save this|note that|call me)\b",
+    r"^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+    r"(?:remember|memorise|memorize|forget|save this|save that|note that|call me)\b",
     re.IGNORECASE,
 )
 _CORRECTION = re.compile(
@@ -237,10 +245,14 @@ def turn_may_contain_memory(text: str) -> bool:
         candidate = sentence.strip()
         if not candidate:
             continue
-        if candidate.endswith("?") or _QUESTION_OPENER.match(candidate):
-            continue
+        # Tested before the question guard, not after it: an explicit memory
+        # command is an instruction whatever punctuation it carries, and checking
+        # it second meant "Can you remember that I'm vegetarian?" was discarded by
+        # the question rule before it was ever considered.
         if _MEMORY_COMMAND.match(candidate):
             return True
+        if candidate.endswith("?") or _QUESTION_OPENER.match(candidate):
+            continue
         if _CORRECTION.search(candidate) or _FIRST_PERSON.search(candidate):
             return True
     return False

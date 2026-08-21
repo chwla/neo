@@ -117,7 +117,24 @@ class ExtractionRequest(ExtractionContractModel):
 
     @staticmethod
     def content_hash(value: str) -> str:
-        normalized = unicodedata.normalize("NFKC", value)
+        """Hash the text extraction will actually read.
+
+        ``str_strip_whitespace`` is on for this model, so ``user_message`` is
+        stripped before ``validate_trusted_request`` compares the two.  Hashing
+        the caller's unstripped string therefore raised
+        ``source_content_hash_mismatch`` for any message with a leading or
+        trailing space or newline — a pasted block, or anything typed into a box
+        that keeps its final newline.  In the chat path that exception is caught
+        and logged, so the turn survived and extraction simply never ran: the
+        user stated a fact, was answered normally, and nothing was remembered.
+
+        Stripping here rather than at each call site keeps the two sides of the
+        comparison derived from one rule, so a future caller cannot reintroduce
+        the mismatch.  It also leaves the recorded provenance hash describing the
+        stored text rather than the transport's whitespace.
+        """
+
+        normalized = unicodedata.normalize("NFKC", value.strip())
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     @model_validator(mode="after")

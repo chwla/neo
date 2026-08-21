@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Mapping
 
 from app.services.memory.contracts import CandidateGroundingSpan, EvidenceRole
 from app.services.memory.extraction_contracts import ExtractionRequest, GroundingDecision
@@ -15,6 +16,7 @@ from app.services.memory.model_schema import (
     ModelSourceSpan,
     SubjectHint,
 )
+from app.services.memory.recall import lexical_tokens
 
 
 def _nfkc(value: str) -> str:
@@ -122,6 +124,64 @@ def value_supported(value: str | None, evidence: str, cited: str) -> bool:
     return _value_supported(value, evidence, cited)
 
 
+# Words that carry no evidential weight.  Requiring them to appear in the source
+# would reject a paraphrase purely for choosing a different article or auxiliary.
+_GROUNDING_STOPWORDS = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "as",
+        "for", "with", "by", "from", "is", "am", "are", "was", "were", "be",
+        "been", "being", "do", "doe", "did", "have", "ha", "had", "i", "my",
+        "me", "mine", "user", "it", "that", "this", "there", "here", "currently",
+    }
+)
+
+
+def _content_tokens(value: str) -> set[str]:
+    return {token for token in lexical_tokens(value) if token not in _GROUNDING_STOPWORDS}
+
+
+def _content_supported(value: str | None, *haystacks: str) -> bool:
+    """Accept a value whose every content word was actually said by the user.
+
+    The exact check this backs requires the value to be a substring of the source
+    or a subset of its raw words, which rejects any rephrasing: the model wrote
+    "Frontend engineer working on Aurora design system" for a message that said
+    "I work on…", and "working" is not "work", so a correctly extracted fact was
+    dropped.  Stemming both sides and ignoring function words lets the wording
+    differ while keeping the property that matters — every substantive word,
+    including every name and number, came from the user's own message, so an
+    invented employer or date still cannot pass.
+    """
+
+    if not value:
+        return False
+    tokens = _content_tokens(value)
+    if not tokens:
+        return False
+    return any(tokens <= _content_tokens(haystack) for haystack in haystacks if haystack)
+
+
+def _groundable_texts(proposal: ModelAssertionProposal) -> tuple[str, ...]:
+    """Return the proposal texts that are supposed to quote the user.
+
+    ``typed_value`` is not always a quote.  For the richer memory types the model
+    returns a classification object — ``{"role": …, "project": …, "domain_hint":
+    "software_development"}`` — and the old check JSON-dumped it and demanded the
+    whole blob appear in the source.  It never can: ``domain_hint`` is a taxonomy
+    label the model assigns, not something the user wrote.  Ground the leaf values
+    of such an object instead, and let ``display_hint`` carry the sentence.
+    """
+
+    value = proposal.typed_value
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        return tuple(item for item in value.values() if isinstance(item, str))
+    if isinstance(value, (list, tuple)):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
+
+
 def ground_assertion(
     request: ExtractionRequest,
     proposal: ModelAssertionProposal,
@@ -148,14 +208,22 @@ def ground_assertion(
         if isinstance(proposal.typed_value, str)
         else json.dumps(proposal.typed_value, ensure_ascii=False, sort_keys=True)
     )
+    groundable = _groundable_texts(proposal)
     # The invariant is that the user actually said the asserted value, not that
     # the model picked the tightest span around it.  Widen the check to the
     # authorized user messages the spans already cite, so a fact is not dropped
     # merely because the quoted excerpt stopped just short of the value.
     cited = " ".join(dict.fromkeys(authorized[item.message_id] for item in spans))
-    if not _value_supported(value, evidence, cited) and not _value_supported(
+    exact = _value_supported(value, evidence, cited) or _value_supported(
         proposal.display_hint, evidence, cited
-    ):
+    )
+    # Fall back to content-word containment so a rephrasing of what the user said
+    # still grounds, while anything introducing a word they never wrote does not.
+    contained = _content_supported(proposal.display_hint, evidence, cited) or (
+        bool(groundable)
+        and all(_content_supported(item, evidence, cited) for item in groundable)
+    )
+    if not exact and not contained:
         return GroundingDecision(
             proposal_id=proposal.proposal_id,
             accepted=False,
