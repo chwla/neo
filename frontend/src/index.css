@@ -236,8 +236,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-rename-input:focus { outline: none; }
 .project-folder-new-chat { margin: 2px 6px 2px 20px; border: 0; background: transparent; color: #444; font-size: 11px; }
 .project-folder-new-chat:hover { color: var(--neo-green); }
-.project-chat-item, .chat-item { display: flex; align-items: center; min-height: 30px; margin: 1px 0 1px 14px; border-left: 2px solid transparent; border-radius: 0 2px 2px 0; padding: 0 6px 0 2px; }
-.chat-item { margin: 1px 8px; padding-left: 2px; }
+.project-chat-item, .chat-item { display: flex; align-items: center; min-height: 30px; margin: 1px 0 1px 14px; border-left: 2px solid transparent; border-radius: 0 2px 2px 0; padding: 0 6px 0 10px; }
+.chat-item { margin: 1px 8px; padding-left: 10px; }
 .project-chat-item:hover, .chat-item:hover { background: rgba(255,255,255,.025); }
 .project-chat-item.active, .chat-item.active { border-left-color: var(--neo-green); background: rgba(57,255,20,.04); }
 .project-chat-link, .chat-item-title { min-width: 0; flex: 1; overflow: hidden; color: #777; font-size: 12px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
