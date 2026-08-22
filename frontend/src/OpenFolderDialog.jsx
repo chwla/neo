@@ -63,7 +63,8 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
           <p className="ws-help">
             Neo is running in a container, so it can only reach folders mounted into
             it{roots.roots?.length ? <> — under <code>{roots.roots.join(", ")}</code></> : null}.
-            Use the path as it appears inside the container.
+            Use the path as it appears inside the container, not the one on your
+            computer: <code>/workspace/my-project</code>, not <code>C:\Users\you\code</code>.
           </p>
         ) : null}
 

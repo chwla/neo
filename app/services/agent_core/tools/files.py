@@ -19,9 +19,18 @@ import fnmatch
 import re
 from pathlib import Path
 
+from app.core import textio
 from app.services.agent_core import journal
 from app.services.agent_core.tools.base import AgentTool, ToolContext
 from app.services.agent_core.workspace import WorkspaceError, is_live, repo_root, resolve
+
+#: A bind-mounted folder keeps its host ownership, so a container running as a
+#: different uid can read everything and write nothing. Saying so beats "Errno 13".
+PERMISSION_HINT = (
+    "Permission denied writing {path}. If Neo is running in a container, the "
+    "mounted folder belongs to a different user than the container runs as -- set "
+    "NEO_UID and NEO_GID to your own (`id -u` / `id -g`) and restart."
+)
 
 MAX_READ_BYTES = 200_000
 MAX_MATCHES = 100
@@ -49,7 +58,7 @@ def read_file(arguments: dict, context: ToolContext):
     path = resolve(root, str(arguments.get("path", "")), must_exist=True)
     if _is_binary(path):
         raise WorkspaceError("That file is binary and cannot be read as text.")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = textio.read_text(path)
     truncated = len(text.encode("utf-8")) > MAX_READ_BYTES
     if truncated:
         text = text.encode("utf-8")[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
@@ -106,9 +115,7 @@ def grep(arguments: dict, context: ToolContext):
         if _is_binary(path):
             continue
         try:
-            for number, line in enumerate(
-                path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
-            ):
+            for number, line in enumerate(textio.read_text(path).splitlines(), start=1):
                 if expression.search(line):
                     results.append(f"{relative}:{number}: {line.strip()[:200]}")
                     if len(results) >= MAX_MATCHES:
@@ -130,7 +137,12 @@ def write_file(arguments: dict, context: ToolContext):
     if live:
         journal.record_before(context.session_id, context.repo_id, root, relative)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    # A file Neo is replacing keeps the line endings it already had; a new one
+    # gets LF. Either way the platform never gets to decide.
+    try:
+        textio.write_text(path, content)
+    except PermissionError as exc:
+        raise WorkspaceError(PERMISSION_HINT.format(path=relative)) from exc
     if live:
         journal.record_after(context.session_id, root, relative)
     return f"{'Updated' if existed else 'Created'} {relative} ({len(content)} characters)."
@@ -155,7 +167,7 @@ def edit_file(arguments: dict, context: ToolContext):
     if old == new:
         raise WorkspaceError("`old_string` and `new_string` are identical.")
 
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = textio.read_text(path)
     occurrences = text.count(old)
     if occurrences == 0:
         raise WorkspaceError("`old_string` was not found in that file.")
@@ -169,7 +181,10 @@ def edit_file(arguments: dict, context: ToolContext):
     live = is_live(context.repo_id)
     if live:
         journal.record_before(context.session_id, context.repo_id, root, relative)
-    path.write_text(text.replace(old, new), encoding="utf-8")
+    try:
+        textio.write_text(path, text.replace(old, new))
+    except PermissionError as exc:
+        raise WorkspaceError(PERMISSION_HINT.format(path=relative)) from exc
     if live:
         journal.record_after(context.session_id, root, relative)
     return f"Edited {relative} ({occurrences} replacement{'s' if occurrences != 1 else ''})."

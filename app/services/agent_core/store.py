@@ -190,6 +190,9 @@ def initialize_agent_core_tables() -> None:
                 relative_path TEXT NOT NULL,
                 existed_before INTEGER NOT NULL DEFAULT 1,
                 before_text TEXT,
+                -- Restoring LF into a file that was CRLF would leave the user a
+                -- whole-file diff after an undo that was meant to leave nothing.
+                before_newline TEXT NOT NULL DEFAULT '\n',
                 -- What the run left behind, refreshed on every write. Undo
                 -- compares the file against this to tell "the agent wrote this"
                 -- from "someone has edited it since", and refuses the latter.
@@ -769,8 +772,8 @@ def insert_file_snapshot(item: dict) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO workspace_agent_file_snapshots"
             " (id, session_id, repo_id, relative_path, existed_before, before_text,"
-            "  after_sha256, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            "  before_newline, after_sha256, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 item["id"],
                 item["session_id"],
@@ -778,6 +781,7 @@ def insert_file_snapshot(item: dict) -> None:
                 item["relative_path"],
                 int(bool(item.get("existed_before", True))),
                 item.get("before_text"),
+                item.get("before_newline") or "\n",
                 item.get("after_sha256"),
                 item["created_at"],
             ),

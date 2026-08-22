@@ -28,6 +28,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.core import textio
 from app.services.agent_core.workspace import WorkspaceError, repo_root
 from app.services.repos import store as repos_store
 from app.services.repos.scanner import IGNORED_DIRS, IGNORED_NAMES
@@ -91,11 +92,18 @@ def _sha256(data: bytes) -> str:
 
 
 def _read(path: Path) -> tuple[str, bytes] | None:
+    """Decoded text for diffing, and the raw bytes the import hash was taken over.
+
+    Both are returned because they answer different questions: the hash must be
+    over what is actually on disk, while the diff has to be line-ending
+    normalised or a CRLF file reads as entirely changed.
+    """
+
     try:
         raw = path.read_bytes()
     except OSError:
         return None
-    return raw.decode("utf-8", errors="replace"), raw
+    return textio.decode(raw), raw
 
 
 def _untracked_changes(root: Path, known: set[str]) -> list[FileChange]:
@@ -305,7 +313,18 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
                 continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(change.managed_text, encoding="utf-8")
+            textio.write_text(target, change.managed_text)
+        except PermissionError:
+            skipped.append(
+                {
+                    "path": change.relative_path,
+                    "reason": (
+                        "Permission denied. If Neo is in a container, set NEO_UID/NEO_GID "
+                        "to your own user and restart."
+                    ),
+                }
+            )
+            continue
         except OSError as exc:
             skipped.append({"path": change.relative_path, "reason": str(exc)})
             continue

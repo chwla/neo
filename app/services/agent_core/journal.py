@@ -24,9 +24,20 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from app.core import textio
 from app.services.agent_core import store
 from app.services.agent_core.delivery import DeliveryPlan, FileChange
 from app.services.agent_core.workspace import WorkspaceError, repo_root, resolve
+
+#: Bind mounts keep the host's ownership, so a container running as a different
+#: uid than the folder's owner can read every file and write none of them. The
+#: error the OS gives for that is "Permission denied", which reads as a Neo bug
+#: rather than a mount that needs one flag.
+_PERMISSION_HINT = (
+    "{path}: permission denied. If Neo is in a container, the mounted folder is "
+    "owned by a different user than the container runs as -- set NEO_UID/NEO_GID "
+    "to your own (`id -u`/`id -g`) and restart."
+)
 
 #: A file this size is not something a text agent meaningfully edited, and
 #: holding two copies of it in SQLite to enable an undo nobody wants is a poor
@@ -38,7 +49,7 @@ def _read_text(path: Path) -> str | None:
     try:
         if path.stat().st_size > MAX_SNAPSHOT_BYTES:
             return None
-        return path.read_text(encoding="utf-8", errors="replace")
+        return textio.read_text(path)
     except OSError:
         return None
 
@@ -68,6 +79,7 @@ def record_before(session_id: str, repo_id: str, root: Path, relative_path: str)
                 "relative_path": relative_path,
                 "existed_before": existed,
                 "before_text": _read_text(path) if existed else None,
+                "before_newline": textio.detect_newline(path) if existed else textio.LF,
                 "created_at": store.now_iso(),
             }
         )
@@ -182,14 +194,18 @@ def undo(session_id: str, repo_id: str) -> dict:
             try:
                 path.unlink()
                 removed.append(relative)
+            except PermissionError:
+                skipped.append({"path": relative, "reason": _PERMISSION_HINT.format(path=relative)})
             except OSError as exc:
                 skipped.append({"path": relative, "reason": str(exc)})
             continue
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(before, encoding="utf-8")
+            textio.write_text(path, before, newline=record["before_newline"] or textio.LF)
             restored.append(relative)
+        except PermissionError:
+            skipped.append({"path": relative, "reason": _PERMISSION_HINT.format(path=relative)})
         except OSError as exc:
             skipped.append({"path": relative, "reason": str(exc)})
 

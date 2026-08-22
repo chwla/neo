@@ -8,9 +8,10 @@ because an agent that can only edit existing files cannot create one.
 
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.paths import is_reparse_point, is_within, normalize_relative_parts, same_path
 from app.services.repos import store as repos_store
 from app.services.repos.safety import validate_live_root
 
@@ -56,12 +57,12 @@ def repo_root(repo_id: str | None) -> Path:
         )
 
     root = Path(repo["workspace_path"])
-    if root.is_symlink():
-        raise WorkspaceError("A repository workspace may not be a symlink.")
+    if is_reparse_point(root):
+        raise WorkspaceError("A repository workspace may not be a symlink or junction.")
 
     if repo.get("access") == repos_store.LIVE:
         resolved = root.resolve()
-        if resolved != Path(original).resolve():
+        if not same_path(resolved, Path(original).resolve()):
             raise WorkspaceError(
                 "This workspace's folder no longer matches the one that was attached."
             )
@@ -72,9 +73,10 @@ def repo_root(repo_id: str | None) -> Path:
 
     managed_root = Path(get_settings().workspace_repos_dir).resolve()
     resolved = root.resolve()
-    if resolved != (managed_root / repo["id"]).resolve() or managed_root not in resolved.parents:
+    expected = (managed_root / repo["id"]).resolve()
+    if not same_path(resolved, expected) or not is_within(managed_root, resolved):
         raise WorkspaceError("Repository workspace is outside Neo's managed directory.")
-    if resolved == Path(original).resolve():
+    if same_path(resolved, Path(original).resolve()):
         raise WorkspaceError("Agent file operations may never target the original repository.")
     return resolved
 
@@ -89,19 +91,20 @@ def is_live(repo_id: str | None) -> bool:
 
 
 def normalize_relative(raw_path: str) -> str:
-    """Reject anything that is not a plain relative path inside the tree."""
+    """Reject anything that is not a plain relative path inside the tree.
 
-    if not raw_path or not raw_path.strip():
-        raise WorkspaceError("A path is required.")
-    candidate = raw_path.strip().replace("\\", "/")
-    if candidate.startswith("/") or PurePosixPath(candidate).is_absolute():
-        raise WorkspaceError("Path must be relative to the repository root.")
-    parts = [part for part in PurePosixPath(candidate).parts if part not in {"."}]
-    if ".." in parts:
-        raise WorkspaceError("Path traversal is not allowed.")
-    if not parts:
-        raise WorkspaceError("Path must name a file.")
-    return PurePosixPath(*parts).as_posix()
+    Delegates to ``core.paths`` so the file tools and the command sandbox share
+    one definition of "relative". That shared definition is also what rejects a
+    Windows drive path: ``C:/Windows`` is not absolute by POSIX rules, so a check
+    that only asked ``is_absolute()`` accepted it as relative and then joined it
+    onto the root -- which discards the root.
+    """
+
+    try:
+        parts = normalize_relative_parts(raw_path)
+    except ValueError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    return "/".join(parts)
 
 
 def resolve(root: Path, raw_path: str, *, must_exist: bool = False) -> Path:
@@ -113,7 +116,7 @@ def resolve(root: Path, raw_path: str, *, must_exist: bool = False) -> Path:
     """
 
     relative = normalize_relative(raw_path)
-    candidate = root.joinpath(*PurePosixPath(relative).parts)
+    candidate = root.joinpath(*relative.split("/"))
 
     probe = candidate
     while not probe.exists():
@@ -122,11 +125,17 @@ def resolve(root: Path, raw_path: str, *, must_exist: bool = False) -> Path:
             break
         probe = parent
     resolved_ancestor = probe.resolve()
-    if resolved_ancestor != root and root not in resolved_ancestor.parents:
+    if not is_within(root, resolved_ancestor):
         raise WorkspaceError("Path escapes the repository root.")
 
-    if candidate.is_symlink():
-        raise WorkspaceError("Symlinks may not be read or written.")
+    # Checked on every component, not just the leaf: a junction or symlink part
+    # way down the path redirects everything below it, and on Windows a junction
+    # is not a symlink so the leaf check alone would miss it.
+    walked = root
+    for part in relative.split("/"):
+        walked = walked / part
+        if is_reparse_point(walked):
+            raise WorkspaceError("Symlinks and junctions may not be read or written.")
     if must_exist:
         if not candidate.exists():
             raise WorkspaceError(f"'{relative}' does not exist.")

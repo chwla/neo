@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
+from app.core.paths import is_within, normalize_relative_parts
 from app.services.command_sandbox import policy, store
 from app.services.command_sandbox.redaction import redact_output
 from app.services.command_sandbox.runner import run
@@ -83,11 +84,21 @@ class CommandSandboxService:
 
     @staticmethod
     def resolve_cwd(root: Path, cwd: str) -> Path:
-        path = PurePosixPath(cwd.replace("\\", "/"))
-        if path.is_absolute() or ".." in path.parts:
-            raise ValueError("cwd must be a managed-workspace relative path.")
-        candidate = (root / Path(*path.parts)).resolve(strict=True)
-        if candidate != root and root not in candidate.parents:
+        """Resolve a workspace-relative working directory.
+
+        Shares ``normalize_relative_parts`` with the file tools rather than
+        restating the rules, so a Windows drive path is rejected here for the
+        same reason and with the same wording it is rejected there.
+        """
+
+        if cwd.strip() in {"", ".", "/"}:
+            return root
+        try:
+            parts = normalize_relative_parts(cwd)
+        except ValueError as exc:
+            raise ValueError(f"cwd must be a managed-workspace relative path. {exc}") from exc
+        candidate = root.joinpath(*parts).resolve(strict=True)
+        if not is_within(root, candidate):
             raise ValueError("cwd escapes the managed workspace.")
         if not candidate.is_dir():
             raise ValueError("cwd is not an existing managed workspace directory.")
