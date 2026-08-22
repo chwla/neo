@@ -25,6 +25,10 @@ from app.services.llm_registry.types import (
 # short timeout per provider per process rather than one per request.
 _DISCOVERY_ATTEMPTED: set[str] = set()
 
+#: The routes the composer's model picker binds. Both chat and agent runs are
+#: started from the same dropdown, so a selection has to move both.
+PICKER_ROUTES = ("chat", "agent")
+
 DEFAULT_ROUTES = (
     "chat",
     "research",
@@ -513,12 +517,14 @@ class LLMRegistryService:
             "context_repaired": context_repaired,
         }
 
-    def bind_chat_route(self, model_name: str, base_url: str | None) -> bool:
-        """Point the chat route at this model so the picker actually selects it.
+    def bind_picker_routes(self, model_name: str, base_url: str | None) -> bool:
+        """Point the routes the composer's picker owns at this model.
 
         The composer dropdown writes the legacy active_id, but generation resolves its
         model through the registry route. Without this the dropdown can say one model
-        while a different one answers.
+        while a different one answers. Chat and agent runs share the one picker, so a
+        selection moves both routes -- binding only chat would leave an agent run
+        answering on whatever model it was seeded with.
         """
         wanted = (base_url or "").rstrip("/")
         for provider in self.list_providers():
@@ -527,14 +533,15 @@ class LLMRegistryService:
             for model in self.list_models(provider["id"]):
                 if model["model_name"] != model_name or not model.get("enabled"):
                     continue
-                self.update_route(
-                    "chat",
-                    RouteUpdate(
-                        provider_id=provider["id"],
-                        model_id=model["id"],
-                        metadata={"source": "picker_selection"},
-                    ),
-                )
+                for route_name in PICKER_ROUTES:
+                    self.update_route(
+                        route_name,
+                        RouteUpdate(
+                            provider_id=provider["id"],
+                            model_id=model["id"],
+                            metadata={"source": "picker_selection"},
+                        ),
+                    )
                 return True
         return False
 

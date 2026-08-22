@@ -62,7 +62,7 @@ def select_active_llm(request: ActiveLLMRequest) -> LLMListResponse:
     service = LLMRegistryService()
     selected = next((item for item in configs if item.id == active_id), None)
     if selected is not None:
-        service.bind_chat_route(selected.model, selected.base_url)
+        service.bind_picker_routes(selected.model, selected.base_url)
     return LLMListResponse(active_id=active_id, llms=[item.public_dict() for item in configs])
 
 

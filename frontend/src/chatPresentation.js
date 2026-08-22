@@ -27,6 +27,18 @@ export function formatDuration(durationMs) {
   return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
 }
 
+/** Wall-clock time on the bubble, the way a messaging app stamps one. */
+export function formatMessageTime(value) {
+  if (!value) {
+    return null;
+  }
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) {
+    return null;
+  }
+  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 export function formatResponseKind(message) {
   const labels = {
     connector: "Connector",

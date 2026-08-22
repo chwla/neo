@@ -32,6 +32,7 @@ import ProfilePicker from "./ProfilePicker.jsx";
 import MemoryDialog from "./MemoryDialog.jsx";
 import {
   formatDuration,
+  formatMessageTime,
   formatResponseKind,
   formatTokens,
   renderMessageHtml,
@@ -631,7 +632,7 @@ function previousUserMessage(messages, message) {
   return null;
 }
 
-function ChatMessage({
+export function ChatMessage({
   message,
   messages,
   editingMessageId,
@@ -654,9 +655,13 @@ function ChatMessage({
     : [formatResponseKind(message), formatTokens(message), formatDuration(message.duration_ms)]
       .filter(Boolean);
 
+  const sentAt = formatMessageTime(message.created_at);
+
   return (
     <article className={`neo-chat-message ${isUser ? "user" : "assistant"}`}>
-      <div className="message-bubble">
+      <div className="message-stack">
+        <span className="message-sender">{isUser ? "You" : "Neo"}</span>
+        <div className="message-bubble">
         {isEditing ? (
           <form
             className="message-edit-form"
@@ -688,41 +693,46 @@ function ChatMessage({
             {message.failed && (
               <div className="chat-message-status">Not sent. Edit and try again.</div>
             )}
-            {!isUser && metadataItems.length > 0 && (
-              <div className="message-meta">
-                {metadataItems.map((item) => <span key={item}>{item}</span>)}
-              </div>
-            )}
-            <div className="message-actions">
-              <button type="button" onClick={() => onCopy(message.content)}>
-                Copy
-              </button>
-              {isUser ? (
-                <button type="button" onClick={() => onEdit(message)}>
-                  Edit
+            {/* The turn's own record -- when it was sent, what answered, and what
+                you can do with it -- rides inside the bubble it belongs to. */}
+            <div className="message-footer">
+              {sentAt ? <time className="message-time">{sentAt}</time> : null}
+              {metadataItems.length > 0 ? (
+                <span className="message-meta">
+                  {metadataItems.map((item) => <span key={item}>{item}</span>)}
+                </span>
+              ) : null}
+              <span className="message-actions">
+                <button type="button" onClick={() => onCopy(message.content)}>
+                  Copy
                 </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    disabled={!previousUser}
-                    onClick={() => previousUser && onRerun(previousUser.content)}
-                  >
-                    Rerun
+                {isUser ? (
+                  <button type="button" onClick={() => onEdit(message)}>
+                    Edit
                   </button>
-                  <button
-                    type="button"
-                    title={
-                      hasThinking
-                        ? "Show the model reasoning returned for this response"
-                        : "Explain why reasoning is unavailable for this response"
-                    }
-                    onClick={() => onToggleThinking(message.id)}
-                  >
-                    {thinkingOpen ? "Hide thinking" : "View thinking"}
-                  </button>
-                </>
-              )}
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!previousUser}
+                      onClick={() => previousUser && onRerun(previousUser.content)}
+                    >
+                      Rerun
+                    </button>
+                    <button
+                      type="button"
+                      title={
+                        hasThinking
+                          ? "Show the model reasoning returned for this response"
+                          : "Explain why reasoning is unavailable for this response"
+                      }
+                      onClick={() => onToggleThinking(message.id)}
+                    >
+                      {thinkingOpen ? "Hide thinking" : "View thinking"}
+                    </button>
+                  </>
+                )}
+              </span>
             </div>
             {!isUser && thinkingOpen && (
               <div className="thinking-panel">
@@ -742,6 +752,7 @@ function ChatMessage({
             )}
           </>
         )}
+        </div>
       </div>
     </article>
   );
@@ -753,7 +764,9 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
 
   return (
     <article className="neo-chat-message assistant thinking">
-      <div className="message-bubble pending-message-bubble">
+      <div className="message-stack">
+        <span className="message-sender">Neo</span>
+        <div className="message-bubble pending-message-bubble">
         <div className="pending-message-header">
           <span>Neo is generating</span>
           <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>
@@ -769,6 +782,7 @@ function PendingAssistantMessage({ generation, elapsedMs }) {
             dangerouslySetInnerHTML={{ __html: renderMessageHtml(generation.content) }}
           />
         )}
+        </div>
       </div>
     </article>
   );
