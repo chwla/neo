@@ -663,6 +663,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ title }),
     }),
+  pinChat: (chatId, pinned) =>
+    request(`/chats/${chatId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned }),
+    }),
   deleteChat: (chatId, context = {}) => {
     const params = new URLSearchParams({
       memory_enabled: String(context.memoryEnabled ?? true),

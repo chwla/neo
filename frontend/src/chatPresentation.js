@@ -27,16 +27,29 @@ export function formatDuration(durationMs) {
   return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
 }
 
-/** Wall-clock time on the bubble, the way a messaging app stamps one. */
+/**
+ * Parse a timestamp Neo's API produced.
+ *
+ * Those are UTC but serialize without a marker, and an unmarked timestamp is
+ * *local* time to `Date.parse`. Reading one as local shifts every stamp by the
+ * viewer's offset, so an unmarked value is pinned to UTC before parsing.
+ */
+export function parseNeoTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return Number.NaN;
+  }
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`;
+  return Date.parse(normalized);
+}
+
+/** Wall-clock time on the bubble, in the viewer's zone, the way a messaging app stamps one. */
 export function formatMessageTime(value) {
-  if (!value) {
+  const parsed = parseNeoTimestamp(value);
+  if (Number.isNaN(parsed)) {
     return null;
   }
-  const at = new Date(value);
-  if (Number.isNaN(at.getTime())) {
-    return null;
-  }
-  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(parsed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export function formatResponseKind(message) {

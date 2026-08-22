@@ -62,7 +62,9 @@ class AppStore:
         statement = (
             select(Chat)
             .where(Chat.archived.is_(False))
-            .order_by(Chat.updated_at.desc(), Chat.id.desc())
+            # Pinned first, then most recent: a pin is a promise the thread stays
+            # at the top no matter how long since it was last touched.
+            .order_by(Chat.pinned.desc(), Chat.updated_at.desc(), Chat.id.desc())
             .limit(limit)
         )
         if unprojected_only:
@@ -210,6 +212,19 @@ class AppStore:
             return
         title = " ".join(prompt.strip().split())
         chat.title = title[:54] + "..." if len(title) > 57 else title or "New chat"
+
+    def set_chat_pinned(self, chat_id: int, pinned: bool) -> Chat | None:
+        """Pin or unpin a chat.
+
+        Pinning is not an edit of the thread, so `updated_at` is left alone: a
+        pin must not reorder the unpinned list when it is undone.
+        """
+        chat = self.get_chat(chat_id)
+        if chat is None:
+            return None
+        chat.pinned = pinned
+        self.db.flush()
+        return chat
 
     def rename_chat(self, chat_id: int, title: str) -> Chat | None:
         """Apply a title the user chose.

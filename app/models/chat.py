@@ -16,12 +16,15 @@ class Chat(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_chats_project_updated", "project_id", "updated_at"),
         Index("ix_chats_archived_updated", "archived", "updated_at"),
+        #: Pinned chats head the sidebar, so the list is read pin-first.
+        Index("ix_chats_pinned_updated", "pinned", "updated_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(160), nullable=False, default="New chat")
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
     archived: Mapped[bool] = mapped_column(default=False, nullable=False)
+    pinned: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     project = relationship("Project", back_populates="chats")
     messages = relationship(

@@ -75,6 +75,27 @@ def initialize_database(database_url: str | None = None) -> None:
     Base.metadata.create_all(bind=target_engine)
     ensure_chat_message_metadata_columns(target_engine)
     ensure_chat_generation_columns(target_engine)
+    ensure_chat_columns(target_engine)
+
+
+def ensure_chat_columns(target_engine=engine) -> None:
+    """Add chat columns introduced after the initial schema.
+
+    A database created before pinning existed has no `pinned` column, and the
+    sidebar orders by it on every read, so the column is added with a default
+    rather than left to fail the first query.
+    """
+
+    inspector = inspect(target_engine)
+    if "chats" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("chats")}
+    if "pinned" in existing:
+        return
+    with target_engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE chats ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT 0")
+        )
 
 
 def ensure_chat_message_metadata_columns(target_engine=engine) -> None:

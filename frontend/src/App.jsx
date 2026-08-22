@@ -35,6 +35,7 @@ import {
   formatMessageTime,
   formatResponseKind,
   formatTokens,
+  parseNeoTimestamp,
   renderMessageHtml,
   splitGeneratedText,
 } from "./chatPresentation.js";
@@ -71,13 +72,6 @@ function browserChatContext() {
     timezone,
     locale: navigator.language || null,
   };
-}
-
-function parseNeoTimestamp(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return Number.NaN;
-  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`;
-  return Date.parse(normalized);
 }
 
 function parseQueryId(params, key) {
@@ -297,7 +291,68 @@ export function Modal({ title, children, onClose, wide = false, className = "", 
  * The two lists (loose chats and chats inside a project) differ only in class names,
  * so they share this row rather than growing two copies of the rename flow.
  */
-function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteChat, onRenameChat }) {
+/**
+ * A row's own controls, behind a vertical "..." that only shows on hover or
+ * focus. Same popover rules as the transcript's menu: escape, an outside click,
+ * or choosing an action closes it.
+ */
+function RowActionsMenu({ label, className = "", children }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+  const buttonRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    function onPointerDown(event) {
+      if (menuRef.current?.contains(event.target) || buttonRef.current?.contains(event.target)) {
+        return;
+      }
+      setOpen(false);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <span className={`row-actions ${className}`.trim()}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`row-actions-trigger${open ? " is-open" : ""}`}
+        aria-expanded={open}
+        aria-haspopup="true"
+        aria-label={label}
+        title={label}
+        onClick={(event) => {
+          event.preventDefault();
+          setOpen((current) => !current);
+        }}
+      >
+        {"\u22ee"}
+      </button>
+      <span ref={menuRef} className="row-actions-menu" hidden={!open} onClick={() => setOpen(false)}>
+        {children}
+      </span>
+    </span>
+  );
+}
+
+function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteChat, onRenameChat, onPinChat }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(chat.title);
 
@@ -348,36 +403,30 @@ function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteCha
 
   return (
     <div className={`${classes.item} ${isActive ? "active" : ""}`} data-chat-id={chat.id}>
-      <button
-        className="chat-item-rename"
-        type="button"
-        title="Rename chat"
-        aria-label={`Rename chat ${chat.title}`}
-        onClick={startRename}
-      >
-        &#9998;
-      </button>
       <a
         className={classes.link}
         href={href}
         onClick={(event) => handlePermalinkClick(event, () => onOpenChat(chat.id))}
       >
+        {chat.pinned ? <span className="chat-item-pin" aria-label="Pinned" title="Pinned">{"\u25c6"}</span> : null}
         {chat.title}
       </a>
-      <button
-        className={classes.delete}
-        type="button"
-        title="Delete chat"
-        aria-label={`Delete chat ${chat.title}`}
-        onClick={() => onDeleteChat(chat)}
-      >
-        X
-      </button>
+      <RowActionsMenu label={`Actions for ${chat.title}`} className={classes.menu}>
+        <button type="button" onClick={startRename}>
+          Rename
+        </button>
+        <button type="button" onClick={() => onPinChat?.(chat, !chat.pinned)}>
+          {chat.pinned ? "Unpin chat" : "Pin chat"}
+        </button>
+        <button type="button" className="row-actions-danger" onClick={() => onDeleteChat(chat)}>
+          Delete
+        </button>
+      </RowActionsMenu>
     </div>
   );
 }
 
-function Sidebar({
+export function Sidebar({
   sidebar,
   activeChatId,
   selectedProjectId,
@@ -388,24 +437,26 @@ function Sidebar({
   onOpenChat,
   onDeleteChat,
   onRenameChat,
+  onPinChat,
   onDeleteProject,
   onOpenSettings,
   onOpenChatHome,
   onOpenMemory,
   onOpenResearch,
   onOpenNotes,
-  onOpenProjects,
   onOpenTasks,
-  onOpenFiles,
-  onOpenRepos,
   onOpenAgentRun,
   activeAgentRunId,
   activeView,
   profile,
   onSwitchProfile,
+  collapsed = false,
+  onToggleCollapsed,
 }) {
   const [projectName, setProjectName] = useState("");
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
+  const [chatsCollapsed, setChatsCollapsed] = useState(false);
+  const [agentRunsCollapsed, setAgentRunsCollapsed] = useState(false);
   const [search, setSearch] = useState("");
 
   function submitProject(event) {
@@ -433,20 +484,70 @@ function Sidebar({
     ["memory", "Memory", onOpenMemory],
     ["research", "Research", onOpenResearch],
     ["notes", "Notes", onOpenNotes],
-    ["projects", "Projects", onOpenProjects],
-    ["files", "Files", onOpenFiles],
-    ["repos", "Repositories", onOpenRepos],
   ];
+
+  // Minimised, the sidebar keeps only what you would reopen it for: the way
+  // home, a new chat, settings, and the control that brings it back.
+  if (collapsed) {
+    return (
+      <aside className="neo-sidebar neo-sidebar-rail">
+        <button className="sidebar-rail-brand" type="button" onClick={onOpenChatHome} title="Neo" aria-label="Open chat home">
+          <NeoLogo />
+        </button>
+        <button
+          className="sidebar-rail-button"
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label="Expand sidebar"
+          aria-expanded={false}
+          title="Expand sidebar"
+        >
+          {"\u00bb"}
+        </button>
+        <button
+          className="sidebar-rail-button"
+          type="button"
+          onClick={() => onNewChat(selectedProjectId)}
+          aria-label="New chat"
+          title="New chat"
+        >
+          +
+        </button>
+        <div className="sidebar-spacer" />
+        <button
+          className="sidebar-rail-button"
+          type="button"
+          onClick={onOpenSettings}
+          aria-label="Settings"
+          title="Settings"
+        >
+          {"\u2261"}
+        </button>
+      </aside>
+    );
+  }
 
   return (
     <aside className="neo-sidebar">
-      <button className="sidebar-brand" type="button" onClick={onOpenChatHome} aria-label="Open chat home">
-        <NeoLogo />
-        <span>neo</span>
-      </button>
+      <div className="sidebar-brand-row">
+        <button className="sidebar-brand" type="button" onClick={onOpenChatHome} aria-label="Open chat home">
+          <NeoLogo />
+          <span>neo</span>
+        </button>
+        <button
+          className="sidebar-collapse-button"
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label="Minimise sidebar"
+          aria-expanded
+          title="Minimise sidebar"
+        >
+          {"\u00ab"}
+        </button>
+      </div>
       <div className="sidebar-primary-action">
         <NeoButton className="w-full" onClick={() => onNewChat(selectedProjectId)}>
-          + NEW CONVERSATION
+          + New chat
         </NeoButton>
       </div>
       <label className="sidebar-search">
@@ -537,19 +638,33 @@ function Sidebar({
                 classes={{
                   item: "project-chat-item",
                   link: "project-chat-link",
-                  delete: "project-chat-delete",
+                  menu: "project-chat-menu",
                 }}
                 onOpenChat={onOpenChat}
                 onDeleteChat={onDeleteChat}
                 onRenameChat={onRenameChat}
+                onPinChat={onPinChat}
               />
             ))}
           </details>
         ))
       )}
 
-      <div className="sidebar-section">CHATS</div>
-      {filteredChats.length === 0 ? (
+      <div className="sidebar-section sidebar-section-row">
+        <button
+          className="sidebar-section-collapse"
+          type="button"
+          aria-expanded={!chatsCollapsed}
+          title={chatsCollapsed ? "Show chats" : "Hide chats"}
+          onClick={() => setChatsCollapsed((collapsed) => !collapsed)}
+        >
+          <span className="sidebar-section-caret" aria-hidden="true">
+            {chatsCollapsed ? "\u25B8" : "\u25BE"}
+          </span>
+          CHATS
+        </button>
+      </div>
+      {chatsCollapsed ? null : filteredChats.length === 0 ? (
         <p className="sidebar-caption">No chats yet.</p>
       ) : (
         filteredChats.map((chat) => (
@@ -558,10 +673,11 @@ function Sidebar({
             chat={chat}
             href={chatPermalink(chat.id)}
             isActive={chat.id === activeChatId}
-            classes={{ item: "chat-item", link: "chat-item-title", delete: "chat-item-delete" }}
+            classes={{ item: "chat-item", link: "chat-item-title", menu: "chat-item-menu" }}
             onOpenChat={onOpenChat}
             onDeleteChat={onDeleteChat}
             onRenameChat={onRenameChat}
+            onPinChat={onPinChat}
           />
         ))
       )}
@@ -569,8 +685,21 @@ function Sidebar({
       {/* Agent runs are their own kind of thread -- they have a status and no
           message to send -- so they get their own section rather than being
           mixed into CHATS where the two would be hard to tell apart. */}
-      <div className="sidebar-section">AGENT RUNS</div>
-      {filteredAgentRuns.length === 0 ? (
+      <div className="sidebar-section sidebar-section-row">
+        <button
+          className="sidebar-section-collapse"
+          type="button"
+          aria-expanded={!agentRunsCollapsed}
+          title={agentRunsCollapsed ? "Show agent runs" : "Hide agent runs"}
+          onClick={() => setAgentRunsCollapsed((collapsed) => !collapsed)}
+        >
+          <span className="sidebar-section-caret" aria-hidden="true">
+            {agentRunsCollapsed ? "\u25B8" : "\u25BE"}
+          </span>
+          AGENT RUNS
+        </button>
+      </div>
+      {agentRunsCollapsed ? null : filteredAgentRuns.length === 0 ? (
         <p className="sidebar-caption">No agent runs yet.</p>
       ) : (
         filteredAgentRuns.map((run) => (
@@ -702,7 +831,7 @@ export function ChatMessage({
                   {metadataItems.map((item) => <span key={item}>{item}</span>)}
                 </span>
               ) : null}
-              <span className="message-actions">
+              <MessageActionsMenu label={isUser ? "Message actions" : "Response actions"}>
                 <button type="button" onClick={() => onCopy(message.content)}>
                   Copy
                 </button>
@@ -732,7 +861,7 @@ export function ChatMessage({
                     </button>
                   </>
                 )}
-              </span>
+              </MessageActionsMenu>
             </div>
             {!isUser && thinkingOpen && (
               <div className="thinking-panel">
@@ -758,7 +887,7 @@ export function ChatMessage({
   );
 }
 
-function PendingAssistantMessage({ generation, elapsedMs }) {
+export function PendingAssistantMessage({ generation, elapsedMs }) {
   const hasThinking = Boolean(generation?.thinking);
   const hasContent = Boolean(generation?.content);
 
@@ -793,6 +922,65 @@ function formatFileSize(value) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * The turn's actions, behind a "..." on the bubble's footer.
+ *
+ * Same popover mechanics as the composer's "+": escape and an outside click
+ * close it, and choosing an action closes it too.
+ */
+function MessageActionsMenu({ label, children }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+  const buttonRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    function onPointerDown(event) {
+      if (menuRef.current?.contains(event.target) || buttonRef.current?.contains(event.target)) {
+        return;
+      }
+      setOpen(false);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <span className="message-actions">
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`message-actions-trigger${open ? " is-open" : ""}`}
+        aria-expanded={open}
+        aria-haspopup="true"
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {"\u22ef"}
+      </button>
+      <span ref={menuRef} className="message-actions-menu" hidden={!open} onClick={() => setOpen(false)}>
+        {children}
+      </span>
+    </span>
+  );
 }
 
 function SubmitArrowIcon() {
@@ -1604,7 +1792,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -1658,6 +1846,8 @@ function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOp
       description: "Projects, work tracking, and portability.",
       items: [
         ["Projects", "Organize related chats and work", onOpenProjects],
+        ["Files", "Uploaded and generated workspace files", onOpenFiles],
+        ["Repositories", "Registered code repositories", onOpenRepos],
         ["Bundles", "Export and import sanitized archives", onOpenBundles],
         ["GitHub", "Issue and pull request workflow", onOpenGitHub],
       ],
@@ -1804,6 +1994,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       return window.localStorage.getItem("neo-agent-session-id") || "";
     } catch {
       return "";
+    }
+  });
+  // A device preference rather than profile state, so it is deliberately not in
+  // PROFILE_SCOPED_STORAGE_KEYS and survives a profile switch.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("neo-sidebar-collapsed") === "1";
+    } catch {
+      return false;
     }
   });
   const [chatAgentBusy, setChatAgentBusy] = useState(false);
@@ -2201,6 +2400,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     }
   }
 
+  async function handlePinChat(chat, pinned) {
+    setStatusError("");
+    try {
+      const updated = await api.pinChat(chat.id, pinned);
+      setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
+      await refreshSidebar();
+    } catch (error) {
+      setStatusError(errorMessage(error));
+    }
+  }
+
   async function handleRenameChat(chat, title) {
     setStatusError("");
     try {
@@ -2539,6 +2749,18 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     }
   }
 
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem("neo-sidebar-collapsed", next ? "1" : "0");
+      } catch {
+        /* storage is unavailable in private mode; the choice just does not persist */
+      }
+      return next;
+    });
+  }, []);
+
   const showEmptyState = messages.length === 0 && !sending;
   const activeView = showSettings ? "settings"
     : showMemory ? "memory"
@@ -2550,7 +2772,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
                 : showRepos ? "repos"
                   : "chat";
   return (
-    <div className="neo-app">
+    <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
         sidebar={sidebar}
         activeChatId={activeChat?.id ?? null}
@@ -2562,6 +2784,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onOpenChat={handleOpenChat}
         onDeleteChat={handleDeleteChat}
         onRenameChat={handleRenameChat}
+        onPinChat={handlePinChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={() => {
@@ -2574,17 +2797,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onOpenNotes={() => {
           setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowNotes(true);
         }}
-        onOpenProjects={() => {
-          setInitialProjectId(null); setShowResearch(false); setShowNotes(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowProjects(true);
-        }}
         onOpenTasks={() => {
           setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
-        }}
-        onOpenFiles={() => {
-          setInitialFileId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowRepos(false); setShowFiles(true);
-        }}
-        onOpenRepos={() => {
-          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(true);
         }}
         onOpenAgentRun={(runId) => {
           setShowResearch(false); setShowNotes(false); setShowProjects(false);
@@ -2595,6 +2809,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         activeView={activeView}
         profile={profile}
         onSwitchProfile={onSwitchProfile}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={toggleSidebar}
       />
 
       {showProjects ? (
@@ -2672,7 +2888,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
         <header className="neo-view-header">
           <span>{activeChat?.title || "New conversation"}</span>
-          <span className="neo-view-context">{chatMode === "agent" ? "AGENT MODE" : "LOCAL · PRIVATE"}</span>
+          <span className="neo-view-context">{chatMode === "agent" ? "Agent Mode" : "Chat Mode"}</span>
         </header>
         <section className="neo-shell">
           {showEmptyState && (
@@ -2828,6 +3044,25 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setShowNotes(false);
             setShowProjects(false);
             setShowTasks(true);
+          }}
+          onOpenFiles={() => {
+            setShowSettings(false);
+            setInitialFileId(null);
+            setShowResearch(false);
+            setShowNotes(false);
+            setShowProjects(false);
+            setShowTasks(false);
+            setShowRepos(false);
+            setShowFiles(true);
+          }}
+          onOpenRepos={() => {
+            setShowSettings(false);
+            setShowResearch(false);
+            setShowNotes(false);
+            setShowProjects(false);
+            setShowTasks(false);
+            setShowFiles(false);
+            setShowRepos(true);
           }}
           onClose={() => setShowSettings(false)}
         />

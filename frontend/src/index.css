@@ -51,19 +51,61 @@ input::placeholder, textarea::placeholder { color: #444; }
 input:focus, textarea:focus, select:focus { border-color: var(--neo-green); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 
-.neo-app { display: flex; width: 100%; height: 100vh; overflow: hidden; background: var(--neo-bg); }
+.neo-app { --neo-sidebar-width: 256px; display: flex; width: 100%; height: 100vh; overflow: hidden; background: var(--neo-bg); }
+.neo-app.sidebar-collapsed { --neo-sidebar-width: 56px; }
 .neo-sidebar {
   position: relative;
   z-index: 30;
   display: flex;
-  flex: 0 0 256px;
+  flex: 0 0 var(--neo-sidebar-width);
   flex-direction: column;
-  width: 256px;
+  width: var(--neo-sidebar-width);
   height: 100vh;
   overflow: hidden auto;
   border-right: 1px solid var(--neo-line);
   background: var(--neo-sidebar);
 }
+/* The wordmark takes the row's slack so the minimise control keeps its place at
+   the edge; the brand's own width: 100% would otherwise push it out of view. */
+.sidebar-brand-row { display: flex; align-items: center; }
+.sidebar-brand-row .sidebar-brand { width: auto; min-width: 0; flex: 1; }
+.sidebar-collapse-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-right: 14px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0;
+  color: #4a4a4a;
+  font: 13px "JetBrains Mono", monospace;
+  transition: background .12s ease, color .12s ease;
+}
+.sidebar-collapse-button:hover { background: rgba(57, 255, 20, .08); color: var(--neo-green); }
+
+/* Minimised, the sidebar is a rail of icon-sized controls. */
+.neo-sidebar-rail { align-items: center; padding: 20px 0 16px; gap: 8px; }
+.sidebar-rail-brand { display: grid; width: 34px; height: 34px; place-items: center; border: 0; background: transparent; padding: 0; }
+.sidebar-rail-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  color: #6a6a6a;
+  font: 15px "JetBrains Mono", monospace;
+  line-height: 1;
+  transition: border-color .12s ease, background .12s ease, color .12s ease;
+}
+.sidebar-rail-button:hover { border-color: rgba(57, 255, 20, .28); background: rgba(57, 255, 20, .08); color: var(--neo-green); }
+
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -71,7 +113,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   width: 100%;
   border: 0;
   background: transparent;
-  padding: 24px 20px 20px;
+  padding: 22px 8px 20px 20px;
   color: var(--neo-text);
   font-size: 18px;
   font-weight: 700;
@@ -99,7 +141,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   letter-spacing: .05em;
   transition: border-color .12s ease, color .12s ease, background .12s ease;
 }
-.sidebar-primary-action .neo-button { width: 100%; height: 36px; clip-path: polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px)); }
+.sidebar-primary-action .neo-button { width: 100%; height: 36px; justify-content: flex-start; padding-left: 12px; clip-path: polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px)); text-align: left; }
 .neo-button:hover:not(:disabled), .neo-button:focus-visible { border-color: var(--neo-green); color: var(--neo-green); outline: none; }
 .neo-button.primary { border-color: var(--neo-green); color: var(--neo-green); }
 .neo-button.danger { border-color: #3a1515; color: var(--neo-danger); }
@@ -133,14 +175,62 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .project-folder summary:hover { background: rgba(255,255,255,.025); color: #888; }
 .project-folder-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--neo-green); }
 .project-folder-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px "JetBrains Mono", monospace; letter-spacing: .05em; text-transform: uppercase; }
-.project-folder-delete, .project-chat-delete, .chat-item-delete { border: 0; background: transparent; color: #fff; opacity: 0; font: 9px "JetBrains Mono", monospace; }
-.project-folder:hover .project-folder-delete, .project-chat-item:hover .project-chat-delete, .chat-item:hover .chat-item-delete { opacity: 1; }
-.project-folder-delete:hover, .project-chat-delete:hover, .chat-item-delete:hover { color: var(--neo-danger); }
-/* Rename sits beside delete and reveals on the same hover, so a row shows either both
-   controls or neither. */
-.chat-item-rename { flex: 0 0 13px; width: 13px; border: 0; background: transparent; padding: 0; color: #fff; opacity: 0; font: 10px "JetBrains Mono", monospace; text-align: left; }
-.project-chat-item:hover .chat-item-rename, .chat-item:hover .chat-item-rename { opacity: 1; }
-.chat-item-rename:hover { color: var(--neo-green); }
+.project-folder-delete { border: 0; background: transparent; color: #fff; opacity: 0; font: 9px "JetBrains Mono", monospace; }
+.project-folder:hover .project-folder-delete { opacity: 1; }
+.project-folder-delete:hover { color: var(--neo-danger); }
+
+/* One control per row: rename, pin and delete live behind it, and it appears on
+   hover or keyboard focus so a resting list is just titles. */
+.row-actions { position: relative; display: flex; flex: 0 0 auto; }
+.row-actions-trigger {
+  display: grid;
+  width: 18px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0;
+  color: #8a8a8a;
+  opacity: 0;
+  font: 13px "JetBrains Mono", monospace;
+  line-height: 1;
+  transition: background .12s ease, color .12s ease;
+}
+.chat-item:hover .row-actions-trigger,
+.project-chat-item:hover .row-actions-trigger,
+.row-actions-trigger:focus-visible,
+.row-actions-trigger.is-open { opacity: 1; }
+.row-actions-trigger:hover, .row-actions-trigger.is-open { background: rgba(255, 255, 255, .06); color: var(--neo-green); }
+.row-actions-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  display: flex;
+  min-width: 132px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 8px;
+  background: #1c1c1c;
+  padding: 5px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, .65);
+}
+.row-actions-menu[hidden] { display: none; }
+.row-actions-menu button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 6px 9px;
+  color: #b4b4b4;
+  font: 11px "JetBrains Mono", monospace;
+  text-align: left;
+}
+.row-actions-menu button:hover { background: rgba(57, 255, 20, .1); color: var(--neo-green); }
+.row-actions-menu .row-actions-danger:hover { background: rgba(255, 59, 48, .12); color: var(--neo-danger); }
+/* A pinned row says so even when the menu is closed. */
+.chat-item-pin { margin-right: 6px; color: var(--neo-green); font-size: 8px; vertical-align: middle; }
 .chat-rename-form { min-width: 0; flex: 1; display: flex; }
 .chat-rename-input { min-width: 0; flex: 1; border: 1px solid var(--neo-green); border-radius: 2px; background: var(--neo-bg); padding: 2px 6px; color: #ededed; font: 12px "JetBrains Mono", monospace; }
 .chat-rename-input:focus { outline: none; }
@@ -285,14 +375,46 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-content th { background: var(--neo-panel); color: var(--neo-green); font: 600 11px "JetBrains Mono", monospace; letter-spacing: .04em; }
 .chat-content tbody tr:nth-child(even) { background: rgba(255,255,255,.017); }
 .message-meta { display: flex; flex-wrap: wrap; gap: 12px; color: inherit; }
-.message-actions { display: flex; gap: 10px; }
+.message-actions { position: relative; display: flex; }
 .message-actions button { border: 0; background: transparent; padding: 0; color: inherit; font: 9px "JetBrains Mono", monospace; letter-spacing: .04em; }
-.message-actions button:hover { color: var(--neo-green); }
+.message-actions button:hover:not(:disabled) { color: var(--neo-green); }
+.message-actions-trigger { display: grid; width: 18px; height: 14px; place-items: center; font-size: 13px !important; line-height: 1; }
+.message-actions-trigger.is-open { color: var(--neo-green); }
+/* Opens downward: the footer sits at the bubble's base, and the transcript keeps
+   176px of bottom padding, so there is always room below but not always above. */
+.message-actions-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: flex;
+  min-width: 118px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  border: 1px solid rgba(233, 237, 239, .16);
+  border-radius: 10px;
+  background: #1c1c1c;
+  padding: 5px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .6);
+}
+.message-actions-menu[hidden] { display: none; }
+.message-actions-menu button {
+  border-radius: 6px;
+  padding: 6px 9px;
+  color: rgba(233, 237, 239, .82);
+  font-size: 10px !important;
+  text-align: left;
+}
+.message-actions-menu button:hover:not(:disabled) { background: rgba(57, 255, 20, .1); color: var(--neo-green); }
+.message-actions-menu button:disabled { opacity: .4; }
+/* Your bubbles sit at the right edge, so their menu opens inward. */
+.neo-chat-message.user .message-actions-menu { left: auto; right: 0; }
 .thinking-panel { max-width: 100%; margin: 8px 0 0; border-left: 1px solid rgba(57,255,20,.2); background: transparent; padding: 4px 0 4px 12px; color: #666; font-size: 13px; line-height: 1.6; }
 /* Neo's turns hang off the right edge, so the reasoning rule follows them. */
 .neo-chat-message.assistant .thinking-panel { color: rgba(233, 237, 239, .6); }
-.pending-message-header { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--neo-green); font: 10px "JetBrains Mono", monospace; }
-.pending-message-bubble::before { animation: neo-pulse 1.5s ease infinite; }
+.pending-message-header { display: flex; align-items: center; justify-content: flex-start; gap: 8px; color: #fff; font: 10px "JetBrains Mono", monospace; }
+.neo-chat-message .pending-message-bubble .live-thinking-panel { margin: 8px 0 0; border: 0; padding: 0; color: #fff; }
 .message-edit-form { display: grid; max-width: 100%; gap: 8px; }
 .message-edit-form textarea { min-height: 90px; padding: 10px; resize: vertical; }
 .chat-message-status { color: var(--neo-danger); font: 10px "JetBrains Mono", monospace; }
@@ -306,7 +428,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   position: fixed;
   right: 0;
   bottom: 0;
-  left: 256px;
+  left: var(--neo-sidebar-width, 256px);
   z-index: 20;
   background: linear-gradient(180deg, rgba(10, 10, 10, 0) 0%, rgba(10, 10, 10, .88) 26%, rgba(10, 10, 10, .99) 62%);
   padding: 26px 40px 14px;
@@ -632,6 +754,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 [class$="-toolbar"], [class$="-actions"] { gap: 8px; }
 [class$="-card"], [class$="-panel"], [class$="-item"] { border-color: var(--neo-line) !important; border-radius: 2px !important; box-shadow: none !important; }
 [class$="-card"], [class$="-panel"] { background: var(--neo-panel) !important; }
+/* That sweep is for the full-page workspaces. A transcript bubble is not one of
+   them: its reasoning panel is text on the bubble, so it opts back out. */
+.message-bubble .thinking-panel { border-color: transparent !important; border-radius: 0 !important; background: transparent !important; }
 [class$="-kicker"], [class$="-meta"], [class$="-status"], [class$="-help"] { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .feature-shell, .settings-shell, .tools-shell, .agentic-shell, .coding-shell { color: var(--neo-body); }
 
@@ -779,8 +904,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 @keyframes neo-slide-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 840px) {
-  .neo-sidebar { flex-basis: 220px; width: 220px; }
-  .chat-input-wrap { left: 220px; padding-right: 22px; padding-left: 22px; }
+  .neo-app { --neo-sidebar-width: 220px; }
+  .neo-app.sidebar-collapsed { --neo-sidebar-width: 56px; }
+  .chat-input-wrap { padding-right: 22px; padding-left: 22px; }
   .neo-shell, .neo-view-header, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
   .settings-menu, .llm-settings-layout, .agent-settings-grid, .tools-settings-grid { grid-template-columns: 1fr; }
   .projects-layout, .tasks-layout, .notes-layout, .files-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
@@ -2403,8 +2529,9 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .delete-copy strong { display: block; margin-bottom: 6px; color: var(--neo-text); font-size: 13px; }
 
 .live-thinking-panel { margin: 10px 0 0; border-left: 1px solid rgba(57,255,20,.2); padding: 4px 0 4px 12px; color: #666; font-size: 13px; line-height: 1.6; }
+.neo-chat-message .pending-message-bubble .live-thinking-panel { border-left: 0; padding: 0; color: #fff; }
 .live-answer { color: #dedede; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
-.pending-message-timer { color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
+.pending-message-timer { color: #fff; font: 9px "JetBrains Mono", monospace; }
 
 .artifact-viewer, .patch-hash-review, .patch-git-checkpoint, .patch-test-runner,
 .coding-agent-patch, .llm-usage-section, .connector-confirm {

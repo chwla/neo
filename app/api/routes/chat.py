@@ -150,6 +150,7 @@ class ChatRead(BaseModel):
     title: str
     project_id: int | None
     archived: bool
+    pinned: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -253,15 +254,18 @@ class ChatSendRequest(BaseModel):
         return value.strip() if value is not None else None
 
 
-class ChatRenameRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=120)
+class ChatUpdateRequest(BaseModel):
+    """A rename, a pin, or both. Each field is optional so one can move alone."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    pinned: bool | None = None
 
     @field_validator("title")
     @classmethod
-    def require_nonblank_title(cls, value: str) -> str:
+    def require_nonblank_title(cls, value: str | None) -> str | None:
         # A title of only whitespace collapses to nothing in the sidebar, so it is
         # rejected the same way a blank prompt is.
-        if not value.strip():
+        if value is not None and not value.strip():
             raise ValueError("title_must_not_be_blank")
         return value
 
@@ -1519,9 +1523,12 @@ def rerun_edited_chat_message(
 
 
 @router.patch("/chats/{chat_id}", response_model=ChatRead)
-def rename_chat(chat_id: int, request: ChatRenameRequest, store: StoreDependency) -> ChatRead:
-    _get_required_chat(store, chat_id)
-    chat = store.rename_chat(chat_id, request.title)
+def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency) -> ChatRead:
+    chat = _get_required_chat(store, chat_id)
+    if request.title is not None:
+        chat = store.rename_chat(chat_id, request.title)
+    if request.pinned is not None:
+        chat = store.set_chat_pinned(chat_id, request.pinned)
     store.db.commit()
     return ChatRead.model_validate(chat)
 
