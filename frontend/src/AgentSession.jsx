@@ -149,6 +149,10 @@ function DeliveryPanel({ sessionId, delivery, onMessage }) {
   const [patch, setPatch] = useState("");
   if (!delivery || (!delivery.deliverable?.length && !delivery.blocked?.length)) return null;
 
+  // The server decides which of the two shapes this is; the browser never
+  // infers it from a path, because only the server knows the repository origin.
+  const uploaded = delivery.mode === "download";
+
   async function run(mode) {
     setBusy(true);
     try {
@@ -162,9 +166,38 @@ function DeliveryPanel({ sessionId, delivery, onMessage }) {
     }
   }
 
+  async function download(scope) {
+    setBusy(true);
+    try {
+      const { blob, filename } = await api.downloadAgentChanges(sessionId, scope);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoking immediately can cancel the download in some browsers.
+      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+      onMessage(`Downloaded ${filename}.`);
+    } catch (error) {
+      onMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="agent-delivery">
-      <div className="agent-delivery-head">Deliver to your repository</div>
+      <div className="agent-delivery-head">
+        {uploaded ? "Take these changes" : "Deliver to your repository"}
+      </div>
+      {uploaded ? (
+        <p className="agent-delivery-note">
+          This repository was uploaded, so Neo has no folder on your machine to write
+          into. Download the files and put them where you want them.
+        </p>
+      ) : null}
       {delivery.deliverable?.length ? (
         <ul className="agent-delivery-files">
           {delivery.deliverable.map((item) => (
@@ -185,16 +218,28 @@ function DeliveryPanel({ sessionId, delivery, onMessage }) {
           ))}
         </ul>
       ) : null}
-      {delivery.deliverable?.length ? (
-        <div className="agent-delivery-actions">
-          <button type="button" className="neo-button secondary" disabled={busy} onClick={() => run("patch")}>
-            Show patch
+      <div className="agent-delivery-actions">
+        <button type="button" className="neo-button secondary" disabled={busy} onClick={() => run("patch")}>
+          View diff
+        </button>
+        {uploaded ? (
+          <>
+            <button type="button" className="neo-button" disabled={busy || !delivery.deliverable?.length} onClick={() => download("changes")}>
+              Download changed files
+            </button>
+            <button type="button" className="neo-button secondary" disabled={busy} onClick={() => download("workspace")}>
+              Download workspace
+            </button>
+          </>
+        ) : (
+          <button type="button" className="neo-button" disabled={busy || !delivery.deliverable?.length} onClick={() => run("working_tree")}>
+            Apply changes
           </button>
-          <button type="button" className="neo-button" disabled={busy} onClick={() => run("working_tree")}>
-            Write files
-          </button>
-        </div>
-      ) : null}
+        )}
+        <button type="button" className="neo-button secondary" disabled={busy} onClick={() => { setPatch(""); onMessage("Changes left in Neo's managed copy."); }}>
+          Discard
+        </button>
+      </div>
       {patch ? <pre className="agent-delivery-patch">{patch}</pre> : null}
     </section>
   );

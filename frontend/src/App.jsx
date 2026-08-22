@@ -2393,22 +2393,41 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
   async function handleFolderSelected(event) {
     const files = Array.from(event.target.files || []);
-    // Chrome reports the picker being dismissed as an empty selection.
-    if (!files.length) return;
+    let name = null;
+    if (!files.length) {
+      // An empty folder carries no webkitRelativePath, so the browser gives us
+      // no name to use -- ask for one rather than inventing it. Cancelling the
+      // picker does not fire this event, so an empty selection really is a
+      // folder with nothing in it.
+      name = window.prompt(
+        "That folder is empty. Name the workspace and the agent can create files in it:",
+        "new-workspace",
+      );
+      if (name === null) return;
+      name = name.trim();
+      if (!name) {
+        setChatAgentMessage("A workspace needs a name.");
+        return;
+      }
+    }
     setFolderUploading(true);
     setChatAgentMessage("");
     try {
       const result = await api.uploadRepoFolder(files, {
         projectId: selectedAgentProjectId || null,
+        name,
       });
       const repo = result?.repo;
       await loadAgentContext();
       if (repo?.id) setSelectedAgentRepoId(repo.id);
       const skipped = result?.skipped_files || 0;
+      const indexed = result?.stats?.indexed_file_count ?? 0;
       setChatAgentMessage(
-        `Uploaded ${repo?.name || "folder"} — ${result?.stats?.indexed_file_count ?? 0} files ready` +
-          (skipped ? `, ${skipped} skipped` : "") +
-          ". Selected as the agent's repository.",
+        indexed === 0
+          ? `Empty workspace "${repo?.name || "folder"}" ready. Ask the agent to create the first file.`
+          : `Uploaded ${repo?.name || "folder"} — ${indexed} files ready` +
+            (skipped ? `, ${skipped} skipped` : "") +
+            ". Selected as the agent's repository.",
       );
     } catch (error) {
       setChatAgentMessage(`Could not upload that folder: ${errorMessage(error)}`);

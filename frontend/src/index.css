@@ -326,6 +326,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 /* A blocked run is a required next step, not background advice, so it reads at
    full strength rather than in the hint's muted grey. */
 .agent-mode-blocked { color: var(--neo-green); }
+.agent-delivery-note { margin: 0 0 10px; color: #8a8a8a; font-size: 12px; line-height: 1.5; }
 
 /* Agent run rows reuse the chat row's shape so the sidebar stays one rhythm,
    and add the status a chat thread does not have. */

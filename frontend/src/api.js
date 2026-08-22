@@ -872,6 +872,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  downloadAgentChanges: async (sessionId, scope = "changes") => {
+    // A zip is not JSON, so this bypasses `request` and reads the blob itself.
+    const response = await fetch(
+      `${API_BASE}/agent-sessions/${sessionId}/download?scope=${scope}`,
+    );
+    if (!response.ok) {
+      let detail = `Download failed (${response.status})`;
+      try {
+        detail = (await response.json()).detail || detail;
+      } catch {
+        // A non-JSON error body is not more informative than the status.
+      }
+      throw new Error(detail);
+    }
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    return { blob: await response.blob(), filename: match?.[1] || `${scope}.zip` };
+  },
   exportAgentSession: (sessionId, target) =>
     request(`/agent-sessions/${sessionId}/export?target=${target}`, { method: "POST" }),
 

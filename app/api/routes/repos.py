@@ -42,8 +42,8 @@ def register_repo(request: RepoRegisterRequest) -> dict:
 
 @router.post("/upload", status_code=201)
 async def upload_repo(
-    files: Annotated[list[UploadFile], File()],
-    paths: Annotated[list[str], Form()],
+    files: Annotated[list[UploadFile] | None, File()] = None,
+    paths: Annotated[list[str] | None, Form()] = None,
     project_id: Annotated[str | None, Form()] = None,
     name: Annotated[str | None, Form()] = None,
 ) -> dict:
@@ -52,15 +52,24 @@ async def upload_repo(
     ``paths`` carries each file's path within the chosen folder, positionally
     matched to ``files``; the browser's own file names are not used, because a
     folder upload has to preserve its directory structure.
+
+    Both are optional: an empty folder sends no files at all, and that is a
+    supported way to start a workspace the agent will write the first file into.
     """
 
+    files = files or []
+    paths = paths or []
     if len(files) != len(paths):
         raise HTTPException(
             status_code=400, detail="Each uploaded file needs exactly one matching path."
         )
     entries = [(path, await item.read()) for path, item in zip(paths, files, strict=True)]
     try:
-        staged = stage_upload(entries, fallback_name=(name or "").strip() or "uploaded-folder")
+        staged = stage_upload(
+            entries,
+            fallback_name=(name or "").strip() or "uploaded-folder",
+            allow_empty=True,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:

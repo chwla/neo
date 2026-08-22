@@ -26,6 +26,14 @@ def deliver_changes(arguments: dict, context: ToolContext) -> str:
         patch = delivery.build_patch(plan, only)
         return f"{delivery.summarize(plan)}\n\nUnified diff:\n{patch}"
     if mode == "working_tree":
+        if not plan.writable:
+            # Say what to do instead, so the agent adapts rather than retrying
+            # the same refused call until it burns its error budget.
+            raise ValueError(
+                "This repository was uploaded, so there is no folder on this machine "
+                "to write into. Use mode='patch'; the user downloads the files from "
+                "the run instead."
+            )
         result = delivery.write_to_working_tree(plan, only)
         lines = [f"Wrote {len(result['written'])} file(s) into the repository working tree."]
         lines += [f"  {path}" for path in result["written"]]
@@ -42,8 +50,10 @@ TOOLS = [
         description=(
             "Deliver changes from Neo's managed copy into the user's real repository. "
             "mode='patch' returns a unified diff for the user to apply; "
-            "mode='working_tree' writes the files directly. Files the user edited since "
-            "import are always refused. Nothing is staged, committed, or pushed."
+            "mode='working_tree' writes the files directly, and is only available for a "
+            "repository registered from a local path -- an uploaded folder has none, so "
+            "the user downloads it instead. Files the user edited since import are "
+            "always refused. Nothing is staged, committed, or pushed."
         ),
         parameters={
             "type": "object",

@@ -56,6 +56,14 @@ class DeliverRequest(BaseModel):
     files: list[str] | None = None
 
 
+def _safe_filename(raw: str) -> str:
+    """A download name that cannot smuggle a path or a quote into the header."""
+
+    cleaned = "".join(char if char.isalnum() or char in "-_" else "-" for char in raw.strip())
+    cleaned = "-".join(part for part in cleaned.split("-") if part)
+    return (cleaned[:60] or "agent-run").lower()
+
+
 def _title(objective: str) -> str:
     first = objective.strip().splitlines()[0].strip()
     return (first[:117] + "...") if len(first) > 120 else first or "Agent session"
@@ -150,6 +158,9 @@ class AgentCoreService:
         except Exception:
             return None
         return {
+            # The UI offers write-back or download on this alone, so it is the
+            # server that decides, not a guess made from the path in the browser.
+            "mode": plan.mode,
             "deliverable": [
                 {"path": change.relative_path, "status": change.status}
                 for change in plan.deliverable
@@ -257,9 +268,36 @@ class AgentCoreService:
                 "mode": "patch",
                 "patch": delivery.build_patch(plan, payload.files),
                 "summary": delivery.summarize(plan),
+                "delivery_mode": plan.mode,
             }
+        # `write_to_working_tree` refuses this too; raising here turns it into a
+        # 400 with an actionable message rather than a generic workspace error.
+        if not plan.writable:
+            raise AgentCoreValidationError(
+                "This repository was uploaded, so there is no folder on this machine "
+                "to write into. Download the changed files instead."
+            )
         result = delivery.write_to_working_tree(plan, payload.files)
-        return {"mode": "working_tree", "summary": delivery.summarize(plan), **result}
+        return {
+            "mode": "working_tree",
+            "summary": delivery.summarize(plan),
+            "delivery_mode": plan.mode,
+            **result,
+        }
+
+    def download(self, session_id: str, scope: str = "changes") -> tuple[bytes, str]:
+        """Zip the work for a repository Neo cannot write back to."""
+
+        session = self.get(session_id)
+        if not session.repo_id:
+            raise AgentCoreValidationError("This session has no repository.")
+        plan = delivery.plan_delivery(session.repo_id)
+        whole = scope == "workspace"
+        if not whole and not plan.deliverable:
+            raise AgentCoreValidationError("No files changed in the managed copy.")
+        archive = delivery.build_archive(plan, whole_workspace=whole)
+        suffix = "workspace" if whole else "changes"
+        return archive, f"{_safe_filename(session.title)}-{suffix}.zip"
 
     def export(self, session_id: str, target: str) -> dict:
         """Promote a finished run into Tasks or a Note, only when asked."""

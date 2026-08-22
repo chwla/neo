@@ -85,8 +85,15 @@ def _common_root(paths: list[tuple[str, ...]]) -> str | None:
     return first
 
 
-def stage_upload(entries: list[tuple[str, bytes]], *, fallback_name: str) -> StagedUpload:
-    """Write uploaded (path, content) pairs into a fresh staging directory."""
+def stage_upload(
+    entries: list[tuple[str, bytes]], *, fallback_name: str, allow_empty: bool = False
+) -> StagedUpload:
+    """Write uploaded (path, content) pairs into a fresh staging directory.
+
+    ``allow_empty`` keeps an upload that contributes no readable file -- an empty
+    folder, or one holding only ignored build output -- as a valid empty
+    workspace rather than an error. The agent can then create the first file.
+    """
 
     settings = get_settings()
     max_files = settings.workspace_repo_max_files
@@ -102,7 +109,7 @@ def stage_upload(entries: list[tuple[str, bytes]], *, fallback_name: str) -> Sta
             continue
         normalized.append((segments, content))
 
-    if not normalized:
+    if not normalized and not allow_empty:
         raise ValueError("The uploaded folder contained no files Neo can read.")
     if len(normalized) > max_files:
         raise ValueError(
@@ -141,7 +148,7 @@ def stage_upload(entries: list[tuple[str, bytes]], *, fallback_name: str) -> Sta
         shutil.rmtree(root, ignore_errors=True)
         raise
 
-    if not written:
+    if not written and not allow_empty:
         shutil.rmtree(root, ignore_errors=True)
         raise ValueError("The uploaded folder contained no files Neo can read.")
 

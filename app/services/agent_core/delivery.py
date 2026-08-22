@@ -21,11 +21,37 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import io
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.services.agent_core.workspace import WorkspaceError, repo_root
 from app.services.repos import store as repos_store
+from app.services.repos.scanner import IGNORED_DIRS, IGNORED_NAMES
+
+#: Marker written as ``original_path`` by an uploaded repository. There is no
+#: such directory on disk -- the folder lives on the user's machine, not the
+#: server -- so write-back is not merely unwise for these, it is meaningless.
+UPLOAD_SCHEME = "upload://"
+
+#: How the finished work can leave the managed copy.
+WRITE_BACK = "write_back"
+DOWNLOAD = "download"
+
+#: An untracked file this size is build output or a binary the agent should not
+#: have produced; reading it into a diff would help no one.
+MAX_UNTRACKED_BYTES = 1024 * 1024
+
+
+def is_uploaded(repo: dict) -> bool:
+    return str(repo.get("original_path") or "").startswith(UPLOAD_SCHEME)
+
+
+def delivery_mode(repo: dict) -> str:
+    """Uploaded folders can only be handed back; registered paths can be written."""
+
+    return DOWNLOAD if is_uploaded(repo) else WRITE_BACK
 
 
 @dataclass
@@ -47,7 +73,14 @@ class FileChange:
 class DeliveryPlan:
     repo_id: str
     original_root: str
+    #: ``WRITE_BACK`` or ``DOWNLOAD``. Carried on the plan so every consumer --
+    #: tool, HTTP route and UI -- branches on one decision made in one place.
+    mode: str = WRITE_BACK
     changes: list[FileChange] = field(default_factory=list)
+
+    @property
+    def writable(self) -> bool:
+        return self.mode == WRITE_BACK
 
     @property
     def deliverable(self) -> list[FileChange]:
@@ -70,6 +103,43 @@ def _read(path: Path) -> tuple[str, bytes] | None:
     return raw.decode("utf-8", errors="replace"), raw
 
 
+def _untracked_changes(root: Path, known: set[str]) -> list[FileChange]:
+    """Files the agent created, which have no import record to compare against.
+
+    ``write_file`` writes into the managed copy without registering a row, so a
+    plan built only from import records misses every new file -- which for an
+    uploaded or empty workspace is all of the work.
+    """
+
+    changes: list[FileChange] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in known or path.name in IGNORED_NAMES:
+            continue
+        if any(part in IGNORED_DIRS for part in path.parts):
+            continue
+        try:
+            if path.stat().st_size > MAX_UNTRACKED_BYTES:
+                continue
+        except OSError:
+            continue
+        managed = _read(path)
+        if managed is None:
+            continue
+        changes.append(
+            FileChange(
+                relative_path=relative,
+                original_relative_path=relative,
+                status="created",
+                managed_text=managed[0],
+                original_text="",
+            )
+        )
+    return changes
+
+
 def plan_delivery(repo_id: str) -> DeliveryPlan:
     """Work out which files changed in the copy and which are safe to deliver."""
 
@@ -77,10 +147,39 @@ def plan_delivery(repo_id: str) -> DeliveryPlan:
     if repo is None or repo.get("deleted"):
         raise WorkspaceError("Repository not found.")
     root = repo_root(repo_id)
-    original_root = Path(repo["original_path"]).resolve()
+    mode = delivery_mode(repo)
     records, _total = repos_store.list_repo_files(repo_id, limit=100_000)
 
-    plan = DeliveryPlan(repo_id=repo_id, original_root=str(original_root))
+    if mode == DOWNLOAD:
+        # There is no original directory to compare against or write to, so the
+        # import hash is the only baseline and every change is handed back.
+        plan = DeliveryPlan(repo_id=repo_id, original_root="", mode=mode)
+        known: set[str] = set()
+        for record in records:
+            relative = record["relative_path"]
+            known.add(relative)
+            managed = _read(root / relative)
+            if managed is None:
+                continue
+            managed_text, managed_bytes = managed
+            if _sha256(managed_bytes) == (record.get("sha256") or ""):
+                continue
+            plan.changes.append(
+                FileChange(
+                    relative_path=relative,
+                    original_relative_path=relative,
+                    status="modified",
+                    managed_text=managed_text,
+                    original_text="",
+                )
+            )
+        plan.changes.extend(_untracked_changes(root, known))
+        plan.changes.sort(key=lambda change: change.relative_path)
+        return plan
+
+    original_root = Path(repo["original_path"]).resolve()
+
+    plan = DeliveryPlan(repo_id=repo_id, original_root=str(original_root), mode=mode)
     for record in records:
         relative = record["relative_path"]
         managed_path = root / relative
@@ -135,6 +234,9 @@ def plan_delivery(repo_id: str) -> DeliveryPlan:
                 original_text=original_text,
             )
         )
+    plan.changes.extend(
+        _untracked_changes(root, {record["relative_path"] for record in records})
+    )
     plan.changes.sort(key=lambda change: change.relative_path)
     return plan
 
@@ -184,6 +286,15 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
     between.
     """
 
+    if not plan.writable:
+        # The last line of defence: a direct API call, a stale plan or a future
+        # caller must not be able to turn an uploaded folder into a filesystem
+        # write. `upload://...` is not a path, and treating it as one would
+        # create junk directories wherever the server happens to be running.
+        raise WorkspaceError(
+            "This repository was uploaded, so it has no folder on this machine to "
+            "write into. Download the changed files instead."
+        )
     selected = _select(plan, only)
     original_root = Path(plan.original_root)
     written: list[str] = []
@@ -234,6 +345,33 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
             {"path": change.relative_path, "reason": change.reason} for change in plan.blocked
         ],
     }
+
+
+def build_archive(
+    plan: DeliveryPlan, only: list[str] | None = None, *, whole_workspace: bool = False
+) -> bytes:
+    """A zip of the work, for a repository Neo cannot write back to.
+
+    ``whole_workspace`` returns everything the agent can see rather than only
+    what changed -- what you want when the upload started empty and "changed
+    files" and "the project" are the same thing anyway.
+    """
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        if whole_workspace:
+            root = repo_root(plan.repo_id)
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                relative = path.relative_to(root).as_posix()
+                if any(part in IGNORED_DIRS for part in path.parts):
+                    continue
+                archive.write(path, arcname=relative)
+        else:
+            for change in _select(plan, only):
+                archive.writestr(change.relative_path, change.managed_text)
+    return buffer.getvalue()
 
 
 def summarize(plan: DeliveryPlan) -> str:

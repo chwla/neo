@@ -51,6 +51,9 @@ class RepoWorkspaceService:
             staged_root,
             name=name,
             project_id=project_id,
+            # An empty folder is a legitimate starting point: the user is asking
+            # the agent to create the first file, not importing existing code.
+            allow_empty=True,
             # Uploads have no stable host path, and re-uploading the same folder
             # is a legitimate refresh rather than the duplicate that the
             # path-based flow rejects, so keep each one distinct.
@@ -65,6 +68,7 @@ class RepoWorkspaceService:
         name: str,
         project_id: str | None,
         original_path: str,
+        allow_empty: bool = False,
         empty_message: str = (
             "No supported text files were found in the selected repository."
         ),
@@ -75,7 +79,7 @@ class RepoWorkspaceService:
             max_total_bytes=self.settings.workspace_repo_max_total_bytes,
             max_file_bytes=self.settings.workspace_repo_max_file_bytes,
         )
-        if not scan.files:
+        if not scan.files and not allow_empty:
             raise ValueError(empty_message)
 
         repo_id = str(uuid.uuid4())
