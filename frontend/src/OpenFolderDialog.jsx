@@ -4,44 +4,18 @@ import { api } from "./api.js";
 import { Modal } from "./App.jsx";
 
 /**
- * Choosing the folder Agent Mode will edit, by browsing rather than by typing.
+ * Choosing the folder Agent Mode will edit, by browsing the real filesystem.
  *
- * The typed path this replaces asked a question the user could not answer:
- * inside a container the only real paths are the mounted ones, and nothing in
- * the browser reveals them, so a typo and an unmounted folder looked identical.
- * The server knows the configured roots and owns containment, so it lists what
- * is reachable one level at a time and this walks that listing.
+ * Two things this deliberately does not do. It does not compute the breadcrumb:
+ * the server knows that ``/workspace/Desktop`` is really ``~/Desktop`` and this
+ * side does not, so the trail arrives ready to render. And it never sends a
+ * displayed path back -- every request carries ``entry.path``, the container
+ * path, so what the user reads and what validation receives cannot diverge.
  *
- * Opening always attaches live -- the agent edits the folder in place. The
- * server decides whether the current folder may be opened at all; a configured
- * root is browse-only, and that arrives here as `can_attach` with a reason
- * rather than being re-derived on this side.
+ * Descending and selecting are separate controls rather than the same click on
+ * different rows: the name navigates, the Select button opens that folder as the
+ * workspace.
  */
-
-/**
- * The clickable path trail, cut off at the configured root.
- *
- * Never yields a segment above the root: those are directories the browser is
- * not permitted to list, so offering them would build a control that can only
- * produce an error.
- */
-export function breadcrumbSegments(cwd, roots = []) {
-  if (!cwd) return [];
-  const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
-  const containing = (roots || [])
-    .filter((root) => cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep))
-    .sort((a, b) => b.length - a.length)[0];
-  if (!containing) return [{ label: cwd, path: cwd }];
-
-  const trail = [{ label: containing, path: containing }];
-  let walked = containing.endsWith(sep) ? containing.slice(0, -1) : containing;
-  for (const name of cwd.slice(containing.length).split(sep).filter(Boolean)) {
-    walked = `${walked}${sep}${name}`;
-    trail.push({ label: name, path: walked });
-  }
-  return trail;
-}
-
 export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
   const [view, setView] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -74,14 +48,12 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
     return entries.filter((entry) => entry.name.toLowerCase().includes(needle));
   }, [entries, filter]);
 
-  const trail = useMemo(() => breadcrumbSegments(view?.path, view?.roots), [view]);
-
-  async function attach() {
-    if (!view?.path) return;
+  /** Open `path` as the workspace. Always a container path, never a display one. */
+  async function select(path) {
     setBusy(true);
     setError("");
     try {
-      const result = await api.attachFolder({ path: view.path, projectId });
+      const result = await api.attachFolder({ path, projectId });
       onAttached(result.repo, result.stats);
       onClose();
     } catch (attachError) {
@@ -89,6 +61,8 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
       setBusy(false);
     }
   }
+
+  const trail = view?.trail || [];
 
   return (
     <Modal title="Open a folder" onClose={onClose} className="open-folder">
@@ -139,12 +113,12 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
                   </li>
                 ) : null}
                 {visible.map((entry) => (
-                  <li key={entry.path}>
+                  <li key={entry.path} className="open-folder-row">
                     <button
                       type="button"
                       className="open-folder-item"
                       disabled={busy}
-                      title={entry.path}
+                      title={entry.display_path || entry.path}
                       onClick={() => load(entry.path)}
                     >
                       <span className="open-folder-item-name">{entry.name}</span>
@@ -155,6 +129,15 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
                         ) : null}
                       </span>
                     </button>
+                    <button
+                      type="button"
+                      className="open-folder-select"
+                      disabled={busy}
+                      title={`Open ${entry.display_path || entry.path} as the workspace`}
+                      onClick={() => select(entry.path)}
+                    >
+                      Select
+                    </button>
                   </li>
                 ))}
                 {entries.length && !visible.length ? (
@@ -162,7 +145,7 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
                 ) : null}
               </ul>
             ) : (
-              <NothingHere path={view?.path} containerized={view?.containerized} />
+              <NothingHere displayPath={view?.display_path} containerized={view?.containerized} />
             )}
           </>
         )}
@@ -170,13 +153,18 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
         {error ? <div className="open-folder-error">{error}</div> : null}
 
         <div className="open-folder-actions">
+          {view?.display_path ? (
+            <p className="open-folder-selected">
+              Current folder: <code>{view.display_path}</code>
+            </p>
+          ) : null}
           {view?.attach_blocked_reason && !error ? (
             <p className="open-folder-note">{view.attach_blocked_reason}</p>
           ) : null}
           <button
             className="ws-primary"
             type="button"
-            onClick={attach}
+            onClick={() => select(view.path)}
             disabled={busy || loading || !view?.can_attach}
           >
             {busy ? "Opening…" : "Open this folder"}
@@ -188,20 +176,20 @@ export default function OpenFolderDialog({ projectId, onClose, onAttached }) {
 }
 
 /**
- * A directory with nothing in it. Inside a container that is usually a mount
- * that was never pointed anywhere, which is a settings problem rather than a
+ * A directory with nothing in it. Inside a container that is usually a mount that
+ * was never pointed anywhere, which is a settings problem rather than a
  * navigation one -- so this names the setting instead of leaving a blank panel.
  */
-function NothingHere({ path, containerized }) {
+function NothingHere({ displayPath, containerized }) {
   if (!containerized) {
     return <p className="open-folder-empty">This folder has no subfolders.</p>;
   }
   return (
     <div className="open-folder-empty-state">
       <p>
-        {path ? (
+        {displayPath ? (
           <>
-            <code>{path}</code> is mounted, but there is nothing inside it.
+            <code>{displayPath}</code> is mounted, but there is nothing inside it.
           </>
         ) : (
           <>No folder is mounted into the container yet.</>

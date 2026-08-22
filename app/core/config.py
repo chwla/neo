@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     #: container only the bind mount is reachable, so it is set to that mount and
     #: becomes a genuine restriction.
     workspace_live_roots: str = Field(default="")
+    #: The host directory that ``workspace_live_roots`` is a mount *of*, when Neo
+    #: is containerised. Display only: the API keeps speaking container paths, and
+    #: this is what lets the folder picker show ``~/Desktop`` for what the server
+    #: knows as ``/workspace/Desktop``. Empty when Neo runs on the host, where the
+    #: two are already the same path.
+    workspace_host_root: str = Field(default="")
     frontend_dir: str = Field(default="app/static")
     workspace_repo_max_files: int = Field(default=500, ge=1)
     workspace_repo_max_total_bytes: int = Field(default=25 * 1024 * 1024, ge=1)

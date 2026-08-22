@@ -67,7 +67,13 @@ def _folders_under(root: str) -> list[dict]:
         return []
     found: list[dict] = []
     try:
-        children = sorted(base.iterdir(), key=lambda entry: entry.name.lower())
+        # Ordering, not filtering: nothing is hidden or refused. Plain names come
+        # first because a home directory is mostly dotted -- sorting purely
+        # alphabetically buries Desktop and Documents under twenty tool caches,
+        # which is what the picker exists to show.
+        children = sorted(
+            base.iterdir(), key=lambda entry: (entry.name.startswith("."), entry.name.lower())
+        )
     except OSError:
         return []
     for child in children:
@@ -99,6 +105,90 @@ def _live_repos_by_path() -> dict[str, str]:
         for repo in repos
         if repo.get("access") == store.LIVE
     }
+
+
+def _host_mount() -> tuple[str, str] | None:
+    """The configured root paired with the host directory it is a mount of.
+
+    Compose bind-mounts exactly one host directory at one container path, so the
+    pairing is the first configured root with ``workspace_host_root``. Any further
+    roots have no host equivalent and are shown as themselves.
+    """
+
+    from app.core.config import get_settings
+
+    host_root = (get_settings().workspace_host_root or "").rstrip("/")
+    roots = _configured_roots()
+    if not host_root or not roots:
+        return None
+    return roots[0].rstrip("/"), host_root
+
+
+def _display_path(container_path: str) -> str:
+    """What to show the user for a path the server knows by its container name.
+
+    ``/workspace/Desktop`` is really ``/Users/you/Desktop``; showing the former
+    makes a real home directory look like a sandbox. This is presentation only --
+    the container path stays the one every request carries, so nothing here can
+    widen what validation accepts.
+    """
+
+    mount = _host_mount()
+    if mount is None:
+        return container_path
+    container_root, host_root = mount
+    if container_path == container_root:
+        return host_root
+    if container_path.startswith(container_root + "/"):
+        return host_root + container_path[len(container_root) :]
+    return container_path
+
+
+def _root_label(container_root: str) -> str:
+    """What to call the top of the trail.
+
+    ``Home`` when the mounted host directory is somebody's home -- detected by its
+    parent being one of the account containers (``/Users``, ``/home``,
+    ``C:\\Users``) rather than by comparing to this process's ``Path.home()``,
+    which inside a container is the container's own home and never the user's.
+    """
+
+    from pathlib import Path
+
+    from app.core.paths import account_containers
+
+    mount = _host_mount()
+    host_root = mount[1] if mount else container_root
+    parent = Path(host_root).parent
+    if any(same_path(parent, container) for container in account_containers()):
+        return "Home"
+    return Path(host_root).name or host_root
+
+
+def _trail(target: Path, roots: list[str]) -> list[dict]:
+    """The breadcrumb: root first, then one entry per level down to ``target``.
+
+    Built server-side because only this side knows the host mapping and the
+    ``Home`` label. ``path`` stays the *container* path -- it is what the client
+    sends back to navigate -- while ``label`` is what the user reads.
+    """
+
+    from pathlib import Path as _Path
+
+    containing = next(
+        (root for root in roots if is_within(_Path(root).expanduser().resolve(), target)),
+        None,
+    )
+    if containing is None:
+        return [{"label": _display_path(str(target)), "path": str(target)}]
+
+    root_path = _Path(containing).expanduser().resolve()
+    trail = [{"label": _root_label(str(root_path)), "path": str(root_path)}]
+    walked = root_path
+    for name in target.parts[len(root_path.parts) :]:
+        walked = walked / name
+        trail.append({"label": name, "path": str(walked)})
+    return trail
 
 
 @router.get("/roots")
@@ -167,6 +257,8 @@ def browse_folders(path: str | None = None) -> dict:
         ]
         return {
             "path": None,
+            "display_path": None,
+            "trail": [],
             "parent": None,
             "roots": roots,
             "entries": entries,
@@ -178,7 +270,11 @@ def browse_folders(path: str | None = None) -> dict:
         }
 
     entries = [
-        {**folder, "attached_repo_id": attached.get(folder["path"])}
+        {
+            **folder,
+            "attached_repo_id": attached.get(folder["path"]),
+            "display_path": _display_path(folder["path"]),
+        }
         for folder in _folders_under(str(target))
     ]
 
@@ -197,6 +293,8 @@ def browse_folders(path: str | None = None) -> dict:
 
     return {
         "path": str(target),
+        "display_path": _display_path(str(target)),
+        "trail": _trail(target, roots),
         "parent": parent,
         "roots": roots,
         "entries": entries,

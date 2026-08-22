@@ -23,35 +23,6 @@ __all__ = [
     "validate_repo_root",
 ]
 
-#: Broad user directories that are a mistake to open rather than a danger: they
-#: hold everything, so indexing one is never what was meant. Projects do live
-#: *inside* them -- ``~/Desktop/my-app`` is the most common location there is --
-#: so only the directory itself is refused, never its contents.
-_BROAD_HOME_DIRS = (
-    "Desktop",
-    "Documents",
-    "Downloads",
-    "OneDrive",
-    "Pictures",
-    "Music",
-    "Movies",
-    "Videos",
-    "Public",
-    "Library",
-    "AppData",
-    "Applications",
-)
-
-
-def _refused_home_dirs() -> set[str]:
-    home = Path.home()
-    return {
-        path_key((home / name).resolve())
-        for name in _BROAD_HOME_DIRS
-        if (home / name).exists()
-    }
-
-
 def validate_repo_root(raw_path: str) -> Path:
     """The rules for any folder Neo will index, on every platform.
 
@@ -82,8 +53,6 @@ def validate_repo_root(raw_path: str) -> Path:
         )
     if any(is_within(root, resolved) for root in system_roots()):
         raise ValueError("System directories cannot be registered as repositories.")
-    if path_key(resolved) in _refused_home_dirs():
-        raise ValueError("Choose a project folder, not a broad user directory.")
     return resolved
 
 
@@ -127,37 +96,6 @@ def _live_roots() -> list[Path]:
     return roots
 
 
-def _under_root(root: Path, resolved: Path) -> tuple[str, ...]:
-    """``resolved``'s components below ``root``.
-
-    Sliced by component count rather than ``Path.relative_to``: containment was
-    established with ``path_key``, so on a case-insensitive filesystem the two
-    may legitimately differ in case and ``relative_to`` would raise on exactly
-    the platforms that permits.
-    """
-
-    return resolved.parts[len(root.parts) :]
-
-
-def _refuse_broad(root: Path, resolved: Path) -> None:
-    """A broad user directory is a destination, never a project.
-
-    Refused for opening only -- browsing through one has to keep working, because
-    the project the user wants is usually inside it. Refusing to list ``Desktop``
-    would hide ``Desktop/my-app`` along with it, which is the whole reason the
-    home directory is mounted.
-    """
-
-    relative = _under_root(root, resolved)
-    # Only the directory itself, never what is inside it. ``~/Desktop`` is refused
-    # and ``~/Desktop/my-app`` is not -- collapsing those two would refuse the
-    # most common project location there is.
-    if len(relative) != 1:
-        return
-    if any(same_path(root / relative[0], root / name) for name in _BROAD_HOME_DIRS):
-        raise ValueError("Choose a project folder, not a broad user directory.")
-
-
 def validate_live_root(raw_path: str) -> Path:
     """Validate a folder the agent will edit *in place*.
 
@@ -166,17 +104,15 @@ def validate_live_root(raw_path: str) -> Path:
     strictly more dangerous than copying out of one.
 
     What it adds on top: the configured root list; the rule that a root is itself
-    browse-only; the broad user directories re-checked relative to that root,
-    because ``_refused_home_dirs`` is computed against *this* process's home and
-    cannot see a host home mounted at ``/workspace``; and a better diagnosis when
-    the path is simply not visible, because inside a container an unmounted host
-    folder looks exactly like a typo and "does not exist" sends the user after
-    the wrong problem.
+    browse-only; and a better diagnosis when the path is simply not visible,
+    because inside a container an unmounted host folder looks exactly like a typo
+    and "does not exist" sends the user after the wrong problem.
 
     What it deliberately does *not* do is judge a folder by its name. Whether the
     agent may read or write anything once the workspace is open is decided
     per-operation by ``agent_core.permissions``; duplicating that here as a list
-    of forbidden directories only made real projects unopenable.
+    of forbidden directories only made real projects -- and real user folders --
+    unopenable.
     """
 
     candidate = Path(raw_path).expanduser()
@@ -199,9 +135,6 @@ def validate_live_root(raw_path: str) -> Path:
     # through as a different directory.
     if any(same_path(resolved, root) for root in roots):
         raise ValueError("Select a project folder inside this workspace.")
-    containing = next((root for root in roots if is_within(root, resolved)), None)
-    if containing is not None:
-        _refuse_broad(containing, resolved)
     return resolved
 
 
