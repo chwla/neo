@@ -245,40 +245,208 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .message-edit-form textarea { min-height: 90px; padding: 10px; resize: vertical; }
 .chat-message-status { color: var(--neo-danger); font: 10px "JetBrains Mono", monospace; }
 
-.chat-input-wrap { position: fixed; right: 0; bottom: 0; left: 256px; z-index: 20; border-top: 1px solid var(--neo-line); background: rgba(10,10,10,.97); padding: 16px 40px 12px; backdrop-filter: blur(12px); }
-.chat-input-shell { width: 100%; max-width: none; }
-.chat-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.chat-mode-switch { display: flex; align-items: center; gap: 12px; }
-.chat-mode-switch button { border: 0; background: transparent; padding: 0; color: #3d3d3d; font: 600 9px "JetBrains Mono", monospace; letter-spacing: .07em; text-transform: uppercase; }
-.chat-mode-switch button.active { color: var(--neo-green); }
-.chat-llm-picker select { max-width: 240px; height: 24px; border: 0; background: transparent; padding: 0 20px 0 0; color: #444; font: 9px "JetBrains Mono", monospace; }
-.chat-input-form { position: relative; display: flex; align-items: flex-end; gap: 8px; padding-left: 20px; }
-.chat-input-form::before { content: "›"; position: absolute; left: 0; bottom: 9px; color: var(--neo-green); font: 16px "JetBrains Mono", monospace; }
-.chat-input-form textarea { --composer-min-height: 40; --composer-max-height: 160; width: 100%; min-height: 40px; max-height: 160px; flex: 1; resize: none; background: transparent; padding: 9px 46px 9px 12px; color: var(--neo-text); font-size: 14px; line-height: 1.5; }
-.chat-input-form .send-button { position: absolute; right: 0; bottom: 0; display: grid; width: 40px; height: 40px; place-items: center; min-height: 40px; border-color: var(--neo-green); padding: 0; color: var(--neo-green); clip-path: polygon(0 0,calc(100% - 4px) 0,100% 4px,100% 100%,4px 100%,0 calc(100% - 4px)); font-size: 16px; }
-.chat-input-form .send-button:hover:not(:disabled) { background: var(--neo-green); color: var(--neo-bg); }
-.chat-input-disclaimer { width: 100%; max-width: none; margin-top: 8px; padding-left: 20px; color: #2f2f2f; font: 9px "JetBrains Mono", monospace; letter-spacing: .04em; text-transform: uppercase; }
+/* ---------------------------------------------------------------------------
+   Composer. One rounded card outlined in terminal green: message line on top
+   with the model picker opposite it, control row underneath. The card floats on
+   the transcript, so the strip behind it fades out instead of drawing a rule.
+   --------------------------------------------------------------------------- */
+.chat-input-wrap {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 256px;
+  z-index: 20;
+  background: linear-gradient(180deg, rgba(10, 10, 10, 0) 0%, rgba(10, 10, 10, .88) 26%, rgba(10, 10, 10, .99) 62%);
+  padding: 26px 40px 14px;
+  backdrop-filter: blur(12px);
+}
+.chat-input-shell {
+  --composer-edge: rgba(57, 255, 20, .34);
+  --composer-ink: #4f9e52;
+  --composer-accent: #5cf07a;
+  position: relative;
+  width: 100%;
+  max-width: none;
+  border: 1px solid var(--composer-edge);
+  border-radius: 24px;
+  background: #050705;
+  padding: 17px 19px 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .55), 0 0 34px rgba(57, 255, 20, .05);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+.chat-input-shell:focus-within {
+  border-color: rgba(57, 255, 20, .55);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .55), 0 0 42px rgba(57, 255, 20, .1);
+}
+.chat-input-form { display: flex; flex-direction: column; gap: 14px; }
+.composer-head { display: flex; align-items: flex-start; gap: 12px; }
+.composer-head .composer-tools { margin-top: -7px; }
+.chat-input-form textarea {
+  --composer-min-height: 26;
+  --composer-max-height: 220;
+  width: 100%;
+  min-height: 26px;
+  max-height: 220px;
+  flex: 1;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--neo-text);
+  font: 15px/1.55 "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+.chat-input-form textarea::placeholder { color: var(--composer-ink); }
+.chat-input-form textarea:focus { border: 0; }
+
+/* Model picker, top right. The native select stays for keyboard and mobile; the
+   caret is drawn on the wrapper because `appearance: none` removes the real one. */
+.chat-llm-picker { position: relative; display: flex; flex: 0 0 auto; align-items: center; padding-top: 2px; margin-left: 6px; color: var(--composer-ink); }
+.chat-llm-picker select {
+  max-width: 260px;
+  height: 22px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 18px 0 0;
+  color: inherit;
+  font: 13px "JetBrains Mono", monospace;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+.chat-llm-picker select option { direction: ltr; background: #0a0a0a; color: var(--neo-text); }
+.chat-llm-picker:hover, .chat-llm-picker:focus-within { color: var(--composer-accent); }
+.chat-llm-caret { position: absolute; top: 50%; right: 1px; width: 11px; height: 11px; transform: translateY(-50%); pointer-events: none; }
+
+/* Control row: tools left, mode switch and send right. */
+.composer-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.composer-tools { display: flex; align-items: center; gap: 10px; }
+.composer-actions { display: flex; align-items: center; gap: 12px; }
+.composer-tool {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  padding: 0;
+  color: var(--composer-ink);
+  transition: color .14s ease, background .14s ease;
+}
+.composer-tool svg { width: 18px; height: 18px; transition: transform .16s ease; }
+.composer-tool:hover:not(:disabled) { background: rgba(57, 255, 20, .08); color: var(--composer-accent); }
+.composer-tool:disabled { opacity: .4; }
+.composer-tool-accent { background: rgba(57, 255, 20, .1); color: #79ef8b; }
+.composer-tool-accent:hover:not(:disabled) { background: rgba(57, 255, 20, .18); }
+.composer-menu-button svg { width: 20px; height: 20px; }
+.composer-menu-button.is-open { background: rgba(57, 255, 20, .16); color: var(--composer-accent); }
+.composer-menu-button.is-open svg { transform: rotate(45deg); }
+
+/* Everything the run needs but the objective. It opens upward, over the
+   transcript, so the composer itself never changes height. */
+.composer-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 8px;
+  z-index: 5;
+  display: flex;
+  min-width: 250px;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(57, 255, 20, .28);
+  border-radius: 16px;
+  background: #080b08;
+  padding: 8px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .7), 0 0 26px rgba(57, 255, 20, .06);
+  animation: neo-slide-in .12s ease;
+}
+.composer-menu[hidden] { display: none; }
+.composer-menu .agent-chip { justify-content: space-between; min-height: 38px; border-radius: 11px; padding: 0 12px; }
+.composer-menu .agent-chip select { max-width: 160px; text-align: right; direction: rtl; }
+.composer-menu .agent-chip select option { direction: ltr; }
+.composer-menu-action {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(57, 255, 20, .16);
+  border-radius: 11px;
+  background: rgba(57, 255, 20, .04);
+  padding: 0 12px;
+  color: var(--neo-body);
+  font: 11px "JetBrains Mono", monospace;
+  transition: border-color .14s ease, background .14s ease, color .14s ease;
+}
+.composer-menu-action svg { width: 16px; height: 16px; flex: 0 0 auto; color: #79ef8b; }
+.composer-menu-action:hover:not(:disabled) { border-color: rgba(57, 255, 20, .34); background: rgba(57, 255, 20, .09); color: var(--neo-text); }
+.composer-menu-action:disabled { opacity: .45; }
+
+/* Segmented mode switch: the inactive half is a label, the active half a chip. */
+.chat-mode-switch {
+  display: flex;
+  align-items: center;
+  border: 1px solid rgba(57, 255, 20, .16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .015);
+  padding: 3px;
+}
+.chat-mode-switch button {
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  padding: 0 15px;
+  color: #4c8a4f;
+  font: 500 13px "JetBrains Mono", monospace;
+  letter-spacing: 0;
+  text-transform: none;
+  transition: color .14s ease, background .14s ease;
+}
+.chat-mode-switch button:hover:not(.active) { color: #7ec982; }
+.chat-mode-switch button.active { background: rgba(226, 255, 226, .1); color: #dcffdc; }
+
+/* Send: the one filled control in the composer. */
+.chat-input-form .send-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  min-height: 40px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--composer-accent);
+  padding: 0;
+  color: #04170a;
+  clip-path: none;
+  font-size: 16px;
+}
+.chat-input-form .send-button svg { width: 19px; height: 19px; }
+.chat-input-form .send-button:hover:not(:disabled) { background: #80ff9a; color: #04170a; }
+.chat-input-form .send-button:disabled { opacity: .32; }
 .visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
 
 /* Agent context controls. Each chip is a single bordered unit holding a small
    uppercase label and its value, so the row reads as one set of instrument
    readouts rather than four loose browser selects. The native select is kept
    (accessibility, keyboard, mobile) and styled flat, with a drawn caret. */
-.agent-context-pickers { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
 .agent-chip {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   min-height: 30px;
-  border: 1px solid var(--neo-line-bright);
-  border-radius: 3px;
-  background: var(--neo-panel);
+  border: 1px solid rgba(57, 255, 20, .16);
+  border-radius: 10px;
+  background: rgba(57, 255, 20, .04);
   padding: 0 10px;
   transition: border-color .14s ease, background .14s ease;
 }
-.agent-chip:hover { border-color: #333; background: var(--neo-panel-raised); }
-.agent-chip:focus-within { border-color: var(--neo-green); background: var(--neo-panel-raised); }
+.agent-chip:hover { border-color: rgba(57, 255, 20, .3); background: rgba(57, 255, 20, .07); }
+.agent-chip:focus-within { border-color: var(--neo-green); background: rgba(57, 255, 20, .09); }
 .agent-chip-label {
   color: var(--neo-muted);
   font: 600 9px "JetBrains Mono", monospace;
@@ -320,12 +488,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .agent-chip-value { color: var(--neo-green); font: 11px "JetBrains Mono", monospace; }
 .agent-task-picker { display: flex; align-items: center; gap: 5px; color: #444; font: 9px "JetBrains Mono", monospace; }
 .agent-task-picker select { height: 26px; padding: 0 6px; color: #777; font-size: 10px; }
-.agent-submit-actions { display: flex; gap: 6px; }
-.agent-submit-actions button { height: 40px; white-space: nowrap; }
-.agent-mode-hint, .agent-mode-message { margin: 6px 0 0 20px; color: #555; font: 10px "JetBrains Mono", monospace; }
-/* A blocked run is a required next step, not background advice, so it reads at
-   full strength rather than in the hint's muted grey. */
-.agent-mode-blocked { color: var(--neo-green); }
+.agent-mode-message { margin: 10px 0 0; font: 10px "JetBrains Mono", monospace; }
 .agent-delivery-note { margin: 0 0 10px; color: #8a8a8a; font-size: 12px; line-height: 1.5; }
 
 /* Agent run rows reuse the chat row's shape so the sidebar stays one rhythm,
@@ -585,9 +748,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .neo-main, .project-page, .task-page, .notes-page, .files-page, .repos-page, .research-page { height: 56vh; }
   .neo-view-header { padding: 0 16px; }
   .neo-shell { padding: 18px 16px 150px; }
-  .chat-input-wrap { right: 0; bottom: 0; left: 0; padding: 12px 16px 8px; }
-  .chat-mode-row { align-items: flex-start; flex-direction: column; }
-  .chat-llm-picker select { max-width: calc(100vw - 32px); }
+  .chat-input-wrap { right: 0; bottom: 0; left: 0; padding: 16px 12px 8px; }
+  .chat-input-shell { border-radius: 20px; padding: 14px 14px 12px; }
+  .chat-llm-picker select { max-width: 40vw; }
   .modal-backdrop { padding: 10px; }
   .neo-dialog { max-height: calc(100vh - 20px); padding: 0 16px 18px; }
   .profile-picker { padding: 16px; }
@@ -1670,21 +1833,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .chat-attachment button { border: 0; background: transparent; padding: 0 2px; color: #555; font-size: 13px; line-height: 1; }
 .chat-attachment button:hover { color: var(--neo-danger); }
 .chat-attach-error { margin-bottom: 8px; border-left: 2px solid var(--neo-danger); background: #160d0d; padding: 7px 9px; color: #d97974; font-size: 11px; }
-.chat-attach-button {
-  display: grid;
-  width: 34px;
-  height: 40px;
-  flex: 0 0 auto;
-  place-items: center;
-  align-self: flex-end;
-  border: 0;
-  border-radius: 2px;
-  background: transparent;
-  color: #4a4a4a;
-  transition: color .12s ease, background .12s ease;
-}
-.chat-attach-button svg { width: 15px; height: 15px; }
-.chat-attach-button:hover:not(:disabled) { background: rgba(57, 255, 20, .08); color: var(--neo-green); }
 .chat-attach-button:disabled { opacity: .4; }
 
 /* ===========================================================================
@@ -2236,11 +2384,11 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 
 /* Stop control: same footprint as the send button so the composer does not shift. */
 .chat-input-form .stop-button {
-  border-color: var(--neo-danger);
-  background: transparent;
+  border: 0;
+  background: rgba(255, 59, 48, .16);
   color: var(--neo-danger);
 }
-.chat-input-form .stop-button svg { width: 14px; height: 14px; fill: currentColor; }
+.chat-input-form .stop-button svg { width: 15px; height: 15px; fill: currentColor; }
 .chat-input-form .stop-button:hover:not(:disabled) { background: var(--neo-danger); color: var(--neo-bg); }
 .chat-input-form .stop-button:disabled { opacity: .5; }
 

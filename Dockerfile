@@ -30,16 +30,22 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY app/ ./app/
+# Group 0 with group-write is what lets the container run as an arbitrary uid.
+# Linux bind mounts keep the host's ownership, so a Linux user has to run the
+# container as themselves (NEO_UID) or every write to their folder fails; that
+# would otherwise leave /app/data unwritable, because it was chowned to a uid
+# they are no longer running as.
 RUN pip install --no-cache-dir . \
     && mkdir -p /app/data/workspace_files /app/data/workspace_repos \
-    && useradd --create-home --uid 10001 neo \
-    && chown -R neo:neo /app/data
+    && useradd --create-home --uid 10001 --gid 0 neo \
+    && chown -R 10001:0 /app/data \
+    && chmod -R g=u /app/data
 RUN rm -rf /app/app/static && mkdir -p /app/app/static
 COPY --from=frontend-build /src/frontend/dist/ /app/app/static/
 
 VOLUME ["/app/data"]
 EXPOSE 8000
-USER neo
+USER 10001:0
 
 HEALTHCHECK --interval=30s --timeout=20s --start-period=30s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=5)"]

@@ -54,6 +54,10 @@ services:
       # host path it is mounted from. Separate multiple roots with ":" here,
       # because this value is read by the Linux process inside the container.
       NEO_WORKSPACE_LIVE_ROOTS: /workspace
+      # The host side of the mount below, passed in so the folder picker can show
+      # ~/Desktop for what the server knows as /workspace/Desktop. Read from the
+      # same variable the mount uses, so the two cannot drift.
+      NEO_WORKSPACE_HOST_ROOT: ${NEO_WORKSPACE_HOST_ROOT:-${HOME:-${USERPROFILE}}}
     # Bind mounts keep the *host's* ownership, so on Linux the container must
     # run as you or every write to your folder fails with EACCES. Set NEO_UID to
     # your own `id -u` in a .env file next to this one. Leave the group at 0:

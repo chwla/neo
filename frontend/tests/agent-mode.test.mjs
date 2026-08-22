@@ -14,10 +14,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ChatComposer, Modal } from "../src/App.jsx";
 
-const PROJECTS = [
-  { id: "p1", title: "Neo Platform" },
-  { id: "p2", title: "Docs Refresh" },
-];
 const REPOS = [
   { id: "r1", name: "neo" },
   { id: "r2", name: "docs" },
@@ -39,9 +35,6 @@ function render(overrides = {}) {
     onLlmChange() {},
     mode: "agent",
     onModeChange() {},
-    projects: PROJECTS,
-    selectedProjectId: "",
-    onProjectChange() {},
     repos: REPOS,
     selectedRepoId: "",
     onRepoChange() {},
@@ -59,11 +52,11 @@ function render(overrides = {}) {
 const count = (haystack, needle) => haystack.split(needle).length - 1;
 
 describe("agent mode composer", () => {
-  test("offers project, repo, mode and agent as labelled chips", () => {
+  test("offers repo, mode and agent as labelled chips", () => {
     const html = render();
 
-    assert.equal(count(html, 'class="agent-chip"'), 4);
-    for (const label of ["Project", "Repo", "Mode", "Agent"]) {
+    assert.equal(count(html, 'class="agent-chip"'), 3);
+    for (const label of ["Repo", "Mode", "Agent"]) {
       assert.ok(
         html.includes(`<span class="agent-chip-label">${label}</span>`),
         `missing ${label} chip`,
@@ -71,23 +64,64 @@ describe("agent mode composer", () => {
     }
   });
 
-  test("a folder on this computer can be opened for the agent to work in", () => {
+  // A run started from the composer is not filed under a project any more, so
+  // the picker that used to say so is gone rather than left showing "No project".
+  test("there is no project picker", () => {
     const html = render();
 
-    assert.ok(html.includes("agent-chip-action"), "folder chip is missing");
-    assert.ok(html.includes('<span class="agent-chip-label">Folder</span>'));
-    assert.ok(html.includes(">Open</span>"));
+    assert.ok(!html.includes("No project"));
+    assert.ok(!html.includes('<span class="agent-chip-label">Project</span>'));
+  });
+
+  // Only the objective is on show: everything that configures the run is one
+  // click away behind the "+", and nothing of it is on the composer's face.
+  test("repo, mode, agent and the clip live behind the + button", () => {
+    const html = render();
+    const menu = html.slice(html.indexOf('id="composer-menu"'));
+
+    assert.ok(html.includes('aria-label="Open the composer menu"'), "the + trigger is missing");
+    for (const control of [
+      'aria-label="Select repository for agent"',
+      'aria-label="Select permission mode"',
+      'aria-label="Select agent definition"',
+      'aria-label="Open a folder"',
+    ]) {
+      assert.ok(menu.includes(control), `${control} is not in the menu`);
+    }
+  });
+
+  test("the menu starts closed", () => {
+    const html = render();
+
+    assert.ok(/id="composer-menu"[^>]*hidden/.test(html), "the menu must not be open on first paint");
+  });
+
+  test("the composer no longer has an expand caret", () => {
+    for (const mode of ["agent", "chatbot"]) {
+      const html = render({ mode });
+      assert.ok(!html.includes("composer-expand"), `caret still in ${mode} mode`);
+      assert.ok(!html.includes("Expand the composer"), `caret label still in ${mode} mode`);
+    }
+  });
+
+  // The clip is the same affordance chat mode uses to attach files: in agent
+  // mode what it attaches is a folder to work in.
+  test("a folder on this computer can be opened from the clip", () => {
+    const html = render();
+
+    assert.ok(html.includes("agent-folder-button"), "the clip is missing");
+    assert.ok(html.includes('aria-label="Open a folder"'));
+    assert.ok(!html.includes("agent-chip-action"), "the old folder chip is gone");
     assert.ok(
       html.includes("edits it directly"),
-      "the chip must say the agent edits the real folder, not a copy",
+      "it must say the agent edits the real folder, not a copy",
     );
   });
 
-  test("the folder chip reports an attach in progress", () => {
+  test("the clip reports an attach in progress", () => {
     const html = render({ folderAttaching: true });
 
-    assert.ok(html.includes("Opening"), "an in-flight attach must be visible");
-    assert.ok(!html.includes(">Open</span>"), "idle label must give way");
+    assert.ok(html.includes('aria-label="Opening a folder"'), "an in-flight attach must be visible");
   });
 
   test("permission mode is chosen before the run starts", () => {
@@ -110,7 +144,6 @@ describe("agent mode composer", () => {
     const html = render();
 
     assert.ok(html.includes("No repository"));
-    assert.ok(html.includes("No project"));
   });
 
   test("repositories are listed by name", () => {
@@ -136,43 +169,46 @@ describe("agent mode composer", () => {
     const html = render({ value: "add a docstring" });
 
     assert.ok(html.includes('aria-label="Start Agent"'));
+    assert.ok(html.includes('class="neo-button send-button"'), "Start is the chat send button");
     assert.ok(!html.includes(">Plan</button>"), "the checklist step was removed");
     assert.ok(!html.includes("agent-plan-preview"));
     assert.ok(!html.includes("agent-created-tasks"));
   });
 
   test("Start is disabled until there is an objective", () => {
-    assert.ok(render({ value: "   " }).includes("disabled=\"\""));
-    assert.ok(!render({ value: "do the thing" }).includes('class="agent-run-button primary" disabled'));
+    const blank = render({ value: "   ", selectedRepoId: "r1" });
+    const typed = render({ value: "do the thing", selectedRepoId: "r1" });
+
+    assert.ok(blank.includes('disabled="" aria-label="Start Agent"'));
+    assert.ok(!typed.includes('disabled="" aria-label="Start Agent"'));
   });
 
-  test("the hint describes autonomy rather than a checklist", () => {
-    const html = render({ selectedRepoId: "r1" });
+  // Agent runs resolve their model through the same picker chat uses, so it has
+  // to be readable and changeable without leaving agent mode.
+  test("agent mode carries the model picker", () => {
+    const html = render();
 
-    assert.ok(html.includes("agent-mode-hint"));
-    assert.ok(!html.toLowerCase().includes("checklist"), "the run no longer creates a checklist up front");
-    assert.ok(html.includes("undone"), "the hint should say the run is reversible");
+    assert.ok(html.includes('aria-label="Choose LLM"'));
+    assert.ok(html.includes("Local / qwen3"));
   });
 
-  test("the hint gives way to the objective once one is typed", () => {
-    const html = render({ value: "do the thing", selectedRepoId: "r1" });
-
-    assert.ok(!html.includes("agent-mode-hint"));
+  // The composer says nothing on its own: the controls are visible and standing
+  // advice under them is noise. What blocks a run is said by the disabled Start.
+  test("no standing hint in any state", () => {
+    for (const props of [{}, { selectedRepoId: "r1" }, { selectedRepoId: "r1", value: "do the thing" }]) {
+      assert.ok(!render(props).includes("agent-mode-hint"));
+    }
   });
 
   // Without a repository the agent has no file or command tools, so a run could
-  // only narrate work it cannot do. The composer has to say so and refuse.
-  test("without a repository the composer asks for one", () => {
-    const html = render({ selectedRepoId: "" });
-
-    assert.ok(html.includes("Select a workspace first"));
-    assert.ok(html.includes("Open a folder"), "it must name the way out, not just the problem");
-  });
-
-  test("the repository prompt outranks the objective hint", () => {
+  // only narrate work it cannot do. Start refuses and says why on itself; the
+  // way out is the "Open a folder" action in the menu.
+  test("without a repository the refusal is on Start, not a line of prose", () => {
     const html = render({ selectedRepoId: "", value: "do the thing" });
 
-    assert.ok(html.includes("Select a workspace first"), "a typed objective must not hide it");
+    assert.ok(!html.includes("Select a workspace first"));
+    assert.ok(html.includes('title="Select a repository first"'));
+    assert.ok(html.includes('aria-label="Open a folder"'), "the way out stays reachable");
   });
 
   test("Start is disabled until a repository is chosen", () => {
@@ -199,7 +235,7 @@ describe("agent mode composer", () => {
   test("every control is disabled while a submission is in flight", () => {
     const html = render({ value: "go", disabled: true });
 
-    assert.equal(count(html, 'disabled=""'), 7, "4 chips + folder button + textarea + Start");
+    assert.equal(count(html, 'disabled=""'), 7, "3 chips + folder + model + textarea + Start");
   });
 });
 
@@ -209,6 +245,8 @@ describe("chat mode composer", () => {
 
     assert.ok(!html.includes("agent-context-pickers"));
     assert.ok(!html.includes('aria-label="Start Agent"'));
+    assert.ok(!html.includes("agent-folder-button"));
+    assert.ok(!html.includes('aria-label="Select permission mode"'));
   });
 
   test("chat mode keeps the model picker", () => {

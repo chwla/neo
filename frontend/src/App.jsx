@@ -781,6 +781,30 @@ function formatFileSize(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function SubmitArrowIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </svg>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
+    </svg>
+  );
+}
+
+/**
+ * The composer is one rounded terminal-green card: the objective/message on the
+ * first line with the model picker opposite it, and a control row underneath --
+ * tools on the left, mode switch and send on the right.
+ */
 export function ChatComposer({
   disabled,
   value,
@@ -791,9 +815,6 @@ export function ChatComposer({
   onLlmChange,
   mode,
   onModeChange,
-  projects,
-  selectedProjectId,
-  onProjectChange,
   agentDefinitions,
   selectedAgentDefinitionId,
   onAgentDefinitionChange,
@@ -816,6 +837,11 @@ export function ChatComposer({
 }) {
   const textareaRef = useRef(null);
   const attachInputRef = useRef(null);
+  // Everything the run needs but the objective itself lives behind the "+":
+  // repo, permission mode, agent, and whatever the clip attaches.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+  const menuButtonRef = useRef(null);
 
   const resizeComposer = useCallback(() => {
     const textarea = textareaRef.current;
@@ -845,79 +871,44 @@ export function ChatComposer({
     return () => window.removeEventListener("resize", resizeComposer);
   }, [resizeComposer]);
 
+  // The menu is a popover, so it closes the way one is expected to: escape, or a
+  // click anywhere that is not the menu or the button that opened it.
+  useEffect(() => {
+    if (!menuOpen) {
+      return undefined;
+    }
+
+    function onPointerDown(event) {
+      if (menuRef.current?.contains(event.target) || menuButtonRef.current?.contains(event.target)) {
+        return;
+      }
+      setMenuOpen(false);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        menuButtonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  // Mode switches carry no context with them, so a menu left open would be
+  // showing another mode's controls.
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [mode]);
+
   return (
     <div className={`chat-input-wrap ${mode === "agent" ? "agent-mode" : "chatbot-mode"}`}>
       <div className="chat-input-shell">
-        <div className="chat-mode-row">
-          <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
-            <button type="button" role="tab" aria-selected={mode === "chatbot"}
-              className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
-            <button type="button" role="tab" aria-selected={mode === "agent"}
-              className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
-          </div>
-          {mode === "chatbot" ? (
-            <div className="chat-llm-picker">
-              <select
-                value={llmId || ""}
-                onChange={(event) => onLlmChange(event.target.value)}
-                disabled={disabled}
-                aria-label="Choose LLM"
-              >
-                {llms.filter((llm) => llm.enabled).map((llm) => (
-                  <option key={llm.id} value={llm.id}>{llm.name} / {llm.model}</option>
-                ))}
-              </select>
-            </div>
-          ) : (
-            <div className="agent-context-pickers">
-              <label className="agent-chip">
-                <span className="agent-chip-label">Project</span>
-                <select value={selectedProjectId} onChange={(event) => onProjectChange(event.target.value)}
-                  disabled={disabled} aria-label="Select optional project for agent">
-                  <option value="">No project</option>
-                  {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
-                </select>
-              </label>
-              <label className="agent-chip">
-                <span className="agent-chip-label">Repo</span>
-                <select value={selectedRepoId} onChange={(event) => onRepoChange(event.target.value)}
-                  disabled={disabled} aria-label="Select repository for agent">
-                  <option value="">No repository</option>
-                  {repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="agent-chip agent-chip-action"
-                onClick={onOpenFolder}
-                disabled={disabled || folderAttaching}
-                title="Open a folder on this computer. The agent edits it directly."
-              >
-                <span className="agent-chip-label">Folder</span>
-                <span className="agent-chip-value">
-                  {folderAttaching ? "Opening…" : "Open"}
-                </span>
-              </button>
-              <label className="agent-chip">
-                <span className="agent-chip-label">Mode</span>
-                <select value={agentMode} onChange={(event) => onAgentModeChange(event.target.value)}
-                  disabled={disabled} aria-label="Select permission mode">
-                  <option value="plan">Plan · propose only</option>
-                  <option value="normal">Normal · ask first</option>
-                  <option value="auto">Auto · no prompts</option>
-                </select>
-              </label>
-              <label className="agent-chip">
-                <span className="agent-chip-label">Agent</span>
-                <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
-                  disabled={disabled} aria-label="Select agent definition">
-                  <option value="general">General</option>
-                  {agentDefinitions.filter((agent) => agent.name !== "general").map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
-                </select>
-              </label>
-            </div>
-          )}
-        </div>
         {mode === "chatbot" && attachments.length > 0 ? (
           <div className="chat-attachments">
             {attachments.map((file) => (
@@ -941,8 +932,8 @@ export function ChatComposer({
           <div className="chat-attach-error">{attachError}</div>
         ) : null}
         <form className="chat-input-form" onSubmit={onSubmit}>
-          {mode === "chatbot" ? (
-            <>
+          <div className="composer-head">
+            <div className="composer-tools">
               <input
                 ref={attachInputRef}
                 type="file"
@@ -955,85 +946,165 @@ export function ChatComposer({
                 }}
               />
               <button
+                ref={menuButtonRef}
                 type="button"
-                className="chat-attach-button"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={disabled || attaching}
-                title="Attach files"
-                aria-label="Attach files"
+                className={`composer-tool composer-menu-button${menuOpen ? " is-open" : ""}`}
+                onClick={() => setMenuOpen((open) => !open)}
+                aria-expanded={menuOpen}
+                aria-haspopup="true"
+                aria-controls="composer-menu"
+                aria-label={menuOpen ? "Close the composer menu" : "Open the composer menu"}
+                title="More"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
                 </svg>
               </button>
-            </>
-          ) : null}
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(event) => {
-              onChange(event.target.value);
-              requestAnimationFrame(resizeComposer);
-            }}
-            onInput={resizeComposer}
-            placeholder={mode === "agent" ? "What should the agent work on?" : "Message Neo"}
-            rows={1}
-            disabled={disabled}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-          />
-          {mode === "agent" ? (
-            <div className="agent-submit-actions">
-              <NeoButton type="submit" className="agent-run-button primary"
-                disabled={disabled || !value.trim() || !selectedRepoId}
-                aria-label="Start Agent"
-                title={selectedRepoId ? "Start Agent" : "Select a repository first"}>Start</NeoButton>
-            </div>
-          ) : (
-            generating ? (
-              <button
-                type="button"
-                className="send-button stop-button"
-                onClick={onStop}
-                disabled={stopping}
-                aria-label="Stop generating"
-                title="Stop generating"
+              <div
+                ref={menuRef}
+                id="composer-menu"
+                className="composer-menu"
+                aria-label="Composer options"
+                hidden={!menuOpen}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <rect x="7" y="7" width="10" height="10" rx="1.5" />
-                </svg>
-              </button>
-            ) : (
-              <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
-                aria-label="Send message" title="Send message">{"\u2191"}</NeoButton>
-            )
-          )}
+                {mode === "agent" ? (
+                  <>
+                    <label className="agent-chip">
+                      <span className="agent-chip-label">Repo</span>
+                      <select value={selectedRepoId} onChange={(event) => onRepoChange(event.target.value)}
+                        disabled={disabled} aria-label="Select repository for agent">
+                        <option value="">No repository</option>
+                        {repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="agent-chip">
+                      <span className="agent-chip-label">Mode</span>
+                      <select value={agentMode} onChange={(event) => onAgentModeChange(event.target.value)}
+                        disabled={disabled} aria-label="Select permission mode">
+                        <option value="plan">Plan · propose only</option>
+                        <option value="normal">Normal · ask first</option>
+                        <option value="auto">Auto · no prompts</option>
+                      </select>
+                    </label>
+                    <label className="agent-chip">
+                      <span className="agent-chip-label">Agent</span>
+                      <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
+                        disabled={disabled} aria-label="Select agent definition">
+                        <option value="general">General</option>
+                        {agentDefinitions.filter((agent) => agent.name !== "general").map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="composer-menu-action agent-folder-button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenFolder?.();
+                      }}
+                      disabled={disabled || folderAttaching}
+                      title="Open a folder on this computer. The agent edits it directly."
+                      aria-label={folderAttaching ? "Opening a folder" : "Open a folder"}
+                    >
+                      <PaperclipIcon />
+                      <span>{folderAttaching ? "Opening a folder…" : "Open a folder"}</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="composer-menu-action chat-attach-button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      attachInputRef.current?.click();
+                    }}
+                    disabled={disabled || attaching}
+                    title="Attach files"
+                    aria-label="Attach files"
+                  >
+                    <PaperclipIcon />
+                    <span>{attaching ? "Attaching…" : "Attach files"}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={value}
+              onChange={(event) => {
+                onChange(event.target.value);
+                requestAnimationFrame(resizeComposer);
+              }}
+              onInput={resizeComposer}
+              placeholder={mode === "agent" ? "What should the agent work on?" : "Message Neo …"}
+              rows={1}
+              disabled={disabled}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+            />
+            <div className="chat-llm-picker">
+              <select
+                value={llmId || ""}
+                onChange={(event) => onLlmChange(event.target.value)}
+                disabled={disabled}
+                aria-label="Choose LLM"
+              >
+                {llms.filter((llm) => llm.enabled).map((llm) => (
+                  <option key={llm.id} value={llm.id}>{llm.name} / {llm.model}</option>
+                ))}
+              </select>
+              <svg className="chat-llm-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m6 15 6-6 6 6" />
+              </svg>
+            </div>
+          </div>
+          <div className="composer-foot">
+            <div className="composer-actions">
+              <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
+                <button type="button" role="tab" aria-selected={mode === "chatbot"}
+                  className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
+                <button type="button" role="tab" aria-selected={mode === "agent"}
+                  className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
+              </div>
+              {mode === "agent" ? (
+                <NeoButton type="submit" className="send-button"
+                  disabled={disabled || !value.trim() || !selectedRepoId}
+                  aria-label="Start Agent"
+                  title={selectedRepoId ? "Start Agent" : "Select a repository first"}>
+                  <SubmitArrowIcon />
+                </NeoButton>
+              ) : (
+                generating ? (
+                  <button
+                    type="button"
+                    className="send-button stop-button"
+                    onClick={onStop}
+                    disabled={stopping}
+                    aria-label="Stop generating"
+                    title="Stop generating"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                    </svg>
+                  </button>
+                ) : (
+                  <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
+                    aria-label="Send message" title="Send message">
+                    <SubmitArrowIcon />
+                  </NeoButton>
+                )
+              )}
+            </div>
+          </div>
         </form>
-        {mode === "agent" && !selectedRepoId ? (
-          <div className="agent-mode-hint agent-mode-blocked">
-            Select a workspace first. Open a folder on this computer and the agent will
-            read, edit and test the files in it directly.
-          </div>
-        ) : mode === "agent" && !value.trim() ? (
-          <div className="agent-mode-hint">
-            Give Neo an objective. It inspects, works, and verifies on its own, editing
-            your files as it goes — every run can be undone.
-          </div>
-        ) : null}
         {mode === "agent" && agentMessage ? <div className="agent-mode-message">{agentMessage}</div> : null}
       </div>
-      {mode === "chatbot" || value.trim() ? (
-        <div className="chat-input-disclaimer">
-          {mode === "agent"
-            ? "Agent runs are task-linked and audited. No chat message is sent in Agent mode."
-            : "Neo is an AI and it can make mistakes. Please double-check responses."}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1639,12 +1710,6 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
 
 function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
-  // Agent runs are filed under the same projects as chats, so the composer's
-  // picker reads the sidebar rather than a second, unrelated project store.
-  const sidebarProjectOptions = useMemo(
-    () => (sidebar.projects || []).map((project) => ({ id: String(project.id), title: project.name })),
-    [sidebar.projects],
-  );
   const [activeChat, setActiveChat] = useState(null);
   // Held in a ref, not state, so a second click in the same tick is refused before
   // React has had a chance to re-render the disabled button.
@@ -1715,7 +1780,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [chatMode, setChatMode] = useState("chatbot");
   const [agentDefinitions, setAgentDefinitions] = useState([]);
   const [selectedAgentDefinitionId, setSelectedAgentDefinitionId] = useState("general");
-  const [selectedAgentProjectId, setSelectedAgentProjectId] = useState("");
   const [agentRepos, setAgentRepos] = useState([]);
   const [selectedAgentRepoId, setSelectedAgentRepoId] = useState("");
   const [agentMode, setAgentMode] = useState("normal");
@@ -2392,18 +2456,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     setShowOpenFolder(true);
   }
 
-  async function handleFolderAttached(repo, stats) {
+  // The repo chip shows what was opened, so the attach says nothing further;
+  // the composer's message line is left for failures.
+  async function handleFolderAttached(repo) {
     await loadAgentContext();
     if (repo?.id) setSelectedAgentRepoId(repo.id);
-    const indexed = stats?.indexed_file_count ?? 0;
-    const live = repo?.access === "live";
-    setChatAgentMessage(
-      live
-        ? indexed === 0
-          ? `Opened "${repo?.name}". It is empty — ask the agent to create the first file.`
-          : `Opened "${repo?.name}" — ${indexed} files. The agent edits these files directly.`
-        : `Copied "${repo?.name}" — ${indexed} files. Your originals are untouched.`,
-    );
   }
 
   async function handleStartChatAgent(event) {
@@ -2428,7 +2485,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       const created = await api.createAgentSession({
         objective,
         mode: agentMode,
-        project_id: selectedAgentProjectId || null,
+        project_id: null,
         repo_id: selectedAgentRepoId || null,
         agent_definition_id: selectedAgentDefinitionId || null,
         client_request_id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -2666,9 +2723,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onLlmChange={handleLlmChange}
           mode={chatMode}
           onModeChange={setChatMode}
-          projects={sidebarProjectOptions}
-          selectedProjectId={selectedAgentProjectId}
-          onProjectChange={setSelectedAgentProjectId}
           repos={agentRepos}
           selectedRepoId={selectedAgentRepoId}
           onRepoChange={setSelectedAgentRepoId}
@@ -2683,7 +2737,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         />
         {showOpenFolder && (
           <OpenFolderDialog
-            projectId={selectedAgentProjectId || null}
+            projectId={null}
             onClose={() => setShowOpenFolder(false)}
             onAttached={handleFolderAttached}
           />
