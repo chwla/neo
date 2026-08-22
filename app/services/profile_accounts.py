@@ -36,6 +36,12 @@ PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
 PROFILE_SESSION_TOKEN_BYTES = 32
 _registry_initialization_lock = Lock()
 _initialized_registry_paths: set[Path] = set()
+# Feature tables are created per profile database, so a profile opened by an
+# existing session cookie would otherwise never pick up tables added by a newer
+# build. The set is process-local on purpose: it empties on restart, which is
+# exactly when a redeployed image needs to re-run the initializers once.
+_storage_initialization_lock = Lock()
+_initialized_storage_keys: set[str] = set()
 
 
 def _root() -> Path:
@@ -461,9 +467,15 @@ def profile_for_session(token: str) -> dict | None:
             """,
             (_session_token_hash(token),),
         ).fetchone()
-        return public_profile(row) if row is not None else None
     finally:
         conn.close()
+    if row is None:
+        return None
+    # A cookie outlives a deploy, so this is the only path that runs for a user
+    # who never signs in again; without it their profile database keeps whatever
+    # schema it had when the session started.
+    ensure_profile_storage(str(row["id"]))
+    return public_profile(row)
 
 
 def revoke_profile_session(token: str) -> None:
@@ -598,6 +610,7 @@ def delete_profile(profile_id: str, password: str) -> dict:
         conn.execute("DELETE FROM profile_sessions WHERE profile_id = ?", (row["id"],))
         conn.execute("DELETE FROM account_profiles WHERE id = ?", (row["id"],))
         conn.commit()
+        forget_profile_storage(str(row["id"]))
         return public_profile(row)
     finally:
         conn.close()
@@ -608,16 +621,35 @@ def cleanup_guests() -> None:
 
 
 def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
-    """Initialise the tables used by every Neo feature in one profile database."""
+    """Initialise the tables used by every Neo feature in one profile database.
 
+    Memoised per process, so it is cheap enough to call on every session
+    resolution rather than only at signup and password login.
+    """
+
+    key = f"{'guest' if guest else 'account'}:{profile_id}"
+    with _storage_initialization_lock:
+        if key in _initialized_storage_keys:
+            return
+        _initialize_profile_storage(profile_id, guest=guest)
+        _initialized_storage_keys.add(key)
+
+
+def forget_profile_storage(profile_id: str, *, guest: bool = False) -> None:
+    """Drop the memo so a recreated profile re-runs the initializers."""
+
+    key = f"{'guest' if guest else 'account'}:{profile_id}"
+    with _storage_initialization_lock:
+        _initialized_storage_keys.discard(key)
+
+
+def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None:
     with profile_database(profile_id, guest=guest):
         initialize_database(get_settings().database_url)
         # The feature stores use get_settings(), which is profile-aware inside this context.
+        from app.services.agent_core.store import initialize_agent_core_tables
         from app.services.agent_framework import initialize_agent_framework_tables
-        from app.services.agentic_core import initialize_agentic_core_tables
-        from app.services.agents.store import initialize_agent_tables
         from app.services.bundles import initialize_bundle_tables
-        from app.services.coding_agent.store import initialize_coding_agent_tables
         from app.services.command_sandbox import initialize_command_sandbox_tables
         from app.services.context_memory import initialize_context_memory_tables
         from app.services.continuity import initialize_continuity_tables
@@ -632,7 +664,6 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
         from app.services.notes.store import initialize_notes_tables
         from app.services.projects.store import initialize_project_tables
         from app.services.provider_runtime import initialize_provider_runtime_tables
-        from app.services.recovery import initialize_recovery_tables
         from app.services.research.store import initialize_research_tables
         from app.services.research_mode import initialize_research_mode_tables
         from app.services.rules.store import initialize_rule_tables
@@ -646,12 +677,10 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
             initialize_notes_tables,
             initialize_project_tables,
             initialize_task_tables,
-            initialize_agent_tables,
+            initialize_agent_core_tables,
             initialize_bundle_tables,
             initialize_tool_tables,
             initialize_agent_framework_tables,
-            initialize_agentic_core_tables,
-            initialize_coding_agent_tables,
             initialize_command_sandbox_tables,
             initialize_context_memory_tables,
             initialize_memory_retrieval_tables,
@@ -665,7 +694,6 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
             initialize_provider_runtime_tables,
             initialize_lsp_tables,
             initialize_rule_tables,
-            initialize_recovery_tables,
             initialize_web_search_tables,
             initialize_workspace_orchestration_tables,
             initialize_continuity_tables,

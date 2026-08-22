@@ -61,8 +61,36 @@ class ProviderRuntimeClient(BaseLLMClient):
     def model_is_installed(self) -> bool:
         return self.is_available()
 
+    def supports_tools(self) -> bool:
+        """Whether the routed model advertises native tool calling.
+
+        ``supports_tools`` has been on the model record since the registry was
+        added but was never read; it is the capability probe that decides between
+        the native transport and the parsed-text fallback.
+        """
+
+        try:
+            from app.services.llm_registry.providers import build_client
+            from app.services.provider_runtime.router import select
+
+            route = select("chat", self.route_name)
+            if bool((route.get("model_record") or {}).get("supports_tools")):
+                return True
+            # The registry flag defaults to false and nothing populates it, so a
+            # false there means "unknown", not "unsupported". Ask the provider
+            # before downgrading a capable model to the text fallback.
+            client = build_client(route["provider_record"], route["model_record"])
+            probe = getattr(client, "supports_tools", None)
+            return bool(probe()) if callable(probe) else False
+        except Exception:
+            return False
+
     def chat_with_metadata(
-        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.4,
+        num_predict: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult:
         result = self.runtime.complete(
             request_type="chat",
@@ -70,6 +98,7 @@ class ProviderRuntimeClient(BaseLLMClient):
             messages=messages,
             max_tokens=num_predict or self.num_predict,
             metadata={"temperature": temperature},
+            tools=tools,
         )
         if result.status != "completed":
             raise _failure(
@@ -91,6 +120,7 @@ class ProviderRuntimeClient(BaseLLMClient):
         }
         return LLMChatResult(
             content=result.content,
+            tool_calls=result.tool_calls,
             thinking=str(thinking) if thinking else None,
             prompt_tokens=result.usage.get("prompt_tokens"),
             completion_tokens=result.usage.get("completion_tokens"),

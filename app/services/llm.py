@@ -18,12 +18,25 @@ _registry_lock = RLock()
 
 
 class LLMMessage(BaseModel):
+    """One transcript turn.
+
+    ``tool_calls`` carries an assistant turn that asked for tools;
+    ``tool_call_id``/``name`` carry the matching ``role="tool"`` result. Both stay
+    optional so every existing two-field call site keeps working untouched, and
+    provider serialisation drops them when unset -- a provider that is sent
+    ``"tool_calls": null`` rejects the request.
+    """
+
     role: str
     content: str
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class LLMChatResult(BaseModel):
     content: str
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     thinking: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -55,6 +68,7 @@ class LLMClient(Protocol):
         messages: list[LLMMessage],
         temperature: float = 0.4,
         num_predict: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult: ...
     def chat_stream(
         self,
@@ -96,6 +110,88 @@ class LLMConfig(BaseModel):
         return data
 
 
+def _tool_call_id(index: int, raw: dict[str, Any]) -> str:
+    """Ollama omits tool-call ids, so one is synthesised to keep results correlatable."""
+
+    return str(raw.get("id") or f"call_{index}")
+
+
+def _decode_arguments(value: Any) -> dict[str, Any]:
+    """OpenAI sends arguments as a JSON *string*; Ollama sends an object."""
+
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
+    """Flatten either provider's tool-call shape into ``{id, name, arguments}``."""
+
+    calls: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_calls or []):
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function") if isinstance(raw.get("function"), dict) else raw
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        calls.append(
+            {
+                "id": _tool_call_id(index, raw),
+                "name": name,
+                "arguments": _decode_arguments(function.get("arguments")),
+            }
+        )
+    return calls
+
+
+def _ollama_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
+    """Serialise for Ollama's /api/chat, which takes object arguments and no ids."""
+
+    payload: list[dict[str, Any]] = []
+    for message in messages:
+        item: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            item["tool_calls"] = [
+                {"function": {"name": call["name"], "arguments": call.get("arguments") or {}}}
+                for call in message.tool_calls
+            ]
+        if message.role == "tool" and message.name:
+            item["tool_name"] = message.name
+        payload.append(item)
+    return payload
+
+
+def _openai_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
+    """Serialise for /chat/completions, which requires ids and stringified arguments."""
+
+    payload: list[dict[str, Any]] = []
+    for message in messages:
+        item: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            item["tool_calls"] = [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": json.dumps(call.get("arguments") or {}),
+                    },
+                }
+                for call in message.tool_calls
+            ]
+        if message.role == "tool" and message.tool_call_id:
+            item["tool_call_id"] = message.tool_call_id
+        payload.append(item)
+    return payload
+
+
 class BaseLLMClient:
     def clean_response(self, content: str) -> str:
         return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
@@ -107,6 +203,41 @@ class BaseLLMClient:
 
     def chat(self, messages: list[LLMMessage], temperature: float = 0.4) -> str:
         return self.chat_with_metadata(messages, temperature).content
+
+
+#: Capability answers are cached per (base_url, model): the probe is a network
+#: round trip and the answer only changes when a model is re-pulled.
+_TOOL_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def ollama_supports_tools(base_url: str, model: str, timeout: int = 5) -> bool:
+    """Ask Ollama whether a model can do native tool calling.
+
+    The registry carries a ``supports_tools`` flag, but it defaults to false and
+    nothing populates it, so trusting it alone silently downgrades every model to
+    the text fallback. Ollama reports the answer directly, so ask.
+    """
+
+    key = (base_url.rstrip("/"), model)
+    if key in _TOOL_SUPPORT_CACHE:
+        return _TOOL_SUPPORT_CACHE[key]
+    supported = False
+    try:
+        response = requests.post(
+            f"{key[0]}/api/show", json={"model": model}, timeout=timeout
+        )
+        response.raise_for_status()
+        payload = response.json()
+        capabilities = payload.get("capabilities") or []
+        supported = "tools" in capabilities
+        if not supported:
+            # Older Ollama builds omit `capabilities`; the template mentioning
+            # tools is the next best signal.
+            supported = ".Tools" in str(payload.get("template") or "")
+    except Exception:
+        supported = False
+    _TOOL_SUPPORT_CACHE[key] = supported
+    return supported
 
 
 class OllamaClient(BaseLLMClient):
@@ -130,6 +261,9 @@ class OllamaClient(BaseLLMClient):
         except requests.RequestException:
             return False
 
+    def supports_tools(self) -> bool:
+        return ollama_supports_tools(self.base_url, self.model)
+
     def model_is_installed(self) -> bool:
         try:
             response = requests.get(f"{self.base_url}/api/tags", timeout=3)
@@ -151,29 +285,38 @@ class OllamaClient(BaseLLMClient):
         return options
 
     def chat_with_metadata(
-        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.4,
+        num_predict: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": _ollama_messages(messages),
+            "stream": False,
+            "options": self._options(temperature, num_predict),
+        }
+        if tools:
+            body["tools"] = tools
         response = requests.post(
             f"{self.base_url}/api/chat",
-            json={
-                "model": self.model,
-                "messages": [m.model_dump() for m in messages],
-                "stream": False,
-                "options": self._options(temperature, num_predict),
-            },
+            json=body,
             timeout=self.timeout,
         )
         response.raise_for_status()
         payload = response.json()
         message = payload["message"]
-        raw = str(message["content"])
+        raw = str(message.get("content") or "")
+        tool_calls = normalize_tool_calls(message.get("tool_calls"))
         native_thinking = str(message.get("thinking") or message.get("reasoning") or "").strip()
         prompt, completion = payload.get("prompt_eval_count"), payload.get("eval_count")
         elapsed = int((time.perf_counter() - started) * 1000)
         duration = payload.get("total_duration")
         return LLMChatResult(
             content=self.clean_response(raw),
+            tool_calls=tool_calls,
             thinking=native_thinking or self.extract_thinking(raw),
             prompt_tokens=prompt,
             completion_tokens=completion,
@@ -196,7 +339,7 @@ class OllamaClient(BaseLLMClient):
             f"{self.base_url}/api/chat",
             json={
                 "model": self.model,
-                "messages": [m.model_dump() for m in messages],
+                "messages": _ollama_messages(messages),
                 "stream": True,
                 "options": self._options(temperature, num_predict),
             },
@@ -265,30 +408,43 @@ class OpenAICompatibleClient(BaseLLMClient):
             return False
 
     def _payload(
-        self, messages: list[LLMMessage], temperature: float, num_predict: int | None, stream: bool
+        self,
+        messages: list[LLMMessage],
+        temperature: float,
+        num_predict: int | None,
+        stream: bool,
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [m.model_dump() for m in messages],
+            "messages": _openai_messages(messages),
             "temperature": temperature,
             "max_tokens": num_predict or self.num_predict,
             "stream": stream,
         }
+        if tools:
+            payload["tools"] = tools
+        return payload
 
     def chat_with_metadata(
-        self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.4,
+        num_predict: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
         response = requests.post(
             f"{self.base_url}/chat/completions",
             headers=self.headers,
-            json=self._payload(messages, temperature, num_predict, False),
+            json=self._payload(messages, temperature, num_predict, False, tools),
             timeout=self.timeout,
         )
         response.raise_for_status()
         payload = response.json()
         message = payload["choices"][0]["message"]
         raw = str(message.get("content") or "")
+        tool_calls = normalize_tool_calls(message.get("tool_calls"))
         native_thinking = str(
             message.get("reasoning")
             or message.get("reasoning_content")
@@ -298,6 +454,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         usage = payload.get("usage") or {}
         return LLMChatResult(
             content=self.clean_response(raw),
+            tool_calls=tool_calls,
             thinking=native_thinking or self.extract_thinking(raw),
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),

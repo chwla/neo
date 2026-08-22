@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
 
-const scopes = ["chat", "agent_run", "coding_run", "task", "project", "repo_workspace"];
+const scopes = ["chat", "agent_session", "task", "project", "repo_workspace"];
 const payload = (scope_type, scope_id) => ({ scope_type, scope_id, mode: "safe", max_summary_tokens: 1200, include_events: true, include_files: true, include_tests: true, include_checkpoints: true });
 
 export default function ContextMemory() {

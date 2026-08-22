@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Annotated
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from app.services.files.types import WorkspaceFile
 from app.services.repos import store
 from app.services.repos.service import RepoWorkspaceService
 from app.services.repos.types import RepoFile, RepoRegisterRequest, RepoStats, WorkspaceRepo
+from app.services.repos.uploads import discard, stage_upload
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
@@ -35,6 +38,50 @@ def register_repo(request: RepoRegisterRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"repo": WorkspaceRepo.model_validate(repo), "stats": _stats(repo)}
+
+
+@router.post("/upload", status_code=201)
+async def upload_repo(
+    files: Annotated[list[UploadFile], File()],
+    paths: Annotated[list[str], Form()],
+    project_id: Annotated[str | None, Form()] = None,
+    name: Annotated[str | None, Form()] = None,
+) -> dict:
+    """Register a folder uploaded from the browser as a workspace repository.
+
+    ``paths`` carries each file's path within the chosen folder, positionally
+    matched to ``files``; the browser's own file names are not used, because a
+    folder upload has to preserve its directory structure.
+    """
+
+    if len(files) != len(paths):
+        raise HTTPException(
+            status_code=400, detail="Each uploaded file needs exactly one matching path."
+        )
+    entries = [(path, await item.read()) for path, item in zip(paths, files, strict=True)]
+    try:
+        staged = stage_upload(entries, fallback_name=(name or "").strip() or "uploaded-folder")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        repo = _service().register_upload(
+            staged.root,
+            name=(name or "").strip() or staged.name,
+            project_id=project_id or None,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        # The importer copies what it keeps into the managed workspace, so the
+        # staging tree is redundant either way.
+        discard(staged.root)
+    return {
+        "repo": WorkspaceRepo.model_validate(repo),
+        "stats": _stats(repo),
+        "skipped_files": staged.skipped,
+    }
 
 
 @router.get("")

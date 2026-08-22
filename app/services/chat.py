@@ -18,10 +18,9 @@ from app.core.config import get_settings
 from app.db.session import build_engine
 from app.models import ChatGeneration, ChatMessage
 from app.repositories.app_store import AppStore
-from app.services.agents.guidance import agent_run_guidance
+from app.services.agent_core.guidance import agent_run_guidance
 from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
-from app.services.coding_agent.service import CodingAgentService
 from app.services.context import ContextPackage
 from app.services.files.service import WorkspaceFilesService
 from app.services.git.service import GitContextService
@@ -47,7 +46,6 @@ from app.services.memory_chat import (
     RecallQuery,
 )
 from app.services.projects import ProjectContextService
-from app.services.recovery.service import RecoveryService
 from app.services.rules.resolver import RuleResolver
 from app.services.search.citations import validate_citation_markers
 from app.services.search.content import FactResult, extract_release_date, run_extractors
@@ -148,11 +146,9 @@ class NeoChatService:
         )
         self.web_search = WebSearchService(llm=self.ollama)
         self.project_context = ProjectContextService()
-        self.recovery = RecoveryService()
         self.task_context = TaskContextService()
         self.file_context = WorkspaceFilesService()
         self.code_index = CodeIndexService()
-        self.coding_agent = CodingAgentService()
         self.symbol_awareness = SymbolAwarenessService()
         self.test_runner = TestRunnerContextService()
         self.git_context = GitContextService()
@@ -409,37 +405,7 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
-        task_context = f"{task_context}\n\n{self.coding_agent.context_for_prompt(prompt)}"
         internal_intent = resolve_internal_chat_intent(prompt)
-        coding_direct_reply = (
-            self.coding_agent.answer_for_prompt(prompt)
-            if internal_intent is not None and internal_intent.feature == "coding"
-            else None
-        )
-        if coding_direct_reply is not None:
-            self.store.add_chat_message(chat_id, "assistant", coding_direct_reply)
-            self.db.commit()
-            self.last_web_debug = {"coding_context_loaded": True, "web_search_needed": False}
-            return coding_direct_reply
-        recovery_direct_reply = (
-            self.recovery.answer_for_prompt(prompt)
-            if internal_intent is not None and internal_intent.feature == "recovery"
-            else None
-        )
-        if recovery_direct_reply is not None:
-            self.store.add_chat_message(
-                chat_id,
-                "assistant",
-                recovery_direct_reply,
-                response_kind="internal_action",
-                provider_name="Neo Recovery",
-                route_name="recovery",
-                finish_reason="stop",
-                duration_ms=0,
-            )
-            self.db.commit()
-            self.last_web_debug = {"recovery_context_loaded": True, "web_search_needed": False}
-            return recovery_direct_reply
         git_direct_reply = (
             self.git_context.answer_for_prompt(prompt)
             if internal_intent is not None and internal_intent.feature == "git"
@@ -863,81 +829,7 @@ class NeoChatService:
         task_context = f"{task_context}\n\n{self.symbol_awareness.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.test_runner.context_for_prompt(prompt)}"
         task_context = f"{task_context}\n\n{self.git_context.context_for_prompt(prompt)}"
-        task_context = f"{task_context}\n\n{self.coding_agent.context_for_prompt(prompt)}"
         internal_intent = resolve_internal_chat_intent(prompt)
-        coding_direct_reply = (
-            self.coding_agent.answer_for_prompt(prompt)
-            if internal_intent is not None and internal_intent.feature == "coding"
-            else None
-        )
-        if coding_direct_reply is not None:
-            assistant = persist_assistant(coding_direct_reply)
-            self.db.commit()
-            self.db.refresh(assistant)
-            self.last_web_debug = {"coding_context_loaded": True, "web_search_needed": False}
-            yield {"type": "chunk", "content": coding_direct_reply}
-            yield {
-                "type": "done",
-                "message_id": assistant.id,
-                "reply": coding_direct_reply,
-                "thinking": None,
-                "prompt_tokens": None,
-                "completion_tokens": None,
-                "total_tokens": None,
-                "duration_ms": None,
-                "web_debug": self.last_web_debug,
-            }
-            return
-        recovery_direct_reply = (
-            self.recovery.answer_for_prompt(prompt)
-            if internal_intent is not None and internal_intent.feature == "recovery"
-            else None
-        )
-        if recovery_direct_reply is not None:
-            assistant = persist_assistant(
-                recovery_direct_reply,
-                response_kind="internal_action",
-                provider_name="Neo Recovery",
-                route_name="recovery",
-                finish_reason="stop",
-                duration_ms=0,
-            )
-            self.db.commit()
-            self.db.refresh(assistant)
-            self.last_web_debug = {
-                "recovery_context_loaded": True,
-                "web_search_needed": False,
-                "routing": self._routing_diagnostic(
-                    chat_id,
-                    prompt,
-                    message_id=assistant.id,
-                    selected_route="internal",
-                    component="recovery_service",
-                    matched_intent=f"{internal_intent.feature}:{internal_intent.action}",
-                    confidence=1.0,
-                    direct_feature_service="RecoveryService.answer_for_prompt",
-                    provider_invoked=False,
-                    response_source="recovery_service",
-                    final_status="completed",
-                ),
-            }
-            yield {"type": "chunk", "content": recovery_direct_reply}
-            yield {
-                "type": "done",
-                "message_id": assistant.id,
-                "reply": recovery_direct_reply,
-                "thinking": None,
-                "prompt_tokens": None,
-                "completion_tokens": None,
-                "total_tokens": None,
-                "duration_ms": 0,
-                "response_kind": "internal_action",
-                "provider_name": "Neo Recovery",
-                "route_name": "recovery",
-                "finish_reason": "stop",
-                "web_debug": self.last_web_debug,
-            }
-            return
         git_direct_reply = (
             self.git_context.answer_for_prompt(prompt)
             if internal_intent is not None and internal_intent.feature == "git"

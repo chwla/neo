@@ -183,9 +183,24 @@ class ProjectWithChatsRead(ProjectRead):
     chats: list[ChatRead] = Field(default_factory=list)
 
 
+class AgentRunRead(BaseModel):
+    """One agent run as the sidebar needs it.
+
+    Agent runs live in their own store and are keyed by string ids, so they are
+    carried alongside chats rather than folded into ``ChatRead``.
+    """
+
+    id: str
+    title: str
+    status: str
+    project_id: int | None = None
+    updated_at: str
+
+
 class SidebarRead(BaseModel):
     projects: list[ProjectWithChatsRead]
     chats: list[ChatRead]
+    agent_runs: list[AgentRunRead] = []
 
 
 class ChatThreadRead(BaseModel):
@@ -949,7 +964,44 @@ def get_sidebar(store: StoreDependency) -> SidebarRead:
     return SidebarRead(
         projects=projects,
         chats=[ChatRead.model_validate(chat) for chat in chats],
+        agent_runs=_sidebar_agent_runs(),
     )
+
+
+def _sidebar_agent_runs(limit: int = 20) -> list[AgentRunRead]:
+    """Recent agent runs for the sidebar.
+
+    The agent store is a separate SQLite layer from the chat ORM, so a failure to
+    read it must not take the whole sidebar down with it.
+    """
+
+    try:
+        from app.services.agent_core import store as agent_store
+    except Exception:  # pragma: no cover - import guard
+        return []
+    try:
+        rows = agent_store.list_sessions(limit=limit)
+    except Exception:
+        return []
+    runs = []
+    for row in rows:
+        raw_project = row.get("project_id")
+        try:
+            project_id = int(raw_project) if raw_project not in (None, "") else None
+        except (TypeError, ValueError):
+            # Runs filed against the old workspace-project UUIDs predate sidebar
+            # filing; show them unfiled rather than dropping them.
+            project_id = None
+        runs.append(
+            AgentRunRead(
+                id=str(row["id"]),
+                title=str(row.get("title") or "Agent run"),
+                status=str(row.get("status") or "queued"),
+                project_id=project_id,
+                updated_at=str(row.get("updated_at") or ""),
+            )
+        )
+    return runs
 
 
 @router.post("/chats", response_model=ChatRead, status_code=status.HTTP_201_CREATED)

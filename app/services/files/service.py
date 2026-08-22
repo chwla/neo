@@ -224,9 +224,9 @@ class WorkspaceFilesService:
         if link_type == "note":
             return get_note(target_id) is not None
         if link_type == "agent_run":
-            from app.services.agents import store as agent_store
+            from app.services.agent_core import store as agent_store
 
-            return agent_store.get_run(target_id) is not None
+            return agent_store.get_session(target_id) is not None
         return False
 
     def _validate_optional_targets(self, request: ArtifactCreate) -> None:

@@ -107,6 +107,47 @@ async function streamRequest(path, payload, onEvent) {
   }
 }
 
+async function streamGet(path, onEvent, signal) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { signal });
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    throw new Error(
+      `Backend API is not reachable. Start FastAPI on http://127.0.0.1:8000. Details: ${
+        error.message || error
+      }`,
+    );
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Request failed with ${response.status}`);
+  }
+  if (!response.body) throw new Error("Streaming response is not available in this browser.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      throw error;
+    }
+    const { done, value } = chunk;
+    buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffered.split("\n");
+    buffered = lines.pop() ?? "";
+    for (const line of lines) {
+      const cleaned = line.trim();
+      if (cleaned) onEvent(JSON.parse(cleaned));
+    }
+    if (done) break;
+  }
+}
+
 export const api = {
   accountProfiles: () => request("/account-profiles"),
   currentAccountProfile: () => request("/account-profiles/session/current"),
@@ -234,7 +275,6 @@ export const api = {
   toolCalls: (params = {}) => {
     const search = new URLSearchParams();
     if (params.runId) search.set("run_id", params.runId);
-    if (params.codingRunId) search.set("coding_run_id", params.codingRunId);
     if (params.status) search.set("status", params.status);
     search.set("limit", String(params.limit ?? 100));
     return request(`/tools/calls?${search.toString()}`);
@@ -287,37 +327,6 @@ export const api = {
     search.set("limit", String(params.limit ?? 100));
     return request(`/recovery/events?${search.toString()}`);
   },
-  startCodingRun: (payload) => request("/coding-agent/runs", {
-    method: "POST", body: JSON.stringify(payload),
-  }),
-  codingRuns: (params = {}) => {
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries({
-      task_id: params.taskId, project_id: params.projectId, repo_id: params.repoId,
-      status: params.status,
-    })) if (value) search.set(key, value);
-    search.set("limit", String(params.limit ?? 50));
-    return request(`/coding-agent/runs?${search.toString()}`);
-  },
-  codingRun: (runId) => request(`/coding-agent/runs/${runId}`),
-  approveCodingAction: (actionId, options = {}) => request(
-    `/coding-agent/actions/${actionId}/approve`, {
-      method: "POST", body: JSON.stringify({ confirm: true, options }),
-    },
-  ),
-  rejectCodingAction: (actionId, reason = null) => request(
-    `/coding-agent/actions/${actionId}/reject`, {
-      method: "POST", body: JSON.stringify({ reason }),
-    },
-  ),
-  reviseCodingPatch: (runId, instructions) => request(
-    `/coding-agent/runs/${runId}/revise-patch`, {
-      method: "POST", body: JSON.stringify({ instructions }),
-    },
-  ),
-  cancelCodingRun: (runId) => request(`/coding-agent/runs/${runId}/cancel`, {
-    method: "POST",
-  }),
   lspStatus: () => request("/lsp/status"),
   lspServers: () => request("/lsp/servers"),
   lspStart: (workspaceId, language = "python") => request(`/lsp/workspaces/${workspaceId}/start`, {
@@ -388,6 +397,18 @@ export const api = {
     if (params.projectId) search.set("project_id", params.projectId);
     search.set("limit", String(params.limit ?? 100));
     return request(`/repos?${search.toString()}`);
+  },
+  uploadRepoFolder: (files, { projectId = null, name = null } = {}) => {
+    const body = new FormData();
+    for (const file of files) {
+      body.append("files", file);
+      // The folder-relative path is the whole point of a folder upload, and it
+      // does not survive as part of the file object on the server side.
+      body.append("paths", file.webkitRelativePath || file.name);
+    }
+    if (projectId) body.append("project_id", projectId);
+    if (name) body.append("name", name);
+    return request("/repos/upload", { method: "POST", body });
   },
   registerRepo: (payload) => request("/repos/register", {
     method: "POST", body: JSON.stringify(payload),
@@ -820,6 +841,40 @@ export const api = {
   createProjectTask: (projectId, payload) =>
     request(`/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
 
+  createAgentSession: (payload) =>
+    request("/agent-sessions", { method: "POST", body: JSON.stringify(payload) }),
+  agentSession: (sessionId) => request(`/agent-sessions/${sessionId}`),
+  agentSessions: (params = {}) => {
+    const search = new URLSearchParams();
+    if (params.limit) search.set("limit", params.limit);
+    if (params.taskId) search.set("task_id", params.taskId);
+    const query = search.toString();
+    return request(`/agent-sessions${query ? `?${query}` : ""}`);
+  },
+  streamAgentSession: (sessionId, after, onEvent, signal) =>
+    streamGet(`/agent-sessions/${sessionId}/events?after=${after || 0}`, onEvent, signal),
+  sendAgentMessage: (sessionId, content) =>
+    request(`/agent-sessions/${sessionId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
+  decideAgentApproval: (sessionId, approvalId, decision, predicate) =>
+    request(`/agent-sessions/${sessionId}/approvals/${approvalId}`, {
+      method: "POST",
+      body: JSON.stringify({ decision, predicate: predicate ?? null }),
+    }),
+  cancelAgentSession: (sessionId) =>
+    request(`/agent-sessions/${sessionId}/cancel`, { method: "POST" }),
+  setAgentSessionMode: (sessionId, mode) =>
+    request(`/agent-sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ mode }) }),
+  deliverAgentChanges: (sessionId, payload) =>
+    request(`/agent-sessions/${sessionId}/deliver`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  exportAgentSession: (sessionId, target) =>
+    request(`/agent-sessions/${sessionId}/export?target=${target}`, { method: "POST" }),
+
   agentRuns: (params = {}) => {
     const search = new URLSearchParams();
     if (params.taskId) search.set("task_id", params.taskId);
@@ -831,22 +886,4 @@ export const api = {
   },
   taskAgentRuns: (taskId) => request(`/tasks/${taskId}/agent-runs`),
   agentRun: (runId) => request(`/agents/runs/${runId}`),
-  startAgentRun: (payload) =>
-    request("/agents/runs", { method: "POST", body: JSON.stringify(payload) }),
-  planAgentTasks: (payload) =>
-    request("/agents/plan-tasks", { method: "POST", body: JSON.stringify(payload) }),
-  startAgentRunFromObjective: (payload) =>
-    request("/agents/runs/from-objective", { method: "POST", body: JSON.stringify(payload) }),
-  cancelAgentRun: (runId) =>
-    request(`/agents/runs/${runId}/cancel`, { method: "POST" }),
-  approveAgentStep: (runId, stepId, approved) =>
-    request(`/agents/runs/${runId}/steps/${stepId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ approved }),
-    }),
-  saveAgentRunToNote: (runId, payload = {}) =>
-    request(`/agents/runs/${runId}/save-to-note`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
 };

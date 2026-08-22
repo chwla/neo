@@ -27,6 +27,48 @@ class RepoWorkspaceService:
         source = validate_repo_root(request.path)
         if store.get_repo_by_original_path(str(source)):
             raise ValueError("This repository is already registered.")
+        return self._import_root(
+            source,
+            name=request.name.strip() if request.name else source.name,
+            project_id=request.project_id,
+            original_path=str(source),
+        )
+
+    def register_upload(
+        self, staged_root: Path, *, name: str, project_id: str | None = None
+    ) -> dict:
+        """Register a folder the browser uploaded and Neo staged on disk.
+
+        Uploads are the only way to reach a user's folder when Neo runs in a
+        container, where the host filesystem the path-based flow expects is not
+        visible. Everything after staging is the same pipeline, so uploaded
+        repositories get identical ignore rules, limits and indexing.
+        """
+
+        if project_id and not get_project(project_id):
+            raise LookupError("Project not found.")
+        return self._import_root(
+            staged_root,
+            name=name,
+            project_id=project_id,
+            # Uploads have no stable host path, and re-uploading the same folder
+            # is a legitimate refresh rather than the duplicate that the
+            # path-based flow rejects, so keep each one distinct.
+            original_path=f"upload://{uuid.uuid4()}/{name}",
+            empty_message="No supported text files were found in the uploaded folder.",
+        )
+
+    def _import_root(
+        self,
+        source: Path,
+        *,
+        name: str,
+        project_id: str | None,
+        original_path: str,
+        empty_message: str = (
+            "No supported text files were found in the selected repository."
+        ),
+    ) -> dict:
         scan = scan_repo(
             source,
             max_files=self.settings.workspace_repo_max_files,
@@ -34,7 +76,7 @@ class RepoWorkspaceService:
             max_file_bytes=self.settings.workspace_repo_max_file_bytes,
         )
         if not scan.files:
-            raise ValueError("No supported text files were found in the selected repository.")
+            raise ValueError(empty_message)
 
         repo_id = str(uuid.uuid4())
         managed_root = Path(self.settings.workspace_repos_dir).resolve()
@@ -44,9 +86,9 @@ class RepoWorkspaceService:
         repo = store.insert_repo(
             {
                 "id": repo_id,
-                "project_id": request.project_id,
-                "name": request.name.strip() if request.name else source.name,
-                "original_path": str(source),
+                "project_id": project_id,
+                "name": name,
+                "original_path": original_path,
                 "workspace_path": str(workspace_path),
                 "status": "importing",
                 "file_count": len(scan.files),

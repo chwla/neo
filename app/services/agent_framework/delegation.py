@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-import app.services.agents.store as agent_store
+import app.services.agent_core.store as agent_store
 from app.services.agent_framework import store
 from app.services.agent_framework.service import (
     AgentDefinitionService,
@@ -20,9 +20,9 @@ class AgentDelegationService:
         self.definitions = AgentDefinitionService()
 
     def create(self, payload: DelegationCreate) -> AgentDelegation:
-        parent_run = agent_store.get_run(payload.parent_run_id)
+        parent_run = agent_store.get_session(payload.parent_run_id)
         if not parent_run:
-            raise AgentFrameworkValidationError("Parent agent run not found.")
+            raise AgentFrameworkValidationError("Parent agent session not found.")
         parent_agent_id = (
             payload.parent_agent_id or parent_run.get("agent_definition_id") or "general"
         )

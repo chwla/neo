@@ -95,9 +95,16 @@ class ProviderRuntimeService:
         messages: list[LLMMessage],
         max_tokens: int | None,
         metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> RuntimeResult:
         return self._run(
-            request_type, route_name, messages, max_tokens, metadata or {}, stream=False
+            request_type,
+            route_name,
+            messages,
+            max_tokens,
+            metadata or {},
+            stream=False,
+            tools=tools,
         )
 
     def _run(
@@ -110,6 +117,7 @@ class ProviderRuntimeService:
         stream: bool,
         existing_id: str | None = None,
         cancelled=None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> RuntimeResult:
         route = select(request_type, route_name)
         estimates = estimate_tokens(messages, max_tokens)
@@ -194,6 +202,7 @@ class ProviderRuntimeService:
                     model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
                 )
                 client = build_client(provider, model, num_predict=max_tokens, num_ctx=num_ctx)
+                tool_calls: list[dict[str, Any]] = []
                 if stream:
                     partial = ""
                     thinking = ""
@@ -231,8 +240,11 @@ class ProviderRuntimeService:
                         stream_usage or {"total_tokens": estimates["total_tokens_estimate"]},
                     )
                 else:
-                    result = client.chat_with_metadata(messages, num_predict=max_tokens)
+                    result = client.chat_with_metadata(
+                        messages, num_predict=max_tokens, tools=tools
+                    )
                     result_content = result.content
+                    tool_calls = result.tool_calls
                     thinking = result.thinking or ""
                     usage = {
                         "prompt_tokens": result.prompt_tokens,
@@ -257,6 +269,7 @@ class ProviderRuntimeService:
                     fallback_chain,
                     redaction,
                     content=result_content,
+                    tool_calls=tool_calls,
                     usage=usage,
                     latency=int((time.perf_counter() - started) * 1000),
                     thinking=thinking,
@@ -282,7 +295,9 @@ class ProviderRuntimeService:
                         client = build_client(
                             provider, model, num_predict=max_tokens, num_ctx=num_ctx
                         )
-                        result = client.chat_with_metadata(messages, num_predict=max_tokens)
+                        result = client.chat_with_metadata(
+                            messages, num_predict=max_tokens, tools=tools
+                        )
                         return self._finish(
                             request["id"],
                             "completed",
@@ -293,6 +308,7 @@ class ProviderRuntimeService:
                             fallback_chain,
                             redaction,
                             content=result.content,
+                            tool_calls=result.tool_calls,
                             usage={"total_tokens": result.total_tokens},
                             latency=int((time.perf_counter() - started) * 1000),
                             thinking=result.thinking,
@@ -348,6 +364,7 @@ class ProviderRuntimeService:
         fallback,
         redaction,
         content="",
+        tool_calls=None,
         usage=None,
         latency=None,
         partial=None,
@@ -383,6 +400,7 @@ class ProviderRuntimeService:
         )
         return RuntimeResult(
             request_id=request_id,
+            tool_calls=list(tool_calls or []),
             status=status,
             route={
                 key: value

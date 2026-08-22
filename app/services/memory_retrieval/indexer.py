@@ -170,9 +170,7 @@ class MemoryIndexer:
     def index_run(self, source_type: str, source_id: str) -> list[dict]:
         """Read already-persisted run metadata; missing optional tables degrade to no items."""
         table = (
-            "workspace_agentic_runs"
-            if source_type == "agentic_run"
-            else "workspace_coding_agent_runs"
+"workspace_agent_sessions"
         )
         try:
             conn = store._connect()
@@ -223,12 +221,8 @@ class MemoryIndexer:
             return []
         if source_type == "bundle":
             return self._index_bundles(scope_type, scope_id)
-        if source_type in {"agentic_run", "coding_run"}:
-            table = (
-                "workspace_agentic_runs"
-                if source_type == "agentic_run"
-                else "workspace_coding_agent_runs"
-            )
+        if source_type == "agent_session":
+            table = "workspace_agent_sessions"
             try:
                 conn = store._connect()
                 identifiers = [

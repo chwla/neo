@@ -106,7 +106,7 @@ export default function RulesProfiles({ onClose }) {
         project_id: form.scope_type === "project" ? form.scope_id || null : null,
         repo_id: form.scope_type === "repo" ? form.scope_id || null : null,
         task_id: form.scope_type === "task" ? form.scope_id || null : null,
-        coding_run_id: form.scope_type === "coding_run" ? form.scope_id || null : null,
+        agent_session_id: form.scope_type === "agent_session" ? form.scope_id || null : null,
       }));
       await load();
     } catch (resolveError) {
@@ -134,7 +134,7 @@ export default function RulesProfiles({ onClose }) {
       <label>Name<input aria-label="Profile name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
       <label>Description<input aria-label="Profile description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
       <div className="coding-agent-selectors">
-        <label>Scope<select aria-label="Profile scope" value={form.scope_type} onChange={(event) => setForm({ ...form, scope_type: event.target.value })}><option value="workspace">Workspace</option><option value="project">Project</option><option value="repo">Repo</option><option value="task">Task</option><option value="coding_run">Coding run</option></select></label>
+        <label>Scope<select aria-label="Profile scope" value={form.scope_type} onChange={(event) => setForm({ ...form, scope_type: event.target.value })}><option value="workspace">Workspace</option><option value="project">Project</option><option value="repo">Repo</option><option value="task">Task</option><option value="agent_session">Agent session</option></select></label>
         <label>Scope ID<input aria-label="Profile scope ID" value={form.scope_id} onChange={(event) => setForm({ ...form, scope_id: event.target.value })} placeholder="Required except workspace" /></label>
         <label>Priority<input aria-label="Profile priority" type="number" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} /></label>
         <label>Enabled<input aria-label="Profile enabled" type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /></label>

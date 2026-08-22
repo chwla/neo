@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --import ./tests/jsx-hooks.mjs --test tests/*.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

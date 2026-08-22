@@ -76,28 +76,24 @@ class BundleExporter:
         result = {
             key: []
             for key in (
-                "coding_runs",
-                "agent_runs",
+                "agent_sessions",
                 "tasks",
                 "projects",
                 "patch_applications",
                 "test_runs",
                 "git_checkpoints",
-                "rules_snapshots",
-                "recovery_events",
                 "tool_calls",
             )
         }
-        if kind == "coding_run":
-            result["coding_runs"] = rows(conn, "workspace_coding_agent_runs", "id=?", [entity_id])
-            run = result["coding_runs"][0] if result["coding_runs"] else {}
-            agent_ids = [run.get("agent_run_id")] if run.get("agent_run_id") else []
-            task_ids = [run.get("task_id")] if run.get("task_id") else []
-            project_ids = [run.get("project_id")] if run.get("project_id") else []
-            patch_ids = [run.get("patch_application_id")] if run.get("patch_application_id") else []
-        elif kind == "agent_run":
-            result["agent_runs"] = rows(conn, "workspace_agent_runs", "id=?", [entity_id])
+        if kind == "agent_session":
+            result["agent_sessions"] = rows(
+                conn, "workspace_agent_sessions", "id=?", [entity_id]
+            )
+            session = result["agent_sessions"][0] if result["agent_sessions"] else {}
             agent_ids = [entity_id]
+            task_ids = [session.get("task_id")] if session.get("task_id") else []
+            project_ids = [session.get("project_id")] if session.get("project_id") else []
+            patch_ids = []
             task_ids = []
             project_ids = []
             patch_ids = []
@@ -117,24 +113,16 @@ class BundleExporter:
             patch_ids = []
         for task_id in task_ids:
             result["tasks"] += rows(conn, "workspace_tasks", "id=?", [task_id])
-            result["agent_runs"] += rows(conn, "workspace_agent_runs", "task_id=?", [task_id])
-            result["coding_runs"] += rows(
-                conn, "workspace_coding_agent_runs", "task_id=?", [task_id]
+            result["agent_sessions"] += rows(
+                conn, "workspace_agent_sessions", "task_id=?", [task_id]
             )
         for project_id in project_ids:
             result["projects"] += rows(conn, "workspace_projects", "id=?", [project_id])
-            result["agent_runs"] += rows(conn, "workspace_agent_runs", "project_id=?", [project_id])
-            result["coding_runs"] += rows(
-                conn, "workspace_coding_agent_runs", "project_id=?", [project_id]
+            result["agent_sessions"] += rows(
+                conn, "workspace_agent_sessions", "project_id=?", [project_id]
             )
-        agent_ids += [item.get("id") for item in result["agent_runs"] if item.get("id")]
-        patch_ids += [
-            item.get("patch_application_id")
-            for item in result["coding_runs"]
-            if item.get("patch_application_id")
-        ]
+        agent_ids += [item.get("id") for item in result["agent_sessions"] if item.get("id")]
         for agent_id in set(filter(None, agent_ids)):
-            result["agent_runs"] += rows(conn, "workspace_agent_runs", "id=?", [agent_id])
             result["tool_calls"] += rows(conn, "workspace_tool_calls", "agent_run_id=?", [agent_id])
         for patch_id in set(filter(None, patch_ids)):
             result["patch_applications"] += rows(
@@ -143,18 +131,13 @@ class BundleExporter:
             result["patch_applications"] += rows(
                 conn, "workspace_patch_application_files", "patch_application_id=?", [patch_id]
             )
-        for item in result["coding_runs"]:
-            if item.get("test_run_id"):
-                result["test_runs"] += rows(
-                    conn, "workspace_test_runs", "id=?", [item["test_run_id"]]
-                )
-            if item.get("checkpoint_id"):
-                result["git_checkpoints"] += rows(
-                    conn, "workspace_git_checkpoints", "id=?", [item["checkpoint_id"]]
-                )
+        # Tests and checkpoints a session produced are linked by agent_run_id.
         for agent_id in set(filter(None, agent_ids)):
-            result["recovery_events"] += rows(
-                conn, "workspace_agent_recovery_events", "run_id=?", [agent_id]
+            result["test_runs"] += rows(
+                conn, "workspace_test_runs", "agent_run_id=?", [agent_id]
+            )
+            result["git_checkpoints"] += rows(
+                conn, "workspace_git_checkpoints", "agent_run_id=?", [agent_id]
             )
         if not include_patch_text:
             for item in result["patch_applications"]:
@@ -166,11 +149,6 @@ class BundleExporter:
                 item.pop("combined_output", None)
                 item.pop("stdout_text", None)
                 item.pop("stderr_text", None)
-        result["rules_snapshots"] = [
-            item.get("metadata", {}).get("resolved_rules")
-            for item in result["coding_runs"]
-            if item.get("metadata", {}).get("resolved_rules")
-        ]
         return {key: self._unique(value) for key, value in result.items()}
 
     @staticmethod

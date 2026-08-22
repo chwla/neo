@@ -13,9 +13,6 @@ def snapshot(view: str, data: dict) -> str:
     if view == "tasks":
         for item in data.get("tasks", {}).get("tasks", []):
             lines.append(f"{item.get('status')} · {line(item.get('title'))}")
-    elif view == "coding-runs":
-        for item in data.get("coding", {}).get("coding_runs", []):
-            lines.append(f"{item.get('status')} · {line(item.get('objective'))}")
     elif view == "commands":
         for item in data.get("commands", {}).get("runs", []):
             command = " ".join(item.get("command", []))
@@ -27,7 +24,6 @@ def snapshot(view: str, data: dict) -> str:
     else:
         lines.append(f"Health: {data.get('health', {}).get('status', 'unavailable')}")
         lines.append(f"Tasks: {data.get('tasks', {}).get('total', 0)}")
-        lines.append(f"Coding runs: {data.get('coding', {}).get('total', 0)}")
         lines.append(f"Command runs: {len(data.get('commands', {}).get('runs', []))}")
         lines.append(f"Context summaries: {len(data.get('context', {}).get('summaries', []))}")
     return "\n".join(lines + ["", "q quit · r refresh · ? help · j/k navigate · a approve"])

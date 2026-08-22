@@ -77,8 +77,7 @@ class MemoryRetrievalService:
         )
         source_types = requested or [
             "context_summary",
-            "agentic_run",
-            "coding_run",
+            "agent_session",
             *self.indexer.SOURCE_TYPES,
         ]
         items: list[dict] = []
@@ -89,7 +88,7 @@ class MemoryRetrievalService:
                 items.extend(
                     self.indexer.index_context_summaries(request.scope_type, request.scope_id)
                 )
-            elif source_type in {"agentic_run", "coding_run"}:
+            elif source_type == "agent_session":
                 if request.source_id:
                     items.extend(self.indexer.index_run(source_type, request.source_id))
                 else:
@@ -107,7 +106,7 @@ class MemoryRetrievalService:
             counts[source_type] = len(items) - before
         return {"indexed": len(items), "counts": counts, "items": items}
 
-    def refresh_agentic_run(self, run: dict[str, Any]) -> list[dict]:
+    def refresh_agent_session(self, run: dict[str, Any]) -> list[dict]:
         state = run.get("state") or {}
         scope_type, scope_id = (
             ("task", state.get("task_id"))
@@ -118,11 +117,11 @@ class MemoryRetrievalService:
             self.indexer.index_record(
                 scope_type=scope_type,
                 scope_id=scope_id,
-                source_type="agentic_run",
+                source_type="agent_session",
                 source_id=run["id"],
                 title=f"Agentic run: {run['objective']}",
                 content=run.get("final_report") or run["objective"],
-                tags=["agentic_run", "summary"],
+                tags=["agent_session", "summary"],
             )
         ]
         for index, failure in enumerate(state.get("failures") or state.get("blockers") or []):
@@ -130,13 +129,13 @@ class MemoryRetrievalService:
                 self.indexer.index_record(
                     scope_type=scope_type,
                     scope_id=scope_id,
-                    source_type="agentic_run",
+                    source_type="agent_session",
                     source_id=f"{run['id']}:failure:{index}",
                     title=f"Agentic blocker: {run['objective'][:100]}",
                     content=failure,
                     memory_type="failure",
                     importance=4,
-                    tags=["agentic_run", "failure"],
+                    tags=["agent_session", "failure"],
                 )
             )
         return items

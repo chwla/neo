@@ -38,6 +38,7 @@ class RuntimeResult(BaseModel):
     status: str
     route: dict[str, Any]
     content: str = ""
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
     latency_ms: int | None = None
     retry_count: int = 0

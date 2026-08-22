@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.core.config import get_settings
-from app.services.agents import store as agent_store
+from app.services.agent_core import store as agent_store
 from app.services.chat_intent import is_internal_chat_command
 from app.services.code_index import store as index_store
 from app.services.files import store as file_store
@@ -450,9 +450,9 @@ class GitService:
             if repo.get("project_id") and task.get("project_id") != repo["project_id"]:
                 raise ValueError("Attached task must belong to the repository project.")
         if request.agent_run_id:
-            run = agent_store.get_run(request.agent_run_id)
+            run = agent_store.get_session(request.agent_run_id)
             if not run:
-                raise LookupError("Attached agent run not found.")
+                raise LookupError("Attached agent session not found.")
             if request.task_id and run.get("task_id") != request.task_id:
                 raise ValueError("Attached agent run must belong to the attached task.")
         if request.patch_application_id:

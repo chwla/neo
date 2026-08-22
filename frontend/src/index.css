@@ -258,46 +258,94 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-input-form .send-button { position: absolute; right: 0; bottom: 0; display: grid; width: 40px; height: 40px; place-items: center; min-height: 40px; border-color: var(--neo-green); padding: 0; color: var(--neo-green); clip-path: polygon(0 0,calc(100% - 4px) 0,100% 4px,100% 100%,4px 100%,0 calc(100% - 4px)); font-size: 16px; }
 .chat-input-form .send-button:hover:not(:disabled) { background: var(--neo-green); color: var(--neo-bg); }
 .chat-input-disclaimer { width: 100%; max-width: none; margin-top: 8px; padding-left: 20px; color: #2f2f2f; font: 9px "JetBrains Mono", monospace; letter-spacing: .04em; text-transform: uppercase; }
-.agent-context-pickers { display: flex; flex-wrap: wrap; gap: 8px; }
+.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+
+/* Agent context controls. Each chip is a single bordered unit holding a small
+   uppercase label and its value, so the row reads as one set of instrument
+   readouts rather than four loose browser selects. The native select is kept
+   (accessibility, keyboard, mobile) and styled flat, with a drawn caret. */
+.agent-context-pickers { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
+.agent-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 3px;
+  background: var(--neo-panel);
+  padding: 0 10px;
+  transition: border-color .14s ease, background .14s ease;
+}
+.agent-chip:hover { border-color: #333; background: var(--neo-panel-raised); }
+.agent-chip:focus-within { border-color: var(--neo-green); background: var(--neo-panel-raised); }
+.agent-chip-label {
+  color: var(--neo-muted);
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.agent-chip select {
+  max-width: 190px;
+  height: 28px;
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 14px 0 0;
+  color: var(--neo-body);
+  font: 11px "JetBrains Mono", monospace;
+  text-overflow: ellipsis;
+}
+.agent-chip select:focus { outline: none; }
+.agent-chip select option { background: var(--neo-panel); color: var(--neo-body); }
+/* Caret is drawn on the wrapper because `appearance: none` removes the native
+   one, and a select cannot carry its own pseudo-element. */
+.agent-chip:has(select)::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid var(--neo-muted);
+  border-bottom: 1px solid var(--neo-muted);
+  transform: translateY(-2px) rotate(45deg);
+  pointer-events: none;
+}
+.agent-chip:hover:has(select)::after, .agent-chip:focus-within:has(select)::after { border-color: var(--neo-green); }
+.agent-chip-action { border-style: dashed; color: var(--neo-body); }
+.agent-chip-action:hover:not(:disabled) { border-style: solid; border-color: var(--neo-green); }
+.agent-chip-action:disabled { opacity: .45; }
+.agent-chip-value { color: var(--neo-green); font: 11px "JetBrains Mono", monospace; }
 .agent-task-picker { display: flex; align-items: center; gap: 5px; color: #444; font: 9px "JetBrains Mono", monospace; }
 .agent-task-picker select { height: 26px; padding: 0 6px; color: #777; font-size: 10px; }
 .agent-submit-actions { display: flex; gap: 6px; }
 .agent-submit-actions button { height: 40px; white-space: nowrap; }
 .agent-mode-hint, .agent-mode-message { margin: 6px 0 0 20px; color: #555; font: 10px "JetBrains Mono", monospace; }
-.agent-mode-message { color: var(--neo-green); }
-.agent-workbench-trigger { display:grid; grid-template-columns:auto minmax(0,1fr) auto; width:100%; align-items:center; gap:14px; margin-top:10px; border:1px solid var(--neo-line-bright); border-left:2px solid var(--neo-green); background:linear-gradient(90deg,rgba(57,255,20,.06),transparent 48%); padding:12px 14px; color:#c9c9c9; font-size:12px; text-align:left; }
-.agent-workbench-trigger:hover { border-color:var(--neo-green); background:linear-gradient(90deg,rgba(57,255,20,.11),transparent 58%); }
-.agent-workbench-trigger span { color:var(--neo-green); font:600 9px "JetBrains Mono", monospace; letter-spacing:.08em; }
-.agent-workbench-trigger small { color:#555; font:9px "JetBrains Mono", monospace; }
-.agent-plan-preview, .agent-created-tasks, .chat-agent-status { margin-top: 8px; border: 1px solid var(--neo-line); border-left: 2px solid var(--neo-green); background: var(--neo-panel); padding: 10px; color: #aaa; font-size: 11px; }
-.agent-plan-preview-head, .agent-plan-actions, .chat-agent-status-main, .chat-agent-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agent-plan-preview-head > div, .agent-created-tasks { display: grid; gap: 3px; }
-.agent-plan-preview ol { max-height: 170px; overflow: auto; padding-left: 22px; }
-.agent-plan-preview li { margin: 7px 0; color: #666; }
-.agent-plan-preview li strong, .agent-plan-preview li span { display: block; }
-.agent-plan-actions { justify-content: flex-end; }
-.agent-plan-actions button, .chat-agent-actions button, .agent-plan-preview-head button { border: 0; background: transparent; color: #555; font: 9px "JetBrains Mono", monospace; }
-.agent-plan-actions button:hover, .chat-agent-actions button:hover { color: var(--neo-green); }
-.chat-agent-details { display: grid; gap: 6px; margin-top: 8px; border-top: 1px solid var(--neo-line); padding-top: 8px; }
+/* A blocked run is a required next step, not background advice, so it reads at
+   full strength rather than in the hint's muted grey. */
+.agent-mode-blocked { color: var(--neo-green); }
 
-/* Advanced agent workbench */
-.coding-workbench-modal { width:min(1180px,100%) !important; padding:0 28px 28px; }
+/* Agent run rows reuse the chat row's shape so the sidebar stays one rhythm,
+   and add the status a chat thread does not have. */
+.agent-run-item { display: flex; align-items: center; gap: 8px; }
+.agent-run-item .chat-item-title { flex: 1; min-width: 0; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.agent-run-status { flex: none; color: var(--neo-muted); font: 600 8px "JetBrains Mono", monospace; letter-spacing: .08em; }
+.agent-run-status.status-running, .agent-run-status.status-queued { color: var(--neo-green); }
+.agent-run-status.status-waiting_approval { color: #e0a030; }
+.agent-run-status.status-failed { color: var(--neo-danger); }
+.agent-mode-message { color: var(--neo-green); }
 .coding-agent { display:grid; gap:18px; padding:20px 0 4px; color:#b7b7b7; }
-.coding-agent-title { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; border-bottom:1px solid var(--neo-line); padding-bottom:18px; }
-.coding-agent-title h3 { margin:4px 0 6px; color:var(--neo-text); font-size:22px; font-weight:600; }
-.coding-agent-title p { max-width:640px; margin:0; color:#777; font-size:13px; line-height:1.55; }
 .coding-kicker { color:var(--neo-green); font:600 10px "JetBrains Mono", monospace; letter-spacing:.12em; text-transform:uppercase; }
 .coding-agent-form { display:grid; gap:16px; border:1px solid var(--neo-line-bright); background:var(--neo-panel); padding:20px; }
-.coding-objective { display:grid; gap:7px; }
 .coding-objective > span, .coding-agent-selectors label { color:#717171; font:600 10px "JetBrains Mono", monospace; letter-spacing:.06em; text-transform:uppercase; }
-.coding-objective textarea { min-height:116px; border:1px solid #2a2a2a; background:#090909; padding:13px; color:var(--neo-text); font:14px/1.55 inherit; resize:vertical; }
-.coding-objective textarea:focus { outline:0; border-color:var(--neo-green); }
 .coding-agent-selectors { display:grid; grid-template-columns:1fr 1.15fr 1fr 130px; gap:12px; }
 .coding-agent-selectors label { display:grid; gap:7px; }
 .coding-agent-selectors select, .coding-agent-selectors input { min-height:38px; border:1px solid #292929; background:#0a0a0a; padding:8px 10px; color:#c8c8c8; font:12px inherit; }
 .coding-agent-form > .neo-button { justify-self:start; min-width:210px; min-height:40px; }
 .coding-agent-form .task-help { margin:0; border-top:1px solid var(--neo-line); padding-top:12px; color:#5d5d5d; font-size:11px; }
-@media (max-width: 800px) { .coding-agent-selectors { grid-template-columns:1fr 1fr; } .agent-workbench-trigger { grid-template-columns:1fr; gap:5px; } .agent-workbench-trigger small { margin:0; } }
+@media (max-width: 800px) { .coding-agent-selectors { grid-template-columns:1fr 1fr; } }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: auto; background: rgba(0,0,0,.78); padding: 28px; backdrop-filter: blur(3px); }
 .neo-dialog { width: min(620px, 100%); max-height: calc(100vh - 56px); overflow: auto; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-bg); box-shadow: 0 24px 80px rgba(0,0,0,.7); padding: 0 24px 24px; }
@@ -480,7 +528,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .task-editor { display: grid; gap: 10px; }
 .task-status, .task-priority, .agent-status, .research-status-badge { color: var(--neo-green); font: 9px "JetBrains Mono", monospace; text-transform: uppercase; }
 .task-help { color: #444; font: 10px/1.5 "JetBrains Mono", monospace; }
-.agent-run-detail, .agent-final-output { border: 1px solid var(--neo-line); background: var(--neo-panel); padding: 10px; color: #888; font-size: 11px; }
 
 .research-layout { display: grid; grid-template-columns: minmax(0,1fr) 280px; width: 100%; height: 100vh; overflow: hidden; padding: 0; }
 .research-main { min-width: 0; overflow: auto; padding: 0 32px 32px; }
@@ -1952,7 +1999,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 11.5px;
   line-height: 1.6;
 }
-.agentic-timeline { display: grid; gap: 6px; }
 
 @media (max-width: 900px) {
   .connector-layout, .connector-skills-layout, .test-runner-grid { grid-template-columns: minmax(0, 1fr); }
@@ -2193,3 +2239,95 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .chat-input-form .stop-button svg { width: 14px; height: 14px; fill: currentColor; }
 .chat-input-form .stop-button:hover:not(:disabled) { background: var(--neo-danger); color: var(--neo-bg); }
 .chat-input-form .stop-button:disabled { opacity: .5; }
+
+/* --- Agent session -------------------------------------------------------- */
+/* A full view rather than a panel inside the composer strip: that strip is
+   position:fixed with a backdrop-filter, which makes it a containing block for
+   fixed descendants and previously trapped dialogs inside it. */
+.agent-session-main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.agent-session { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.agent-session.loading { align-items: center; justify-content: center; color: var(--neo-muted); }
+.agent-session-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--neo-line); flex: 0 0 auto; flex-wrap: wrap; }
+.agent-session-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.agent-session-title strong { color: var(--neo-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-session-back { background: none; border: none; color: var(--neo-muted); cursor: pointer; padding: 4px 6px; }
+.agent-session-back:hover { color: var(--neo-green); }
+.agent-session-controls { display: flex; align-items: center; gap: 10px; }
+.agent-session-status { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 3px 8px; border: 1px solid var(--neo-line-bright); border-radius: 3px; color: var(--neo-muted); }
+.agent-session-status.running { color: var(--neo-green); border-color: var(--neo-green); }
+.agent-session-status.waiting_approval { color: #ffb020; border-color: #ffb020; }
+.agent-session-status.completed { color: var(--neo-green); }
+.agent-session-status.failed { color: var(--neo-danger); border-color: var(--neo-danger); }
+.agent-session-status.cancelled { color: var(--neo-muted); }
+.agent-mode-switch { display: inline-flex; border: 1px solid var(--neo-line-bright); border-radius: 4px; overflow: hidden; }
+.agent-mode-switch button { background: transparent; border: none; color: var(--neo-muted); padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.agent-mode-switch button.active { background: var(--neo-panel-raised); color: var(--neo-green); }
+.agent-mode-switch button:disabled { opacity: .5; cursor: not-allowed; }
+.agent-stop { background: transparent; border: 1px solid var(--neo-danger); color: var(--neo-danger); padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.agent-stop:hover { background: rgba(255, 59, 48, .12); }
+.agent-session-body { display: flex; gap: 16px; flex: 1 1 auto; min-height: 0; padding: 16px 18px; }
+.agent-transcript { flex: 1 1 auto; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.agent-objective { border-left: 2px solid var(--neo-green); padding: 8px 12px; color: var(--neo-body); background: var(--neo-panel); border-radius: 0 4px 4px 0; }
+.agent-text { color: var(--neo-body); line-height: 1.6; }
+.agent-text pre, .agent-summary pre { overflow-x: auto; background: var(--neo-panel); padding: 10px; border-radius: 4px; }
+.agent-user-note { align-self: flex-end; max-width: 80%; background: var(--neo-panel-raised); border: 1px solid var(--neo-line-bright); border-radius: 6px; padding: 8px 12px; color: var(--neo-text); }
+.agent-tool-card { border: 1px solid var(--neo-line); border-radius: 5px; background: var(--neo-panel); overflow: hidden; }
+.agent-tool-card.bad { border-color: rgba(255, 59, 48, .5); }
+.agent-tool-card.warn { border-color: rgba(255, 176, 32, .5); }
+.agent-tool-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; background: none; border: none; color: var(--neo-body); cursor: pointer; text-align: left; font-size: 13px; }
+.agent-tool-head:hover { background: var(--neo-panel-raised); }
+.agent-tool-name { color: var(--neo-green); font-family: ui-monospace, monospace; flex: 0 0 auto; }
+.agent-tool-summary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--neo-muted); }
+.agent-tool-status { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; flex: 0 0 auto; }
+.agent-tool-status.ok { color: var(--neo-green); }
+.agent-tool-status.bad { color: var(--neo-danger); }
+.agent-tool-status.warn { color: #ffb020; }
+.agent-tool-time { color: var(--neo-faint); font-size: 11px; flex: 0 0 auto; }
+.agent-tool-body { border-top: 1px solid var(--neo-line); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.agent-tool-args, .agent-tool-output { margin: 0; max-height: 320px; overflow: auto; background: var(--neo-bg); padding: 8px; border-radius: 4px; font-size: 12px; color: var(--neo-body); white-space: pre-wrap; word-break: break-word; }
+.agent-tool-error { color: var(--neo-danger); font-size: 12px; }
+.agent-approval { border: 1px solid #ffb020; border-radius: 6px; padding: 14px; background: rgba(255, 176, 32, .06); display: flex; flex-direction: column; gap: 10px; }
+.agent-approval-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.agent-approval-head strong { color: #ffb020; }
+.agent-approval-head span { color: var(--neo-muted); font-size: 12px; }
+.agent-approval-summary { color: var(--neo-text); }
+.agent-approval-args { margin: 0; background: var(--neo-bg); padding: 8px; border-radius: 4px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.agent-approval-scope { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--neo-muted); }
+.agent-approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-approval-note { margin: 0; font-size: 11px; color: var(--neo-muted); }
+.agent-outcome { border: 1px solid var(--neo-line-bright); border-radius: 6px; padding: 14px; background: var(--neo-panel); }
+.agent-outcome.ok { border-color: var(--neo-green); }
+.agent-outcome.warn { border-color: #ffb020; }
+.agent-outcome.bad { border-color: var(--neo-danger); }
+.agent-outcome strong { display: block; margin-bottom: 4px; }
+.agent-outcome.ok strong { color: var(--neo-green); }
+.agent-outcome.warn strong { color: #ffb020; }
+.agent-outcome.bad strong { color: var(--neo-danger); }
+.agent-outcome p { margin: 0 0 8px; color: var(--neo-muted); font-size: 12px; }
+.agent-summary { color: var(--neo-body); line-height: 1.6; }
+.agent-evidence { margin: 10px 0 0; padding-left: 18px; font-size: 12px; }
+.agent-evidence li.ok { color: var(--neo-green); }
+.agent-evidence li.bad { color: var(--neo-danger); }
+.agent-todo { flex: 0 0 260px; align-self: flex-start; border: 1px solid var(--neo-line); border-radius: 6px; background: var(--neo-panel); padding: 12px; max-height: 100%; overflow-y: auto; }
+.agent-todo-head { display: flex; justify-content: space-between; color: var(--neo-text); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+.agent-todo-head span { color: var(--neo-muted); }
+.agent-todo ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.agent-todo-item { display: flex; gap: 8px; font-size: 13px; color: var(--neo-body); }
+.agent-todo-item.completed { color: var(--neo-faint); text-decoration: line-through; }
+.agent-todo-item.in_progress { color: var(--neo-green); }
+.agent-todo-mark { flex: 0 0 auto; }
+.agent-delivery { border: 1px solid var(--neo-line-bright); border-radius: 6px; padding: 14px; background: var(--neo-panel); }
+.agent-delivery-head { color: var(--neo-text); margin-bottom: 8px; }
+.agent-delivery-files, .agent-delivery-blocked { margin: 0 0 10px; padding-left: 18px; font-size: 12px; }
+.agent-delivery-files li { color: var(--neo-body); }
+.agent-delivery-blocked li { color: #ffb020; }
+.agent-delivery-empty { color: var(--neo-muted); font-size: 12px; }
+.agent-delivery-actions { display: flex; gap: 8px; }
+.agent-delivery-patch { margin: 10px 0 0; max-height: 320px; overflow: auto; background: var(--neo-bg); padding: 10px; border-radius: 4px; font-size: 12px; }
+.agent-session-error { color: var(--neo-danger); font-size: 13px; }
+.agent-followup { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--neo-line); flex: 0 0 auto; }
+.agent-followup input { flex: 1 1 auto; }
+@media (max-width: 900px) {
+  .agent-session-body { flex-direction: column; }
+  .agent-todo { flex: 0 0 auto; width: 100%; }
+}

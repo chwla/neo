@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 ScopeType = Literal[
     "chat",
     "agent_run",
-    "coding_run",
+    "agent_session",
     "task",
     "project",
     "repo_workspace",

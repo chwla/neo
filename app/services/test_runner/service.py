@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 
-from app.services.agents import store as agent_store
+from app.services.agent_core import store as agent_store
 from app.services.chat_intent import is_internal_chat_command
 from app.services.patch_apply import store as patch_store
 from app.services.repos import store as repo_store
@@ -161,9 +161,9 @@ class TestRunnerService:
             if project_id and task.get("project_id") != project_id:
                 raise ValueError("Attached task must belong to the test command project.")
         if request.agent_run_id:
-            agent_run = agent_store.get_run(request.agent_run_id)
+            agent_run = agent_store.get_session(request.agent_run_id)
             if not agent_run:
-                raise LookupError("Attached agent run not found.")
+                raise LookupError("Attached agent session not found.")
             if request.task_id and agent_run.get("task_id") != request.task_id:
                 raise ValueError("Attached agent run must belong to the attached task.")
         if request.patch_application_id:

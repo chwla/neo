@@ -1,1 +1,1 @@
-VIEWS = ("dashboard", "tasks", "coding-runs", "agents", "commands", "context", "settings")
+VIEWS = ("dashboard", "tasks", "agent-sessions", "agents", "commands", "context", "settings")

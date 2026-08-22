@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { api } from "./api.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
+import { registerModal } from "./modalStack.js";
 import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
@@ -9,9 +11,8 @@ import Research from "./Research.jsx";
 import Tasks from "./Tasks.jsx";
 import Files from "./Files.jsx";
 import Repos from "./Repos.jsx";
-import CodingAgent from "./CodingAgent.jsx";
+import AgentSession from "./AgentSession.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
-import RecoveryPanel from "./RecoveryPanel.jsx";
 import AgentSettings from "./AgentSettings.jsx";
 import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
 import Bundles from "./Bundles.jsx";
@@ -19,7 +20,6 @@ import GitHub from "./GitHub.jsx";
 import ContextMemory from "./ContextMemory.jsx";
 import CommandSandbox from "./CommandSandbox.jsx";
 import LspPanel from "./LspPanel.jsx";
-import AgenticRuns from "./AgenticRuns.jsx";
 import WebSearch from "./WebSearch.jsx";
 import MemoryRetrieval from "./MemoryRetrieval.jsx";
 import ProviderRuntime from "./ProviderRuntime.jsx";
@@ -37,8 +37,18 @@ import {
   splitGeneratedText,
 } from "./chatPresentation.js";
 
-const EMPTY_SIDEBAR = { projects: [], chats: [] };
-const ACTIVE_AGENT_RUN_STATUSES = new Set(["queued", "planning", "running", "waiting_approval"]);
+const EMPTY_SIDEBAR = { projects: [], chats: [], agent_runs: [] };
+
+// Short labels: the sidebar row is narrow, and "waiting_approval" in full would
+// crowd out the title that identifies the run.
+const AGENT_RUN_STATUS = {
+  queued: "QUEUED",
+  running: "RUNNING",
+  waiting_approval: "APPROVE",
+  completed: "DONE",
+  failed: "FAILED",
+  cancelled: "STOPPED",
+};
 
 
 function errorMessage(error) {
@@ -59,17 +69,6 @@ function browserChatContext() {
     timezone,
     locale: navigator.language || null,
   };
-}
-
-function formatAgentStatus(value) {
-  if (value === "waiting_approval") return "Waiting for approval";
-  return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function formatAgentTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
 function parseNeoTimestamp(value) {
@@ -238,8 +237,24 @@ function NeoButton({ children, className = "", type = "button", ...props }) {
   );
 }
 
-function Modal({ title, children, onClose, wide = false, className = "" }) {
-  return (
+/**
+ * Escape closes any dialog -- see modalStack.js for how that is routed when dialogs
+ * stack. The corner "\u00d7" used to be the only way out, which reads as a trap in the
+ * taller dialogs where it scrolls away; `backLabel` adds a second, spelled-out exit
+ * next to the title for the ones you can get deep inside.
+ */
+export function Modal({ title, children, onClose, wide = false, className = "", backLabel = "" }) {
+  // Held in a ref so an inline onClose does not re-register the dialog on every
+  // render, which would shuffle it back to the top of the stack.
+  const closeRef = useRef(onClose);
+
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => registerModal(() => closeRef.current?.()), []);
+
+  const dialog = (
     <div className="modal-backdrop" role="presentation">
       <section
         className={`neo-dialog ${wide ? "neo-dialog-wide" : ""} ${className}`.trim()}
@@ -248,8 +263,16 @@ function Modal({ title, children, onClose, wide = false, className = "" }) {
         aria-label={title}
       >
         <div className="dialog-title-row">
-          <h2>{title}</h2>
-          <button className="dialog-close" onClick={onClose} aria-label="Close" type="button">
+          <div className="dialog-title-main">
+            {backLabel ? (
+              <button className="dialog-back" onClick={onClose} type="button">
+                {"\u2190"} {backLabel}
+              </button>
+            ) : null}
+            <h2>{title}</h2>
+          </div>
+          <button className="dialog-close" onClick={onClose} aria-label="Close dialog (Escape)"
+            title="Close (Esc)" type="button">
             {"\u00d7"}
           </button>
         </div>
@@ -257,6 +280,13 @@ function Modal({ title, children, onClose, wide = false, className = "" }) {
       </section>
     </div>
   );
+
+  // Portalled to <body> rather than rendered in place. The composer that opens the
+  // workbench sets backdrop-filter, and that makes it the containing block for
+  // fixed-position descendants -- rendered inline, the dialog was trapped inside the
+  // composer strip with its title row and close button off-screen. Going through the
+  // body keeps every dialog anchored to the viewport wherever it is opened from.
+  return typeof document === "undefined" ? dialog : createPortal(dialog, document.body);
 }
 
 /**
@@ -366,6 +396,8 @@ function Sidebar({
   onOpenTasks,
   onOpenFiles,
   onOpenRepos,
+  onOpenAgentRun,
+  activeAgentRunId,
   activeView,
   profile,
   onSwitchProfile,
@@ -392,6 +424,9 @@ function Sidebar({
     }))
     .filter((project) => !query || project.name.toLowerCase().includes(query) || project.chats.length);
   const filteredChats = sidebar.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
+  const filteredAgentRuns = (sidebar.agent_runs || []).filter(
+    (run) => !query || run.title.toLowerCase().includes(query),
+  );
   const systemItems = [
     ["memory", "Memory", onOpenMemory],
     ["research", "Research", onOpenResearch],
@@ -526,6 +561,31 @@ function Sidebar({
             onDeleteChat={onDeleteChat}
             onRenameChat={onRenameChat}
           />
+        ))
+      )}
+
+      {/* Agent runs are their own kind of thread -- they have a status and no
+          message to send -- so they get their own section rather than being
+          mixed into CHATS where the two would be hard to tell apart. */}
+      <div className="sidebar-section">AGENT RUNS</div>
+      {filteredAgentRuns.length === 0 ? (
+        <p className="sidebar-caption">No agent runs yet.</p>
+      ) : (
+        filteredAgentRuns.map((run) => (
+          <div
+            className={`chat-item agent-run-item ${run.id === activeAgentRunId ? "active" : ""}`}
+            key={run.id}
+          >
+            <button
+              className="chat-item-title"
+              type="button"
+              onClick={() => onOpenAgentRun?.(run.id)}
+              title={run.title}
+            >
+              {run.title}
+            </button>
+            <span className={`agent-run-status status-${run.status}`}>{AGENT_RUN_STATUS[run.status] || run.status}</span>
+          </div>
         ))
       )}
 
@@ -720,7 +780,7 @@ function formatFileSize(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function ChatComposer({
+export function ChatComposer({
   disabled,
   value,
   onChange,
@@ -736,19 +796,14 @@ function ChatComposer({
   agentDefinitions,
   selectedAgentDefinitionId,
   onAgentDefinitionChange,
-  onPlanAgentTasks,
-  planningTasks,
-  proposedPlan,
-  onCreatePlannedTasks,
-  onCreatePlannedTasksAndRun,
-  onCancelPlan,
-  createdTasks,
-  agentRun,
+  repos = [],
+  selectedRepoId,
+  onRepoChange,
+  agentMode = "normal",
+  onAgentModeChange,
+  onUploadFolder,
+  folderUploading = false,
   agentMessage,
-  agentDetailsOpen,
-  onToggleAgentDetails,
-  onSaveAgentRun,
-  onRefreshAgentRun,
   attachments = [],
   onAttachFiles,
   onRemoveAttachment,
@@ -760,7 +815,6 @@ function ChatComposer({
 }) {
   const textareaRef = useRef(null);
   const attachInputRef = useRef(null);
-  const [showCodingWorkbench, setShowCodingWorkbench] = useState(false);
 
   const resizeComposer = useCallback(() => {
     const textarea = textareaRef.current;
@@ -815,20 +869,49 @@ function ChatComposer({
             </div>
           ) : (
             <div className="agent-context-pickers">
-              <label className="agent-task-picker">
-                <span>Project</span>
+              <label className="agent-chip">
+                <span className="agent-chip-label">Project</span>
                 <select value={selectedProjectId} onChange={(event) => onProjectChange(event.target.value)}
                   disabled={disabled} aria-label="Select optional project for agent">
-                  <option value="">Optional project</option>
+                  <option value="">No project</option>
                   {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
                 </select>
               </label>
-              <label className="agent-task-picker">
-                <span>Agent</span>
+              <label className="agent-chip">
+                <span className="agent-chip-label">Repo</span>
+                <select value={selectedRepoId} onChange={(event) => onRepoChange(event.target.value)}
+                  disabled={disabled} aria-label="Select repository for agent">
+                  <option value="">No repository</option>
+                  {repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="agent-chip agent-chip-action"
+                onClick={onUploadFolder}
+                disabled={disabled || folderUploading}
+                title="Upload a folder from this computer for the agent to work on"
+              >
+                <span className="agent-chip-label">Folder</span>
+                <span className="agent-chip-value">
+                  {folderUploading ? "Uploading…" : "Upload"}
+                </span>
+              </button>
+              <label className="agent-chip">
+                <span className="agent-chip-label">Mode</span>
+                <select value={agentMode} onChange={(event) => onAgentModeChange(event.target.value)}
+                  disabled={disabled} aria-label="Select permission mode">
+                  <option value="plan">Plan · propose only</option>
+                  <option value="normal">Normal · ask first</option>
+                  <option value="auto">Auto · no prompts</option>
+                </select>
+              </label>
+              <label className="agent-chip">
+                <span className="agent-chip-label">Agent</span>
                 <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
                   disabled={disabled} aria-label="Select agent definition">
                   <option value="general">General</option>
-                  {agentDefinitions.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
+                  {agentDefinitions.filter((agent) => agent.name !== "general").map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
                 </select>
               </label>
             </div>
@@ -905,11 +988,10 @@ function ChatComposer({
           />
           {mode === "agent" ? (
             <div className="agent-submit-actions">
-              <button type="button" className="neo-button secondary" onClick={onPlanAgentTasks}
-                disabled={disabled || planningTasks || !value.trim()}>Plan</button>
-              <NeoButton type="submit" className="agent-run-button"
-                disabled={disabled || !value.trim()}
-                aria-label="Start Agent" title="Start Agent">Start</NeoButton>
+              <NeoButton type="submit" className="agent-run-button primary"
+                disabled={disabled || !value.trim() || !selectedRepoId}
+                aria-label="Start Agent"
+                title={selectedRepoId ? "Start Agent" : "Select a repository first"}>Start</NeoButton>
             </div>
           ) : (
             generating ? (
@@ -931,88 +1013,25 @@ function ChatComposer({
             )
           )}
         </form>
-        {mode === "agent" && !value.trim() ? (
-          <div className="agent-mode-hint">Give Neo an objective or paste a plan. It will create and complete its own checklist.</div>
+        {mode === "agent" && !selectedRepoId ? (
+          <div className="agent-mode-hint agent-mode-blocked">
+            Select a repository first. Upload a folder from your computer and the agent
+            will have code to read, edit and test.
+          </div>
+        ) : mode === "agent" && !value.trim() ? (
+          <div className="agent-mode-hint">
+            Give Neo an objective. It inspects, works, and verifies on its own, and asks you
+            before anything outside its sandbox changes.
+          </div>
         ) : null}
         {mode === "agent" && agentMessage ? <div className="agent-mode-message">{agentMessage}</div> : null}
-        {mode === "agent" ? (
-          <button
-            className="agent-workbench-trigger"
-            type="button"
-            onClick={() => setShowCodingWorkbench(true)}
-          >
-            <span>ADVANCED WORKBENCH</span>
-            Plan, patch, test, and checkpoint a coding change
-            <small>explicit approvals remain required</small>
-          </button>
-        ) : null}
-        {mode === "agent" && proposedPlan ? (
-          <div className="agent-plan-preview">
-            <div className="agent-plan-preview-head">
-              <div><strong>{proposedPlan.parent_task.title}</strong><span>{proposedPlan.subtasks.length} checklist items</span></div>
-              <button type="button" onClick={onCancelPlan}>Cancel</button>
-            </div>
-            <ol>{proposedPlan.subtasks.map((task) => <li key={task.order}><strong>{task.title}</strong><span>{task.description}</span></li>)}</ol>
-            <div className="agent-plan-actions">
-              <button type="button" onClick={onCreatePlannedTasks} disabled={disabled}>Save checklist</button>
-              <button type="button" onClick={onCreatePlannedTasksAndRun} disabled={disabled}>Start with checklist</button>
-            </div>
-          </div>
-        ) : null}
-        {mode === "agent" && createdTasks?.length ? (
-          <div className="agent-created-tasks">
-            <strong>Checklist created</strong>
-            <span>{createdTasks[0].title} with {Math.max(0, createdTasks.length - 1)} steps.</span>
-          </div>
-        ) : null}
-        {mode === "agent" && agentRun ? (
-          <div className="chat-agent-status" aria-live="polite">
-            <div className="chat-agent-status-main">
-              <div>
-                <strong>{agentRun.run.title}</strong>
-                <span>{formatAgentTime(agentRun.run.created_at)}</span>
-              </div>
-              <span className={`agent-status ${agentRun.run.status}`}>{formatAgentStatus(agentRun.run.status)}</span>
-            </div>
-            <div className="chat-agent-actions">
-              <button type="button" onClick={onToggleAgentDetails}>{agentDetailsOpen ? "Hide Run" : "Open Run"}</button>
-              {agentRun.run.status === "completed" ? (
-                <button type="button" onClick={onSaveAgentRun} disabled={disabled}>Save Output to Note</button>
-              ) : null}
-            </div>
-            {agentDetailsOpen ? (
-              <div className="chat-agent-details">
-                {agentRun.run.agent_definition_snapshot ? <div className="agent-run-card"><strong>Active agent: {agentRun.run.agent_definition_snapshot.display_name || agentRun.run.agent_definition_snapshot.name}</strong><p className="task-help">Agents cannot bypass approvals; any protected actions still require explicit approval.</p></div> : null}
-                {agentRun.steps.map((step) => (
-                  <div key={step.id}><span>{step.title}</span><span>{formatAgentStatus(step.status)}</span></div>
-                ))}
-                {agentRun.tool_calls?.length ? <details className="agent-run-card"><summary><strong>Tool calls</strong></summary><ol>{agentRun.tool_calls.map((call) => <li key={call.id}><strong>{call.tool_id}</strong> · {formatAgentStatus(call.status)} · approval {call.approval_status}{call.error ? ` · ${call.error}` : ""}</li>)}</ol></details> : null}
-                {agentRun.run.error ? <div className="chat-agent-error">{agentRun.run.error}</div> : null}
-                {agentRun.run.final_output ? <pre>{agentRun.run.final_output}</pre> : null}
-                <RecoveryPanel
-                  runType="agent"
-                  runId={agentRun.run.id}
-                  onUpdated={onRefreshAgentRun}
-                />
-              </div>
-            ) : null}
-          </div>
-        ) : null}
       </div>
-      <div className="chat-input-disclaimer">
-        {mode === "agent"
-          ? "Agent runs are task-linked and audited. No chat message is sent in Agent mode."
-          : "Neo is an AI and it can make mistakes. Please double-check responses."}
-      </div>
-      {mode === "agent" && showCodingWorkbench ? (
-        <Modal
-          title="Advanced Coding Workbench"
-          onClose={() => setShowCodingWorkbench(false)}
-          wide
-          className="coding-workbench-modal"
-        >
-          <CodingAgent initialProjectId={selectedProjectId} />
-        </Modal>
+      {mode === "chatbot" || value.trim() ? (
+        <div className="chat-input-disclaimer">
+          {mode === "agent"
+            ? "Agent runs are task-linked and audited. No chat message is sent in Agent mode."
+            : "Neo is an AI and it can make mistakes. Please double-check responses."}
+        </div>
       ) : null}
     </div>
   );
@@ -1499,14 +1518,13 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenAgentic, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenGitHub, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   const groups = [
     {
       title: "Intelligence",
       icon: "memory",
       description: "Models, behavior, and agent configuration.",
       items: [
-        ["Agentic Runs", "Plan, execute, verify, and reflect", onOpenAgentic],
         ["LLM Providers", "Models, routes, fallbacks, and usage", onOpenLLMs],
         ["Provider Runtime", "Health, rate limits, streaming, and request audit", onOpenProviderRuntime],
         ["Evaluation Harness", "Offline scoring, reports, baselines, and safety regression", onOpenEvaluationHarness],
@@ -1620,6 +1638,12 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
 
 function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
+  // Agent runs are filed under the same projects as chats, so the composer's
+  // picker reads the sidebar rather than a second, unrelated project store.
+  const sidebarProjectOptions = useMemo(
+    () => (sidebar.projects || []).map((project) => ({ id: String(project.id), title: project.name })),
+    [sidebar.projects],
+  );
   const [activeChat, setActiveChat] = useState(null);
   // Held in a ref, not state, so a second click in the same tick is refused before
   // React has had a chance to re-render the disabled button.
@@ -1648,7 +1672,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showMemoryRetrieval, setShowMemoryRetrieval] = useState(false);
   const [showCommandSandbox, setShowCommandSandbox] = useState(false);
   const [showLsp, setShowLsp] = useState(false);
-  const [showAgentic, setShowAgentic] = useState(false);
   const [showReliableWebSearch, setShowReliableWebSearch] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
@@ -1689,20 +1712,25 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [initialTaskId, setInitialTaskId] = useState(null);
   const [initialTaskProjectId, setInitialTaskProjectId] = useState(null);
   const [chatMode, setChatMode] = useState("chatbot");
-  const [agentTasks, setAgentTasks] = useState([]);
-  const [agentProjects, setAgentProjects] = useState([]);
   const [agentDefinitions, setAgentDefinitions] = useState([]);
   const [selectedAgentDefinitionId, setSelectedAgentDefinitionId] = useState("general");
-  const [agentTasksLoading, setAgentTasksLoading] = useState(false);
-  const [selectedAgentTaskId, setSelectedAgentTaskId] = useState("");
   const [selectedAgentProjectId, setSelectedAgentProjectId] = useState("");
-  const [agentTaskPlan, setAgentTaskPlan] = useState(null);
-  const [agentCreatedTasks, setAgentCreatedTasks] = useState([]);
-  const [agentPlanning, setAgentPlanning] = useState(false);
-  const [chatAgentRun, setChatAgentRun] = useState(null);
+  const [agentRepos, setAgentRepos] = useState([]);
+  const [selectedAgentRepoId, setSelectedAgentRepoId] = useState("");
+  const [agentMode, setAgentMode] = useState("normal");
+  // The active session id is persisted so a reload reattaches to a run that is
+  // still executing on the server instead of orphaning it.
+  const [agentSessionId, setAgentSessionId] = useState(() => {
+    try {
+      return window.localStorage.getItem("neo-agent-session-id") || "";
+    } catch {
+      return "";
+    }
+  });
   const [chatAgentBusy, setChatAgentBusy] = useState(false);
   const [chatAgentMessage, setChatAgentMessage] = useState("");
-  const [chatAgentDetailsOpen, setChatAgentDetailsOpen] = useState(false);
+  const [folderUploading, setFolderUploading] = useState(false);
+  const folderInputRef = useRef(null);
   const bootstrapped = useRef(false);
   const createChatPromiseRef = useRef(null);
   const visibleChatIdRef = useRef(null);
@@ -1714,20 +1742,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   }, []);
 
   const loadAgentContext = useCallback(async () => {
-    setAgentTasksLoading(true);
     try {
-      const [taskData, projectData, agentData] = await Promise.all([
-        api.tasksList({ includeArchived: false, pinnedFirst: true, limit: 100 }),
-        api.projectsList({ includeArchived: false, pinnedFirst: true, limit: 100 }),
+      const [agentData, repoData] = await Promise.all([
         api.agentDefinitions(false),
+        api.reposList({ limit: 100 }).catch(() => ({ repos: [] })),
       ]);
-      setAgentTasks(taskData.tasks || []);
-      setAgentProjects(projectData.projects || []);
       setAgentDefinitions(agentData.definitions || []);
+      setAgentRepos(repoData.repos || []);
     } catch (error) {
       setStatusError(`Could not load Agent mode context: ${errorMessage(error)}`);
-    } finally {
-      setAgentTasksLoading(false);
     }
   }, []);
 
@@ -1735,27 +1758,27 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (chatMode === "agent") loadAgentContext();
   }, [chatMode, loadAgentContext]);
 
+  // A run's sidebar badge would otherwise read RUNNING until something else
+  // happened to refresh the sidebar. Poll only while one is actually unfinished.
+  const hasUnfinishedRun = (sidebar.agent_runs || []).some((run) =>
+    ["queued", "running", "waiting_approval"].includes(run.status),
+  );
   useEffect(() => {
-    const runId = chatAgentRun?.run?.id;
-    const status = chatAgentRun?.run?.status;
-    if (!runId || !ACTIVE_AGENT_RUN_STATUSES.has(status)) return undefined;
-    const interval = window.setInterval(async () => {
-      try {
-        const detail = await api.agentRun(runId);
-        setChatAgentRun(detail);
-        if (!ACTIVE_AGENT_RUN_STATUSES.has(detail.run.status)) {
-          setChatAgentMessage(
-            detail.run.status === "completed"
-              ? "Agent run completed."
-              : `Agent run ${formatAgentStatus(detail.run.status).toLowerCase()}.`,
-          );
-        }
-      } catch (error) {
-        setChatAgentMessage(`Could not refresh the agent run: ${errorMessage(error)}`);
-      }
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [chatAgentRun?.run?.id, chatAgentRun?.run?.status]);
+    if (!hasUnfinishedRun) return undefined;
+    const timer = window.setInterval(() => refreshSidebar().catch(() => {}), 8000);
+    return () => window.clearInterval(timer);
+  }, [hasUnfinishedRun, refreshSidebar]);
+
+  // The session view streams its own events, so there is no polling here. The id
+  // is persisted instead, which is what lets a reload rejoin a running session.
+  useEffect(() => {
+    try {
+      if (agentSessionId) window.localStorage.setItem("neo-agent-session-id", agentSessionId);
+      else window.localStorage.removeItem("neo-agent-session-id");
+    } catch {
+      /* storage is unavailable in private mode; the session still runs */
+    }
+  }, [agentSessionId]);
 
   const handleLlmConfigChanged = useCallback((next) => {
     setLlms(next.llms || []);
@@ -2364,118 +2387,72 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     await sendPrompt(outgoing);
   }
 
+  function handleUploadFolder() {
+    folderInputRef.current?.click();
+  }
+
+  async function handleFolderSelected(event) {
+    const files = Array.from(event.target.files || []);
+    // Chrome reports the picker being dismissed as an empty selection.
+    if (!files.length) return;
+    setFolderUploading(true);
+    setChatAgentMessage("");
+    try {
+      const result = await api.uploadRepoFolder(files, {
+        projectId: selectedAgentProjectId || null,
+      });
+      const repo = result?.repo;
+      await loadAgentContext();
+      if (repo?.id) setSelectedAgentRepoId(repo.id);
+      const skipped = result?.skipped_files || 0;
+      setChatAgentMessage(
+        `Uploaded ${repo?.name || "folder"} — ${result?.stats?.indexed_file_count ?? 0} files ready` +
+          (skipped ? `, ${skipped} skipped` : "") +
+          ". Selected as the agent's repository.",
+      );
+    } catch (error) {
+      setChatAgentMessage(`Could not upload that folder: ${errorMessage(error)}`);
+    } finally {
+      setFolderUploading(false);
+      // Reset so re-picking the same folder still fires a change event.
+      event.target.value = "";
+    }
+  }
+
   async function handleStartChatAgent(event) {
     event.preventDefault();
     const objective = composerValue.trim();
-    if ((!selectedAgentTaskId && !objective) || chatAgentBusy || agentPlanning) {
-      if (!selectedAgentTaskId && !objective) setChatAgentMessage("Select an existing task or enter an objective.");
+    if (!objective || chatAgentBusy) {
+      if (!objective) setChatAgentMessage("Give Neo an objective.");
+      return;
+    }
+    if (!selectedAgentRepoId) {
+      // The server refuses this too; saying it here avoids a round trip and
+      // names the way out rather than only the problem.
+      setChatAgentMessage(
+        "Select a repository first. Upload a folder to give the agent code to work on.",
+      );
       return;
     }
     setChatAgentBusy(true);
     setChatAgentMessage("");
     setStatusError("");
     try {
-      let created;
-      if (selectedAgentTaskId) {
-        created = await api.startAgentRun({
-          task_id: selectedAgentTaskId,
-          objective: objective || null,
-          mode: "assist",
-          agent_definition_id: selectedAgentDefinitionId || null,
-        });
-      } else {
-        const result = await api.startAgentRunFromObjective({
-          objective,
-          project_id: selectedAgentProjectId || null,
-          mode: "assist",
-          auto_create_tasks: true,
-          agent_definition_id: selectedAgentDefinitionId || null,
-        });
-        created = { run: result.run };
-        setSelectedAgentTaskId(result.parent_task.id);
-        setAgentCreatedTasks([result.parent_task, ...result.subtasks]);
-        setAgentTaskPlan(null);
-        await loadAgentContext();
-      }
-      setComposerValue("");
-      setChatAgentDetailsOpen(false);
-      setChatAgentRun(await api.agentRun(created.run.id));
-      setChatAgentMessage("Agent run started.");
-    } catch (error) {
-      setChatAgentMessage(`Could not start the agent run: ${errorMessage(error)}`);
-    } finally {
-      setChatAgentBusy(false);
-    }
-  }
-
-  async function handlePlanAgentTasks() {
-    const objective = composerValue.trim();
-    if (!objective || agentPlanning || chatAgentBusy) {
-      if (!objective) setChatAgentMessage("Enter an objective to plan tasks.");
-      return;
-    }
-    setAgentPlanning(true);
-    setChatAgentMessage("Planning tasks…");
-    setAgentCreatedTasks([]);
-    try {
-      const result = await api.planAgentTasks({
+      const created = await api.createAgentSession({
         objective,
+        mode: agentMode,
         project_id: selectedAgentProjectId || null,
-        dry_run: true,
-      });
-      setAgentTaskPlan(result.plan);
-      setChatAgentMessage("Task plan ready for review. No tasks were created.");
-    } catch (error) {
-      setChatAgentMessage(`Could not plan tasks: ${errorMessage(error)}`);
-    } finally {
-      setAgentPlanning(false);
-    }
-  }
-
-  async function handleCreatePlannedTasks() {
-    const objective = composerValue.trim();
-    if (!objective || chatAgentBusy) return;
-    setChatAgentBusy(true);
-    try {
-      const result = await api.planAgentTasks({
-        objective,
-        project_id: selectedAgentProjectId || null,
-        dry_run: false,
-      });
-      setAgentCreatedTasks(result.tasks || []);
-      setSelectedAgentTaskId(result.tasks?.[0]?.id || "");
-      setAgentTaskPlan(null);
-      setChatAgentMessage(`Created ${result.tasks?.length || 0} tasks. The parent task is selected.`);
-      await loadAgentContext();
-    } catch (error) {
-      setChatAgentMessage(`Could not create tasks: ${errorMessage(error)}`);
-    } finally {
-      setChatAgentBusy(false);
-    }
-  }
-
-  async function handleCreatePlannedTasksAndRun() {
-    const objective = composerValue.trim();
-    if (!objective || chatAgentBusy) return;
-    setChatAgentBusy(true);
-    try {
-      const result = await api.startAgentRunFromObjective({
-        objective,
-        project_id: selectedAgentProjectId || null,
-        mode: "assist",
-        auto_create_tasks: true,
+        repo_id: selectedAgentRepoId || null,
         agent_definition_id: selectedAgentDefinitionId || null,
+        client_request_id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       });
-      setAgentCreatedTasks([result.parent_task, ...result.subtasks]);
-      setSelectedAgentTaskId(result.parent_task.id);
-      setAgentTaskPlan(null);
       setComposerValue("");
-      setChatAgentDetailsOpen(false);
-      setChatAgentRun(await api.agentRun(result.run.id));
-      setChatAgentMessage("Tasks created and Agent run started.");
-      await loadAgentContext();
+      setAgentSessionId(created.session.id);
+      // The run belongs in the sidebar the moment it exists, not after the next
+      // unrelated refresh.
+      refreshSidebar().catch(() => {});
     } catch (error) {
-      setChatAgentMessage(`Could not create tasks and run: ${errorMessage(error)}`);
+      setChatAgentMessage(`Could not start the agent: ${errorMessage(error)}`);
     } finally {
       setChatAgentBusy(false);
     }
@@ -2484,31 +2461,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   function handleComposerSubmit(event) {
     if (chatMode === "agent") return handleStartChatAgent(event);
     return handleSendMessage(event);
-  }
-
-  async function handleSaveChatAgentRun() {
-    if (!chatAgentRun || chatAgentBusy) return;
-    setChatAgentBusy(true);
-    try {
-      const saved = await api.saveAgentRunToNote(chatAgentRun.run.id, { tags: ["agent", "task-output"] });
-      setChatAgentRun(await api.agentRun(chatAgentRun.run.id));
-      setChatAgentMessage(saved.already_saved ? "Output was already saved to this Note." : "Output saved to Note.");
-    } catch (error) {
-      setChatAgentMessage(`Could not save the output: ${errorMessage(error)}`);
-    } finally {
-      setChatAgentBusy(false);
-    }
-  }
-
-  function openAgentTask(taskId) {
-    setInitialTaskId(taskId);
-    setInitialTaskProjectId(null);
-    setShowResearch(false);
-    setShowNotes(false);
-    setShowProjects(false);
-    setShowTasks(true);
-    setShowFiles(false);
-    setShowRepos(false);
   }
 
   function openWorkspaceFile(fileId) {
@@ -2576,6 +2528,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onOpenRepos={() => {
           setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(true);
         }}
+        onOpenAgentRun={(runId) => {
+          setShowResearch(false); setShowNotes(false); setShowProjects(false);
+          setShowTasks(false); setShowFiles(false); setShowRepos(false);
+          setChatMode("agent"); setAgentSessionId(runId);
+        }}
+        activeAgentRunId={agentSessionId}
         activeView={activeView}
         profile={profile}
         onSwitchProfile={onSwitchProfile}
@@ -2611,6 +2569,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           initialProjectId={initialTaskProjectId}
           onBack={() => { setShowTasks(false); setInitialTaskId(null); setInitialTaskProjectId(null); }}
           onTaskChange={setInitialTaskId}
+          onOpenAgentSession={(sessionId) => { setShowTasks(false); setAgentSessionId(sessionId); }}
           onOpenNote={(noteId) => {
             setInitialNoteId(noteId); setShowTasks(false); setShowProjects(false); setShowResearch(false); setShowNotes(true);
           }}
@@ -2643,6 +2602,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setShowNotes(true);
           }}
         />
+      ) : agentSessionId ? (
+        <main className="neo-main agent-session-main">
+          <AgentSession
+            sessionId={agentSessionId}
+            onClose={() => setAgentSessionId("")}
+            onMessage={setChatAgentMessage}
+          />
+        </main>
       ) : (
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
         <header className="neo-view-header">
@@ -2706,40 +2673,37 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           value={composerValue}
           onChange={setComposerValue}
           onSubmit={handleComposerSubmit}
-          disabled={chatMode === "chatbot"
-            ? sending || !activeChat?.id
-            : chatAgentBusy || agentPlanning || ACTIVE_AGENT_RUN_STATUSES.has(chatAgentRun?.run?.status)}
+          disabled={chatMode === "chatbot" ? sending || !activeChat?.id : chatAgentBusy}
           llms={llms}
           llmId={selectedLlmId}
           onLlmChange={handleLlmChange}
           mode={chatMode}
           onModeChange={setChatMode}
-          tasks={agentTasks}
-          tasksLoading={agentTasksLoading}
-          selectedTaskId={selectedAgentTaskId}
-          onTaskChange={(taskId) => { setSelectedAgentTaskId(taskId); setAgentTaskPlan(null); }}
-          projects={agentProjects}
+          projects={sidebarProjectOptions}
           selectedProjectId={selectedAgentProjectId}
-          onProjectChange={(projectId) => { setSelectedAgentProjectId(projectId); setAgentTaskPlan(null); }}
+          onProjectChange={setSelectedAgentProjectId}
+          repos={agentRepos}
+          selectedRepoId={selectedAgentRepoId}
+          onRepoChange={setSelectedAgentRepoId}
           agentDefinitions={agentDefinitions}
           selectedAgentDefinitionId={selectedAgentDefinitionId}
           onAgentDefinitionChange={setSelectedAgentDefinitionId}
-          onPlanAgentTasks={handlePlanAgentTasks}
-          planningTasks={agentPlanning}
-          proposedPlan={agentTaskPlan}
-          onCreatePlannedTasks={handleCreatePlannedTasks}
-          onCreatePlannedTasksAndRun={handleCreatePlannedTasksAndRun}
-          onCancelPlan={() => setAgentTaskPlan(null)}
-          createdTasks={agentCreatedTasks}
-          agentRun={chatAgentRun}
+          agentMode={agentMode}
+          onAgentModeChange={setAgentMode}
+          onUploadFolder={handleUploadFolder}
+          folderUploading={folderUploading}
           agentMessage={chatAgentMessage}
-          agentDetailsOpen={chatAgentDetailsOpen}
-          onToggleAgentDetails={() => setChatAgentDetailsOpen((open) => !open)}
-          onOpenAgentTask={openAgentTask}
-          onSaveAgentRun={handleSaveChatAgentRun}
-          onRefreshAgentRun={async () => {
-            if (chatAgentRun?.run?.id) setChatAgentRun(await api.agentRun(chatAgentRun.run.id));
-          }}
+        />
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          webkitdirectory=""
+          directory=""
+          className="visually-hidden-input"
+          onChange={handleFolderSelected}
+          aria-hidden="true"
+          tabIndex={-1}
         />
       </main>
       )}
@@ -2755,7 +2719,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       {showSettings && (
         <SettingsDialog
           onOpenAccount={() => { setShowSettings(false); setShowAccount(true); }}
-          onOpenAgentic={() => { setShowSettings(false); setShowAgentic(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenTools={() => { setShowSettings(false); setShowToolsSettings(true); }}
@@ -2838,7 +2801,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       {showMemoryRetrieval && <Modal title="Workspace Retrieval" onClose={() => setShowMemoryRetrieval(false)} wide><MemoryRetrieval /></Modal>}
       {showCommandSandbox && <Modal title="Command Sandbox" onClose={() => setShowCommandSandbox(false)} wide><CommandSandbox /></Modal>}
       {showLsp && <Modal title="Language Server Protocol" onClose={() => setShowLsp(false)} wide><LspPanel /></Modal>}
-      {showAgentic && <Modal title="Agentic Core" onClose={() => setShowAgentic(false)} wide><AgenticRuns /></Modal>}
       {showReliableWebSearch && <Modal title="Reliable Web Search" onClose={() => setShowReliableWebSearch(false)} wide><WebSearch /></Modal>}
 
       {showWebSearchSettings && (

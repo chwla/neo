@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ScopeType = Literal["workspace", "global", "project", "repo", "task", "coding_run"]
+ScopeType = Literal["workspace", "global", "project", "repo", "task", "agent_session"]
 ContextType = Literal["chat", "research", "agent", "coding_agent", "patch", "test", "git"]
 
 
@@ -34,6 +34,6 @@ class RuleResolveRequest(BaseModel):
     project_id: str | None = None
     task_id: str | None = None
     repo_id: str | None = None
-    coding_run_id: str | None = None
+    agent_session_id: str | None = None
     override_rules: dict[str, Any] | None = None
     profile_ids: list[str] = Field(default_factory=list)

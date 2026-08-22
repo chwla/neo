@@ -78,50 +78,29 @@ def build_parser() -> argparse.ArgumentParser:
     show_agent = agents_sub.add_parser("show")
     show_agent.add_argument("agent_id")
 
-    coding = sub.add_parser("coding")
-    coding_sub = coding.add_subparsers(dest="coding_command", required=True)
-    start = coding_sub.add_parser("start")
-    start.add_argument("objective")
-    start.add_argument("--project", dest="project_id")
-    start.add_argument("--repo", dest="repo_id")
-    start.add_argument("--task", dest="task_id")
-    start.add_argument("--agent", dest="agent_definition_id")
-    start.add_argument("--max-iterations", type=int, default=3)
-    coding_sub.add_parser("list")
-    show = coding_sub.add_parser("show")
-    show.add_argument("run_id")
-    actions = coding_sub.add_parser("actions")
-    actions.add_argument("run_id")
-    cancel = coding_sub.add_parser("cancel")
-    cancel.add_argument("run_id")
-    approve = coding_sub.add_parser("approve")
-    approve.add_argument("action_id")
-    approve.add_argument("--yes", action="store_true")
-    reject = coding_sub.add_parser("reject")
-    reject.add_argument("action_id")
-    reject.add_argument("--reason")
-    revise = coding_sub.add_parser("revise")
-    revise.add_argument("run_id")
-    revise.add_argument("--instructions", required=True)
-
-    agentic = sub.add_parser("agentic")
-    agentic_sub = agentic.add_subparsers(dest="agentic_command", required=True)
-    agentic_start = agentic_sub.add_parser("start")
-    agentic_start.add_argument(
-        "--type",
-        dest="run_type",
-        choices=["coding", "research", "task"],
-        required=True,
+    agent = sub.add_parser("agent")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_start = agent_sub.add_parser("start")
+    agent_start.add_argument("--objective", required=True)
+    agent_start.add_argument(
+        "--mode", choices=["plan", "normal", "auto"], default="normal"
     )
-    agentic_start.add_argument("--objective", required=True)
-    agentic_start.add_argument("--project", dest="project_id")
-    agentic_start.add_argument("--task", dest="task_id")
-    agentic_start.add_argument("--repo", dest="repo_id")
-    agentic_start.add_argument("--max-steps", type=int, default=20)
-    agentic_sub.add_parser("list")
-    for command in ("show", "steps", "continue", "context", "stop"):
-        item = agentic_sub.add_parser(command)
-        item.add_argument("run_id")
+    agent_start.add_argument("--project", dest="project_id")
+    agent_start.add_argument("--task", dest="task_id")
+    agent_start.add_argument("--repo", dest="repo_id")
+    agent_sub.add_parser("list")
+    for command in ("show", "cancel"):
+        item = agent_sub.add_parser(command)
+        item.add_argument("session_id")
+    agent_events = agent_sub.add_parser("events")
+    agent_events.add_argument("session_id")
+    agent_events.add_argument("--after", type=int, default=0)
+    agent_approve = agent_sub.add_parser("approve")
+    agent_approve.add_argument("session_id")
+    agent_approve.add_argument("approval_id")
+    agent_approve.add_argument(
+        "--decision", choices=["allow_once", "allow_always", "reject"], default="allow_once"
+    )
 
     web = sub.add_parser("web")
     web_sub = web.add_subparsers(dest="web_command", required=True)
@@ -273,23 +252,6 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--line", type=int, default=0)
         item.add_argument("--character", type=int, default=0)
 
-    recovery = sub.add_parser("recovery")
-    recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
-    recovery_sub.add_parser("list")
-    rec_show = recovery_sub.add_parser("show")
-    rec_show.add_argument("run_type")
-    rec_show.add_argument("run_id")
-    for command in ("resume", "retry"):
-        item = recovery_sub.add_parser(command)
-        item.add_argument("run_type")
-        item.add_argument("run_id")
-        item.add_argument("--yes", action="store_true")
-    rec_fork = recovery_sub.add_parser("fork")
-    rec_fork.add_argument("run_type")
-    rec_fork.add_argument("run_id")
-    rec_fork.add_argument("--objective")
-    rec_fork.add_argument("--yes", action="store_true")
-
     rules = sub.add_parser("rules")
     rules_sub = rules.add_subparsers(dest="rules_command", required=True)
     rules_sub.add_parser("list")
@@ -297,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--project", dest="project_id")
     resolve.add_argument("--repo", dest="repo_id")
     resolve.add_argument("--task", dest="task_id")
-    resolve.add_argument("--context", dest="context_type", default="coding_agent")
+    resolve.add_argument("--context", dest="context_type", default="agent")
 
     tools = sub.add_parser("tools")
     tools_sub = tools.add_subparsers(dest="tools_command", required=True)
@@ -333,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_sub = export.add_subparsers(dest="export_command", required=True)
     exp_run = export_sub.add_parser("run")
     exp_run.add_argument("run_id")
-    exp_run.add_argument("--type", choices=["coding_agent", "agent"], default="coding_agent")
+    exp_run.add_argument("--type", choices=["agent_session"], default="agent_session")
     exp_run.add_argument("--out", required=True)
     exp_task = export_sub.add_parser("task")
     exp_task.add_argument("task_id")
@@ -391,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--snapshot", action="store_true")
     tui.add_argument(
         "--view",
-        choices=["dashboard", "tasks", "coding-runs", "agents", "commands", "context", "settings"],
+        choices=["dashboard", "tasks", "agent-sessions", "agents", "commands", "context", "settings"],
         default="dashboard",
     )
     return parser
@@ -428,10 +390,8 @@ def handle(args, client: NeoApiClient) -> Any:
         if args.agents_command == "list":
             return client.get("/api/agents/definitions")
         return client.get(f"/api/agents/definitions/{args.agent_id}")
-    if args.command == "coding":
-        return handle_coding(args, client)
-    if args.command == "agentic":
-        return handle_agentic(args, client)
+    if args.command == "agent":
+        return handle_agent(args, client)
     if args.command == "web":
         return handle_web(args, client)
     if args.command == "providers":
@@ -450,8 +410,6 @@ def handle(args, client: NeoApiClient) -> Any:
         return handle_memory(args, client)
     if args.command == "lsp":
         return handle_lsp(args, client)
-    if args.command == "recovery":
-        return handle_recovery(args, client)
     if args.command == "rules":
         if args.rules_command == "list":
             return client.get("/api/rules/profiles")
@@ -491,74 +449,32 @@ def handle(args, client: NeoApiClient) -> Any:
     raise ValueError("Unknown command.")
 
 
-def handle_coding(args, client: NeoApiClient) -> Any:
-    if args.coding_command == "start":
+def handle_agent(args, client: NeoApiClient) -> Any:
+    if args.agent_command == "start":
         return client.post(
-            "/api/coding-agent/runs",
+            "/api/agent-sessions",
             {
                 "objective": args.objective,
-                "project_id": args.project_id,
-                "repo_id": args.repo_id,
-                "task_id": args.task_id,
-                "agent_definition_id": args.agent_definition_id,
-                "max_iterations": args.max_iterations,
-            },
-        )
-    if args.coding_command == "list":
-        return client.get("/api/coding-agent/runs")
-    if args.coding_command == "show":
-        return client.get(f"/api/coding-agent/runs/{args.run_id}")
-    if args.coding_command == "actions":
-        detail = client.get(f"/api/coding-agent/runs/{args.run_id}")
-        return {"action_requests": detail.get("action_requests", [])}
-    if args.coding_command == "cancel":
-        return client.post(f"/api/coding-agent/runs/{args.run_id}/cancel")
-    if args.coding_command == "approve":
-        require_confirm(args, APPROVAL_WARNING)
-        return client.post(
-            f"/api/coding-agent/actions/{args.action_id}/approve",
-            {"confirm": True, "options": {}},
-        )
-    if args.coding_command == "reject":
-        return client.post(
-            f"/api/coding-agent/actions/{args.action_id}/reject",
-            {"reason": args.reason},
-        )
-    if args.coding_command == "revise":
-        return client.post(
-            f"/api/coding-agent/runs/{args.run_id}/revise-patch",
-            {"instructions": args.instructions},
-        )
-    raise ValueError("Unknown coding command.")
-
-
-def handle_agentic(args, client: NeoApiClient) -> Any:
-    if args.agentic_command == "start":
-        return client.post(
-            "/api/agentic/runs",
-            {
-                "objective": args.objective,
-                "run_type": args.run_type,
+                "mode": args.mode,
                 "project_id": args.project_id,
                 "task_id": args.task_id,
                 "repo_id": args.repo_id,
-                "max_steps": args.max_steps,
-                "require_approval_for_actions": True,
             },
         )
-    if args.agentic_command == "list":
-        return client.get("/api/agentic/runs")
-    if args.agentic_command == "show":
-        return client.get(f"/api/agentic/runs/{args.run_id}")
-    if args.agentic_command == "steps":
-        return client.get(f"/api/agentic/runs/{args.run_id}/steps")
-    if args.agentic_command == "context":
-        return client.get(f"/api/agentic/runs/{args.run_id}/context")
-    if args.agentic_command == "continue":
-        return client.post(f"/api/agentic/runs/{args.run_id}/continue", {})
-    if args.agentic_command == "stop":
-        return client.post(f"/api/agentic/runs/{args.run_id}/stop")
-    raise ValueError("Unknown agentic command.")
+    if args.agent_command == "list":
+        return client.get("/api/agent-sessions")
+    if args.agent_command == "show":
+        return client.get(f"/api/agent-sessions/{args.session_id}")
+    if args.agent_command == "events":
+        return client.get(f"/api/agent-sessions/{args.session_id}/events?after={args.after}")
+    if args.agent_command == "approve":
+        return client.post(
+            f"/api/agent-sessions/{args.session_id}/approvals/{args.approval_id}",
+            {"decision": args.decision},
+        )
+    if args.agent_command == "cancel":
+        return client.post(f"/api/agent-sessions/{args.session_id}/cancel")
+    raise ValueError("Unknown agent command.")
 
 
 def handle_web(args, client: NeoApiClient) -> Any:
@@ -791,32 +707,6 @@ APPROVAL_WARNING = (
 )
 
 
-def handle_recovery(args, client: NeoApiClient) -> Any:
-    if args.recovery_command == "list":
-        return client.get("/api/recovery/runs")
-    if args.recovery_command == "show":
-        return client.get(f"/api/recovery/runs/{args.run_type}/{args.run_id}")
-    if args.recovery_command == "resume":
-        require_confirm(args, "Resume this run? Approval gates remain intact.")
-        return client.post(
-            f"/api/recovery/runs/{args.run_type}/{args.run_id}/resume",
-            {"confirm": True},
-        )
-    if args.recovery_command == "retry":
-        require_confirm(args, "Retry this run? Approval gates remain intact.")
-        return client.post(
-            f"/api/recovery/runs/{args.run_type}/{args.run_id}/retry",
-            {"confirm": True},
-        )
-    if args.recovery_command == "fork":
-        require_confirm(args, "Fork this run? No actions execute automatically.")
-        return client.post(
-            f"/api/recovery/runs/{args.run_type}/{args.run_id}/fork",
-            {"confirm": True, "objective_override": args.objective},
-        )
-    raise ValueError("Unknown recovery command.")
-
-
 def handle_tests(args, client: NeoApiClient) -> Any:
     if args.tests_command == "list":
         return client.get(f"/api/test-runner/repos/{args.repo_id}/commands")
@@ -847,7 +737,7 @@ def handle_git(args, client: NeoApiClient) -> Any:
 
 def handle_export(args, client: NeoApiClient) -> dict[str, str]:
     kind, entity_id = (
-        (("coding_run" if args.type == "coding_agent" else "agent_run"), args.run_id)
+        ("agent_session", args.run_id)
         if args.export_command == "run"
         else ("task", args.task_id)
     )

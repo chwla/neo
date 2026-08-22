@@ -1,7 +1,6 @@
 # ruff: noqa
 LINKABLE_ENTITY_TYPES = {
-    "agentic_run",
-    "coding_run",
+    "agent_session",
     "research_run",
     "web_search_run",
     "eval_run",

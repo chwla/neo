@@ -4,13 +4,10 @@ import { api } from "./api.js";
 import FileAttachments from "./FileAttachments.jsx";
 import ArtifactsPanel from "./ArtifactsPanel.jsx";
 import PatchApplications from "./PatchApplications.jsx";
-import CodingAgent from "./CodingAgent.jsx";
-import RecoveryPanel from "./RecoveryPanel.jsx";
 import RelatedMemories from "./RelatedMemories.jsx";
 
 const STATUSES = ["todo", "doing", "blocked", "done"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
-const ACTIVE_RUN_STATUSES = new Set(["queued", "planning", "running", "waiting_approval"]);
 
 function toDraft(task) {
   return {
@@ -39,7 +36,7 @@ function formatStatus(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-export default function Tasks({ initialTaskId = null, initialProjectId = null, onBack, onOpenNote, onOpenFile, onTaskChange }) {
+export default function Tasks({ initialTaskId = null, initialProjectId = null, onBack, onOpenNote, onOpenFile, onTaskChange , onOpenAgentSession }) {
   const [tasks, setTasks] = useState([]);
   const [projects, setProjects] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -56,8 +53,8 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
   const [includeArchived, setIncludeArchived] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [agentRuns, setAgentRuns] = useState([]);
-  const [selectedRun, setSelectedRun] = useState(null);
+  const [agentSessions, setAgentSessions] = useState([]);
+  const [agentMode, setAgentMode] = useState("normal");
   const [runObjective, setRunObjective] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentMessage, setAgentMessage] = useState("");
@@ -87,14 +84,6 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
     if (initialProjectId) setProjectFilter(initialProjectId);
   }, [initialProjectId]);
 
-  useEffect(() => {
-    if (!selectedRun || !ACTIVE_RUN_STATUSES.has(selectedRun.run.status)) return undefined;
-    const interval = window.setInterval(() => {
-      refreshAgentRuns(selectedRun.run.task_id, selectedRun.run.id).catch(() => {});
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [selectedRun?.run?.id, selectedRun?.run?.status]);
-
   const dirty = useMemo(() => selectedTask && JSON.stringify(draft) !== JSON.stringify(toDraft(selectedTask)), [draft, selectedTask]);
   const attachableNotes = notes.filter((note) => !linkedNotes.some((linked) => linked.id === note.id));
 
@@ -112,7 +101,7 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
       setDraft(toDraft(data.task));
       setLinkedNotes(data.notes || []);
       setSubtasks(data.subtasks || []);
-      await refreshAgentRuns(data.task.id, null, true);
+      await refreshAgentSessions(data.task.id);
       onTaskChange?.(data.task.id);
     } catch (err) {
       setError(err.message || "Failed to load task.");
@@ -198,35 +187,29 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
     await loadTasks();
   }
 
-  async function refreshAgentRuns(taskId = selectedTask?.id, runId = selectedRun?.run?.id, openLatest = false) {
+  async function refreshAgentSessions(taskId = selectedTask?.id) {
     if (!taskId) return;
-    const data = await api.taskAgentRuns(taskId);
-    const runs = data.runs || [];
-    setAgentRuns(runs);
-    const targetId = runId || (openLatest ? runs[0]?.id : null);
-    if (targetId) {
-      const detail = await api.agentRun(targetId);
-      setSelectedRun(detail);
-    } else if (runs.length === 0) {
-      setSelectedRun(null);
-    }
+    const data = await api.agentSessions({ taskId, limit: 20 });
+    setAgentSessions(data.sessions || []);
   }
 
-  async function startAgentRun() {
+  async function startAgentSession() {
     if (!selectedTask) return;
     setAgentBusy(true);
     setAgentMessage("");
-    setError("");
     try {
-      const data = await api.startAgentRun({
+      const objective = runObjective.trim() || selectedTask.description || selectedTask.title;
+      const created = await api.createAgentSession({
+        objective,
+        mode: agentMode,
         task_id: selectedTask.id,
-        objective: runObjective.trim() || null,
-        mode: "assist",
+        project_id: selectedTask.project_id || null,
       });
-      await refreshAgentRuns(selectedTask.id, data.run.id);
-      setAgentMessage("Agent run started.");
+      setRunObjective("");
+      await refreshAgentSessions(selectedTask.id);
+      onOpenAgentSession?.(created.session.id);
     } catch (err) {
-      setError(err.message || "Failed to start agent run.");
+      setAgentMessage(err.message || "Failed to start the agent.");
     } finally {
       setAgentBusy(false);
     }
@@ -250,46 +233,8 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
     } catch (err) { setError(err.message); } finally { setAgentBusy(false); }
   }
 
-  async function cancelAgentRun() {
-    if (!selectedRun) return;
-    setAgentBusy(true);
-    try {
-      await api.cancelAgentRun(selectedRun.run.id);
-      await refreshAgentRuns(selectedTask.id, selectedRun.run.id);
-      setAgentMessage("Agent run cancelled. Partial output was preserved.");
-    } catch (err) {
-      setError(err.message || "Failed to cancel agent run.");
-    } finally {
-      setAgentBusy(false);
-    }
-  }
 
-  async function saveRunToNote() {
-    if (!selectedRun) return;
-    setAgentBusy(true);
-    try {
-      const data = await api.saveAgentRunToNote(selectedRun.run.id, { tags: ["agent", "task-output"] });
-      await Promise.all([refreshAgentRuns(selectedTask.id, selectedRun.run.id), loadMeta()]);
-      setAgentMessage(data.already_saved ? "Output was already saved to this note." : "Output saved to note.");
-    } catch (err) {
-      setError(err.message || "Failed to save agent output.");
-    } finally {
-      setAgentBusy(false);
-    }
-  }
 
-  async function approveAgentStep(stepId, approved) {
-    if (!selectedRun) return;
-    setAgentBusy(true);
-    try {
-      await api.approveAgentStep(selectedRun.run.id, stepId, approved);
-      await refreshAgentRuns(selectedTask.id, selectedRun.run.id);
-    } catch (err) {
-      setError(err.message || "Failed to record approval.");
-    } finally {
-      setAgentBusy(false);
-    }
-  }
 
   return (
     <main className="tasks-layout">
@@ -380,75 +325,44 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
             <section className="agent-runs-section">
               <div className="agent-runs-header">
                 <div>
-                  <div className="task-section-title">Agent Runs</div>
-                  <p className="task-help">Task-linked assisted execution. No shell or destructive actions.</p>
+                  <div className="task-section-title">Agent Sessions</div>
+                  <p className="task-help">
+                    Neo works the objective autonomously and asks before anything leaves its sandbox.
+                  </p>
                 </div>
-                <button className="neo-button" type="button" onClick={startAgentRun} disabled={agentBusy}>
-                  Run Agent
+                <button className="neo-button" type="button" onClick={startAgentSession} disabled={agentBusy}>
+                  Start Agent
                 </button>
               </div>
               <textarea
                 className="agent-objective-input"
                 value={runObjective}
                 onChange={(event) => setRunObjective(event.target.value)}
-                placeholder="Optional run objective; defaults to the task description or title"
+                placeholder="Objective; defaults to the task description or title"
                 rows={2}
               />
+              <label className="agent-chip">
+                <span>Mode</span>
+                <select value={agentMode} onChange={(event) => setAgentMode(event.target.value)} aria-label="Permission mode">
+                  <option value="plan">Plan — propose only</option>
+                  <option value="normal">Normal — ask before changes</option>
+                  <option value="auto">Auto — change without asking</option>
+                </select>
+              </label>
               {agentMessage ? <div className="agent-message">{agentMessage}</div> : null}
-              {agentRuns.length === 0 ? (
-                <p className="task-help">No agent runs yet.<br />Start a run to work on this task.</p>
+              {agentSessions.length === 0 ? (
+                <p className="task-help">No agent sessions yet.<br />Start one to work on this task.</p>
               ) : (
                 <div className="agent-run-list">
-                  {agentRuns.map((run) => (
-                    <button type="button" key={run.id} className={selectedRun?.run?.id === run.id ? "selected" : ""}
-                      onClick={() => refreshAgentRuns(selectedTask.id, run.id)}>
-                      <strong>{run.title}</strong>
-                      <span className={`agent-status ${run.status}`}>{formatStatus(run.status)}</span>
-                      <small>{formatTime(run.created_at)}</small>
+                  {agentSessions.map((session) => (
+                    <button type="button" key={session.id} onClick={() => onOpenAgentSession?.(session.id)}>
+                      <strong>{session.title}</strong>
+                      <span className={`agent-status ${session.status}`}>{formatStatus(session.status)}</span>
+                      <small>{formatTime(session.created_at)}</small>
                     </button>
                   ))}
                 </div>
               )}
-
-              {selectedRun ? (
-                <div className="agent-run-detail">
-                  <div className="agent-run-toolbar">
-                    <span className={`agent-status ${selectedRun.run.status}`}>{formatStatus(selectedRun.run.status)}</span>
-                    {ACTIVE_RUN_STATUSES.has(selectedRun.run.status) ? (
-                      <button type="button" onClick={cancelAgentRun} disabled={agentBusy}>Cancel Run</button>
-                    ) : null}
-                    {selectedRun.run.status === "completed" ? (
-                      <button type="button" onClick={saveRunToNote} disabled={agentBusy}>Save output to note</button>
-                    ) : null}
-                  </div>
-                  <div className="agent-run-objective"><strong>Objective</strong><span>{selectedRun.run.objective}</span><small>{formatTime(selectedRun.run.created_at)}</small></div>
-                  {selectedRun.run.status === "failed" ? <div className="agent-failure">Agent run failed.<br />The logs below show what happened.</div> : null}
-                  {selectedRun.run.status === "cancelled" ? <div className="agent-message">Agent run cancelled.<br />Partial output was preserved.</div> : null}
-                  <div className="agent-step-list">
-                    {selectedRun.steps.map((step) => (
-                      <article key={step.id} className="agent-step">
-                        <div><strong>{step.step_index + 1}. {step.title}</strong><span className={`agent-status ${step.status}`}>{formatStatus(step.status)}</span></div>
-                        {step.output_text ? <pre>{step.output_text}</pre> : null}
-                        {step.error ? <div className="agent-failure">{step.error}</div> : null}
-                        {step.status === "waiting_approval" ? <div className="agent-approval-actions"><button type="button" onClick={() => approveAgentStep(step.id, true)}>Approve</button><button type="button" onClick={() => approveAgentStep(step.id, false)}>Deny</button></div> : null}
-                      </article>
-                    ))}
-                  </div>
-                  {selectedRun.run.final_output ? <div className="agent-final-output"><strong>Final output</strong><pre>{selectedRun.run.final_output}</pre></div> : null}
-                  {selectedRun.artifacts.length ? <div className="agent-artifacts"><strong>Artifacts</strong>{selectedRun.artifacts.map((artifact) => <div key={artifact.id}><span>{artifact.title}</span>{artifact.note_id ? <button type="button" onClick={() => onOpenNote?.(artifact.note_id)}>Open Note</button> : null}</div>)}</div> : null}
-                  <RecoveryPanel
-                    runType="agent"
-                    runId={selectedRun.run.id}
-                    onUpdated={() => refreshAgentRuns(selectedTask.id, selectedRun.run.id)}
-                  />
-                  <ArtifactsPanel agentRunId={selectedRun.run.id} refreshKey={artifactRefresh} onApplied={() => setArtifactRefresh((value) => value + 1)} />
-                </div>
-              ) : null}
-            </section>
-            <section className="agent-runs-section">
-              <div className="task-section-title">Coding Runs</div>
-              <p className="task-help">Multi-step coding workflow with explicit patch, test, and checkpoint approvals.</p>
-              <CodingAgent initialTaskId={selectedTask.id} initialProjectId={selectedTask.project_id || ""} compact />
             </section>
           </form>
         )}

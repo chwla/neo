@@ -23,8 +23,7 @@ MEMORY_TYPES = {
 SCOPE_TYPES = {
     "chat",
     "agent_run",
-    "agentic_run",
-    "coding_run",
+    "agent_session",
     "task",
     "project",
     "repo_workspace",

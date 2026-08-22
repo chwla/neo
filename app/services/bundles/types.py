@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class BundleExportRequest(BaseModel):
-    bundle_type: str = Field(pattern="^(coding_run|agent_run|task|project)$")
+    bundle_type: str = Field(pattern="^(agent_session|task|project)$")
     entity_id: str
     include_files: bool = True
     include_patch_text: bool = True

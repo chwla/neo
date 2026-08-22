@@ -11,7 +11,7 @@ def collect(client) -> dict:
     return {
         "health": get("/api/health"),
         "tasks": get("/api/tasks"),
-        "coding": get("/api/coding-agent/runs"),
+        "agent_sessions": get("/api/agent-sessions"),
         "commands": get("/api/command-sandbox/runs"),
         "context": get("/api/context-memory/summaries"),
         "rules": get("/api/rules/profiles"),

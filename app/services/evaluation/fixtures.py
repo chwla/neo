@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 BUILTIN_SUITES = {
-    "agentic_basic": ("agentic_task", "Agentic Core basic planning and verification"),
+    "agent_session_basic": ("agent_session_task", "Agent session planning and verification"),
     "coding_agent_patch_safety": ("coding_task", "Coding claims and patch safety"),
     "web_search_grounding": ("web_search_task", "Reliable Web Search evidence grounding"),
     "research_citation_accuracy": ("research_task", "Enterprise Research citation accuracy"),

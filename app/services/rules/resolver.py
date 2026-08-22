@@ -20,7 +20,7 @@ class RuleResolver:
             "project": request.project_id,
             "repo": request.repo_id,
             "task": request.task_id,
-            "coding_run": request.coding_run_id,
+            "agent_session": request.agent_session_id,
         }
         for profile in profiles:
             scope = profile["scope_type"]
@@ -80,7 +80,7 @@ class RuleResolver:
                     "id": "coding-run-override",
                     "name": "Coding run override",
                     "scope_type": "coding_run",
-                    "scope_id": request.coding_run_id,
+                    "scope_id": request.agent_session_id,
                     "priority": 10000,
                     "source_type": "override",
                 }
@@ -93,7 +93,7 @@ class RuleResolver:
                 {
                     "id": str(uuid.uuid4()),
                     "context_type": request.context_type,
-                    "context_id": request.context_id or request.coding_run_id,
+                    "context_id": request.context_id or request.agent_session_id,
                     "project_id": request.project_id,
                     "task_id": request.task_id,
                     "repo_id": request.repo_id,
