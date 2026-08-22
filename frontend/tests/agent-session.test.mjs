@@ -12,7 +12,13 @@ import { describe, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ApprovalCard, STOP_REASON_COPY, TodoPanel, ToolCard } from "../src/AgentSession.jsx";
+import {
+  ApprovalCard,
+  ChangesPanel,
+  STOP_REASON_COPY,
+  TodoPanel,
+  ToolCard,
+} from "../src/AgentSession.jsx";
 
 const render = (component, props) => renderToStaticMarkup(createElement(component, props));
 
@@ -73,9 +79,42 @@ describe("approval card", () => {
       onDecide() {},
     });
 
-    assert.ok(grantable.includes("Allow always in this folder"));
+    assert.ok(grantable.includes("Allow always in app/services/search/"), "name the scope");
     assert.ok(!single.includes("Allow always"));
     assert.ok(single.includes("one call at a time"), "and it should say why");
+  });
+
+  // A file at the repository root has no enclosing folder, so the derived
+  // prefix is empty -- and an empty prefix matches nothing. Offering it as a
+  // folder scope produced a grant the server always refused.
+  describe("a file at the repository root", () => {
+    const rootApproval = {
+      ...approval,
+      summary: "Edit ab.py",
+      arguments: { path: "ab.py", old_string: "a", new_string: "b" },
+    };
+
+    test("is granted for the repository rather than an empty folder", () => {
+      const html = render(ApprovalCard, { approval: rootApproval, busy: false, onDecide() {} });
+
+      assert.ok(html.includes("Allow always in this repository"));
+      // The bug rendered a scope with nothing after "in", which the server then
+      // refused; any empty-scope label is the regression.
+      assert.ok(!/Allow always in\s*</.test(html), "an unnamed scope is the bug");
+    });
+
+    test("says why the scope is empty", () => {
+      const html = render(ApprovalCard, { approval: rootApproval, busy: false, onDecide() {} });
+
+      assert.ok(html.includes("at the repository root"));
+    });
+
+    test("still offers a narrower scope to type", () => {
+      const html = render(ApprovalCard, { approval: rootApproval, busy: false, onDecide() {} });
+
+      assert.ok(html.includes('aria-label="Grant path prefix"'), "narrowing stays possible");
+      assert.ok(!html.includes('placeholder="app/services/"'), "no fake default scope");
+    });
   });
 
   test("always offers allow-once and reject", () => {
@@ -142,5 +181,94 @@ describe("outcome wording", () => {
       assert.ok(STOP_REASON_COPY[reason]?.label, `no copy for ${reason}`);
       assert.ok(STOP_REASON_COPY[reason]?.detail, `no detail for ${reason}`);
     }
+  });
+});
+
+
+/**
+ * The panel that used to end every run with four buttons -- View diff, Download
+ * changed files, Download workspace, Discard -- because the agent had been
+ * editing a copy the user could not reach. A live workspace has no such gap:
+ * the files are already theirs, so the panel reports and offers to reverse,
+ * and there is nothing to hand back.
+ */
+describe("changes panel", () => {
+  const live = {
+    mode: "live",
+    root: "/Users/me/project",
+    deliverable: [{ path: "ab.py", status: "created" }],
+    blocked: [],
+    undoable: true,
+  };
+
+  test("a live run says the work is already saved, and where", () => {
+    const html = render(ChangesPanel, { sessionId: "s1", delivery: live });
+
+    assert.ok(html.includes("Changes written to your folder"));
+    assert.ok(html.includes("/Users/me/project"), "the user must see which folder changed");
+    assert.ok(html.includes("ab.py"));
+  });
+
+  test("a live run offers no download and nothing to discard", () => {
+    const html = render(ChangesPanel, { sessionId: "s1", delivery: live });
+
+    assert.ok(!html.includes("Download changed files"));
+    assert.ok(!html.includes("Download workspace"));
+    assert.ok(!html.includes("Discard"));
+    assert.ok(!html.includes("Apply changes"), "there is nothing left to apply");
+  });
+
+  test("a live run can be undone, and can still be read as a diff", () => {
+    const html = render(ChangesPanel, { sessionId: "s1", delivery: live });
+
+    assert.ok(html.includes("Undo this run"));
+    assert.ok(html.includes("View diff"));
+  });
+
+  test("undo is unavailable when the run changed nothing", () => {
+    const html = render(ChangesPanel, {
+      sessionId: "s1",
+      delivery: { ...live, undoable: false },
+    });
+
+    assert.ok(html.includes('Undo this run'));
+    assert.ok(html.includes('disabled=""'), "an empty run must not offer a live undo");
+  });
+
+  test("a managed copy still has to be applied, and says so", () => {
+    const html = render(ChangesPanel, {
+      sessionId: "s1",
+      delivery: {
+        mode: "write_back",
+        deliverable: [{ path: "app/main.py", status: "modified" }],
+        blocked: [],
+      },
+    });
+
+    assert.ok(html.includes("Deliver to your repository"));
+    assert.ok(html.includes("Apply changes"));
+    assert.ok(!html.includes("Undo this run"), "a copy has no user files to restore");
+  });
+
+  test("a file the user edited since import is shown as blocked, with the reason", () => {
+    const html = render(ChangesPanel, {
+      sessionId: "s1",
+      delivery: {
+        mode: "write_back",
+        deliverable: [],
+        blocked: [{ path: "app/main.py", reason: "This file changed in your repository." }],
+      },
+    });
+
+    assert.ok(html.includes("This file changed in your repository."));
+  });
+
+  test("nothing renders when the run changed nothing at all", () => {
+    const html = render(ChangesPanel, {
+      sessionId: "s1",
+      delivery: { mode: "live", root: "/x", deliverable: [], blocked: [] },
+    });
+
+    assert.equal(html, "");
   });
 });

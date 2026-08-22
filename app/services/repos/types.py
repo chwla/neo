@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,9 @@ class RepoRegisterRequest(BaseModel):
     project_id: str | None = None
     name: str | None = Field(default=None, max_length=200)
     confirm: bool = False
+    #: ``live`` points the agent at this folder itself; ``managed`` copies the
+    #: text files and edits the copy, which then has to be delivered.
+    access: Literal["live", "managed"] = "live"
 
 
 class WorkspaceRepo(BaseModel):
@@ -17,6 +20,7 @@ class WorkspaceRepo(BaseModel):
     project_id: str | None = None
     name: str
     original_path: str
+    access: str = "managed"
     status: str
     file_count: int
     indexed_file_count: int

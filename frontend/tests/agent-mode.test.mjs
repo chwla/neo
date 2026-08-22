@@ -71,19 +71,23 @@ describe("agent mode composer", () => {
     }
   });
 
-  test("a folder can be uploaded for the agent to work on", () => {
+  test("a folder on this computer can be opened for the agent to work in", () => {
     const html = render();
 
-    assert.ok(html.includes("agent-chip-action"), "folder upload chip is missing");
+    assert.ok(html.includes("agent-chip-action"), "folder chip is missing");
     assert.ok(html.includes('<span class="agent-chip-label">Folder</span>'));
-    assert.ok(html.includes(">Upload</span>"));
+    assert.ok(html.includes(">Open</span>"));
+    assert.ok(
+      html.includes("edits it directly"),
+      "the chip must say the agent edits the real folder, not a copy",
+    );
   });
 
-  test("the folder chip reports an upload in progress", () => {
-    const html = render({ folderUploading: true });
+  test("the folder chip reports an attach in progress", () => {
+    const html = render({ folderAttaching: true });
 
-    assert.ok(html.includes("Uploading"), "an in-flight upload must be visible");
-    assert.ok(!html.includes(">Upload</span>"), "idle label must give way");
+    assert.ok(html.includes("Opening"), "an in-flight attach must be visible");
+    assert.ok(!html.includes(">Open</span>"), "idle label must give way");
   });
 
   test("permission mode is chosen before the run starts", () => {
@@ -147,7 +151,7 @@ describe("agent mode composer", () => {
 
     assert.ok(html.includes("agent-mode-hint"));
     assert.ok(!html.toLowerCase().includes("checklist"), "the run no longer creates a checklist up front");
-    assert.ok(html.includes("asks you"), "the hint should say when it will interrupt");
+    assert.ok(html.includes("undone"), "the hint should say the run is reversible");
   });
 
   test("the hint gives way to the objective once one is typed", () => {
@@ -161,14 +165,14 @@ describe("agent mode composer", () => {
   test("without a repository the composer asks for one", () => {
     const html = render({ selectedRepoId: "" });
 
-    assert.ok(html.includes("Select a repository first"));
-    assert.ok(html.includes("Upload a folder"), "it must name the way out, not just the problem");
+    assert.ok(html.includes("Select a workspace first"));
+    assert.ok(html.includes("Open a folder"), "it must name the way out, not just the problem");
   });
 
   test("the repository prompt outranks the objective hint", () => {
     const html = render({ selectedRepoId: "", value: "do the thing" });
 
-    assert.ok(html.includes("Select a repository first"), "a typed objective must not hide it");
+    assert.ok(html.includes("Select a workspace first"), "a typed objective must not hide it");
   });
 
   test("Start is disabled until a repository is chosen", () => {
@@ -195,7 +199,7 @@ describe("agent mode composer", () => {
   test("every control is disabled while a submission is in flight", () => {
     const html = render({ value: "go", disabled: true });
 
-    assert.equal(count(html, 'disabled=""'), 7, "4 chips + folder upload + textarea + Start");
+    assert.equal(count(html, 'disabled=""'), 7, "4 chips + folder button + textarea + Start");
   });
 });
 

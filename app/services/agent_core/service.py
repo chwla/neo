@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.services.agent_core import delivery, store, worker
+from app.services.agent_core import delivery, journal, store, worker
 from app.services.agent_core.permissions import grant_matches
 from app.services.agent_core.types import (
     AgentSession,
@@ -19,6 +19,7 @@ from app.services.agent_core.types import (
     PermissionMode,
     ToolCall,
 )
+from app.services.repos import store as repos_store
 
 MAX_OBJECTIVE = 20_000
 
@@ -56,14 +57,6 @@ class DeliverRequest(BaseModel):
     files: list[str] | None = None
 
 
-def _safe_filename(raw: str) -> str:
-    """A download name that cannot smuggle a path or a quote into the header."""
-
-    cleaned = "".join(char if char.isalnum() or char in "-_" else "-" for char in raw.strip())
-    cleaned = "-".join(part for part in cleaned.split("-") if part)
-    return (cleaned[:60] or "agent-run").lower()
-
-
 def _title(objective: str) -> str:
     first = objective.strip().splitlines()[0].strip()
     return (first[:117] + "...") if len(first) > 120 else first or "Agent session"
@@ -83,8 +76,8 @@ class AgentCoreService:
             # so it can only narrate work it cannot do. Refusing here is kinder
             # than a run that looks busy and changes nothing.
             raise AgentCoreValidationError(
-                "Select a repository first. Upload a folder to give the agent "
-                "code to work on."
+                "Select a workspace first. Open a folder on this machine to give "
+                "the agent something to work on."
             )
 
         if payload.client_request_id:
@@ -151,15 +144,36 @@ class AgentCoreService:
 
     @staticmethod
     def _delivery_summary(session: AgentSession) -> dict | None:
+        """What the run changed, and what the user can still do about it.
+
+        The two workspace kinds answer "what changed" from different sources --
+        a live run from its journal, a managed one from the import baseline --
+        but they answer in the same shape, so the UI branches on ``mode`` alone
+        and never infers the kind from a path.
+        """
+
         if not session.repo_id or session.status != "completed":
             return None
         try:
+            repo = repos_store.get_repo(session.repo_id)
+            if repo is None:
+                return None
+            if repo.get("access") == repos_store.LIVE:
+                plan = journal.session_changes(session.id, session.repo_id)
+                return {
+                    "mode": delivery.LIVE,
+                    "root": repo["original_path"],
+                    "deliverable": [
+                        {"path": change.relative_path, "status": change.status}
+                        for change in plan.changes
+                    ],
+                    "blocked": [],
+                    "undoable": bool(plan.changes),
+                }
             plan = delivery.plan_delivery(session.repo_id)
         except Exception:
             return None
         return {
-            # The UI offers write-back or download on this alone, so it is the
-            # server that decides, not a guess made from the path in the browser.
             "mode": plan.mode,
             "deliverable": [
                 {"path": change.relative_path, "status": change.status}
@@ -255,6 +269,13 @@ class AgentCoreService:
             created_at=store.now_iso(),
         )
         if not grant_matches(grant, tool, approval["arguments"]):
+            if chosen.get("kind") == "path_prefix" and not str(chosen.get("value") or ""):
+                # An empty prefix matches nothing by design, so the generic
+                # message would blame the user's scope for a missing one.
+                raise AgentCoreValidationError(
+                    "A path scope is required. This file sits at the repository root, "
+                    "so grant the whole repository or type a folder to narrow it to."
+                )
             raise AgentCoreValidationError("That grant would not cover the action being approved.")
         store.insert_grant(grant.model_dump())
 
@@ -262,6 +283,22 @@ class AgentCoreService:
         session = self.get(session_id)
         if not session.repo_id:
             raise AgentCoreValidationError("This session has no repository.")
+        repo = repos_store.get_repo(session.repo_id)
+        if repo is not None and repo.get("access") == repos_store.LIVE:
+            # A live run has nothing to move, but "show me what changed" is still
+            # a real question, so the diff is served from the journal and only
+            # the write-back mode is refused.
+            plan = journal.session_changes(session_id, session.repo_id)
+            if payload.mode != "patch":
+                raise AgentCoreValidationError(
+                    "This workspace is your own folder, so these changes are already in it."
+                )
+            return {
+                "mode": "patch",
+                "patch": delivery.build_patch(plan, payload.files),
+                "summary": delivery.summarize(plan),
+                "delivery_mode": delivery.LIVE,
+            }
         plan = delivery.plan_delivery(session.repo_id)
         if payload.mode == "patch":
             return {
@@ -274,8 +311,7 @@ class AgentCoreService:
         # 400 with an actionable message rather than a generic workspace error.
         if not plan.writable:
             raise AgentCoreValidationError(
-                "This repository was uploaded, so there is no folder on this machine "
-                "to write into. Download the changed files instead."
+                "This workspace has no folder on this machine to write into."
             )
         result = delivery.write_to_working_tree(plan, payload.files)
         return {
@@ -285,19 +321,18 @@ class AgentCoreService:
             **result,
         }
 
-    def download(self, session_id: str, scope: str = "changes") -> tuple[bytes, str]:
-        """Zip the work for a repository Neo cannot write back to."""
+    def undo(self, session_id: str) -> dict:
+        """Reverse what this run wrote into the user's folder."""
 
         session = self.get(session_id)
         if not session.repo_id:
             raise AgentCoreValidationError("This session has no repository.")
-        plan = delivery.plan_delivery(session.repo_id)
-        whole = scope == "workspace"
-        if not whole and not plan.deliverable:
-            raise AgentCoreValidationError("No files changed in the managed copy.")
-        archive = delivery.build_archive(plan, whole_workspace=whole)
-        suffix = "workspace" if whole else "changes"
-        return archive, f"{_safe_filename(session.title)}-{suffix}.zip"
+        repo = repos_store.get_repo(session.repo_id)
+        if repo is None or repo.get("access") != repos_store.LIVE:
+            raise AgentCoreValidationError(
+                "Only a run against a folder on this machine can be undone."
+            )
+        return journal.undo(session_id, session.repo_id)
 
     def export(self, session_id: str, target: str) -> dict:
         """Promote a finished run into Tasks or a Note, only when asked."""

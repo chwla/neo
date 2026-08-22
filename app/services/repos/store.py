@@ -5,6 +5,15 @@ import sqlite3
 
 from app.core.config import get_settings
 
+#: How the agent reaches a repository's files.
+#:
+#: ``MANAGED`` is the original behaviour: Neo copies text files into
+#: ``workspace_repos_dir`` and the agent edits that copy, which then has to be
+#: delivered. ``LIVE`` points the agent at the user's own folder, the way Codex
+#: and Claude Code work -- there is no copy and nothing to deliver.
+MANAGED = "managed"
+LIVE = "live"
+
 
 def _connect() -> sqlite3.Connection:
     url = get_settings().database_url
@@ -23,10 +32,10 @@ def insert_repo(item: dict) -> dict:
         conn.execute(
             """
             INSERT INTO workspace_repos (
-                id, project_id, name, original_path, workspace_path, status, file_count,
-                indexed_file_count, total_bytes, metadata_json, deleted, created_at,
-                updated_at, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, project_id, name, original_path, workspace_path, access, status,
+                file_count, indexed_file_count, total_bytes, metadata_json, deleted,
+                created_at, updated_at, indexed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item["id"],
@@ -34,6 +43,7 @@ def insert_repo(item: dict) -> dict:
                 item["name"],
                 item["original_path"],
                 item["workspace_path"],
+                item.get("access", MANAGED),
                 item["status"],
                 item.get("file_count", 0),
                 item.get("indexed_file_count", 0),
@@ -292,6 +302,11 @@ def _repo_row(row: sqlite3.Row) -> dict:
     item = dict(row)
     item["metadata"] = _json(item.pop("metadata_json", None))
     item["deleted"] = bool(item["deleted"])
+    # A row read before the migration ran, or written by an older build, has no
+    # opinion about access. Defaulting to the managed copy here means the unknown
+    # case can never be mistaken for permission to write the user's own files.
+    if item.get("access") not in {LIVE, MANAGED}:
+        item["access"] = MANAGED
     return item
 
 

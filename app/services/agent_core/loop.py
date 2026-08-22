@@ -47,6 +47,7 @@ from app.services.agent_core.types import (
     ToolResult,
     status_for_stop_reason,
 )
+from app.services.agent_core.workspace import is_live
 from app.services.llm import LLMMessage
 
 _LOG = logging.getLogger(__name__)
@@ -214,7 +215,11 @@ class AgentLoop:
         return None
 
     def _seed_transcript(self, session: AgentSession) -> None:
-        schemas = self.registry.schemas(mode=session.mode, has_repo=bool(session.repo_id))
+        schemas = self.registry.schemas(
+            mode=session.mode,
+            has_repo=bool(session.repo_id),
+            live=is_live(session.repo_id),
+        )
         native = bool(getattr(self.llm_factory(), "supports_tools", lambda: False)())
         repo, project = self._context_records(session)
         store.append_message(
@@ -253,7 +258,11 @@ class AgentLoop:
     def _think(self, session: AgentSession) -> ModelTurn:
         messages = _to_llm_messages(store.list_messages(session.id))
         budget = context_budget(self.context_window, session.budgets.context_fraction)
-        schemas = self.registry.schemas(mode=session.mode, has_repo=bool(session.repo_id))
+        schemas = self.registry.schemas(
+            mode=session.mode,
+            has_repo=bool(session.repo_id),
+            live=is_live(session.repo_id),
+        )
         return request_tool_calls(self.llm_factory(), fit(messages, budget), schemas)
 
     # --- tool execution ------------------------------------------------------

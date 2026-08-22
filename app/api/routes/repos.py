@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, HTTPException, Query
 
 from app.services.files.types import WorkspaceFile
 from app.services.repos import store
+from app.services.repos.safety import in_container
 from app.services.repos.service import RepoWorkspaceService
 from app.services.repos.types import RepoFile, RepoRegisterRequest, RepoStats, WorkspaceRepo
-from app.services.repos.uploads import discard, stage_upload
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
@@ -40,57 +38,27 @@ def register_repo(request: RepoRegisterRequest) -> dict:
     return {"repo": WorkspaceRepo.model_validate(repo), "stats": _stats(repo)}
 
 
-@router.post("/upload", status_code=201)
-async def upload_repo(
-    files: Annotated[list[UploadFile] | None, File()] = None,
-    paths: Annotated[list[str] | None, Form()] = None,
-    project_id: Annotated[str | None, Form()] = None,
-    name: Annotated[str | None, Form()] = None,
-) -> dict:
-    """Register a folder uploaded from the browser as a workspace repository.
+@router.get("/roots")
+def list_roots() -> dict:
+    """Where a folder may be opened from, and which ones were opened recently.
 
-    ``paths`` carries each file's path within the chosen folder, positionally
-    matched to ``files``; the browser's own file names are not used, because a
-    folder upload has to preserve its directory structure.
-
-    Both are optional: an empty folder sends no files at all, and that is a
-    supported way to start a workspace the agent will write the first file into.
+    The browser cannot supply an absolute path -- a folder picker only yields
+    paths relative to the folder chosen -- so attaching one is typed. Handing
+    back the roots and the recent list turns most attachments back into a click.
     """
 
-    files = files or []
-    paths = paths or []
-    if len(files) != len(paths):
-        raise HTTPException(
-            status_code=400, detail="Each uploaded file needs exactly one matching path."
-        )
-    entries = [(path, await item.read()) for path, item in zip(paths, files, strict=True)]
-    try:
-        staged = stage_upload(
-            entries,
-            fallback_name=(name or "").strip() or "uploaded-folder",
-            allow_empty=True,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
-        repo = _service().register_upload(
-            staged.root,
-            name=(name or "").strip() or staged.name,
-            project_id=project_id or None,
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        # The importer copies what it keeps into the managed workspace, so the
-        # staging tree is redundant either way.
-        discard(staged.root)
-    return {
-        "repo": WorkspaceRepo.model_validate(repo),
-        "stats": _stats(repo),
-        "skipped_files": staged.skipped,
-    }
+    from app.core.config import get_settings
+
+    configured = [
+        part for part in get_settings().workspace_live_roots.split(":") if part.strip()
+    ]
+    repos, _total = store.list_repos(limit=200)
+    recent = [
+        {"path": repo["original_path"], "name": repo["name"], "repo_id": repo["id"]}
+        for repo in repos
+        if repo.get("access") == store.LIVE
+    ]
+    return {"roots": configured, "recent": recent[:10], "containerized": in_container()}
 
 
 @router.get("")

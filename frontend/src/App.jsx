@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { api } from "./api.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { registerModal } from "./modalStack.js";
+import OpenFolderDialog from "./OpenFolderDialog.jsx";
 import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
@@ -801,8 +802,8 @@ export function ChatComposer({
   onRepoChange,
   agentMode = "normal",
   onAgentModeChange,
-  onUploadFolder,
-  folderUploading = false,
+  onOpenFolder,
+  folderAttaching = false,
   agentMessage,
   attachments = [],
   onAttachFiles,
@@ -888,13 +889,13 @@ export function ChatComposer({
               <button
                 type="button"
                 className="agent-chip agent-chip-action"
-                onClick={onUploadFolder}
-                disabled={disabled || folderUploading}
-                title="Upload a folder from this computer for the agent to work on"
+                onClick={onOpenFolder}
+                disabled={disabled || folderAttaching}
+                title="Open a folder on this computer. The agent edits it directly."
               >
                 <span className="agent-chip-label">Folder</span>
                 <span className="agent-chip-value">
-                  {folderUploading ? "Uploading…" : "Upload"}
+                  {folderAttaching ? "Opening…" : "Open"}
                 </span>
               </button>
               <label className="agent-chip">
@@ -1015,13 +1016,13 @@ export function ChatComposer({
         </form>
         {mode === "agent" && !selectedRepoId ? (
           <div className="agent-mode-hint agent-mode-blocked">
-            Select a repository first. Upload a folder from your computer and the agent
-            will have code to read, edit and test.
+            Select a workspace first. Open a folder on this computer and the agent will
+            read, edit and test the files in it directly.
           </div>
         ) : mode === "agent" && !value.trim() ? (
           <div className="agent-mode-hint">
-            Give Neo an objective. It inspects, works, and verifies on its own, and asks you
-            before anything outside its sandbox changes.
+            Give Neo an objective. It inspects, works, and verifies on its own, editing
+            your files as it goes — every run can be undone.
           </div>
         ) : null}
         {mode === "agent" && agentMessage ? <div className="agent-mode-message">{agentMessage}</div> : null}
@@ -1729,8 +1730,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   });
   const [chatAgentBusy, setChatAgentBusy] = useState(false);
   const [chatAgentMessage, setChatAgentMessage] = useState("");
-  const [folderUploading, setFolderUploading] = useState(false);
-  const folderInputRef = useRef(null);
+  const [showOpenFolder, setShowOpenFolder] = useState(false);
   const bootstrapped = useRef(false);
   const createChatPromiseRef = useRef(null);
   const visibleChatIdRef = useRef(null);
@@ -2387,55 +2387,23 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     await sendPrompt(outgoing);
   }
 
-  function handleUploadFolder() {
-    folderInputRef.current?.click();
+  function handleOpenFolder() {
+    setChatAgentMessage("");
+    setShowOpenFolder(true);
   }
 
-  async function handleFolderSelected(event) {
-    const files = Array.from(event.target.files || []);
-    let name = null;
-    if (!files.length) {
-      // An empty folder carries no webkitRelativePath, so the browser gives us
-      // no name to use -- ask for one rather than inventing it. Cancelling the
-      // picker does not fire this event, so an empty selection really is a
-      // folder with nothing in it.
-      name = window.prompt(
-        "That folder is empty. Name the workspace and the agent can create files in it:",
-        "new-workspace",
-      );
-      if (name === null) return;
-      name = name.trim();
-      if (!name) {
-        setChatAgentMessage("A workspace needs a name.");
-        return;
-      }
-    }
-    setFolderUploading(true);
-    setChatAgentMessage("");
-    try {
-      const result = await api.uploadRepoFolder(files, {
-        projectId: selectedAgentProjectId || null,
-        name,
-      });
-      const repo = result?.repo;
-      await loadAgentContext();
-      if (repo?.id) setSelectedAgentRepoId(repo.id);
-      const skipped = result?.skipped_files || 0;
-      const indexed = result?.stats?.indexed_file_count ?? 0;
-      setChatAgentMessage(
-        indexed === 0
-          ? `Empty workspace "${repo?.name || "folder"}" ready. Ask the agent to create the first file.`
-          : `Uploaded ${repo?.name || "folder"} — ${indexed} files ready` +
-            (skipped ? `, ${skipped} skipped` : "") +
-            ". Selected as the agent's repository.",
-      );
-    } catch (error) {
-      setChatAgentMessage(`Could not upload that folder: ${errorMessage(error)}`);
-    } finally {
-      setFolderUploading(false);
-      // Reset so re-picking the same folder still fires a change event.
-      event.target.value = "";
-    }
+  async function handleFolderAttached(repo, stats) {
+    await loadAgentContext();
+    if (repo?.id) setSelectedAgentRepoId(repo.id);
+    const indexed = stats?.indexed_file_count ?? 0;
+    const live = repo?.access === "live";
+    setChatAgentMessage(
+      live
+        ? indexed === 0
+          ? `Opened "${repo?.name}". It is empty — ask the agent to create the first file.`
+          : `Opened "${repo?.name}" — ${indexed} files. The agent edits these files directly.`
+        : `Copied "${repo?.name}" — ${indexed} files. Your originals are untouched.`,
+    );
   }
 
   async function handleStartChatAgent(event) {
@@ -2709,21 +2677,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onAgentDefinitionChange={setSelectedAgentDefinitionId}
           agentMode={agentMode}
           onAgentModeChange={setAgentMode}
-          onUploadFolder={handleUploadFolder}
-          folderUploading={folderUploading}
+          onOpenFolder={handleOpenFolder}
+          folderAttaching={false}
           agentMessage={chatAgentMessage}
         />
-        <input
-          ref={folderInputRef}
-          type="file"
-          multiple
-          webkitdirectory=""
-          directory=""
-          className="visually-hidden-input"
-          onChange={handleFolderSelected}
-          aria-hidden="true"
-          tabIndex={-1}
-        />
+        {showOpenFolder && (
+          <OpenFolderDialog
+            projectId={selectedAgentProjectId || null}
+            onClose={() => setShowOpenFolder(false)}
+            onAttached={handleFolderAttached}
+          />
+        )}
       </main>
       )}
 

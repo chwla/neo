@@ -398,18 +398,21 @@ export const api = {
     search.set("limit", String(params.limit ?? 100));
     return request(`/repos?${search.toString()}`);
   },
-  uploadRepoFolder: (files, { projectId = null, name = null } = {}) => {
-    const body = new FormData();
-    for (const file of files) {
-      body.append("files", file);
-      // The folder-relative path is the whole point of a folder upload, and it
-      // does not survive as part of the file object on the server side.
-      body.append("paths", file.webkitRelativePath || file.name);
-    }
-    if (projectId) body.append("project_id", projectId);
-    if (name) body.append("name", name);
-    return request("/repos/upload", { method: "POST", body });
-  },
+  // Where a folder may be opened from, plus the ones opened recently. The
+  // browser cannot produce an absolute path on its own, so this is what turns
+  // attaching a folder back into a click for everything after the first time.
+  repoRoots: () => request("/repos/roots"),
+  attachFolder: ({ path, projectId = null, name = null, managed = false }) =>
+    request("/repos/register", {
+      method: "POST",
+      body: JSON.stringify({
+        path,
+        project_id: projectId,
+        name,
+        confirm: true,
+        access: managed ? "managed" : "live",
+      }),
+    }),
   registerRepo: (payload) => request("/repos/register", {
     method: "POST", body: JSON.stringify(payload),
   }),
@@ -872,24 +875,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  downloadAgentChanges: async (sessionId, scope = "changes") => {
-    // A zip is not JSON, so this bypasses `request` and reads the blob itself.
-    const response = await fetch(
-      `${API_BASE}/agent-sessions/${sessionId}/download?scope=${scope}`,
-    );
-    if (!response.ok) {
-      let detail = `Download failed (${response.status})`;
-      try {
-        detail = (await response.json()).detail || detail;
-      } catch {
-        // A non-JSON error body is not more informative than the status.
-      }
-      throw new Error(detail);
-    }
-    const disposition = response.headers.get("content-disposition") || "";
-    const match = disposition.match(/filename="([^"]+)"/);
-    return { blob: await response.blob(), filename: match?.[1] || `${scope}.zip` };
-  },
+  undoAgentRun: (sessionId) =>
+    request(`/agent-sessions/${sessionId}/undo`, { method: "POST" }),
   exportAgentSession: (sessionId, target) =>
     request(`/agent-sessions/${sessionId}/export?target=${target}`, { method: "POST" }),
 

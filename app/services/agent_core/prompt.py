@@ -13,6 +13,7 @@ from typing import Any
 
 from app.services.agent_core.tool_protocol import render_tool_docs
 from app.services.agent_core.types import AgentSession
+from app.services.repos import store as repos_store
 
 _BASE = """You are Neo's agent. You work autonomously toward the user's objective.
 
@@ -91,12 +92,22 @@ def build_system_prompt(
 def build_environment(session: AgentSession, repo: dict | None, project: dict | None) -> str:
     lines = []
     if repo:
-        lines.append(f"- Repository: {repo.get('name')} (Neo's managed copy)")
-        lines.append(
-            "- Your file tools operate on the managed copy, not the user's original "
-            "repository. Use deliver_changes when the work is verified and the user "
-            "wants it delivered."
-        )
+        # The model behaves differently depending on whether its edits are real,
+        # so say which it is plainly rather than leaving it to infer one.
+        if repo.get("access") == repos_store.LIVE:
+            lines.append(f"- Repository: {repo.get('name')} at {repo.get('original_path')}")
+            lines.append(
+                "- Your file tools edit these files directly on the user's machine. "
+                "There is no copy and no delivery step: once you write a file, the "
+                "change is real. Verify your work before you finish."
+            )
+        else:
+            lines.append(f"- Repository: {repo.get('name')} (Neo's managed copy)")
+            lines.append(
+                "- Your file tools operate on the managed copy, not the user's original "
+                "repository. Use deliver_changes when the work is verified and the user "
+                "wants it delivered."
+            )
     else:
         lines.append("- No repository is attached; file and command tools are unavailable.")
     if project:

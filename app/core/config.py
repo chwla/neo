@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     llm_config_path: str = Field(default="neo_llms.json")
     workspace_files_dir: str = Field(default="data/workspace_files")
     workspace_repos_dir: str = Field(default="data/workspace_repos")
+    #: Colon-separated absolute directories under which a folder may be attached
+    #: live -- that is, with the agent editing the user's own files rather than a
+    #: copy. Empty means "wherever ``validate_repo_root`` already allows", which
+    #: is what you want when Neo runs on the host and every path is real. In a
+    #: container only the bind mount is reachable, so it is set to that mount and
+    #: becomes a genuine restriction.
+    workspace_live_roots: str = Field(default="")
     frontend_dir: str = Field(default="app/static")
     workspace_repo_max_files: int = Field(default=500, ge=1)
     workspace_repo_max_total_bytes: int = Field(default=25 * 1024 * 1024, ge=1)

@@ -10,7 +10,7 @@ from app.services.files.store import now_iso
 from app.services.projects.store import get_project
 from app.services.repos import store
 from app.services.repos.importer import import_scan
-from app.services.repos.safety import ensure_inside, validate_repo_root
+from app.services.repos.safety import ensure_inside, validate_live_root, validate_repo_root
 from app.services.repos.scanner import scan_repo
 from app.services.repos.types import RepoRegisterRequest
 
@@ -20,11 +20,20 @@ class RepoWorkspaceService:
         self.settings = get_settings()
 
     def register(self, request: RepoRegisterRequest) -> dict:
+        """Attach a folder on this machine, live or as a managed copy.
+
+        ``live`` is the default because it is what the user almost always means:
+        the agent edits the folder they pointed at, and there is no second step
+        to get the work back out. ``managed`` keeps the older copy-and-deliver
+        behaviour for anyone who wants their own files left alone.
+        """
+
         if not request.confirm:
             raise ValueError("Repository registration requires confirm=true.")
         if request.project_id and not get_project(request.project_id):
             raise LookupError("Project not found.")
-        source = validate_repo_root(request.path)
+        live = request.access == store.LIVE
+        source = validate_live_root(request.path) if live else validate_repo_root(request.path)
         if store.get_repo_by_original_path(str(source)):
             raise ValueError("This repository is already registered.")
         return self._import_root(
@@ -32,33 +41,11 @@ class RepoWorkspaceService:
             name=request.name.strip() if request.name else source.name,
             project_id=request.project_id,
             original_path=str(source),
-        )
-
-    def register_upload(
-        self, staged_root: Path, *, name: str, project_id: str | None = None
-    ) -> dict:
-        """Register a folder the browser uploaded and Neo staged on disk.
-
-        Uploads are the only way to reach a user's folder when Neo runs in a
-        container, where the host filesystem the path-based flow expects is not
-        visible. Everything after staging is the same pipeline, so uploaded
-        repositories get identical ignore rules, limits and indexing.
-        """
-
-        if project_id and not get_project(project_id):
-            raise LookupError("Project not found.")
-        return self._import_root(
-            staged_root,
-            name=name,
-            project_id=project_id,
-            # An empty folder is a legitimate starting point: the user is asking
-            # the agent to create the first file, not importing existing code.
-            allow_empty=True,
-            # Uploads have no stable host path, and re-uploading the same folder
-            # is a legitimate refresh rather than the duplicate that the
-            # path-based flow rejects, so keep each one distinct.
-            original_path=f"upload://{uuid.uuid4()}/{name}",
-            empty_message="No supported text files were found in the uploaded folder.",
+            access=store.LIVE if live else store.MANAGED,
+            # An empty folder is a legitimate starting point for a live
+            # workspace: the user is asking the agent to create the first file,
+            # not importing existing code.
+            allow_empty=live,
         )
 
     def _import_root(
@@ -68,6 +55,7 @@ class RepoWorkspaceService:
         name: str,
         project_id: str | None,
         original_path: str,
+        access: str = store.MANAGED,
         allow_empty: bool = False,
         empty_message: str = (
             "No supported text files were found in the selected repository."
@@ -83,9 +71,17 @@ class RepoWorkspaceService:
             raise ValueError(empty_message)
 
         repo_id = str(uuid.uuid4())
-        managed_root = Path(self.settings.workspace_repos_dir).resolve()
-        managed_root.mkdir(parents=True, exist_ok=True)
-        workspace_path = ensure_inside(managed_root, managed_root / repo_id)
+        live = access == store.LIVE
+        if live:
+            # There is no copy, so the workspace *is* the folder. Recording it
+            # rather than a managed path is what lets every downstream consumer
+            # -- file tools, the command sandbox, the code index -- reach the
+            # real files without knowing anything about live workspaces.
+            workspace_path = source
+        else:
+            managed_root = Path(self.settings.workspace_repos_dir).resolve()
+            managed_root.mkdir(parents=True, exist_ok=True)
+            workspace_path = ensure_inside(managed_root, managed_root / repo_id)
         now = now_iso()
         repo = store.insert_repo(
             {
@@ -94,6 +90,7 @@ class RepoWorkspaceService:
                 "name": name,
                 "original_path": original_path,
                 "workspace_path": str(workspace_path),
+                "access": access,
                 "status": "importing",
                 "file_count": len(scan.files),
                 "indexed_file_count": 0,
@@ -106,9 +103,11 @@ class RepoWorkspaceService:
             }
         )
         try:
-            mappings = import_scan(repo, scan)
+            mappings = import_scan(repo, scan, copy=not live)
         except Exception:
-            if workspace_path.exists():
+            # Only a managed copy is Neo's to delete. Removing the tree on a
+            # failed live import would delete the user's project.
+            if not live and workspace_path.exists():
                 shutil.rmtree(workspace_path)
             store.cleanup_failed_import(repo_id)
             raise

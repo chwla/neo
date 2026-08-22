@@ -182,6 +182,24 @@ def initialize_agent_core_tables() -> None:
             );
             CREATE INDEX IF NOT EXISTS ix_agent_tool_calls_session
                 ON workspace_agent_tool_calls(session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS workspace_agent_file_snapshots (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                repo_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                existed_before INTEGER NOT NULL DEFAULT 1,
+                before_text TEXT,
+                -- What the run left behind, refreshed on every write. Undo
+                -- compares the file against this to tell "the agent wrote this"
+                -- from "someone has edited it since", and refuses the latter.
+                after_sha256 TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(session_id, relative_path),
+                FOREIGN KEY (session_id) REFERENCES workspace_agent_sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS ix_agent_file_snapshots_session
+                ON workspace_agent_file_snapshots(session_id, relative_path);
         """)
         conn.commit()
     finally:
@@ -734,5 +752,75 @@ def recover_interrupted_sessions() -> int:
         )
         conn.commit()
         return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def insert_file_snapshot(item: dict) -> None:
+    """Record a file's pre-edit state, keeping only the first touch per session.
+
+    ``INSERT OR IGNORE`` against the ``(session_id, relative_path)`` unique index
+    is what makes "before" mean before the run: a second write to the same file
+    finds a row already there and leaves it alone.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_agent_file_snapshots"
+            " (id, session_id, repo_id, relative_path, existed_before, before_text,"
+            "  after_sha256, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (
+                item["id"],
+                item["session_id"],
+                item["repo_id"],
+                item["relative_path"],
+                int(bool(item.get("existed_before", True))),
+                item.get("before_text"),
+                item.get("after_sha256"),
+                item["created_at"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_snapshot_result(session_id: str, relative_path: str, after_sha256: str) -> None:
+    """Refresh what the run left behind, so undo can detect later outside edits."""
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE workspace_agent_file_snapshots SET after_sha256 = ?"
+            " WHERE session_id = ? AND relative_path = ?",
+            (after_sha256, session_id, relative_path),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_file_snapshots(session_id: str) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM workspace_agent_file_snapshots WHERE session_id = ?"
+            " ORDER BY relative_path",
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def clear_file_snapshots(session_id: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "DELETE FROM workspace_agent_file_snapshots WHERE session_id = ?", (session_id,)
+        )
+        conn.commit()
     finally:
         conn.close()

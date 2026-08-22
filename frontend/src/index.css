@@ -2323,7 +2323,9 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .agent-delivery-files li { color: var(--neo-body); }
 .agent-delivery-blocked li { color: #ffb020; }
 .agent-delivery-empty { color: var(--neo-muted); font-size: 12px; }
-.agent-delivery-actions { display: flex; gap: 8px; }
+.agent-delivery-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Recently opened folders, offered as buttons so the second attach is a click. */
+.agent-folder-recents { display: flex; gap: 8px; flex-wrap: wrap; }
 .agent-delivery-patch { margin: 10px 0 0; max-height: 320px; overflow: auto; background: var(--neo-bg); padding: 10px; border-radius: 4px; font-size: 12px; }
 .agent-session-error { color: var(--neo-danger); font-size: 13px; }
 .agent-followup { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--neo-line); flex: 0 0 auto; }

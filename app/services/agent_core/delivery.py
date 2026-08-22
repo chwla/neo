@@ -1,12 +1,16 @@
-"""Getting verified work out of the managed copy and into the user's repository.
+"""Getting verified work out of a managed copy and into the user's repository.
 
-Until now the managed copy was a dead end. ``repos.register`` copies a filtered
-subset of text files into ``workspace_repos_dir``, ``git/safety.py`` forbids
-push/pull/remote and refuses any operation that resolves to the original path,
-and nothing anywhere wrote back. An agent that can only edit a copy the user
-cannot retrieve is not useful, so this module closes the loop.
+This is the ``managed`` workspace's exit route. The copy is a dead end without
+it: ``repos.register`` copies a filtered subset of text files into
+``workspace_repos_dir``, ``git/safety.py`` forbids push/pull/remote and refuses
+any operation that resolves to the original path, and nothing else writes back.
 
-Three properties make it safe to offer:
+A ``live`` workspace needs none of this, because the agent edited the user's
+files in the first place. What that workspace does need -- a change list, a diff
+and an undo -- comes from ``agent_core.journal``, which reuses the ``FileChange``
+and ``DeliveryPlan`` shapes below so ``build_patch`` serves both.
+
+Three properties make writing back safe to offer:
 
 * **Per file, never whole-tree.** The copy is a *subset* of the repository, so a
   tree-wide diff would read as deletions for every file that was never imported.
@@ -21,8 +25,6 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import io
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,28 +32,21 @@ from app.services.agent_core.workspace import WorkspaceError, repo_root
 from app.services.repos import store as repos_store
 from app.services.repos.scanner import IGNORED_DIRS, IGNORED_NAMES
 
-#: Marker written as ``original_path`` by an uploaded repository. There is no
-#: such directory on disk -- the folder lives on the user's machine, not the
-#: server -- so write-back is not merely unwise for these, it is meaningless.
-UPLOAD_SCHEME = "upload://"
-
-#: How the finished work can leave the managed copy.
+#: How the finished work reaches the user. ``WRITE_BACK`` copies it out of the
+#: managed workspace; ``LIVE`` means it never left, because the agent was
+#: editing the user's own files all along.
 WRITE_BACK = "write_back"
-DOWNLOAD = "download"
+LIVE = "live"
 
 #: An untracked file this size is build output or a binary the agent should not
 #: have produced; reading it into a diff would help no one.
 MAX_UNTRACKED_BYTES = 1024 * 1024
 
 
-def is_uploaded(repo: dict) -> bool:
-    return str(repo.get("original_path") or "").startswith(UPLOAD_SCHEME)
-
-
 def delivery_mode(repo: dict) -> str:
-    """Uploaded folders can only be handed back; registered paths can be written."""
+    """A live folder has nothing to deliver; a managed copy is written back."""
 
-    return DOWNLOAD if is_uploaded(repo) else WRITE_BACK
+    return LIVE if repo.get("access") == repos_store.LIVE else WRITE_BACK
 
 
 @dataclass
@@ -73,7 +68,7 @@ class FileChange:
 class DeliveryPlan:
     repo_id: str
     original_root: str
-    #: ``WRITE_BACK`` or ``DOWNLOAD``. Carried on the plan so every consumer --
+    #: ``WRITE_BACK`` or ``LIVE``. Carried on the plan so every consumer --
     #: tool, HTTP route and UI -- branches on one decision made in one place.
     mode: str = WRITE_BACK
     changes: list[FileChange] = field(default_factory=list)
@@ -107,8 +102,8 @@ def _untracked_changes(root: Path, known: set[str]) -> list[FileChange]:
     """Files the agent created, which have no import record to compare against.
 
     ``write_file`` writes into the managed copy without registering a row, so a
-    plan built only from import records misses every new file -- which for an
-    uploaded or empty workspace is all of the work.
+    plan built only from import records misses every new file -- which for a
+    workspace that started empty is all of the work.
     """
 
     changes: list[FileChange] = []
@@ -148,34 +143,14 @@ def plan_delivery(repo_id: str) -> DeliveryPlan:
         raise WorkspaceError("Repository not found.")
     root = repo_root(repo_id)
     mode = delivery_mode(repo)
+    if mode == LIVE:
+        # Nothing to plan: the agent wrote the user's files directly. What that
+        # run changed is the journal's business, not a hash comparison against
+        # import time, which would also report the user's own edits.
+        raise WorkspaceError(
+            "This workspace is your own folder, so these changes are already in it."
+        )
     records, _total = repos_store.list_repo_files(repo_id, limit=100_000)
-
-    if mode == DOWNLOAD:
-        # There is no original directory to compare against or write to, so the
-        # import hash is the only baseline and every change is handed back.
-        plan = DeliveryPlan(repo_id=repo_id, original_root="", mode=mode)
-        known: set[str] = set()
-        for record in records:
-            relative = record["relative_path"]
-            known.add(relative)
-            managed = _read(root / relative)
-            if managed is None:
-                continue
-            managed_text, managed_bytes = managed
-            if _sha256(managed_bytes) == (record.get("sha256") or ""):
-                continue
-            plan.changes.append(
-                FileChange(
-                    relative_path=relative,
-                    original_relative_path=relative,
-                    status="modified",
-                    managed_text=managed_text,
-                    original_text="",
-                )
-            )
-        plan.changes.extend(_untracked_changes(root, known))
-        plan.changes.sort(key=lambda change: change.relative_path)
-        return plan
 
     original_root = Path(repo["original_path"]).resolve()
 
@@ -288,12 +263,10 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
 
     if not plan.writable:
         # The last line of defence: a direct API call, a stale plan or a future
-        # caller must not be able to turn an uploaded folder into a filesystem
-        # write. `upload://...` is not a path, and treating it as one would
-        # create junk directories wherever the server happens to be running.
+        # caller must not reach a filesystem write for a workspace that has no
+        # copy to write out of.
         raise WorkspaceError(
-            "This repository was uploaded, so it has no folder on this machine to "
-            "write into. Download the changed files instead."
+            "This workspace is your own folder; its changes are already written."
         )
     selected = _select(plan, only)
     original_root = Path(plan.original_root)
@@ -345,33 +318,6 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
             {"path": change.relative_path, "reason": change.reason} for change in plan.blocked
         ],
     }
-
-
-def build_archive(
-    plan: DeliveryPlan, only: list[str] | None = None, *, whole_workspace: bool = False
-) -> bytes:
-    """A zip of the work, for a repository Neo cannot write back to.
-
-    ``whole_workspace`` returns everything the agent can see rather than only
-    what changed -- what you want when the upload started empty and "changed
-    files" and "the project" are the same thing anyway.
-    """
-
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        if whole_workspace:
-            root = repo_root(plan.repo_id)
-            for path in sorted(root.rglob("*")):
-                if not path.is_file() or path.is_symlink():
-                    continue
-                relative = path.relative_to(root).as_posix()
-                if any(part in IGNORED_DIRS for part in path.parts):
-                    continue
-                archive.write(path, arcname=relative)
-        else:
-            for change in _select(plan, only):
-                archive.writestr(change.relative_path, change.managed_text)
-    return buffer.getvalue()
 
 
 def summarize(plan: DeliveryPlan) -> str:

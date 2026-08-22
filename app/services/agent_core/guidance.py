@@ -37,8 +37,8 @@ def agent_run_guidance(prompt: str) -> str | None:
         "Switch the composer to Agent mode and give Neo the objective. It inspects the "
         "code, calls tools, and verifies its own work, streaming each step as it goes. "
         "Pick a permission mode first: Plan proposes without changing anything, Normal "
-        "asks before each change, and Auto edits inside Neo's managed copy on its own. "
-        "You can steer or stop the run at any point, and changes reach your real "
-        "repository only when you deliver them. Chat does not start agent runs "
-        "automatically."
+        "asks before each change, and Auto edits on its own. Open a folder on this "
+        "machine and Neo works in it directly, the way a coding CLI does -- every run "
+        "is journalled, so you can undo it. You can steer or stop the run at any "
+        "point. Chat does not start agent runs automatically."
     )

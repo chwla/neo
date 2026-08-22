@@ -16,6 +16,23 @@ from app.services.agent_core.permissions import PermissionResolver
 from app.services.agent_core.tools import checkpoint, deliver, files, knowledge, shell, todo
 from app.services.agent_core.tools.base import AgentTool, ToolContext
 from app.services.agent_core.types import PermissionMode, ToolCall, ToolResult
+from app.services.agent_core.workspace import is_live
+
+#: Tools that make no sense once the workspace is the user's own folder, mapped
+#: to what the agent should understand instead. ``deliver_changes`` moved work
+#: out of the managed copy, and there is no copy to move it out of. Checkpoints
+#: committed inside that copy, and ``git/safety.py`` refuses -- correctly -- to
+#: run git in the user's repository, so Neo never creates commits there.
+LIVE_WITHHELD = {
+    "deliver_changes": (
+        "This workspace is the user's own folder, so your edits are already in it. "
+        "There is nothing to deliver."
+    ),
+    "create_checkpoint": (
+        "Neo does not create commits in the user's own repository. "
+        "The run is journalled instead, and the user can undo it."
+    ),
+}
 
 #: Output beyond this is elided in the middle: the head shows what happened and
 #: the tail usually holds the error, while the middle is rarely load bearing.
@@ -52,18 +69,26 @@ class ToolRegistry:
     def get(self, name: str) -> AgentTool | None:
         return self._tools.get(name)
 
-    def available(self, *, mode: PermissionMode, has_repo: bool) -> list[AgentTool]:
+    def available(
+        self, *, mode: PermissionMode, has_repo: bool, live: bool = False
+    ) -> list[AgentTool]:
         chosen = []
         for tool in self._tools.values():
             if tool.requires_repo and not has_repo:
+                continue
+            if live and tool.name in LIVE_WITHHELD:
                 continue
             if self.resolver.resolve(tool=tool, arguments={}, mode=mode).outcome == "deny":
                 continue
             chosen.append(tool)
         return chosen
 
-    def schemas(self, *, mode: PermissionMode, has_repo: bool) -> list[dict[str, Any]]:
-        return [tool.schema() for tool in self.available(mode=mode, has_repo=has_repo)]
+    def schemas(
+        self, *, mode: PermissionMode, has_repo: bool, live: bool = False
+    ) -> list[dict[str, Any]]:
+        return [
+            tool.schema() for tool in self.available(mode=mode, has_repo=has_repo, live=live)
+        ]
 
     def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
         """Run one call, turning any failure into a result the model can react to.
@@ -81,6 +106,18 @@ class ToolRegistry:
                 status="error",
                 content=f"No tool named '{call.name}' is available.",
                 error="unknown tool",
+            )
+
+        # Withholding a tool from the schema is advice; a model can still name
+        # one it saw in an earlier turn, or that it invented. Refusing here as
+        # well is what makes it a rule.
+        if call.name in LIVE_WITHHELD and is_live(context.repo_id):
+            return ToolResult(
+                call_id=call.id,
+                name=call.name,
+                status="error",
+                content=LIVE_WITHHELD[call.name],
+                error="not available for a live workspace",
             )
 
         started = time.perf_counter()

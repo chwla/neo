@@ -86,6 +86,7 @@ def initialize_workspace_file_tables() -> None:
             CREATE TABLE IF NOT EXISTS workspace_repos (
                 id TEXT PRIMARY KEY, project_id TEXT, name TEXT NOT NULL,
                 original_path TEXT NOT NULL, workspace_path TEXT NOT NULL,
+                access TEXT NOT NULL DEFAULT 'managed',
                 status TEXT NOT NULL DEFAULT 'registered', file_count INTEGER NOT NULL DEFAULT 0,
                 indexed_file_count INTEGER NOT NULL DEFAULT 0,
                 total_bytes INTEGER NOT NULL DEFAULT 0, metadata_json TEXT,
@@ -244,9 +245,22 @@ def initialize_workspace_file_tables() -> None:
             CREATE INDEX IF NOT EXISTS idx_workspace_code_related_files_target
             ON workspace_code_related_files(repo_id, target_repo_file_id);
         """)
+        # Added after the table shipped. It defaults to 'managed', so every row
+        # that predates live workspaces keeps the copy-and-deliver behaviour it
+        # was created with rather than silently gaining direct write access.
+        _ensure_column(conn, "workspace_repos", "access", "TEXT NOT NULL DEFAULT 'managed'")
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, spec: str) -> None:
+    try:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
 
 
 def insert_file(item: dict) -> dict:

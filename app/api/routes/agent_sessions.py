@@ -6,7 +6,7 @@ import json
 import time
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from app.services.agent_core import events as event_types
 from app.services.agent_core.service import (
@@ -135,22 +135,14 @@ def update_session(session_id: str, payload: SessionUpdate):
         _raise(exc)
 
 
-@router.get("/{session_id}/download")
-def download(
-    session_id: str,
-    scope: str = Query(default="changes", pattern="^(changes|workspace)$"),
-):
-    """Hand the work back as a zip, for repositories Neo must not write into."""
+@router.post("/{session_id}/undo")
+def undo(session_id: str):
+    """Put the user's folder back the way this run found it."""
 
     try:
-        archive, filename = _service().download(session_id, scope)
+        return _service().undo(session_id)
     except Exception as exc:
         _raise(exc)
-    return Response(
-        content=archive,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 @router.post("/{session_id}/deliver")

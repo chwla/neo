@@ -2,8 +2,15 @@
 
 These are the agent's hands. Everything resolves through
 ``agent_core.workspace``, so containment is enforced in one place rather than
-per tool, and every write lands in the managed copy -- never in the user's
-original repository, which is reached only through explicit delivery.
+per tool, and neither tool knows which kind of workspace it is in: ``repo_root``
+returns the managed copy or the user's own folder, and the same containment
+rules apply to both.
+
+The one place the difference shows is the journal. A write into a live folder is
+a write to the user's real file, so it is bracketed by a snapshot -- what the
+file held before, and what the run left in it -- which is what makes the change
+list, the diff and undo possible. A managed copy needs none of that: the copy is
+itself the before-image.
 """
 
 from __future__ import annotations
@@ -12,8 +19,9 @@ import fnmatch
 import re
 from pathlib import Path
 
+from app.services.agent_core import journal
 from app.services.agent_core.tools.base import AgentTool, ToolContext
-from app.services.agent_core.workspace import WorkspaceError, repo_root, resolve
+from app.services.agent_core.workspace import WorkspaceError, is_live, repo_root, resolve
 
 MAX_READ_BYTES = 200_000
 MAX_MATCHES = 100
@@ -117,9 +125,14 @@ def write_file(arguments: dict, context: ToolContext):
     if not isinstance(content, str):
         raise WorkspaceError("`content` must be a string.")
     existed = path.exists()
+    relative = path.relative_to(root).as_posix()
+    live = is_live(context.repo_id)
+    if live:
+        journal.record_before(context.session_id, context.repo_id, root, relative)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-    relative = path.relative_to(root).as_posix()
+    if live:
+        journal.record_after(context.session_id, root, relative)
     return f"{'Updated' if existed else 'Created'} {relative} ({len(content)} characters)."
 
 
@@ -152,8 +165,13 @@ def edit_file(arguments: dict, context: ToolContext):
             f"`old_string` appears {occurrences} times. Include more surrounding context "
             "to make it unique, or pass replace_all=true."
         )
-    path.write_text(text.replace(old, new), encoding="utf-8")
     relative = path.relative_to(root).as_posix()
+    live = is_live(context.repo_id)
+    if live:
+        journal.record_before(context.session_id, context.repo_id, root, relative)
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    if live:
+        journal.record_after(context.session_id, root, relative)
     return f"Edited {relative} ({occurrences} replacement{'s' if occurrences != 1 else ''})."
 
 
@@ -231,7 +249,7 @@ TOOLS = [
     ),
     AgentTool(
         name="write_file",
-        description="Create or overwrite a file in the managed repository copy.",
+        description="Create or overwrite a file in the repository.",
         parameters={
             "type": "object",
             "properties": {"path": {"type": "string"}, "content": {"type": "string"}},

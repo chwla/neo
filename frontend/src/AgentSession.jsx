@@ -69,6 +69,20 @@ function ApprovalCard({ approval, busy, onDecide }) {
     if (typeof pathArgument !== "string" || !pathArgument.includes("/")) return "";
     return `${pathArgument.slice(0, pathArgument.lastIndexOf("/") + 1)}`;
   }, [pathArgument]);
+  // A file at the repository root has no enclosing folder to prefix-match, and
+  // an empty prefix matches nothing -- which is why granting one used to be
+  // refused outright. Its folder *is* the repository, so say that and grant it
+  // as such rather than offering a scope that cannot work.
+  const atRepoRoot = typeof pathArgument === "string" && !pathArgument.includes("/");
+  const typedScope = scope.trim();
+  const grantScope = typedScope || suggestion;
+  const grantsWholeRepo = atRepoRoot && !typedScope;
+
+  function grantPredicate() {
+    return grantsWholeRepo
+      ? { kind: "any" }
+      : { kind: "path_prefix", argument: "path", value: grantScope };
+  }
 
   return (
     <div className="agent-approval" role="alertdialog" aria-label="Approval required">
@@ -80,10 +94,14 @@ function ApprovalCard({ approval, busy, onDecide }) {
       <pre className="agent-approval-args">{JSON.stringify(approval.arguments, null, 2)}</pre>
       {approval.grantable ? (
         <label className="agent-approval-scope">
-          <span>Allow always for paths starting with</span>
+          <span>
+            {grantsWholeRepo
+              ? `${pathArgument} is at the repository root — narrow the scope, or leave this empty`
+              : "Allow always for paths starting with"}
+          </span>
           <input
             value={scope}
-            placeholder={suggestion || "app/services/"}
+            placeholder={suggestion || "leave empty for the whole repository"}
             onChange={(event) => setScope(event.target.value)}
             aria-label="Grant path prefix"
           />
@@ -98,15 +116,11 @@ function ApprovalCard({ approval, busy, onDecide }) {
             type="button"
             className="neo-button secondary"
             disabled={busy}
-            onClick={() =>
-              onDecide("allow_always", {
-                kind: "path_prefix",
-                argument: "path",
-                value: (scope || suggestion).trim(),
-              })
-            }
+            onClick={() => onDecide("allow_always", grantPredicate())}
           >
-            Allow always in this folder
+            {grantsWholeRepo
+              ? `Allow always in this repository`
+              : `Allow always in ${grantScope}`}
           </button>
         ) : null}
         <button type="button" className="neo-button" disabled={busy} onClick={() => onDecide("reject")}>
@@ -144,14 +158,15 @@ function TodoPanel({ items }) {
   );
 }
 
-function DeliveryPanel({ sessionId, delivery, onMessage }) {
+function ChangesPanel({ sessionId, delivery, onMessage, onUndone }) {
   const [busy, setBusy] = useState(false);
   const [patch, setPatch] = useState("");
+  const [undone, setUndone] = useState(false);
   if (!delivery || (!delivery.deliverable?.length && !delivery.blocked?.length)) return null;
 
   // The server decides which of the two shapes this is; the browser never
-  // infers it from a path, because only the server knows the repository origin.
-  const uploaded = delivery.mode === "download";
+  // infers it from a path, because only the server knows the workspace kind.
+  const live = delivery.mode === "live";
 
   async function run(mode) {
     setBusy(true);
@@ -166,20 +181,23 @@ function DeliveryPanel({ sessionId, delivery, onMessage }) {
     }
   }
 
-  async function download(scope) {
+  async function undo() {
+    if (!window.confirm("Undo every change this run made to your folder?")) return;
     setBusy(true);
     try {
-      const { blob, filename } = await api.downloadAgentChanges(sessionId, scope);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      // Revoking immediately can cancel the download in some browsers.
-      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
-      onMessage(`Downloaded ${filename}.`);
+      const result = await api.undoAgentRun(sessionId);
+      const reversed = (result.restored?.length ?? 0) + (result.removed?.length ?? 0);
+      const skipped = result.skipped || [];
+      setUndone(skipped.length === 0);
+      setPatch("");
+      onMessage(
+        skipped.length
+          ? `Undid ${reversed} file(s). Left alone: ${skipped
+              .map((item) => item.path)
+              .join(", ")} — changed after the run finished.`
+          : `Undid ${reversed} file(s).`,
+      );
+      onUndone?.();
     } catch (error) {
       onMessage(error.message);
     } finally {
@@ -190,12 +208,18 @@ function DeliveryPanel({ sessionId, delivery, onMessage }) {
   return (
     <section className="agent-delivery">
       <div className="agent-delivery-head">
-        {uploaded ? "Take these changes" : "Deliver to your repository"}
+        {live ? "Changes written to your folder" : "Deliver to your repository"}
       </div>
-      {uploaded ? (
+      {live ? (
         <p className="agent-delivery-note">
-          This repository was uploaded, so Neo has no folder on your machine to write
-          into. Download the files and put them where you want them.
+          {undone
+            ? "This run has been undone."
+            : (
+              <>
+                These edits are already saved in <code>{delivery.root}</code>. Nothing
+                to download.
+              </>
+            )}
         </p>
       ) : null}
       {delivery.deliverable?.length ? (
@@ -222,23 +246,21 @@ function DeliveryPanel({ sessionId, delivery, onMessage }) {
         <button type="button" className="neo-button secondary" disabled={busy} onClick={() => run("patch")}>
           View diff
         </button>
-        {uploaded ? (
-          <>
-            <button type="button" className="neo-button" disabled={busy || !delivery.deliverable?.length} onClick={() => download("changes")}>
-              Download changed files
-            </button>
-            <button type="button" className="neo-button secondary" disabled={busy} onClick={() => download("workspace")}>
-              Download workspace
-            </button>
-          </>
+        {live ? (
+          <button
+            type="button"
+            className="neo-button danger"
+            disabled={busy || undone || !delivery.undoable}
+            onClick={undo}
+            title="Restore every file this run changed"
+          >
+            Undo this run
+          </button>
         ) : (
           <button type="button" className="neo-button" disabled={busy || !delivery.deliverable?.length} onClick={() => run("working_tree")}>
             Apply changes
           </button>
         )}
-        <button type="button" className="neo-button secondary" disabled={busy} onClick={() => { setPatch(""); onMessage("Changes left in Neo's managed copy."); }}>
-          Discard
-        </button>
       </div>
       {patch ? <pre className="agent-delivery-patch">{patch}</pre> : null}
     </section>
@@ -476,7 +498,12 @@ export default function AgentSession({ sessionId, onClose, onMessage }) {
             </div>
           ) : null}
 
-          <DeliveryPanel sessionId={sessionId} delivery={delivery} onMessage={onMessage} />
+          <ChangesPanel
+            sessionId={sessionId}
+            delivery={delivery}
+            onMessage={onMessage}
+            onUndone={refresh}
+          />
           {error ? <div className="agent-session-error">{error}</div> : null}
           <div ref={bottomRef} />
         </div>
@@ -500,4 +527,4 @@ export default function AgentSession({ sessionId, onClose, onMessage }) {
   );
 }
 
-export { ApprovalCard, ToolCard, TodoPanel, STOP_REASON_COPY };
+export { ApprovalCard, ChangesPanel, ToolCard, TodoPanel, STOP_REASON_COPY };

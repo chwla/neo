@@ -15,20 +15,34 @@ from app.services.repos.safety import ensure_inside
 from app.services.repos.scanner import ScanResult, language_for
 
 
-def import_scan(repo: dict, scan: ScanResult) -> list[dict]:
-    """Copy a completed scan into Neo-managed storage and index every text file."""
+def import_scan(repo: dict, scan: ScanResult, *, copy: bool = True) -> list[dict]:
+    """Index every text file in a scan, copying it into managed storage first.
+
+    ``copy=False`` is the live case: the folder already is the workspace, so the
+    files are indexed where they sit and ``storage_path`` points at the user's
+    own file. Everything else -- hashing, text extraction, the index rows the
+    code index and symbol tools read -- is identical, which is what keeps those
+    features working against a live folder without knowing about one.
+
+    One consequence is worth stating plainly: file preview then serves the real
+    file rather than a snapshot of it, so it shows current content, not content
+    as of import.
+    """
+
     settings = get_settings()
     destination_root = Path(repo["workspace_path"]).resolve()
-    managed_root = Path(settings.workspace_repos_dir).resolve()
-    ensure_inside(managed_root, destination_root)
-    destination_root.mkdir(parents=True, exist_ok=False)
+    if copy:
+        managed_root = Path(settings.workspace_repos_dir).resolve()
+        ensure_inside(managed_root, destination_root)
+        destination_root.mkdir(parents=True, exist_ok=False)
     mappings: list[dict] = []
     files_service = WorkspaceFilesService()
 
     for scanned in scan.files:
         destination = ensure_inside(destination_root, destination_root / scanned.relative_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(scanned.content)
+        if copy:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(scanned.content)
         digest = hashlib.sha256(scanned.content).hexdigest()
         extracted, extraction_metadata = extract_text(
             scanned.relative_path,

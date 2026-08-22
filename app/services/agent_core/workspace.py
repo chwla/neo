@@ -12,17 +12,34 @@ from pathlib import Path, PurePosixPath
 
 from app.core.config import get_settings
 from app.services.repos import store as repos_store
+from app.services.repos.safety import validate_live_root
+
+#: Written as ``original_path`` by the browser upload flow, which no longer
+#: exists. Rows created by it survive in older databases and name no directory
+#: any process can reach, so they are refused by name rather than left to fail
+#: further in as a confusing path error.
+_RETIRED_UPLOAD_SCHEME = "upload://"
 
 
 class WorkspaceError(ValueError):
-    """The requested path is not a usable location inside the managed copy."""
+    """The requested path is not a usable location inside the agent's workspace."""
 
 
 def repo_root(repo_id: str | None) -> Path:
-    """The managed copy's directory, re-validated on every call.
+    """The agent's working directory, re-validated on every call.
 
-    Containment is checked here rather than trusted from the stored row, so a
-    tampered ``workspace_path`` cannot redirect writes outside the managed tree.
+    Nothing is trusted from the stored row. That mattered when the only
+    workspace was a managed copy -- a tampered ``workspace_path`` must not
+    redirect writes out of the managed tree -- and it matters more now that a
+    live workspace *is* the user's folder, because the same tampering would
+    otherwise aim writes at an arbitrary directory. So each kind re-derives its
+    own answer here:
+
+    * ``managed`` must resolve to ``workspace_repos_dir/<repo_id>`` and must not
+      be the original repository.
+    * ``live`` must have ``workspace_path`` and ``original_path`` in agreement,
+      and that path must still pass the full live-root check -- system trees,
+      ``$HOME`` and the configured root list included.
     """
 
     if not repo_id:
@@ -30,16 +47,45 @@ def repo_root(repo_id: str | None) -> Path:
     repo = repos_store.get_repo(repo_id)
     if repo is None or repo.get("deleted"):
         raise WorkspaceError("Repository not found.")
-    managed_root = Path(get_settings().workspace_repos_dir).resolve()
+
+    original = str(repo.get("original_path") or "")
+    if original.startswith(_RETIRED_UPLOAD_SCHEME):
+        raise WorkspaceError(
+            "This workspace was uploaded, and uploads are no longer supported. "
+            "Attach the folder from your machine instead and Neo will work in it directly."
+        )
+
     root = Path(repo["workspace_path"])
     if root.is_symlink():
-        raise WorkspaceError("Managed repository workspace may not be a symlink.")
+        raise WorkspaceError("A repository workspace may not be a symlink.")
+
+    if repo.get("access") == repos_store.LIVE:
+        resolved = root.resolve()
+        if resolved != Path(original).resolve():
+            raise WorkspaceError(
+                "This workspace's folder no longer matches the one that was attached."
+            )
+        try:
+            return validate_live_root(original)
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    managed_root = Path(get_settings().workspace_repos_dir).resolve()
     resolved = root.resolve()
     if resolved != (managed_root / repo["id"]).resolve() or managed_root not in resolved.parents:
         raise WorkspaceError("Repository workspace is outside Neo's managed directory.")
-    if resolved == Path(repo["original_path"]).resolve():
+    if resolved == Path(original).resolve():
         raise WorkspaceError("Agent file operations may never target the original repository.")
     return resolved
+
+
+def is_live(repo_id: str | None) -> bool:
+    """Whether this repository's files are the user's own, not a copy."""
+
+    if not repo_id:
+        return False
+    repo = repos_store.get_repo(repo_id)
+    return bool(repo) and repo.get("access") == repos_store.LIVE
 
 
 def normalize_relative(raw_path: str) -> str:
