@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.paths import is_within, same_path
 from app.services.files.types import WorkspaceFile
 from app.services.repos import store
-from app.services.repos.safety import in_container
+from app.services.repos.safety import in_container, validate_browse_path, validate_live_root
 from app.services.repos.service import RepoWorkspaceService
 from app.services.repos.types import RepoFile, RepoRegisterRequest, RepoStats, WorkspaceRepo
 
@@ -38,27 +39,171 @@ def register_repo(request: RepoRegisterRequest) -> dict:
     return {"repo": WorkspaceRepo.model_validate(repo), "stats": _stats(repo)}
 
 
-@router.get("/roots")
-def list_roots() -> dict:
-    """Where a folder may be opened from, and which ones were opened recently.
+#: Enough to pick from without turning the dialog into a file manager. A root
+#: holding more than this is not a project folder, and paging it would only make
+#: that harder to notice.
+_MAX_LISTED_FOLDERS = 200
 
-    The browser cannot supply an absolute path -- a folder picker only yields
-    paths relative to the folder chosen -- so attaching one is typed. Handing
-    back the roots and the recent list turns most attachments back into a click.
+
+def _folders_under(root: str) -> list[dict]:
+    """The immediate subdirectories of one directory, for the folder browser.
+
+    One level deep and directories only: this answers "what is in here?", and the
+    browser asks it again for each level the user descends into. Linked entries
+    are skipped for the same reason ``validate_repo_root`` refuses them.
+
+    Dotted entries are listed like any other. ``.dotfiles``, ``.vscode`` and
+    ``.config`` are ordinary folders to a coding agent, and hiding them by name
+    would make a real project unreachable -- there is no typed path field left to
+    fall back on.
     """
 
-    from app.core.config import get_settings
+    from pathlib import Path
 
-    configured = [
-        part for part in get_settings().workspace_live_roots.split(":") if part.strip()
-    ]
+    from app.core.paths import is_reparse_point
+
+    base = Path(root).expanduser()
+    if not base.is_dir():
+        return []
+    found: list[dict] = []
+    try:
+        children = sorted(base.iterdir(), key=lambda entry: entry.name.lower())
+    except OSError:
+        return []
+    for child in children:
+        if len(found) >= _MAX_LISTED_FOLDERS:
+            break
+        try:
+            if not child.is_dir() or is_reparse_point(child):
+                continue
+            is_git = (child / ".git").exists()
+        except OSError:
+            continue
+        found.append({"name": child.name, "path": str(child), "is_git": is_git})
+    return found
+
+
+def _configured_roots() -> list[str]:
+    from app.core.config import get_settings
+    from app.core.paths import split_roots
+
+    return [part for part in split_roots(get_settings().workspace_live_roots) if part.strip()]
+
+
+def _live_repos_by_path() -> dict[str, str]:
+    """Live repositories keyed by the folder they were opened from."""
+
+    repos, _total = store.list_repos(limit=200)
+    return {
+        repo["original_path"]: repo["id"]
+        for repo in repos
+        if repo.get("access") == store.LIVE
+    }
+
+
+@router.get("/roots")
+def list_roots() -> dict:
+    """Where a folder may be opened from, and which ones were opened recently."""
+
     repos, _total = store.list_repos(limit=200)
     recent = [
         {"path": repo["original_path"], "name": repo["name"], "repo_id": repo["id"]}
         for repo in repos
         if repo.get("access") == store.LIVE
     ]
-    return {"roots": configured, "recent": recent[:10], "containerized": in_container()}
+    return {
+        "roots": _configured_roots(),
+        "recent": recent[:10],
+        "containerized": in_container(),
+    }
+
+
+@router.get("/browse")
+def browse_folders(path: str | None = None) -> dict:
+    """List the directories under a configured root, one level at a time.
+
+    The typed path field this replaces asked a question the user could not
+    answer: inside a container the only real paths are the mounted ones, and
+    nothing in the browser reveals them. The server knows them, so it lists them.
+
+    ``can_attach`` is decided by running the real attach check against the
+    current directory rather than by re-deriving the rules here. That keeps one
+    source of truth -- a root reports itself as browse-only because
+    ``validate_live_root`` refuses it, not because this route knows about roots.
+    """
+
+    from pathlib import Path
+
+    roots = _configured_roots()
+    target: Path | None = None
+
+    if path is None:
+        # One root is the ordinary case, and making the user click through a
+        # single-item list to reach it is a step for nothing.
+        if len(roots) == 1:
+            try:
+                target = validate_browse_path(roots[0])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        try:
+            target = validate_browse_path(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    attached = _live_repos_by_path()
+
+    if target is None:
+        # Either nothing is configured, or several roots are -- both are shown as
+        # a list of roots rather than a directory listing.
+        entries = [
+            {
+                "name": root,
+                "path": root,
+                "is_git": False,
+                "attached_repo_id": attached.get(root),
+            }
+            for root in roots
+        ]
+        return {
+            "path": None,
+            "parent": None,
+            "roots": roots,
+            "entries": entries,
+            "can_attach": False,
+            "attach_blocked_reason": (
+                "No workspace root is configured." if not roots else "Choose a workspace root."
+            ),
+            "containerized": in_container(),
+        }
+
+    entries = [
+        {**folder, "attached_repo_id": attached.get(folder["path"])}
+        for folder in _folders_under(str(target))
+    ]
+
+    can_attach = True
+    blocked: str | None = None
+    try:
+        validate_live_root(str(target))
+    except ValueError as exc:
+        can_attach = False
+        blocked = str(exc)
+
+    # A root has no parent the browser may show: navigating above it would leave
+    # the configured tree, which is the one thing this endpoint must not permit.
+    at_root = any(same_path(target, Path(root).expanduser().resolve()) for root in roots)
+    parent = None if at_root else str(target.parent)
+
+    return {
+        "path": str(target),
+        "parent": parent,
+        "roots": roots,
+        "entries": entries,
+        "can_attach": can_attach,
+        "attach_blocked_reason": blocked,
+        "containerized": in_container(),
+    }
 
 
 @router.get("")

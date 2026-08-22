@@ -1,0 +1,101 @@
+# Neo plus its local SearXNG search backend.
+#
+#   docker compose up -d --build
+#
+# SearXNG is deliberately not published to the host: only Neo needs it, and it
+# reaches it by service name over the private network below. That is also why
+# NEO_SEARXNG_URL is http://searxng:8080 rather than 127.0.0.1 -- inside a
+# container 127.0.0.1 is the container itself, not the host.
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: neo-searxng
+    restart: unless-stopped
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    # Bound to loopback so a host-run `uvicorn app.main:app` can use the same
+    # instance at http://localhost:8080; not exposed beyond this machine.
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - neo-net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/search?q=ping&format=json',timeout=5)"
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  neo:
+    build: .
+    image: neo:latest
+    container_name: neo
+    restart: unless-stopped
+    depends_on:
+      searxng:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      NEO_SEARCH_PROVIDER: searxng
+      NEO_SEARXNG_URL: http://searxng:8080
+      # SearXNG aggregates upstream engines that rate-limit, so keep keyless
+      # direct providers behind it rather than failing the turn.
+      NEO_WEB_SEARCH_FALLBACK_PROVIDERS: duckduckgo,bing_html
+      # Folders may be opened for direct editing only from here down. Attach them
+      # by their path *inside* the container -- /workspace/my-project, not the
+      # host path it is mounted from. Separate multiple roots with ":" here,
+      # because this value is read by the Linux process inside the container.
+      NEO_WORKSPACE_LIVE_ROOTS: /workspace
+    # Bind mounts keep the *host's* ownership, so on Linux the container must
+    # run as you or every write to your folder fails with EACCES. Set NEO_UID to
+    # your own `id -u` in a .env file next to this one. Leave the group at 0:
+    # /app/data is group-owned by 0 and group-writable precisely so that any uid
+    # can still use it. macOS and Windows need neither -- Docker Desktop maps
+    # ownership for you, and the image's own 10001 is correct there.
+    user: "${NEO_UID:-10001}:${NEO_GID:-0}"
+    volumes:
+      - neo-data:/app/data
+      # Agent mode edits your files in place, so the container has to be able to
+      # see them. Nothing outside this mount is reachable, which is what makes
+      # NEO_WORKSPACE_LIVE_ROOTS a real boundary rather than a preference.
+      #
+      # Your home directory is the default, so projects work where they already
+      # live instead of having to be moved into a staging folder. Set
+      # NEO_WORKSPACE_HOST_ROOT to narrow it:
+      #
+      #   macOS         NEO_WORKSPACE_HOST_ROOT=/Users/you
+      #   Linux / WSL2  NEO_WORKSPACE_HOST_ROOT=/home/you
+      #   Windows       NEO_WORKSPACE_HOST_ROOT=C:\\Users\\you
+      #
+      # $HOME is unset in a Windows command prompt, so USERPROFILE is the
+      # fallback; Docker Desktop must also be sharing whichever path this ends up
+      # naming. On Windows, keep projects on the Linux side of WSL2 where you can:
+      # a \\wsl$ or C:\ mount crosses a filesystem bridge and is markedly slower.
+      #
+      # Mounting a home directory does not make all of it a project. /workspace
+      # itself is browse-only, and the broad folders (Desktop, Documents, Library,
+      # AppData, ...) are refused as destinations while staying browsable. What
+      # the agent may then *do* is governed per-operation by
+      # app/services/agent_core/permissions.py, not by the folder picker.
+      - ${NEO_WORKSPACE_HOST_ROOT:-${HOME:-${USERPROFILE}}}:/workspace
+    networks:
+      - neo-net
+
+networks:
+  neo-net:
+    driver: bridge
+
+volumes:
+  # The anonymous volume the standalone `docker run` container was using, kept
+  # by name so existing profiles, chats and the database carry over.
+  neo-data:
+    external: true
+    name: 3a71b43feaa9f05aff321924dc975c7778e1ccf0ad1aec76178c5c2959861066

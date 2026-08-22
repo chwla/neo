@@ -2811,6 +2811,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   );
 }
 
+// Every key here holds state that belongs to one profile. They live in
+// localStorage, which is scoped to the origin rather than to the profile, so a
+// profile transition has to drop them explicitly — otherwise the next profile
+// boots pointing at rows that only exist in the previous profile's store.
+export const PROFILE_SCOPED_STORAGE_KEYS = ["neo-active-chat-id", "neo-agent-session-id"];
+
+export function clearProfileScopedState() {
+  try {
+    for (const key of PROFILE_SCOPED_STORAGE_KEYS) localStorage.removeItem(key);
+  } catch {
+    /* storage is unavailable in private mode; nothing was persisted to clear */
+  }
+}
+
 export default function App() {
   const [profile, setProfile] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -2826,7 +2840,7 @@ export default function App() {
     try {
       await api.endAccountProfileSession();
     } finally {
-      localStorage.removeItem("neo-active-chat-id");
+      clearProfileScopedState();
       window.location.assign("/");
     }
   }
@@ -2835,7 +2849,14 @@ export default function App() {
     return <main className="profile-picker"><p className="profile-loading">Loading profiles…</p></main>;
   }
   if (!profile) {
-    return <ProfilePicker onSignedIn={setProfile} />;
+    return (
+      <ProfilePicker
+        onSignedIn={(next) => {
+          clearProfileScopedState();
+          setProfile(next);
+        }}
+      />
+    );
   }
   return <NeoApp profile={profile} onProfileUpdated={setProfile} onSwitchProfile={switchProfile} />;
 }

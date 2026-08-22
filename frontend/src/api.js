@@ -402,7 +402,11 @@ export const api = {
   // browser cannot produce an absolute path on its own, so this is what turns
   // attaching a folder back into a click for everything after the first time.
   repoRoots: () => request("/repos/roots"),
-  attachFolder: ({ path, projectId = null, name = null, managed = false }) =>
+  // Omitting `path` asks for the top level: the configured root itself when there
+  // is one, or the list of roots when there are several.
+  browseFolders: (path = null) =>
+    request(`/repos/browse${path ? `?${new URLSearchParams({ path })}` : ""}`),
+  attachFolder: ({ path, projectId = null, name = null }) =>
     request("/repos/register", {
       method: "POST",
       body: JSON.stringify({
@@ -410,7 +414,7 @@ export const api = {
         project_id: projectId,
         name,
         confirm: true,
-        access: managed ? "managed" : "live",
+        access: "live",
       }),
     }),
   registerRepo: (payload) => request("/repos/register", {

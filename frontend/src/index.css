@@ -2026,9 +2026,12 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   letter-spacing: .1em;
   text-transform: uppercase;
 }
-.neo-dialog label > input, .neo-dialog label > select, .neo-dialog label > textarea,
-.settings-dialog label > input, .settings-dialog label > select, .settings-dialog label > textarea,
-.settings-section label > input, .settings-section label > select, .settings-section label > textarea {
+.neo-dialog label > input:not([type="checkbox"]):not([type="radio"]),
+.neo-dialog label > select, .neo-dialog label > textarea,
+.settings-dialog label > input:not([type="checkbox"]):not([type="radio"]),
+.settings-dialog label > select, .settings-dialog label > textarea,
+.settings-section label > input:not([type="checkbox"]):not([type="radio"]),
+.settings-section label > select, .settings-section label > textarea {
   width: 100%;
   min-height: 34px;
   color: var(--neo-text);
@@ -2248,6 +2251,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .agent-session-main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .agent-session { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .agent-session.loading { align-items: center; justify-content: center; color: var(--neo-muted); }
+.agent-session.unavailable { align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 24px; }
 .agent-session-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--neo-line); flex: 0 0 auto; flex-wrap: wrap; }
 .agent-session-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .agent-session-title strong { color: var(--neo-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2333,4 +2337,123 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 @media (max-width: 900px) {
   .agent-session-body { flex-direction: column; }
   .agent-todo { flex: 0 0 auto; width: 100%; }
+}
+/* ===========================================================================
+   Open a folder. Scoped end to end rather than borrowing the .ws-* form rules,
+   because that cascade is what stretched the consent checkbox across the dialog
+   and pushed its label off the right edge. Every child here is min-width: 0 and
+   wraps, so no amount of path length can overflow the dialog again.
+   =========================================================================== */
+.open-folder .open-folder-body { display: grid; gap: 18px; min-width: 0; }
+.open-folder-section { display: grid; gap: 9px; min-width: 0; }
+.open-folder-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.open-folder-section h3 {
+  margin: 0;
+  color: #4a4a4a;
+  font: 600 9px "JetBrains Mono", monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.open-folder-root {
+  min-width: 0;
+  color: var(--neo-muted);
+  font: 10.5px "JetBrains Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.open-folder-filter { width: 100%; min-height: 30px; padding: 5px 8px; font-size: 12px; }
+
+.open-folder-list {
+  display: grid;
+  gap: 4px;
+  overflow-y: auto;
+  max-height: 264px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.open-folder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-panel);
+  padding: 9px 11px;
+  color: var(--neo-body);
+  text-align: left;
+  font-size: 12.5px;
+}
+.open-folder-item:hover:not(:disabled) { border-color: var(--neo-green); background: rgba(57, 255, 20, .06); color: var(--neo-text); }
+.open-folder-item-name { min-width: 0; overflow-wrap: anywhere; }
+.open-folder-item-meta { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.open-folder-tag {
+  border: 1px solid rgba(57, 255, 20, .3);
+  border-radius: 2px;
+  padding: 1px 5px;
+  color: var(--neo-green);
+  font: 9px "JetBrains Mono", monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.open-folder-tag.muted { border-color: var(--neo-line-bright); color: var(--neo-muted); }
+
+.open-folder-empty { margin: 0; color: var(--neo-muted); font-size: 11.5px; }
+.open-folder-empty-state {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--neo-line-bright);
+  border-left: 2px solid var(--neo-green);
+  border-radius: 2px;
+  background: var(--neo-panel);
+  padding: 12px 14px;
+}
+.open-folder-empty-state p { margin: 0; color: var(--neo-body); font-size: 12px; line-height: 1.6; }
+.open-folder-note { margin: 0; color: var(--neo-muted); font-size: 11.5px; line-height: 1.6; }
+.open-folder-note code, .open-folder-empty-state code {
+  border-radius: 2px;
+  background: rgba(57, 255, 20, .08);
+  padding: 1px 4px;
+  color: var(--neo-green);
+  font: 11px "JetBrains Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.open-folder-manual { border-top: 1px solid var(--neo-line); padding-top: 12px; }
+.open-folder-manual summary { color: var(--neo-muted); cursor: pointer; font-size: 11.5px; }
+.open-folder-manual summary:hover { color: var(--neo-green); }
+.open-folder-manual input { width: 100%; min-height: 34px; margin: 10px 0 8px; padding: 7px 9px; font-size: 12px; }
+
+.open-folder-trail { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; }
+.open-folder-crumb { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.open-folder-crumb-sep { color: var(--neo-faint); padding: 0 2px; }
+.open-folder-crumb button {
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  padding: 2px 5px;
+  color: var(--neo-muted);
+  font: 11px "JetBrains Mono", monospace;
+  overflow-wrap: anywhere;
+}
+.open-folder-crumb button:hover:not(:disabled) { background: rgba(57, 255, 20, .08); color: var(--neo-green); }
+/* The last crumb is where you already are, so it is a label, not a control. */
+.open-folder-crumb button:disabled { color: var(--neo-text); cursor: default; opacity: 1; }
+
+.open-folder-item.up { color: var(--neo-muted); font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+
+.open-folder-actions { display: grid; gap: 8px; border-top: 1px solid var(--neo-line); padding-top: 14px; }
+
+.open-folder-error {
+  border-left: 2px solid var(--neo-danger);
+  border-radius: 2px;
+  background: #160d0d;
+  padding: 9px 11px;
+  color: #d97974;
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }

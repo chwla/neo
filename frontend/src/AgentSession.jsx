@@ -267,6 +267,17 @@ function ChangesPanel({ sessionId, delivery, onMessage, onUndone }) {
   );
 }
 
+function SessionUnavailable({ error, onClose }) {
+  return (
+    <div className="agent-session unavailable">
+      <p className="agent-session-error">This run could not be opened: {error}</p>
+      <button type="button" className="agent-session-back" onClick={onClose}>
+        ← Back
+      </button>
+    </div>
+  );
+}
+
 /**
  * A transcript of what the agent actually did, not a checklist of what it planned.
  *
@@ -399,6 +410,10 @@ export default function AgentSession({ sessionId, onClose, onMessage }) {
   }
 
   if (!session) {
+    // A run that never loads must stay escapable. Without this the view renders
+    // over the whole app with no way back, and a stale id -- one left behind by
+    // another profile -- is indistinguishable from a run that is merely slow.
+    if (error) return <SessionUnavailable error={error} onClose={onClose} />;
     return <div className="agent-session loading">Loading run…</div>;
   }
 
@@ -527,4 +542,4 @@ export default function AgentSession({ sessionId, onClose, onMessage }) {
   );
 }
 
-export { ApprovalCard, ChangesPanel, ToolCard, TodoPanel, STOP_REASON_COPY };
+export { ApprovalCard, ChangesPanel, SessionUnavailable, ToolCard, TodoPanel, STOP_REASON_COPY };
