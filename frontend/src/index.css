@@ -386,7 +386,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   position: absolute;
   left: 0;
   top: calc(100% + 6px);
-  z-index: 6;
+  /* Above the composer, which floats over the end of the transcript at 20. */
+  z-index: 30;
   display: flex;
   min-width: 118px;
   flex-direction: column;
@@ -408,6 +409,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 }
 .message-actions-menu button:hover:not(:disabled) { background: rgba(57, 255, 20, .1); color: var(--neo-green); }
 .message-actions-menu button:disabled { opacity: .4; }
+/* Against the composer there is no room below, so the menu opens upward. */
+.message-actions-menu.drop-up { top: auto; bottom: calc(100% + 6px); }
 /* Your bubbles sit at the right edge, so their menu opens inward. */
 .neo-chat-message.user .message-actions-menu { left: auto; right: 0; }
 .thinking-panel { max-width: 100%; margin: 8px 0 0; border-left: 1px solid rgba(57,255,20,.2); background: transparent; padding: 4px 0 4px 12px; color: #666; font-size: 13px; line-height: 1.6; }
@@ -2598,8 +2601,58 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .agent-stop { background: transparent; border: 1px solid var(--neo-danger); color: var(--neo-danger); padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
 .agent-stop:hover { background: rgba(255, 59, 48, .12); }
 .agent-session-body { display: flex; gap: 16px; flex: 1 1 auto; min-height: 0; padding: 16px 18px; }
-.agent-transcript { flex: 1 1 auto; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-.agent-objective { border-left: 2px solid var(--neo-green); padding: 8px 12px; color: var(--neo-body); background: var(--neo-panel); border-radius: 0 4px 4px 0; }
+.agent-transcript { flex: 1 1 auto; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-bottom: 150px; }
+.agent-transcript > .neo-chat-message { flex: 0 0 auto; }
+
+/* The run's steps hang off a rail, the way a timeline reads, with a dot that
+   travels it while the agent is still working. */
+.agent-steps { position: relative; display: flex; flex-direction: column; gap: 4px; padding-left: 26px; }
+.agent-steps-rail {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 9px;
+  width: 2px;
+  border-radius: 1px;
+  background: linear-gradient(180deg, rgba(57, 255, 20, .05), rgba(57, 255, 20, .35), rgba(57, 255, 20, .05));
+}
+.agent-steps-dot {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--neo-green);
+  box-shadow: 0 0 10px rgba(57, 255, 20, .8);
+  transform: translate(-50%, 0);
+  opacity: 0;
+}
+.agent-steps.is-working .agent-steps-dot { opacity: 1; animation: agent-rail-travel 2.4s ease-in-out infinite; }
+@keyframes agent-rail-travel {
+  0% { top: 0; }
+  50% { top: calc(100% - 8px); }
+  100% { top: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-steps.is-working .agent-steps-dot { animation: neo-pulse 1.6s ease infinite; top: 0; }
+}
+.agent-trace-toggle {
+  align-self: flex-start;
+  margin: 2px 0 0 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 4px 6px;
+  color: #4a4a4a;
+  font: 9px "JetBrains Mono", monospace;
+  letter-spacing: .04em;
+}
+.agent-trace-toggle:hover { color: var(--neo-green); }
+/* Tool cards are not turns in the conversation, so they sit in the same column
+   the bubbles use rather than spanning the pane. */
+.agent-steps > .agent-tool-card { max-width: min(680px, 82%); margin: 4px 0; align-self: flex-start; }
+.agent-transcript > .agent-approval, .agent-transcript > .agent-outcome, .agent-transcript > .agent-changes-panel { max-width: min(680px, 82%); align-self: flex-start; }
 .agent-text { color: var(--neo-body); line-height: 1.6; }
 .agent-text pre, .agent-summary pre { overflow-x: auto; background: var(--neo-panel); padding: 10px; border-radius: 4px; }
 .agent-user-note { align-self: flex-end; max-width: 80%; background: var(--neo-panel-raised); border: 1px solid var(--neo-line-bright); border-radius: 6px; padding: 8px 12px; color: var(--neo-text); }
@@ -2659,8 +2712,10 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .agent-folder-recents { display: flex; gap: 8px; flex-wrap: wrap; }
 .agent-delivery-patch { margin: 10px 0 0; max-height: 320px; overflow: auto; background: var(--neo-bg); padding: 10px; border-radius: 4px; font-size: 12px; }
 .agent-session-error { color: var(--neo-danger); font-size: 13px; }
-.agent-followup { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--neo-line); flex: 0 0 auto; }
-.agent-followup input { flex: 1 1 auto; }
+.agent-followup-wrap { position: absolute; right: 0; bottom: 0; left: 0; padding: 26px 24px 14px; }
+.agent-followup-wrap .chat-input-shell { max-width: 980px; margin: 0 auto; }
+.agent-followup-wrap .composer-menu { bottom: calc(100% + 10px); left: 8px; top: auto; }
+.agent-session { position: relative; }
 @media (max-width: 900px) {
   .agent-session-body { flex-direction: column; }
   .agent-todo { flex: 0 0 auto; width: 100%; }

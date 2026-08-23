@@ -61,6 +61,9 @@ class ModelTurn:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str | None = None
+    #: What answered and what it cost, for the run's transcript. The chat path
+    #: records the same on every message; an agent turn is no less a model call.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def truncated(self) -> bool:
@@ -227,6 +230,18 @@ def request_tool_calls(
     allowed = {schema.get("function", schema).get("name") for schema in schemas}
     allowed.discard(None)
 
+    def meta(result: Any) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in (
+                ("provider_name", getattr(result, "provider_name", None)),
+                ("model_name", getattr(result, "model_name", None)),
+                ("total_tokens", getattr(result, "total_tokens", None)),
+                ("duration_ms", getattr(result, "duration_ms", None)),
+            )
+            if value is not None
+        }
+
     if bool(getattr(client, "supports_tools", lambda: False)()):
         result = client.chat_with_metadata(
             messages, temperature=temperature, num_predict=num_predict, tools=schemas
@@ -242,8 +257,10 @@ def request_tool_calls(
             # answer is untouched.
             calls = salvage_tool_calls(result.content, allowed)
             if calls:
-                return ModelTurn(_strip_salvaged(result.content), calls, result.finish_reason)
-        return ModelTurn(result.content, calls, result.finish_reason)
+                return ModelTurn(
+                    _strip_salvaged(result.content), calls, result.finish_reason, meta(result)
+                )
+        return ModelTurn(result.content, calls, result.finish_reason, meta(result))
 
     attempt_messages = list(messages)
     for attempt in range(2):
@@ -258,7 +275,7 @@ def request_tool_calls(
             salvaged = salvage_tool_calls(result.content, allowed)
             if salvaged:
                 return ModelTurn(
-                    _strip_salvaged(result.content), salvaged, result.finish_reason
+                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result)
                 )
             # Prose that merely mentions a tool is a final answer, not a broken
             # attempt, so only a real attempt is worth a repair round trip.
@@ -274,12 +291,13 @@ def request_tool_calls(
             salvaged = salvage_tool_calls(result.content, allowed)
             if salvaged:
                 return ModelTurn(
-                    _strip_salvaged(result.content), salvaged, result.finish_reason
+                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result)
                 )
         return ModelTurn(
             _strip_tool_block(result.content) if calls else result.content,
             calls,
             result.finish_reason,
+            meta(result),
         )
 
     raise ToolProtocolError("The model did not produce a usable tool call.")

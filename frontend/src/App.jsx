@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 
 import { api } from "./api.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
+import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
+import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
 import Notes from "./Notes.jsx";
@@ -924,62 +926,32 @@ function formatFileSize(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * The turn's actions, behind a "..." on the bubble's footer.
- *
- * Same popover mechanics as the composer's "+": escape and an outside click
- * close it, and choosing an action closes it too.
- */
-function MessageActionsMenu({ label, children }) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef(null);
-  const buttonRef = useRef(null);
-
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-
-    function onPointerDown(event) {
-      if (menuRef.current?.contains(event.target) || buttonRef.current?.contains(event.target)) {
-        return;
-      }
-      setOpen(false);
-    }
-
-    function onKeyDown(event) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        buttonRef.current?.focus();
-      }
-    }
-
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
+/** A folder is not a file, so the action that opens one gets its own glyph. */
+function FolderPlusIcon() {
   return (
-    <span className="message-actions">
-      <button
-        ref={buttonRef}
-        type="button"
-        className={`message-actions-trigger${open ? " is-open" : ""}`}
-        aria-expanded={open}
-        aria-haspopup="true"
-        aria-label={label}
-        title={label}
-        onClick={() => setOpen((current) => !current)}
-      >
-        {"\u22ef"}
-      </button>
-      <span ref={menuRef} className="message-actions-menu" hidden={!open} onClick={() => setOpen(false)}>
-        {children}
-      </span>
-    </span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 20a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1z" />
+      <path d="M12 11v6" />
+      <path d="M9 14h6" />
+    </svg>
+  );
+}
+
+/** Attaching files reads the same in both modes, so it is written once. */
+function AttachFilesAction({ attaching, disabled, onPick }) {
+  return (
+    <button
+      type="button"
+      className="composer-menu-action chat-attach-button"
+      onClick={onPick}
+      disabled={disabled || attaching}
+      title="Attach files"
+      aria-label="Attach files"
+    >
+      <PaperclipIcon />
+      <span>{attaching ? "Attaching…" : "Attach files"}</span>
+    </button>
   );
 }
 
@@ -989,15 +961,6 @@ function SubmitArrowIcon() {
       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 19V5" />
       <path d="m5 12 7-7 7 7" />
-    </svg>
-  );
-}
-
-function PaperclipIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
     </svg>
   );
 }
@@ -1111,7 +1074,7 @@ export function ChatComposer({
   return (
     <div className={`chat-input-wrap ${mode === "agent" ? "agent-mode" : "chatbot-mode"}`}>
       <div className="chat-input-shell">
-        {mode === "chatbot" && attachments.length > 0 ? (
+        {attachments.length > 0 ? (
           <div className="chat-attachments">
             {attachments.map((file) => (
               <span className="chat-attachment" key={file.id}>
@@ -1130,7 +1093,7 @@ export function ChatComposer({
             ))}
           </div>
         ) : null}
-        {mode === "chatbot" && attachError ? (
+        {attachError ? (
           <div className="chat-attach-error">{attachError}</div>
         ) : null}
         <form className="chat-input-form" onSubmit={onSubmit}>
@@ -1209,25 +1172,27 @@ export function ChatComposer({
                       title="Open a folder on this computer. The agent edits it directly."
                       aria-label={folderAttaching ? "Opening a folder" : "Open a folder"}
                     >
-                      <PaperclipIcon />
+                      <FolderPlusIcon />
                       <span>{folderAttaching ? "Opening a folder…" : "Open a folder"}</span>
                     </button>
+                    <AttachFilesAction
+                      attaching={attaching}
+                      disabled={disabled}
+                      onPick={() => {
+                        setMenuOpen(false);
+                        attachInputRef.current?.click();
+                      }}
+                    />
                   </>
                 ) : (
-                  <button
-                    type="button"
-                    className="composer-menu-action chat-attach-button"
-                    onClick={() => {
+                  <AttachFilesAction
+                    attaching={attaching}
+                    disabled={disabled}
+                    onPick={() => {
                       setMenuOpen(false);
                       attachInputRef.current?.click();
                     }}
-                    disabled={disabled || attaching}
-                    title="Attach files"
-                    aria-label="Attach files"
-                  >
-                    <PaperclipIcon />
-                    <span>{attaching ? "Attaching…" : "Attach files"}</span>
-                  </button>
+                  />
                 )}
               </div>
             </div>
@@ -2350,6 +2315,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
     try {
+      setAgentSessionId("");
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
@@ -2368,6 +2334,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
     try {
+      setAgentSessionId("");
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
@@ -2707,7 +2674,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     setStatusError("");
     try {
       const created = await api.createAgentSession({
-        objective,
+        objective: promptWithAttachments(objective),
         mode: agentMode,
         project_id: null,
         repo_id: selectedAgentRepoId || null,
@@ -2715,6 +2682,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         client_request_id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       });
       setComposerValue("");
+      setChatAttachments([]);
+      setAttachError("");
       setAgentSessionId(created.session.id);
       // The run belongs in the sidebar the moment it exists, not after the next
       // unrelated refresh.
@@ -2788,6 +2757,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={() => {
+          setAgentSessionId("");
           setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
         }}
         onOpenMemory={() => setShowMemory(true)}
@@ -2882,6 +2852,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             sessionId={agentSessionId}
             onClose={() => setAgentSessionId("")}
             onMessage={setChatAgentMessage}
+            onLeaveAgentMode={() => {
+              setAgentSessionId("");
+              setChatMode("chatbot");
+            }}
           />
         </main>
       ) : (

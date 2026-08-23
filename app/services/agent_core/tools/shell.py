@@ -51,6 +51,27 @@ def _render(record: dict) -> str:
     return "\n\n".join(parts)
 
 
+#: What to do instead, per category. A blocked command is fed back to the model as
+#: a tool error, and an error that only says "no" costs a retry of the same shape;
+#: one that names the allowed set and the other tool is recovered from in one step.
+_RECOVERY: dict[str, str] = {
+    "read_only": (
+        "run_command only runs read-only inspection: pwd, ls, find, grep, rg, cat, head, "
+        "tail, wc, tree. It cannot execute scripts. To run tests, lint or a build, use "
+        "run_tests (pytest, python -m pytest, npm test, npm run test/build/lint, ruff "
+        "check, mypy). To check a file for syntax errors, read it and inspect it instead."
+    ),
+    "test": (
+        "run_tests allows: pytest, python -m pytest, npm test, npm run test/build/lint, "
+        "ruff check, mypy. Arbitrary scripts cannot be executed."
+    ),
+}
+
+
+def _recovery_hint(category: str) -> str:
+    return _RECOVERY.get(category, "That command is not allowed by Neo's sandbox policy.")
+
+
 def _execute(arguments: dict, context: ToolContext, category: str, kind: str) -> ToolResult:
     if not context.repo_id:
         raise ValueError("This action needs a repository. Attach one to the session first.")
@@ -68,7 +89,7 @@ def _execute(arguments: dict, context: ToolContext, category: str, kind: str) ->
     decision = proposed.get("policy_decision") or {}
     if not decision.get("allowed"):
         reason = decision.get("reason") or "The sandbox policy does not allow that command."
-        raise ValueError(f"{reason} Allowed {category} commands are fixed by Neo's sandbox policy.")
+        raise ValueError(f"{reason}. {_recovery_hint(category)}")
 
     service.approve(proposed["id"], True)
     record = service.execute(proposed["id"])

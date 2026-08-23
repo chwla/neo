@@ -166,7 +166,12 @@ def normalize_relative_parts(raw_path: str) -> tuple[str, ...]:
         raise ValueError("A path is required.")
     text = raw_path.strip().replace("\\", "/")
     if text.startswith("/") or PurePosixPath(text).is_absolute():
-        raise ValueError("Path must be relative to the repository root.")
+        # Naming the fix matters: this message is fed back to the model as a tool
+        # error, and an absolute path is its most common first guess.
+        raise ValueError(
+            "Path must be relative to the repository root -- pass '.' for the root, "
+            "or 'src/main.py', not an absolute path."
+        )
     if has_windows_root(raw_path):
         raise ValueError("Path must be relative to the repository root, with no drive or share.")
     parts = tuple(part for part in PurePosixPath(text).parts if part != ".")

@@ -160,7 +160,9 @@ class AgentLoop:
             store.update_session(session_id, {"iterations": session.iterations + 1})
 
             if turn.content:
-                self._emit(session_id, events.CHUNK, {"content": turn.content})
+                # The transcript renders the same footer chat does, so the turn's
+                # provider, model, tokens and duration ride with its narration.
+                self._emit(session_id, events.CHUNK, {"content": turn.content, **turn.metadata})
             store.append_message(
                 session_id,
                 {

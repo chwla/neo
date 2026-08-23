@@ -13,9 +13,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
+  AgentBubble,
   ApprovalCard,
-  ChangesPanel,
-  STOP_REASON_COPY,
+  DiffView,
+  entryFromEvent,
+  groupEntries,
   TodoPanel,
   ToolCard,
 } from "../src/AgentSession.jsx";
@@ -158,117 +160,87 @@ describe("todo panel", () => {
   });
 });
 
-describe("outcome wording", () => {
-  test("verified and unverified completions are not the same message", () => {
-    const verified = STOP_REASON_COPY.verified_complete;
-    const unverified = STOP_REASON_COPY.unverified_complete;
-
-    assert.notEqual(verified.label, unverified.label);
-    assert.equal(verified.tone, "ok");
-    assert.equal(unverified.tone, "warn");
-    assert.ok(/review/i.test(unverified.detail), "an unverified result must invite review");
+/**
+ * What the run produced is reachable from the message that reports it -- View
+ * diff, Undo this run -- so the panel that used to restate all of that under
+ * every finished run is gone. What remains is the diff itself, on demand.
+ */
+describe("the diff", () => {
+  test("nothing renders until one is asked for", () => {
+    assert.equal(render(DiffView, { patch: "" }), "");
   });
 
-  test("every stop reason the backend can emit has copy", () => {
-    for (const reason of [
-      "verified_complete",
-      "unverified_complete",
-      "blocked",
-      "failed",
-      "cancelled",
-      "budget_exhausted",
-    ]) {
-      assert.ok(STOP_REASON_COPY[reason]?.label, `no copy for ${reason}`);
-      assert.ok(STOP_REASON_COPY[reason]?.detail, `no detail for ${reason}`);
-    }
+  test("a requested diff is shown verbatim", () => {
+    const html = render(DiffView, { patch: "--- a/x.py\n+++ b/x.py\n+print(1)" });
+
+    assert.ok(html.includes("+++ b/x.py"));
+    assert.ok(html.includes("+print(1)"));
+    assert.ok(html.includes("Close the diff"), "a diff must be dismissable");
   });
 });
 
-
 /**
- * The panel that used to end every run with four buttons -- View diff, Download
- * changed files, Download workspace, Discard -- because the agent had been
- * editing a copy the user could not reach. A live workspace has no such gap:
- * the files are already theirs, so the panel reports and offers to reverse,
- * and there is nothing to hand back.
+ * The transcript's footer is built from the event, so the event's record has to
+ * survive the trip. Keeping only `content` here left every agent message with a
+ * bare "..." and no time, model, token count or duration.
  */
-describe("changes panel", () => {
-  const live = {
-    mode: "live",
-    root: "/Users/me/project",
-    deliverable: [{ path: "ab.py", status: "created" }],
-    blocked: [],
-    undoable: true,
+describe("what a streamed turn carries", () => {
+  const chunk = {
+    type: "chunk",
+    seq: 4,
+    content: "Looking at the repository.",
+    created_at: "2026-08-22T21:35:09",
+    provider_name: "ollama",
+    model_name: "gemma4:latest",
+    total_tokens: 968,
+    duration_ms: 9000,
   };
 
-  test("a live run says the work is already saved, and where", () => {
-    const html = render(ChangesPanel, { sessionId: "s1", delivery: live });
+  test("the turn's record reaches the entry, not just its prose", () => {
+    const entry = entryFromEvent(chunk);
 
-    assert.ok(html.includes("Changes written to your folder"));
-    assert.ok(html.includes("/Users/me/project"), "the user must see which folder changed");
-    assert.ok(html.includes("ab.py"));
+    assert.equal(entry.kind, "text");
+    assert.equal(entry.created_at, chunk.created_at);
+    assert.equal(entry.provider_name, "ollama");
+    assert.equal(entry.model_name, "gemma4:latest");
+    assert.equal(entry.total_tokens, 968);
+    assert.equal(entry.duration_ms, 9000);
   });
 
-  test("a live run offers no download and nothing to discard", () => {
-    const html = render(ChangesPanel, { sessionId: "s1", delivery: live });
-
-    assert.ok(!html.includes("Download changed files"));
-    assert.ok(!html.includes("Download workspace"));
-    assert.ok(!html.includes("Discard"));
-    assert.ok(!html.includes("Apply changes"), "there is nothing left to apply");
+  test("an empty chunk is not an entry", () => {
+    assert.equal(entryFromEvent({ type: "chunk", seq: 1, content: "" }), null);
   });
 
-  test("a live run can be undone, and can still be read as a diff", () => {
-    const html = render(ChangesPanel, { sessionId: "s1", delivery: live });
+  test("merging two turns into one bubble sums what they cost", () => {
+    const [merged] = groupEntries([
+      entryFromEvent(chunk),
+      entryFromEvent({ ...chunk, seq: 5, content: " Now the README.", total_tokens: 32, duration_ms: 1000 }),
+    ]);
 
-    assert.ok(html.includes("Undo this run"));
-    assert.ok(html.includes("View diff"));
+    assert.equal(merged.content, "Looking at the repository. Now the README.");
+    assert.equal(merged.total_tokens, 1000, "both turns' tokens");
+    assert.equal(merged.duration_ms, 10000, "both turns' time");
   });
 
-  test("undo is unavailable when the run changed nothing", () => {
-    const html = render(ChangesPanel, {
-      sessionId: "s1",
-      delivery: { ...live, undoable: false },
+  test("the footer renders the record the entry carries", () => {
+    const html = render(AgentBubble, { role: "assistant", text: "done", entry: entryFromEvent(chunk) });
+
+    assert.ok(html.includes("ollama / gemma4:latest"), "the model that answered");
+    assert.ok(html.includes("968 tokens"));
+    assert.ok(html.includes("9.0 s"));
+    assert.ok(/<time class="message-time">[^<]+<\/time>/.test(html), "a timestamp");
+    assert.ok(html.includes("Response actions"), "the actions menu");
+  });
+
+  test("a user turn is stamped but carries no model record", () => {
+    const html = render(AgentBubble, {
+      role: "user",
+      text: "verify this code",
+      entry: { created_at: "2026-08-22T21:34:00", content: "verify this code" },
     });
 
-    assert.ok(html.includes('Undo this run'));
-    assert.ok(html.includes('disabled=""'), "an empty run must not offer a live undo");
-  });
-
-  test("a managed copy still has to be applied, and says so", () => {
-    const html = render(ChangesPanel, {
-      sessionId: "s1",
-      delivery: {
-        mode: "write_back",
-        deliverable: [{ path: "app/main.py", status: "modified" }],
-        blocked: [],
-      },
-    });
-
-    assert.ok(html.includes("Deliver to your repository"));
-    assert.ok(html.includes("Apply changes"));
-    assert.ok(!html.includes("Undo this run"), "a copy has no user files to restore");
-  });
-
-  test("a file the user edited since import is shown as blocked, with the reason", () => {
-    const html = render(ChangesPanel, {
-      sessionId: "s1",
-      delivery: {
-        mode: "write_back",
-        deliverable: [],
-        blocked: [{ path: "app/main.py", reason: "This file changed in your repository." }],
-      },
-    });
-
-    assert.ok(html.includes("This file changed in your repository."));
-  });
-
-  test("nothing renders when the run changed nothing at all", () => {
-    const html = render(ChangesPanel, {
-      sessionId: "s1",
-      delivery: { mode: "live", root: "/x", deliverable: [], blocked: [] },
-    });
-
-    assert.equal(html, "");
+    assert.ok(/<time class="message-time">[^<]+<\/time>/.test(html));
+    assert.ok(!html.includes("tokens"));
+    assert.ok(html.includes("Message actions"));
   });
 });

@@ -118,6 +118,15 @@ describe("agent mode composer", () => {
     );
   });
 
+  // Agent runs take files the same way chat does: the menu offers both a folder
+  // to work in and files to read.
+  test("files can be attached in agent mode too", () => {
+    const menu = render().slice(render().indexOf('id="composer-menu"'));
+
+    assert.ok(menu.includes('aria-label="Attach files"'));
+    assert.ok(menu.includes('aria-label="Open a folder"'));
+  });
+
   test("the clip reports an attach in progress", () => {
     const html = render({ folderAttaching: true });
 
@@ -235,7 +244,7 @@ describe("agent mode composer", () => {
   test("every control is disabled while a submission is in flight", () => {
     const html = render({ value: "go", disabled: true });
 
-    assert.equal(count(html, 'disabled=""'), 7, "3 chips + folder + model + textarea + Start");
+    assert.equal(count(html, 'disabled=""'), 8, "3 chips + folder + attach + model + textarea + Start");
   });
 });
 

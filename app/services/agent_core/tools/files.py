@@ -221,7 +221,12 @@ TOOLS = [
         description="List the entries of a directory in the repository.",
         parameters={
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "Directory, default root."}},
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory relative to the repository root; '.' is the root.",
+                }
+            },
         },
         risk="read",
         requires_repo=True,
