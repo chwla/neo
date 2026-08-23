@@ -267,6 +267,7 @@ class AgentLoop:
             mode=session.mode,
             has_repo=bool(session.repo_id),
             live=is_live(session.repo_id),
+            disabled=frozenset(session.disabled_tools),
         )
         native = bool(getattr(self.llm_factory(), "supports_tools", lambda: False)())
         repo, project = self._context_records(session)
@@ -337,6 +338,7 @@ class AgentLoop:
             mode=session.mode,
             has_repo=bool(session.repo_id),
             live=is_live(session.repo_id),
+            disabled=frozenset(session.disabled_tools),
         )
         return request_tool_calls(self.llm_factory(), fit(messages, budget), schemas)
 
@@ -362,7 +364,27 @@ class AgentLoop:
 
             if tool is None:
                 self._record(
-                    session, call, self.registry.execute(call, self._tool_context(session))
+                    session,
+                    call,
+                    self.registry.execute(
+                        call,
+                        self._tool_context(session),
+                        disabled=frozenset(session.disabled_tools),
+                    ),
+                )
+                continue
+
+            if call.name in session.disabled_tools:
+                self._record(
+                    session,
+                    call,
+                    ToolResult(
+                        call_id=call.id,
+                        name=call.name,
+                        status="denied",
+                        content="This tool has been turned off for this chat.",
+                        error="tool disabled for this chat",
+                    ),
                 )
                 continue
 
@@ -425,7 +447,9 @@ class AgentLoop:
         )
 
     def _execute(self, session: AgentSession, call: ToolCall) -> ToolResult:
-        return self.registry.execute(call, self._tool_context(session))
+        return self.registry.execute(
+            call, self._tool_context(session), disabled=frozenset(session.disabled_tools)
+        )
 
     def _request_approval(self, session: AgentSession, call, tool, decision) -> None:
         approval = store.insert_approval(

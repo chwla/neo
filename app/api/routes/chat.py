@@ -158,6 +158,7 @@ class ChatRead(BaseModel):
     repo_id: str | None = None
     agent_mode: str = "normal"
     agent_definition_id: str | None = None
+    disabled_tools: list[str] = Field(default_factory=list)
     #: Set only while a run in this chat is unfinished, so the sidebar can badge
     #: the row without a second request. A chat whose agent turns are all done
     #: is an ordinary chat again.
@@ -288,6 +289,7 @@ class ChatUpdateRequest(BaseModel):
     repo_id: str | None = Field(default=None, max_length=64)
     agent_mode: Literal["plan", "normal", "auto"] | None = None
     agent_definition_id: str | None = Field(default=None, max_length=64)
+    disabled_tools: list[str] | None = None
 
     @field_validator("title")
     @classmethod
@@ -297,6 +299,26 @@ class ChatUpdateRequest(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("title_must_not_be_blank")
         return value
+
+
+class ChatToolCatalogEntry(BaseModel):
+    """One tool as offered to this chat's agent, whether built in or bridged
+    from a connector definition -- see ``agent_core.tools.connectors``."""
+
+    name: str
+    display_name: str
+    description: str
+    risk: str
+    category: str
+    requires_repo: bool
+    source: Literal["built_in", "connector"]
+    enabled: bool
+    tool_id: str | None = None
+    server_name: str | None = None
+
+
+class ChatToolsRead(BaseModel):
+    tools: list[ChatToolCatalogEntry]
 
 
 class ChatMessageUpdateRequest(BaseModel):
@@ -1571,6 +1593,7 @@ def _start_agent_turn(
                 mode=chat.agent_mode or "normal",
                 repo_id=chat.repo_id,
                 agent_definition_id=chat.agent_definition_id,
+                disabled_tools=chat.disabled_tools or [],
                 chat_id=chat.id,
                 anchor_message_id=anchor.id,
                 client_request_id=payload.client_request_id,
@@ -1901,9 +1924,30 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat.agent_mode = request.agent_mode
     if request.agent_definition_id is not None:
         chat.agent_definition_id = request.agent_definition_id or None
+    if request.disabled_tools is not None:
+        chat.disabled_tools = request.disabled_tools
     store.db.commit()
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)
+
+
+@router.get("/chats/{chat_id}/tools", response_model=ChatToolsRead)
+def list_chat_tools(chat_id: int, store: StoreDependency) -> ChatToolsRead:
+    """Every tool this chat's agent could use, toggle-annotated.
+
+    Returns the full candidate set regardless of the chat's current repo or
+    permission mode -- a repo-only tool can be pre-toggled off before any
+    repository is attached, and its ``requires_repo`` flag is what a caller
+    uses to explain that instead of hiding the row.
+    """
+
+    chat = _get_required_chat(store, chat_id)
+    from app.services.agent_core.tools.connectors import chat_tools_catalog
+    from app.services.agent_core.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    catalog = chat_tools_catalog(registry, set(chat.disabled_tools or []))
+    return ChatToolsRead(tools=catalog)
 
 
 @router.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)

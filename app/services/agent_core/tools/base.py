@@ -69,6 +69,12 @@ class AgentTool:
     #: Tools that cannot work without a managed repository are withheld from
     #: sessions that have none, rather than being offered and then failing.
     requires_repo: bool = False
+    #: Where this tool came from. A connector-bridged tool re-fetches its
+    #: definition by ``origin_id`` on every call rather than closing over it,
+    #: so a toggle in Settings takes effect on the next run with nothing to
+    #: invalidate.
+    source: Literal["built_in", "connector"] = "built_in"
+    origin_id: str | None = None
 
     @property
     def category(self) -> str:

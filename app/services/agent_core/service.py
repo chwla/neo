@@ -37,6 +37,7 @@ class SessionCreate(BaseModel):
     chat_id: int | None = None
     anchor_message_id: int | None = None
     agent_definition_id: str | None = None
+    disabled_tools: list[str] = Field(default_factory=list)
     client_request_id: str | None = Field(default=None, max_length=200)
 
 
@@ -130,6 +131,7 @@ class AgentCoreService:
                 "anchor_message_id": anchor_message_id,
                 "agent_definition_id": payload.agent_definition_id,
                 "agent_definition_snapshot": snapshot,
+                "disabled_tools": payload.disabled_tools,
                 "budgets": Budgets().model_dump(),
                 "client_request_id": payload.client_request_id,
                 "created_at": now,

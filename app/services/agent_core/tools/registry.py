@@ -50,6 +50,13 @@ def default_tools() -> list[AgentTool]:
     ]
 
 
+def _default_tools_with_connectors() -> list[AgentTool]:
+    from app.services.agent_core.tools.connectors import bridged_connector_tools
+
+    base = default_tools()
+    return [*base, *bridged_connector_tools({tool.name for tool in base})]
+
+
 def truncate_output(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
     if len(text) <= limit:
         return text
@@ -62,18 +69,29 @@ def truncate_output(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
 class ToolRegistry:
     def __init__(self, tools: list[AgentTool] | None = None) -> None:
         self._tools = {
-            tool.name: tool for tool in (tools if tools is not None else default_tools())
+            tool.name: tool
+            for tool in (tools if tools is not None else _default_tools_with_connectors())
         }
         self.resolver = PermissionResolver()
 
     def get(self, name: str) -> AgentTool | None:
         return self._tools.get(name)
 
+    def all(self) -> list[AgentTool]:
+        return list(self._tools.values())
+
     def available(
-        self, *, mode: PermissionMode, has_repo: bool, live: bool = False
+        self,
+        *,
+        mode: PermissionMode,
+        has_repo: bool,
+        live: bool = False,
+        disabled: frozenset[str] = frozenset(),
     ) -> list[AgentTool]:
         chosen = []
         for tool in self._tools.values():
+            if tool.name in disabled:
+                continue
             if tool.requires_repo and not has_repo:
                 continue
             if live and tool.name in LIVE_WITHHELD:
@@ -84,13 +102,21 @@ class ToolRegistry:
         return chosen
 
     def schemas(
-        self, *, mode: PermissionMode, has_repo: bool, live: bool = False
+        self,
+        *,
+        mode: PermissionMode,
+        has_repo: bool,
+        live: bool = False,
+        disabled: frozenset[str] = frozenset(),
     ) -> list[dict[str, Any]]:
         return [
-            tool.schema() for tool in self.available(mode=mode, has_repo=has_repo, live=live)
+            tool.schema()
+            for tool in self.available(mode=mode, has_repo=has_repo, live=live, disabled=disabled)
         ]
 
-    def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
+    def execute(
+        self, call: ToolCall, context: ToolContext, *, disabled: frozenset[str] = frozenset()
+    ) -> ToolResult:
         """Run one call, turning any failure into a result the model can react to.
 
         Tool errors are returned rather than raised on purpose: "that path does
@@ -111,6 +137,15 @@ class ToolRegistry:
         # Withholding a tool from the schema is advice; a model can still name
         # one it saw in an earlier turn, or that it invented. Refusing here as
         # well is what makes it a rule.
+        if call.name in disabled:
+            return ToolResult(
+                call_id=call.id,
+                name=call.name,
+                status="denied",
+                content="This tool has been turned off for this chat.",
+                error="tool disabled for this chat",
+            )
+
         if call.name in LIVE_WITHHELD and is_live(context.repo_id):
             return ToolResult(
                 call_id=call.id,

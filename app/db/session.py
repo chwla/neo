@@ -97,6 +97,7 @@ def ensure_chat_columns(target_engine=engine) -> None:
         "repo_id": "VARCHAR(64)",
         "agent_mode": "VARCHAR(16) NOT NULL DEFAULT 'normal'",
         "agent_definition_id": "VARCHAR(64)",
+        "disabled_tools": "JSON NOT NULL DEFAULT '[]'",
     }
     with target_engine.begin() as connection:
         for name, column_type in columns.items():

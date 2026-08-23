@@ -87,6 +87,7 @@ def initialize_agent_core_tables() -> None:
                 task_id TEXT,
                 agent_definition_id TEXT,
                 agent_definition_snapshot_json TEXT,
+                disabled_tools_json TEXT,
                 -- The chat this run is a turn of, and the assistant row that
                 -- holds its place in that chat's transcript.
                 chat_id INTEGER,
@@ -220,6 +221,10 @@ def initialize_agent_core_tables() -> None:
         for name in ("chat_id", "anchor_message_id"):
             if name not in existing:
                 conn.execute(f"ALTER TABLE workspace_agent_sessions ADD COLUMN {name} INTEGER")
+        if "disabled_tools_json" not in existing:
+            conn.execute(
+                "ALTER TABLE workspace_agent_sessions ADD COLUMN disabled_tools_json TEXT"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_agent_sessions_chat"
             " ON workspace_agent_sessions(chat_id, created_at)"
@@ -278,6 +283,7 @@ def _row_to_session(row: sqlite3.Row) -> dict:
     data["agent_definition_snapshot"] = _loads(
         data.pop("agent_definition_snapshot_json", None), None
     )
+    data["disabled_tools"] = _loads(data.pop("disabled_tools_json", None), [])
     data["todo"] = _loads(data.pop("todo_json", None), [])
     data["evidence"] = _loads(data.pop("evidence_json", None), [])
     data["budgets"] = _loads(data.pop("budgets_json", None), {}) or {}
@@ -297,10 +303,10 @@ def insert_session(item: dict) -> dict:
             """
             INSERT INTO workspace_agent_sessions (
                 id, objective, title, status, mode, project_id, repo_id, task_id,
-                agent_definition_id, agent_definition_snapshot_json, chat_id,
-                anchor_message_id, todo_json, evidence_json, budgets_json,
+                agent_definition_id, agent_definition_snapshot_json, disabled_tools_json,
+                chat_id, anchor_message_id, todo_json, evidence_json, budgets_json,
                 client_request_id, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 item["id"],
@@ -315,6 +321,7 @@ def insert_session(item: dict) -> dict:
                 json.dumps(item.get("agent_definition_snapshot"))
                 if item.get("agent_definition_snapshot")
                 else None,
+                json.dumps(item.get("disabled_tools") or []),
                 item.get("chat_id"),
                 item.get("anchor_message_id"),
                 json.dumps(item.get("todo") or []),
@@ -592,8 +599,8 @@ def create_chat_for_session(objective: str, title: str) -> tuple[int, int]:
     try:
         chat = conn.execute(
             "INSERT INTO chats (title, project_id, archived, pinned, agent_mode,"
-            " created_at, updated_at) VALUES (?,?,0,0,?,?,?)",
-            (title[:160], None, "normal", now, now),
+            " disabled_tools, created_at, updated_at) VALUES (?,?,0,0,?,?,?,?)",
+            (title[:160], None, "normal", "[]", now, now),
         )
         chat_id = int(chat.lastrowid or 0)
         conn.execute(

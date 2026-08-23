@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -33,6 +33,15 @@ class Chat(TimestampMixin, Base):
     repo_id: Mapped[str | None] = mapped_column(String(64))
     agent_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
     agent_definition_id: Mapped[str | None] = mapped_column(String(64))
+    #: Tool names withheld from every agent turn in this chat. Applies to both
+    #: built-in tools and bridged connector tools -- see agent_core.tools.registry.
+    #: ``server_default`` matters here, not just ``default``: agent_core writes
+    #: chat rows through its own raw-sqlite3 INSERT (``create_chat_for_session``)
+    #: that never goes through the ORM, so the NOT NULL fallback has to live in
+    #: the column's own DDL rather than in Python-side insert defaults.
+    disabled_tools: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="'[]'"
+    )
 
     project = relationship("Project", back_populates="chats")
     messages = relationship(

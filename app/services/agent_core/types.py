@@ -145,6 +145,9 @@ class AgentSession(BaseModel):
     anchor_message_id: int | None = None
     agent_definition_id: str | None = None
     agent_definition_snapshot: dict[str, Any] | None = None
+    #: Tool names withheld from this run, snapshotted from the chat at session
+    #: creation -- like ``agent_definition_snapshot``, not re-read mid-run.
+    disabled_tools: list[str] = Field(default_factory=list)
     todo: list[TodoItem] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     budgets: Budgets = Field(default_factory=Budgets)
