@@ -139,6 +139,10 @@ class AgentSession(BaseModel):
     project_id: str | None = None
     repo_id: str | None = None
     task_id: str | None = None
+    #: The chat this run is a turn of, and the assistant row holding its place
+    #: in that chat's transcript. Every run started from the interface has both.
+    chat_id: int | None = None
+    anchor_message_id: int | None = None
     agent_definition_id: str | None = None
     agent_definition_snapshot: dict[str, Any] | None = None
     todo: list[TodoItem] = Field(default_factory=list)

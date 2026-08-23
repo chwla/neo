@@ -45,6 +45,7 @@ from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
 from app.core.config import get_settings
 from app.services.agent_core.store import (
+    delete_chatless_sessions,
     initialize_agent_core_tables,
     recover_interrupted_sessions,
 )
@@ -208,6 +209,9 @@ def create_app() -> FastAPI:
     # advance. The previous runner had an equivalent helper that nothing called,
     # so runs stayed active forever; this one is wired up.
     recover_interrupted_sessions()
+    # Runs from before every run was a turn of a chat have nowhere left to be
+    # opened from, so they are dropped once rather than kept as orphans.
+    delete_chatless_sessions()
 
     @app.on_event("shutdown")
     def remove_temporary_guest_profiles() -> None:

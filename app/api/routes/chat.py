@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from threading import Lock, Thread
-from typing import Annotated
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -25,6 +25,8 @@ from app.models.enums import ProjectStatus
 from app.models.memory import MemoryRecord, MemorySource
 from app.repositories.app_store import AppStore
 from app.schemas.chat import ProjectRead
+from app.services import chat_events
+from app.services.agent_core import events as agent_events
 from app.services.chat import NeoChatService
 from app.services.llm import LLMClient, LLMRegistry, ProviderUsagePersistenceError, get_llm_client
 from app.services.llm_registry.providers import ProviderConfigurationError
@@ -151,6 +153,15 @@ class ChatRead(BaseModel):
     project_id: int | None
     archived: bool
     pinned: bool = False
+    #: What an agent turn in this chat runs against. The workspace and the
+    #: permission mode belong to the conversation, not to one message.
+    repo_id: str | None = None
+    agent_mode: str = "normal"
+    agent_definition_id: str | None = None
+    #: Set only while a run in this chat is unfinished, so the sidebar can badge
+    #: the row without a second request. A chat whose agent turns are all done
+    #: is an ordinary chat again.
+    agent_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -177,6 +188,10 @@ class ChatMessageRead(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
     search_trace: dict[str, object] = Field(default_factory=dict)
     connector_trace: dict[str, object] = Field(default_factory=dict)
+    #: Present on `response_kind == "agent_run"` rows: the run this turn is,
+    #: with everything the transcript needs to draw it on first paint rather
+    #: than after a second request per turn.
+    agent: dict[str, object] | None = None
     created_at: datetime
 
 
@@ -184,29 +199,26 @@ class ProjectWithChatsRead(ProjectRead):
     chats: list[ChatRead] = Field(default_factory=list)
 
 
-class AgentRunRead(BaseModel):
-    """One agent run as the sidebar needs it.
+class SidebarRead(BaseModel):
+    """Every thread, in one list.
 
-    Agent runs live in their own store and are keyed by string ids, so they are
-    carried alongside chats rather than folded into ``ChatRead``.
+    Agent runs used to be carried separately because they had their own view to
+    open. Now a run is a turn of a chat, so it appears wherever that chat does
+    and its status rides on ``ChatRead.agent_status``.
     """
 
-    id: str
-    title: str
-    status: str
-    project_id: int | None = None
-    updated_at: str
-
-
-class SidebarRead(BaseModel):
     projects: list[ProjectWithChatsRead]
     chats: list[ChatRead]
-    agent_runs: list[AgentRunRead] = []
 
 
 class ChatThreadRead(BaseModel):
     chat: ChatRead
     messages: list[ChatMessageRead]
+    #: The sequence number to tail the chat's live log from. The server decides
+    #: it because only the server knows whether a turn is still in flight, and a
+    #: browser guessing wrong either replays the whole thread or misses the
+    #: part of a running turn it did not see.
+    stream_after: int = 0
 
 
 class ChatCreateRequest(BaseModel):
@@ -221,6 +233,16 @@ class ChatSendRequest(BaseModel):
     locale: str | None = Field(default=None, min_length=2, max_length=40)
     memory_enabled: bool = True
     memory_incognito: bool = False
+    #: Which kind of turn this message starts. Chosen per message, defaulting to
+    #: whatever the chat was last set to, so a thread can answer a question and
+    #: then go and do the work without changing where the user is.
+    mode: Literal["chat", "agent"] | None = None
+    #: Overrides for the chat's agent settings. Sent when the composer's chips
+    #: changed in the same gesture as the message, and persisted onto the chat
+    #: so the next turn inherits them.
+    repo_id: str | None = Field(default=None, max_length=64)
+    agent_mode: Literal["plan", "normal", "auto"] | None = None
+    agent_definition_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("prompt")
     @classmethod
@@ -255,10 +277,17 @@ class ChatSendRequest(BaseModel):
 
 
 class ChatUpdateRequest(BaseModel):
-    """A rename, a pin, or both. Each field is optional so one can move alone."""
+    """A rename, a pin, an agent setting, or any combination.
+
+    Every field is optional so one can move alone: the composer's chips patch a
+    single setting without having to restate the title it is not changing.
+    """
 
     title: str | None = Field(default=None, min_length=1, max_length=120)
     pinned: bool | None = None
+    repo_id: str | None = Field(default=None, max_length=64)
+    agent_mode: Literal["plan", "normal", "auto"] | None = None
+    agent_definition_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("title")
     @classmethod
@@ -325,7 +354,14 @@ class ChatGenerationRead(BaseModel):
 
 
 class ChatGenerationStartResponse(BaseModel):
-    generation: ChatGenerationRead
+    #: Absent for an agent turn, which has no generation row -- its durable
+    #: state is the session, and the anchor row below is its place in the chat.
+    generation: ChatGenerationRead | None = None
+    #: Set when the turn was an agent run. The browser needs both: the anchor to
+    #: know which row in the transcript is filling in, and the session to send
+    #: approvals, steering and delivery to.
+    agent_session_id: str | None = None
+    anchor_message_id: int | None = None
 
 
 class ProjectCreateRequest(BaseModel):
@@ -362,10 +398,88 @@ def _get_required_project(store: AppStore, project_id: int):
 def _thread_payload(store: AppStore, chat_id: int) -> ChatThreadRead:
     chat = _get_required_chat(store, chat_id)
     messages = store.list_chat_messages(chat_id)
-    return ChatThreadRead(
-        chat=ChatRead.model_validate(chat),
-        messages=[_chat_message_read(message) for message in messages],
+    runs = _agent_runs_by_anchor(chat_id)
+    active = next(
+        (run for run in runs.values() if run["session"]["status"] in _ACTIVE_AGENT_STATUSES),
+        None,
     )
+    return ChatThreadRead(
+        chat=ChatRead.model_validate(chat).model_copy(
+            update={"agent_status": active["session"]["status"] if active else None}
+        ),
+        messages=[_chat_message_read(message, runs.get(message.id)) for message in messages],
+        stream_after=_stream_cursor(store, chat_id, active),
+    )
+
+
+_ACTIVE_AGENT_STATUSES = frozenset({"queued", "running", "waiting_approval"})
+
+
+def _agent_runs_by_anchor(chat_id: int) -> dict[int, dict[str, object]]:
+    """Every agent turn in this chat, keyed by the row that holds its place.
+
+    Read here rather than per message so a long thread costs one query instead
+    of one per turn, and so a transcript arrives complete: the trace, the
+    checklist and any pending approval are all on the first paint, which is what
+    lets a reopened chat show a waiting run without a second request.
+
+    The run transcript itself is deliberately left out. The anchor row already
+    carries what the agent said; the model-facing messages are the run's
+    working state, not the conversation.
+    """
+
+    try:
+        from app.services.agent_core import store as agent_store
+        from app.services.agent_core.service import AgentCoreService
+
+        sessions = agent_store.sessions_for_chat(chat_id)
+    except Exception:
+        return {}
+    service = AgentCoreService()
+    runs: dict[int, dict[str, object]] = {}
+    for row in sessions:
+        anchor_id = row.get("anchor_message_id")
+        if not anchor_id:
+            continue
+        try:
+            detail = service.detail(str(row["id"]))
+        except Exception:
+            continue
+        runs[int(anchor_id)] = {
+            "session": detail["session"],
+            "tool_calls": detail["tool_calls"],
+            "pending_approval": detail["pending_approval"],
+            "grants": detail["grants"],
+            "delivery": detail["delivery"],
+        }
+    return runs
+
+
+def _stream_cursor(store: AppStore, chat_id: int, active: dict[str, object] | None) -> int:
+    """Where a reader should start tailing this chat.
+
+    A finished thread is fully described by its message rows, so the tail starts
+    at the end and replays nothing. A thread with a turn still running starts
+    just before that turn's first event instead, so reopening a chat mid-run
+    rebuilds the narration and tool cards produced while nobody was watching.
+    """
+
+    if active is not None:
+        first = chat_events.first_seq_for(
+            chat_id, agent_session_id=str(active["session"]["id"])
+        )
+        if first:
+            return first - 1
+    generation = store.db.scalar(
+        select(ChatGeneration)
+        .where(ChatGeneration.chat_id == chat_id, ChatGeneration.status.in_(("queued", "running")))
+        .order_by(ChatGeneration.created_at.desc())
+    )
+    if generation is not None:
+        first = chat_events.first_seq_for(chat_id, generation_id=generation.id)
+        if first:
+            return first - 1
+    return chat_events.latest_seq(chat_id)
 
 
 def _detach_sources_for_message(runtime, db, message_id: int, *, reason: str) -> list[dict]:
@@ -415,14 +529,17 @@ def _json_object(value: str | None) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _chat_message_read(message: ChatMessage) -> ChatMessageRead:
+def _chat_message_read(
+    message: ChatMessage,
+    agent: dict[str, object] | None = None,
+) -> ChatMessageRead:
     metadata = _json_object(message.metadata_json)
     search_trace = metadata.get("search_trace") or metadata.get("web_debug") or {}
     connector_trace = metadata.get("connector_trace") or {}
     payload = {
         field: getattr(message, field)
         for field in ChatMessageRead.model_fields
-        if field not in {"metadata", "search_trace", "connector_trace"}
+        if field not in {"metadata", "search_trace", "connector_trace", "agent"}
     }
     return ChatMessageRead.model_validate(
         {
@@ -430,6 +547,7 @@ def _chat_message_read(message: ChatMessage) -> ChatMessageRead:
             "metadata": metadata,
             "search_trace": search_trace if isinstance(search_trace, dict) else {},
             "connector_trace": connector_trace if isinstance(connector_trace, dict) else {},
+            "agent": agent,
         },
     )
 
@@ -651,6 +769,70 @@ def _persist_cancelled_partial(
     db.commit()
 
 
+def _chat_id_for_generation(db, generation_id: str) -> int | None:
+    """Read a generation's chat without trusting an ORM instance to still be bound."""
+
+    try:
+        return db.scalar(
+            select(ChatGeneration.chat_id).where(ChatGeneration.id == generation_id)
+        )
+    except Exception:  # pragma: no cover - the session is already failing
+        return None
+
+
+class _ChatEventEmitter:
+    """Publish a generation's progress into the chat's live log.
+
+    A reply arrives token by token, and a row per token would turn the log into
+    the transcript's largest table for no reader's benefit -- the browser
+    repaints far slower than the provider emits.  Deltas are therefore buffered
+    and flushed on a short interval, and always ahead of any event whose meaning
+    depends on the text before it.
+
+    The generation row remains the durable record.  This log is how a reader
+    watches, so a failure to write one is never allowed to reach the worker.
+    """
+
+    FLUSH_SECONDS = 0.12
+
+    def __init__(self, chat_id: int, generation_id: str) -> None:
+        self.chat_id = chat_id
+        self.generation_id = generation_id
+        self._pending = ""
+        self._last_flush = 0.0
+
+    def _append(self, event_type: str, payload: dict | None = None) -> None:
+        try:
+            chat_events.append(
+                self.chat_id,
+                event_type,
+                payload,
+                generation_id=self.generation_id,
+            )
+        except Exception:  # pragma: no cover - watching must not break generating
+            _GENERATION_LOG.debug("chat event dropped for generation %s", self.generation_id)
+
+    def chunk(self, text: str) -> None:
+        if not text:
+            return
+        self._pending += text
+        if time.monotonic() - self._last_flush >= self.FLUSH_SECONDS:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._pending:
+            return
+        pending, self._pending = self._pending, ""
+        self._last_flush = time.monotonic()
+        self._append(agent_events.CHUNK, {"content": pending})
+
+    def event(self, event_type: str, payload: dict | None = None) -> None:
+        """Emit something that is only correct after the text preceding it."""
+
+        self.flush()
+        self._append(event_type, payload)
+
+
 def _run_chat_generation(profile: dict, generation_id: str) -> None:
     """Finish a response independently of the browser connection."""
 
@@ -690,6 +872,8 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
             )
             partial_response = ""
             thinking = ""
+            emitter = _ChatEventEmitter(chat.id, generation_id)
+            emitter.event(agent_events.RUN_STARTED, {"objective": generation.prompt})
             for event in service.stream_message(
                 chat.id,
                 generation.prompt,
@@ -703,14 +887,18 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 if event["type"] == "chunk":
                     partial_response += str(event.get("content") or "")
                     values["partial_response"] = partial_response
+                    emitter.chunk(str(event.get("content") or ""))
                 elif event["type"] == "thinking":
                     thinking += str(event.get("content") or "")
                     values["thinking"] = thinking
+                    emitter.event(agent_events.THINKING, {"content": event.get("content") or ""})
                 elif event["type"] == "replace":
                     partial_response = str(event.get("content") or "")
                     values["partial_response"] = partial_response
+                    emitter.event(agent_events.REPLACE, {"content": partial_response})
                 elif event["type"] == "status":
                     values["status_detail"] = str(event.get("content") or "")[:120] or None
+                    emitter.event(agent_events.STATUS, {"content": event.get("content") or ""})
                 elif event["type"] == "done":
                     reply = str(event.get("reply") or partial_response)
                     values.update(
@@ -744,6 +932,23 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                             "completed_at": datetime.now(UTC),
                         }
                     )
+                    emitter.event(
+                        agent_events.RUN_COMPLETED,
+                        {
+                            "message_id": event.get("message_id"),
+                            "reply": reply,
+                            "thinking": str(event.get("thinking") or thinking) or None,
+                            "response_kind": event.get("response_kind"),
+                            "provider_name": event.get("provider_name") or event.get("provider"),
+                            "model_name": event.get("model_name") or event.get("model"),
+                            "route_name": event.get("route_name"),
+                            "finish_reason": event.get("finish_reason"),
+                            "prompt_tokens": event.get("prompt_tokens"),
+                            "completion_tokens": event.get("completion_tokens"),
+                            "total_tokens": event.get("total_tokens"),
+                            "duration_ms": event.get("duration_ms"),
+                        },
+                    )
                 if not _update_leased_generation(
                     db,
                     generation_id,
@@ -753,6 +958,7 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                     # The lease is gone. If the user stopped this response, keep the text
                     # generated so far instead of discarding it.
                     _persist_cancelled_partial(db, generation_id, partial_response, thinking)
+                    emitter.event(agent_events.RUN_CANCELLED, {"reply": partial_response})
                     return
 
             generation = db.get(ChatGeneration, generation_id)
@@ -765,6 +971,10 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                     status_detail="Failed",
                     error="The response ended without a completion event.",
                     completed_at=datetime.now(UTC),
+                )
+                emitter.event(
+                    agent_events.RUN_FAILED,
+                    {"error": "The response ended without a completion event."},
                 )
         except Exception as exc:
             db.rollback()
@@ -799,6 +1009,14 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 error=error,
                 completed_at=datetime.now(UTC),
             )
+            # A reader tailing this chat is waiting on a terminal event, and the
+            # failure above is one. Without it the tail would sit until its idle
+            # timeout before the browser learned anything went wrong.
+            failed_chat_id = _chat_id_for_generation(db, generation_id)
+            if failed_chat_id is not None:
+                _ChatEventEmitter(failed_chat_id, generation_id).event(
+                    agent_events.RUN_FAILED, {"error": error}
+                )
         finally:
             db.close()
             with _GENERATION_THREADS_LOCK:
@@ -954,6 +1172,7 @@ def _supersede_generations_for_messages(
 
 @router.get("/sidebar", response_model=SidebarRead)
 def get_sidebar(store: StoreDependency) -> SidebarRead:
+    running = _active_agent_status_by_chat()
     projects = []
     for project in store.list_projects(ProjectStatus.ACTIVE):
         chats = store.list_chats(project_id=project.id, with_messages_only=True, limit=12)
@@ -961,51 +1180,36 @@ def get_sidebar(store: StoreDependency) -> SidebarRead:
         projects.append(
             ProjectWithChatsRead(
                 **project_data,
-                chats=[ChatRead.model_validate(chat) for chat in chats],
+                chats=[_sidebar_chat_read(chat, running) for chat in chats],
             )
         )
     chats = store.list_chats(unprojected_only=True, with_messages_only=True, limit=20)
     return SidebarRead(
         projects=projects,
-        chats=[ChatRead.model_validate(chat) for chat in chats],
-        agent_runs=_sidebar_agent_runs(),
+        chats=[_sidebar_chat_read(chat, running) for chat in chats],
     )
 
 
-def _sidebar_agent_runs(limit: int = 20) -> list[AgentRunRead]:
-    """Recent agent runs for the sidebar.
+def _sidebar_chat_read(chat: Chat, running: dict[int, str]) -> ChatRead:
+    return ChatRead.model_validate(chat).model_copy(
+        update={"agent_status": running.get(chat.id)}
+    )
+
+
+def _active_agent_status_by_chat() -> dict[int, str]:
+    """Which chats have a run still going, for the sidebar badge.
 
     The agent store is a separate SQLite layer from the chat ORM, so a failure to
-    read it must not take the whole sidebar down with it.
+    read it must not take the whole sidebar down with it -- the chats are still
+    the answer, just without their badges.
     """
 
     try:
         from app.services.agent_core import store as agent_store
-    except Exception:  # pragma: no cover - import guard
-        return []
-    try:
-        rows = agent_store.list_sessions(limit=limit)
+
+        return agent_store.active_status_by_chat()
     except Exception:
-        return []
-    runs = []
-    for row in rows:
-        raw_project = row.get("project_id")
-        try:
-            project_id = int(raw_project) if raw_project not in (None, "") else None
-        except (TypeError, ValueError):
-            # Runs filed against the old workspace-project UUIDs predate sidebar
-            # filing; show them unfiled rather than dropping them.
-            project_id = None
-        runs.append(
-            AgentRunRead(
-                id=str(row["id"]),
-                title=str(row.get("title") or "Agent run"),
-                status=str(row.get("status") or "queued"),
-                project_id=project_id,
-                updated_at=str(row.get("updated_at") or ""),
-            )
-        )
-    return runs
+        return {}
 
 
 @router.post("/chats", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
@@ -1285,10 +1489,161 @@ def start_chat_generation(
     request: Request,
     store: StoreDependency,
 ) -> ChatGenerationStartResponse:
+    """Start the next turn, of whichever kind the composer asked for.
+
+    One entry point rather than two because from the thread's point of view the
+    user did the same thing either way: they sent a message. What differs is
+    what runs, not where it lands.
+    """
+
     if not payload.prompt.strip():
         raise HTTPException(status_code=422, detail="Message content is required")
+    chat = _get_required_chat(store, chat_id)
+    # A message with no stated kind is a reply, never a run -- it must not start
+    # something that edits files because an earlier turn in this chat did. The
+    # composer always states its kind; this is the answer for everything that
+    # does not, including the CLI and older clients.
+    if payload.mode == "agent":
+        return _start_agent_turn(store, chat, payload)
     generation = _start_chat_generation(request, store, chat_id, payload)
     return ChatGenerationStartResponse(generation=_generation_read(generation))
+
+
+def _apply_agent_settings(store: AppStore, chat: Chat, payload: ChatSendRequest) -> None:
+    """Persist chips that moved in the same gesture as the message."""
+
+    if payload.repo_id is not None:
+        chat.repo_id = payload.repo_id or None
+    if payload.agent_mode is not None:
+        chat.agent_mode = payload.agent_mode
+    if payload.agent_definition_id is not None:
+        chat.agent_definition_id = payload.agent_definition_id or None
+    store.db.commit()
+
+
+def _start_agent_turn(
+    store: AppStore,
+    chat: Chat,
+    payload: ChatSendRequest,
+) -> ChatGenerationStartResponse:
+    """Run the agent as a turn of this chat.
+
+    The user's prompt is persisted the same way any message is, then an empty
+    assistant row is written to hold the turn's place while the run works. That
+    row is what the transcript draws the trace into and what the finished run
+    writes its answer back onto, so an agent turn occupies one position in the
+    conversation from the moment it starts rather than appearing at the end.
+    """
+
+    from app.services.agent_core import store as agent_store
+    from app.services.agent_core.service import (
+        AgentCoreService,
+        AgentCoreValidationError,
+        SessionCreate,
+    )
+
+    cleaned_prompt = payload.prompt.strip()
+    if payload.client_request_id:
+        # Checked before anything is written: a retried submit must not add a
+        # second pair of rows to the transcript for one send.
+        existing = agent_store.get_session_by_request(payload.client_request_id)
+        if existing is not None:
+            return ChatGenerationStartResponse(
+                agent_session_id=str(existing["id"]),
+                anchor_message_id=existing.get("anchor_message_id"),
+            )
+
+    _apply_agent_settings(store, chat, payload)
+    store.add_chat_message(
+        chat.id,
+        "user",
+        cleaned_prompt,
+        metadata={"client_request_id": payload.client_request_id},
+    )
+    store.rename_chat_from_prompt(chat.id, cleaned_prompt)
+    anchor = store.add_chat_message(chat.id, "assistant", "", response_kind="agent_run")
+    store.db.commit()
+
+    try:
+        session = AgentCoreService().create(
+            SessionCreate(
+                objective=cleaned_prompt,
+                mode=chat.agent_mode or "normal",
+                repo_id=chat.repo_id,
+                agent_definition_id=chat.agent_definition_id,
+                chat_id=chat.id,
+                anchor_message_id=anchor.id,
+                client_request_id=payload.client_request_id,
+            )
+        )
+    except AgentCoreValidationError as exc:
+        # The turn never started, so the placeholder would sit empty forever.
+        # Saying why in the row itself keeps the refusal in the conversation
+        # where it was asked for.
+        anchor.content = str(exc)
+        anchor.response_kind = "agent_error"
+        store.db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    anchor.metadata_json = json.dumps({"agent_session_id": session.id}, sort_keys=True)
+    store.db.commit()
+    return ChatGenerationStartResponse(
+        agent_session_id=session.id,
+        anchor_message_id=anchor.id,
+    )
+
+
+#: How long a chat tail waits for new events before closing. The browser
+#: reconnects with its last sequence number, so a close costs nothing and keeps
+#: a stalled connection from holding a worker thread forever.
+CHAT_STREAM_IDLE_TIMEOUT = 90.0
+CHAT_STREAM_POLL_INTERVAL = 0.25
+
+
+@router.get("/chats/{chat_id}/events")
+def stream_chat_events(
+    chat_id: int,
+    store: StoreDependency,
+    after: int = 0,
+) -> StreamingResponse:
+    """Tail one chat's live log as newline-delimited JSON.
+
+    This is the single live transport for a thread, whichever kind of turn is
+    producing: the generation worker and the agent loop both append here, so a
+    browser watching a conversation that answers a question and then goes and
+    edits files holds one connection with one cursor.
+
+    Streaming and resumption are the same mechanism, as they already were for a
+    run: the log is append-only with a monotonic sequence, so a reload asks for
+    everything after the last sequence it saw and misses nothing.
+    """
+
+    _get_required_chat(store, chat_id)
+
+    def generate():
+        cursor = max(0, after)
+        idle_since = time.monotonic()
+        while True:
+            batch = chat_events.list_events(chat_id, after=cursor)
+            for event in batch:
+                cursor = event["seq"]
+                yield json.dumps(event, default=str) + "\n"
+                if event["type"] in agent_events.TERMINAL_EVENTS:
+                    return
+            if batch:
+                idle_since = time.monotonic()
+                continue
+            if not chat_events.has_active_turn(chat_id):
+                # Nothing is generating, so nothing will arrive. A chat has no
+                # terminal state of its own; this stands in for one.
+                yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
+                return
+            if time.monotonic() - idle_since > CHAT_STREAM_IDLE_TIMEOUT:
+                yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
+                return
+            time.sleep(CHAT_STREAM_POLL_INTERVAL)
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @router.get("/chats/{chat_id}/generations/active", response_model=ChatGenerationRead | None)
@@ -1352,6 +1707,15 @@ def cancel_chat_generation(
         generation.completed_at = datetime.now(UTC)
         store.db.commit()
         store.db.refresh(generation)
+        # The worker will notice at its next event, but it may be blocked on the
+        # provider for a while yet. Saying so here is what makes Stop feel like
+        # it stopped something.
+        chat_events.append(
+            chat_id,
+            agent_events.RUN_CANCELLED,
+            {"reply": generation.partial_response or ""},
+            generation_id=generation.id,
+        )
     return _generation_read(generation)
 
 
@@ -1529,7 +1893,16 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat = store.rename_chat(chat_id, request.title)
     if request.pinned is not None:
         chat = store.set_chat_pinned(chat_id, request.pinned)
+    # An empty string clears the workspace, which is a real choice ("stop
+    # pointing this conversation at a folder") and distinct from not saying.
+    if request.repo_id is not None:
+        chat.repo_id = request.repo_id or None
+    if request.agent_mode is not None:
+        chat.agent_mode = request.agent_mode
+    if request.agent_definition_id is not None:
+        chat.agent_definition_id = request.agent_definition_id or None
     store.db.commit()
+    store.db.refresh(chat)
     return ChatRead.model_validate(chat)
 
 

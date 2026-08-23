@@ -4,6 +4,8 @@ import { createPortal } from "react-dom";
 import { api } from "./api.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
+import AgentTurn, { TERMINAL } from "./AgentTurn.jsx";
+import { useChatStream } from "./chatStream.js";
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
@@ -14,7 +16,6 @@ import Research from "./Research.jsx";
 import Tasks from "./Tasks.jsx";
 import Files from "./Files.jsx";
 import Repos from "./Repos.jsx";
-import AgentSession from "./AgentSession.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
 import AgentSettings from "./AgentSettings.jsx";
 import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
@@ -42,17 +43,16 @@ import {
   splitGeneratedText,
 } from "./chatPresentation.js";
 
-const EMPTY_SIDEBAR = { projects: [], chats: [], agent_runs: [] };
+const EMPTY_SIDEBAR = { projects: [], chats: [] };
 
 // Short labels: the sidebar row is narrow, and "waiting_approval" in full would
-// crowd out the title that identifies the run.
+// crowd out the title that identifies the chat. Only unfinished states appear --
+// a chat whose run is done is an ordinary chat again, and badging it forever
+// would make every thread that ever used the agent look permanently special.
 const AGENT_RUN_STATUS = {
   queued: "QUEUED",
   running: "RUNNING",
   waiting_approval: "APPROVE",
-  completed: "DONE",
-  failed: "FAILED",
-  cancelled: "STOPPED",
 };
 
 
@@ -413,6 +413,13 @@ function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteCha
         {chat.pinned ? <span className="chat-item-pin" aria-label="Pinned" title="Pinned">{"\u25c6"}</span> : null}
         {chat.title}
       </a>
+      {/* A run in flight has to be visible from here: without the old AGENT RUNS
+          section this is the only way back to work that is still happening. */}
+      {AGENT_RUN_STATUS[chat.agent_status] ? (
+        <span className={`agent-run-status status-${chat.agent_status}`}>
+          {AGENT_RUN_STATUS[chat.agent_status]}
+        </span>
+      ) : null}
       <RowActionsMenu label={`Actions for ${chat.title}`} className={classes.menu}>
         <button type="button" onClick={startRename}>
           Rename
@@ -447,8 +454,6 @@ export function Sidebar({
   onOpenResearch,
   onOpenNotes,
   onOpenTasks,
-  onOpenAgentRun,
-  activeAgentRunId,
   activeView,
   profile,
   onSwitchProfile,
@@ -458,7 +463,6 @@ export function Sidebar({
   const [projectName, setProjectName] = useState("");
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [chatsCollapsed, setChatsCollapsed] = useState(false);
-  const [agentRunsCollapsed, setAgentRunsCollapsed] = useState(false);
   const [search, setSearch] = useState("");
 
   function submitProject(event) {
@@ -479,9 +483,6 @@ export function Sidebar({
     }))
     .filter((project) => !query || project.name.toLowerCase().includes(query) || project.chats.length);
   const filteredChats = sidebar.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
-  const filteredAgentRuns = (sidebar.agent_runs || []).filter(
-    (run) => !query || run.title.toLowerCase().includes(query),
-  );
   const systemItems = [
     ["memory", "Memory", onOpenMemory],
     ["research", "Research", onOpenResearch],
@@ -684,44 +685,6 @@ export function Sidebar({
         ))
       )}
 
-      {/* Agent runs are their own kind of thread -- they have a status and no
-          message to send -- so they get their own section rather than being
-          mixed into CHATS where the two would be hard to tell apart. */}
-      <div className="sidebar-section sidebar-section-row">
-        <button
-          className="sidebar-section-collapse"
-          type="button"
-          aria-expanded={!agentRunsCollapsed}
-          title={agentRunsCollapsed ? "Show agent runs" : "Hide agent runs"}
-          onClick={() => setAgentRunsCollapsed((collapsed) => !collapsed)}
-        >
-          <span className="sidebar-section-caret" aria-hidden="true">
-            {agentRunsCollapsed ? "\u25B8" : "\u25BE"}
-          </span>
-          AGENT RUNS
-        </button>
-      </div>
-      {agentRunsCollapsed ? null : filteredAgentRuns.length === 0 ? (
-        <p className="sidebar-caption">No agent runs yet.</p>
-      ) : (
-        filteredAgentRuns.map((run) => (
-          <div
-            className={`chat-item agent-run-item ${run.id === activeAgentRunId ? "active" : ""}`}
-            key={run.id}
-          >
-            <button
-              className="chat-item-title"
-              type="button"
-              onClick={() => onOpenAgentRun?.(run.id)}
-              title={run.title}
-            >
-              {run.title}
-            </button>
-            <span className={`agent-run-status status-${run.status}`}>{AGENT_RUN_STATUS[run.status] || run.status}</span>
-          </div>
-        ))
-      )}
-
       <div className="sidebar-spacer" />
       <div className="sidebar-section">SYSTEM</div>
       <nav className="system-nav" aria-label="Neo system">
@@ -776,6 +739,14 @@ export function ChatMessage({
   onSetEditingValue,
   onToggleThinking,
   thinkingOpen,
+  agentRun,
+  agentEntries,
+  agentBusy,
+  agentPatch,
+  onAgentDecide,
+  onAgentDeliver,
+  onAgentUndo,
+  onCloseAgentPatch,
 }) {
   const isUser = message.role === "user";
   const hasThinking = Boolean(message.thinking?.trim());
@@ -787,11 +758,34 @@ export function ChatMessage({
       .filter(Boolean);
 
   const sentAt = formatMessageTime(message.created_at);
+  // An agent turn is an assistant turn that did some work first. The work is
+  // drawn above the bubble; the bubble itself holds the answer, exactly as it
+  // does for a reply, which is what makes the two read as one conversation.
+  const isAgentTurn = message.response_kind === "agent_run";
+  const run = isAgentTurn ? agentRun : null;
+  const delivery = run?.delivery;
+  const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
+  const canUndo = hasChanges && delivery?.mode === "live" && Boolean(delivery?.undoable);
+  // While the run works the answer has not been written yet, so there is no
+  // bubble to show -- the trace above is the whole turn.
+  const hideEmptyBubble = isAgentTurn && !message.content?.trim();
 
   return (
-    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}`}>
+    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}${isAgentTurn ? " agent-turn-message" : ""}`}>
       <div className="message-stack">
         <span className="message-sender">{isUser ? "You" : "Neo"}</span>
+        {isAgentTurn ? (
+          <AgentTurn
+            run={run}
+            entries={agentEntries}
+            traceOpen={thinkingOpen}
+            busy={agentBusy}
+            onDecide={onAgentDecide}
+            patch={agentPatch}
+            onClosePatch={onCloseAgentPatch}
+          />
+        ) : null}
+        {hideEmptyBubble ? null : (
         <div className="message-bubble">
         {isEditing ? (
           <form
@@ -841,6 +835,33 @@ export function ChatMessage({
                   <button type="button" onClick={() => onEdit(message)}>
                     Edit
                   </button>
+                ) : isAgentTurn ? (
+                  <>
+                    <button type="button" onClick={() => onToggleThinking(message.id)}>
+                      {thinkingOpen ? "Hide thinking" : "View thinking"}
+                    </button>
+                    {/* Only offered when this run actually produced changes, so
+                        the menu never shows an action that would do nothing. */}
+                    {hasChanges ? (
+                      <button type="button" onClick={() => onAgentDeliver?.(run, "patch")}>
+                        View diff
+                      </button>
+                    ) : null}
+                    {hasChanges && delivery?.mode !== "live" && delivery?.deliverable?.length ? (
+                      <button type="button" onClick={() => onAgentDeliver?.(run, "working_tree")}>
+                        Apply changes
+                      </button>
+                    ) : null}
+                    {canUndo ? (
+                      <button
+                        type="button"
+                        className="row-actions-danger"
+                        onClick={() => onAgentUndo?.(run)}
+                      >
+                        Undo this run
+                      </button>
+                    ) : null}
+                  </>
                 ) : (
                   <>
                     <button
@@ -865,7 +886,7 @@ export function ChatMessage({
                 )}
               </MessageActionsMenu>
             </div>
-            {!isUser && thinkingOpen && (
+            {!isUser && !isAgentTurn && thinkingOpen && (
               <div className="thinking-panel">
                 {hasThinking ? (
                   message.thinking
@@ -884,6 +905,7 @@ export function ChatMessage({
           </>
         )}
         </div>
+        )}
       </div>
     </article>
   );
@@ -999,6 +1021,7 @@ export function ChatComposer({
   generating = false,
   onStop,
   stopping = false,
+  steering = false,
 }) {
   const textareaRef = useRef(null);
   const attachInputRef = useRef(null);
@@ -1139,7 +1162,8 @@ export function ChatComposer({
                     <label className="agent-chip">
                       <span className="agent-chip-label">Repo</span>
                       <select value={selectedRepoId} onChange={(event) => onRepoChange(event.target.value)}
-                        disabled={disabled} aria-label="Select repository for agent">
+                        disabled={disabled} aria-label="Select repository for agent"
+                        title="The folder agent turns in this chat work on. Without one they can still search, fetch and remember.">
                         <option value="">No repository</option>
                         {repos.map((repo) => <option key={repo.id} value={repo.id}>{repo.name}</option>)}
                       </select>
@@ -1204,7 +1228,13 @@ export function ChatComposer({
                 requestAnimationFrame(resizeComposer);
               }}
               onInput={resizeComposer}
-              placeholder={mode === "agent" ? "What should the agent work on?" : "Message Neo …"}
+              placeholder={
+                steering
+                  ? "Steer the agent …"
+                  : mode === "agent"
+                    ? "What should the agent work on?"
+                    : "Message Neo …"
+              }
               rows={1}
               disabled={disabled}
               onKeyDown={(event) => {
@@ -1239,33 +1269,27 @@ export function ChatComposer({
                 <button type="button" role="tab" aria-selected={mode === "agent"}
                   className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
               </div>
-              {mode === "agent" ? (
-                <NeoButton type="submit" className="send-button"
-                  disabled={disabled || !value.trim() || !selectedRepoId}
-                  aria-label="Start Agent"
-                  title={selectedRepoId ? "Start Agent" : "Select a repository first"}>
+              {/* One control for both kinds of turn. The toggle above decides
+                  what the next one does, not what the button is called -- and a
+                  turn already running is stopped the same way whichever it is. */}
+              {generating ? (
+                <button
+                  type="button"
+                  className="send-button stop-button"
+                  onClick={onStop}
+                  disabled={stopping}
+                  aria-label="Stop generating"
+                  title="Stop generating"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                  </svg>
+                </button>
+              ) : (
+                <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
+                  aria-label="Send message" title="Send message">
                   <SubmitArrowIcon />
                 </NeoButton>
-              ) : (
-                generating ? (
-                  <button
-                    type="button"
-                    className="send-button stop-button"
-                    onClick={onStop}
-                    disabled={stopping}
-                    aria-label="Stop generating"
-                    title="Stop generating"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <rect x="7" y="7" width="10" height="10" rx="1.5" />
-                    </svg>
-                  </button>
-                ) : (
-                  <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
-                    aria-label="Send message" title="Send message">
-                    <SubmitArrowIcon />
-                  </NeoButton>
-                )
               )}
             </div>
           </div>
@@ -1877,6 +1901,31 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
   );
 }
 
+//: Statuses in which a run is still going, so a reload has to rejoin it.
+const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "waiting_approval"]);
+
+/**
+ * The stored run, brought up to date by whatever is streaming.
+ *
+ * The thread payload describes a run as it stood when the chat was loaded, which
+ * for a run still working is immediately out of date. The live state is layered
+ * over it rather than replacing it, because only some of a run arrives as events
+ * -- delivery and grants are read once, when it finishes.
+ */
+function mergeLiveRun(run, live, messageId) {
+  if (!live.sessionId || live.sessionId !== run.session?.id) return run;
+  return {
+    ...run,
+    session: {
+      ...run.session,
+      status: live.sessionStatus || run.session.status,
+      todo: live.todo ?? run.session.todo,
+    },
+    pending_approval: live.approval ?? null,
+    liveEntries: live.messageId === messageId || !live.messageId ? live.entries : null,
+  };
+}
+
 function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
@@ -1927,9 +1976,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     }
   }, [sending]);
   const [stopping, setStopping] = useState(false);
-  const [streamingAssistant, setStreamingAssistant] = useState(null);
-  const [generationChatId, setGenerationChatId] = useState(null);
-  const [activeGenerationId, setActiveGenerationId] = useState(null);
   const [generationStartedAt, setGenerationStartedAt] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [statusError, setStatusError] = useState("");
@@ -1946,21 +1992,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [initialNoteId, setInitialNoteId] = useState(null);
   const [initialTaskId, setInitialTaskId] = useState(null);
   const [initialTaskProjectId, setInitialTaskProjectId] = useState(null);
+  // What the next turn will be. A per-message choice, not a view: the thread
+  // stays where it is either way.
   const [chatMode, setChatMode] = useState("chatbot");
   const [agentDefinitions, setAgentDefinitions] = useState([]);
-  const [selectedAgentDefinitionId, setSelectedAgentDefinitionId] = useState("general");
   const [agentRepos, setAgentRepos] = useState([]);
-  const [selectedAgentRepoId, setSelectedAgentRepoId] = useState("");
-  const [agentMode, setAgentMode] = useState("normal");
-  // The active session id is persisted so a reload reattaches to a run that is
-  // still executing on the server instead of orphaning it.
-  const [agentSessionId, setAgentSessionId] = useState(() => {
-    try {
-      return window.localStorage.getItem("neo-agent-session-id") || "";
-    } catch {
-      return "";
-    }
-  });
+  // Which turn is in flight, so Stop knows what to stop. Set at send rather than
+  // read off the stream, because the gap between the POST and the first event is
+  // exactly when a user reaches for Stop.
+  const [activeTurn, setActiveTurn] = useState(null);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentPatch, setAgentPatch] = useState("");
+  // Where to tail this chat's log from. The server decides it -- only it knows
+  // whether a turn is still running -- so it arrives with the thread.
+  const [streamAfter, setStreamAfter] = useState(0);
   // A device preference rather than profile state, so it is deliberately not in
   // PROFILE_SCOPED_STORAGE_KEYS and survives a profile switch.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -1970,12 +2015,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       return false;
     }
   });
-  const [chatAgentBusy, setChatAgentBusy] = useState(false);
   const [chatAgentMessage, setChatAgentMessage] = useState("");
   const [showOpenFolder, setShowOpenFolder] = useState(false);
   const bootstrapped = useRef(false);
   const createChatPromiseRef = useRef(null);
   const visibleChatIdRef = useRef(null);
+  // The chat the stream is attached to. Kept apart from `visibleChatIdRef`,
+  // which goes null whenever another view is on screen: a turn that finishes
+  // while the user is looking at Tasks still has to be written into the thread.
+  const streamChatIdRef = useRef(null);
+  streamChatIdRef.current = activeChat?.id ?? null;
 
   const refreshSidebar = useCallback(async () => {
     const nextSidebar = await api.sidebar();
@@ -2000,27 +2049,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (chatMode === "agent") loadAgentContext();
   }, [chatMode, loadAgentContext]);
 
-  // A run's sidebar badge would otherwise read RUNNING until something else
-  // happened to refresh the sidebar. Poll only while one is actually unfinished.
-  const hasUnfinishedRun = (sidebar.agent_runs || []).some((run) =>
-    ["queued", "running", "waiting_approval"].includes(run.status),
+  // A chat's badge would otherwise read RUNNING until something else happened to
+  // refresh the sidebar. Poll only while a run is actually unfinished.
+  const hasUnfinishedRun = (sidebar.chats || []).some((chat) =>
+    ["queued", "running", "waiting_approval"].includes(chat.agent_status),
   );
   useEffect(() => {
     if (!hasUnfinishedRun) return undefined;
     const timer = window.setInterval(() => refreshSidebar().catch(() => {}), 8000);
     return () => window.clearInterval(timer);
   }, [hasUnfinishedRun, refreshSidebar]);
-
-  // The session view streams its own events, so there is no polling here. The id
-  // is persisted instead, which is what lets a reload rejoin a running session.
-  useEffect(() => {
-    try {
-      if (agentSessionId) window.localStorage.setItem("neo-agent-session-id", agentSessionId);
-      else window.localStorage.removeItem("neo-agent-session-id");
-    } catch {
-      /* storage is unavailable in private mode; the session still runs */
-    }
-  }, [agentSessionId]);
 
   const handleLlmConfigChanged = useCallback((next) => {
     setLlms(next.llms || []);
@@ -2036,20 +2074,27 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (options.history !== "none") {
       updatePermalink(chatPermalink(thread.chat.id, thread.chat.project_id), { replace: options.history === "replace" });
     }
+    // The transcript already carries any finished agent turn, so the only thing
+    // left to establish is where to start watching -- and whether something is
+    // still going, which is what a reload has to rejoin rather than orphan.
+    setStreamAfter(thread.stream_after || 0);
+    const runningTurn = thread.messages.find(
+      (message) => message.agent && ACTIVE_RUN_STATUSES.has(message.agent.session?.status),
+    );
+    if (runningTurn) {
+      setActiveTurn({ kind: "agent", sessionId: runningTurn.agent.session.id });
+      setSending(true);
+      setGenerationStartedAt(parseNeoTimestamp(runningTurn.agent.session.started_at) || Date.now());
+      return thread;
+    }
     const generation = await api.activeChatGeneration(thread.chat.id).catch(() => null);
     if (generation) {
-      setActiveGenerationId(generation.id);
-      setGenerationChatId(thread.chat.id);
+      setActiveTurn({ kind: "chat", generationId: generation.id });
       setSending(true);
       setGenerationStartedAt(parseNeoTimestamp(generation.started_at || generation.created_at) || Date.now());
-      setStreamingAssistant({
-        rawContent: generation.partial_response || "",
-        ...splitGeneratedText(generation.partial_response || ""),
-        thinking: generation.thinking || splitGeneratedText(generation.partial_response || "").thinking,
-        statusDetail: generation.status_detail || "",
-      });
     } else {
-      setActiveGenerationId(null);
+      setActiveTurn(null);
+      setSending(false);
     }
     return thread;
   }, []);
@@ -2083,79 +2128,34 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     [refreshSidebar],
   );
 
-  useEffect(() => {
-    if (!activeGenerationId || !activeChat?.id) {
-      return undefined;
-    }
-    let cancelled = false;
-    let timerId = null;
-
-    async function pollGeneration() {
+  /**
+   * One live connection for the whole thread.
+   *
+   * A turn ends by writing a message row, so the transcript is reloaded and the
+   * live state stands down rather than lingering as a second copy of what is now
+   * on the page. This is the same handling for both kinds, because by the time a
+   * turn is over the difference between them is only what the row says.
+   */
+  const handleTurnEnd = useCallback(
+    async (event) => {
+      const chatId = streamChatIdRef.current;
+      if (!chatId) return;
+      if (event?.type === "run.failed" && event.error) setStatusError(event.error);
       try {
-        const generation = await api.chatGeneration(activeChat.id, activeGenerationId);
-        if (cancelled) return;
-        const rawContent = generation.partial_response || "";
-        const parsed = splitGeneratedText(rawContent);
-        setStreamingAssistant({
-          rawContent,
-          ...parsed,
-          thinking: generation.thinking || parsed.thinking,
-          statusDetail: generation.status_detail || "",
-        });
-        if (generation.status === "completed") {
-          await loadChat(activeChat.id, { history: "none" });
-          if (!cancelled) {
-            setActiveGenerationId(null);
-            setSending(false);
-            setStopping(false);
-            setGenerationStartedAt(null);
-            setGenerationChatId(null);
-            setStreamingAssistant(null);
-            await refreshSidebar();
-          }
-          return;
-        }
-        if (generation.status === "cancelled") {
-          await loadChat(activeChat.id, { history: "none" });
-          if (!cancelled) {
-            setActiveGenerationId(null);
-            setSending(false);
-            setStopping(false);
-            setGenerationStartedAt(null);
-            setGenerationChatId(null);
-            setStreamingAssistant(null);
-            await refreshSidebar();
-          }
-          return;
-        }
-        if (generation.status === "failed") {
-          setStatusError(generation.error || "Neo could not finish this response.");
-          await loadChat(activeChat.id, { history: "none" });
-          if (!cancelled) {
-            setActiveGenerationId(null);
-            setSending(false);
-            setGenerationStartedAt(null);
-            setGenerationChatId(null);
-            setStreamingAssistant(null);
-            await refreshSidebar();
-          }
-          return;
-        }
-        timerId = window.setTimeout(pollGeneration, 250);
+        await loadChat(chatId, { history: "none" });
       } catch (error) {
-        if (!cancelled) {
-          setStatusError(`Could not check the response: ${errorMessage(error)}`);
-          timerId = window.setTimeout(pollGeneration, 1000);
-        }
+        setStatusError(`Could not reload the chat: ${errorMessage(error)}`);
       }
-    }
+      setActiveTurn(null);
+      setSending(false);
+      setStopping(false);
+      setGenerationStartedAt(null);
+      refreshSidebar().catch(() => {});
+    },
+    [loadChat, refreshSidebar],
+  );
 
-    pollGeneration();
-    return () => {
-      cancelled = true;
-      if (timerId) window.clearTimeout(timerId);
-    };
-  }, [activeChat?.id, activeGenerationId, loadChat, refreshSidebar]);
+  const { live } = useChatStream(activeChat?.id ?? null, streamAfter, { onTurnEnd: handleTurnEnd });
 
   useEffect(() => {
     if (bootstrapped.current) {
@@ -2315,7 +2315,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
     try {
-      setAgentSessionId("");
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
@@ -2334,7 +2333,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
     try {
-      setAgentSessionId("");
       setShowResearch(false);
       setShowNotes(false);
       setShowProjects(false);
@@ -2511,17 +2509,22 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       setEditingMessageId(null);
       setEditingValue("");
       setSending(true);
-      setGenerationChatId(activeChat.id);
-      setActiveGenerationId(result.generation.id);
+      setActiveTurn({ kind: "chat", generationId: result.generation.id });
       setGenerationStartedAt(parseNeoTimestamp(result.generation.created_at) || Date.now());
       setElapsedMs(0);
-      setStreamingAssistant({ rawContent: "", content: "", thinking: "" });
     } catch (error) {
       setStatusError(errorMessage(error));
     }
   }
 
-  async function sendPrompt(prompt) {
+  /**
+   * Start the next turn, of whichever kind the composer asked for.
+   *
+   * One path for both: the send, the guard against a double click, the optimistic
+   * user bubble and the failure handling are the same work either way. Only the
+   * `mode` differs, and what the server does with it.
+   */
+  async function sendPrompt(prompt, turnMode = "chat") {
     // `sending` catches a send started by another flow (a rerun, or a generation resumed
     // after reload). It cannot catch a second click in the same tick, because it only
     // becomes true on the next render -- that window is what the guard closes.
@@ -2535,13 +2538,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
     setSending(true);
     setStatusError("");
+    setChatAgentMessage("");
     setGenerationStartedAt(Date.now());
     setElapsedMs(0);
-    setStreamingAssistant({
-      rawContent: "",
-      content: "",
-      thinking: "",
-    });
     const pendingId = `pending-${Date.now()}`;
     const optimisticMessage = {
       id: pendingId,
@@ -2554,15 +2553,32 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
     try {
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
-      setGenerationChatId(chat.id);
       const result = await api.startChatGeneration(
         chat.id,
         prompt,
         selectedLlmId || null,
         requestId,
-        { ...browserChatContext(), memoryEnabled, memoryIncognito },
+        {
+          ...browserChatContext(),
+          memoryEnabled,
+          memoryIncognito,
+          mode: turnMode,
+          repoId: chat.repo_id ?? null,
+          agentMode: chat.agent_mode ?? null,
+          agentDefinitionId: chat.agent_definition_id ?? null,
+        },
       );
-      setActiveGenerationId(result.generation.id);
+      if (result.agent_session_id) {
+        setActiveTurn({ kind: "agent", sessionId: result.agent_session_id });
+        // The run wrote a row to hold its place in the transcript, and the trace
+        // draws into that row -- so the thread is reloaded rather than waiting
+        // for the first event to imply a turn that is already there.
+        await loadChat(chat.id, { history: "none" });
+        setSending(true);
+        refreshSidebar().catch(() => {});
+      } else {
+        setActiveTurn({ kind: "chat", generationId: result.generation.id });
+      }
     } catch (error) {
       setMessages((current) =>
         current.map((message) =>
@@ -2572,9 +2588,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       setComposerValue(prompt);
       setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
       setSending(false);
+      setActiveTurn(null);
       setGenerationStartedAt(null);
-      setGenerationChatId(null);
-      setStreamingAssistant(null);
     }
   }
 
@@ -2617,12 +2632,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     return `${prompt}\n\n${blocks.join("\n\n")}`;
   }
 
+  /** Stop whatever is running, whichever kind it is. */
   async function handleStopGeneration() {
-    if (!activeGenerationId || !activeChat?.id || stopping) return;
+    if (!activeTurn || !activeChat?.id || stopping) return;
     setStopping(true);
     try {
-      await api.cancelChatGeneration(activeChat.id, activeGenerationId);
-      // The poll loop sees "cancelled" and tears the streaming state down.
+      if (activeTurn.kind === "agent") await api.cancelAgentSession(activeTurn.sessionId);
+      else await api.cancelChatGeneration(activeChat.id, activeTurn.generationId);
+      // The tail sees the cancellation and tears the live state down.
     } catch (error) {
       setStopping(false);
       setStatusError(`Could not stop the response: ${errorMessage(error)}`);
@@ -2632,14 +2649,119 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   async function handleSendMessage(event) {
     event.preventDefault();
     const prompt = composerValue.trim();
-    if (!prompt || sending) {
+    if (!prompt) {
       return;
     }
     const outgoing = promptWithAttachments(prompt);
+    // Typing while a run is working steers it rather than queueing a second
+    // turn: the correction lands before the agent's next decision, which is the
+    // whole point of being able to say something mid-run.
+    if (steeringSessionId) {
+      setComposerValue("");
+      setChatAttachments([]);
+      setAttachError("");
+      try {
+        await api.sendAgentMessage(steeringSessionId, outgoing);
+      } catch (error) {
+        setComposerValue(prompt);
+        setStatusError(`Could not send that to the agent: ${errorMessage(error)}`);
+      }
+      return;
+    }
+    if (sending) {
+      return;
+    }
     setComposerValue("");
     setChatAttachments([]);
     setAttachError("");
-    await sendPrompt(outgoing);
+    await sendPrompt(outgoing, chatMode === "agent" ? "agent" : "chat");
+  }
+
+  /** Persist a composer chip onto the chat it belongs to. */
+  async function updateChatAgentSettings(changes) {
+    setChatAgentMessage("");
+    try {
+      const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
+      const updated = await api.updateChat(chat.id, changes);
+      setActiveChat((current) => (current?.id === updated.id ? { ...current, ...updated } : current));
+    } catch (error) {
+      setChatAgentMessage(`Could not save that: ${errorMessage(error)}`);
+    }
+  }
+
+  async function handleAgentDecide(decision, predicate) {
+    const run = pendingApprovalRun;
+    if (!run) return;
+    setAgentBusy(true);
+    setStatusError("");
+    try {
+      await api.decideAgentApproval(run.session.id, run.pending_approval.id, decision, predicate);
+      await loadChat(activeChat.id, { history: "none" });
+    } catch (error) {
+      setStatusError(errorMessage(error));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function handleAgentDeliver(run, deliverMode) {
+    if (!run?.session?.id) return;
+    setAgentBusy(true);
+    try {
+      const result = await api.deliverAgentChanges(run.session.id, { mode: deliverMode });
+      if (deliverMode === "patch") setAgentPatch(result.patch || "(no changes)");
+      else setChatAgentMessage(`Wrote ${result.written?.length ?? 0} file(s) into your repository.`);
+    } catch (error) {
+      setChatAgentMessage(errorMessage(error));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function handleAgentUndo(run) {
+    if (!run?.session?.id) return;
+    if (!window.confirm("Undo every change this run made to your folder?")) return;
+    setAgentBusy(true);
+    try {
+      const result = await api.undoAgentRun(run.session.id);
+      const reversed = (result.restored?.length ?? 0) + (result.removed?.length ?? 0);
+      const skipped = result.skipped || [];
+      setAgentPatch("");
+      setChatAgentMessage(
+        skipped.length
+          ? `Undid ${reversed} file(s). Left alone: ${skipped
+            .map((item) => item.path)
+            .join(", ")} — changed after the run finished.`
+          : `Undid ${reversed} file(s).`,
+      );
+      await loadChat(activeChat.id, { history: "none" });
+    } catch (error) {
+      setChatAgentMessage(errorMessage(error));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  /**
+   * Open the run a task links to, by opening the conversation it happened in.
+   *
+   * A run has no view of its own any more, so "open this run" means "go to that
+   * turn of that chat" -- which is also why it is now a normal permalink.
+   */
+  async function handleOpenAgentSession(sessionId) {
+    setStatusError("");
+    try {
+      const detail = await api.agentSession(sessionId);
+      const chatId = detail.session?.chat_id;
+      if (!chatId) {
+        setStatusError("That run is not part of a conversation, so there is nothing to open.");
+        return;
+      }
+      setShowTasks(false);
+      await handleOpenChat(chatId);
+    } catch (error) {
+      setStatusError(`Could not open that run: ${errorMessage(error)}`);
+    }
   }
 
   function handleOpenFolder() {
@@ -2648,56 +2770,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   }
 
   // The repo chip shows what was opened, so the attach says nothing further;
-  // the composer's message line is left for failures.
+  // the composer's message line is left for failures. The folder is saved onto
+  // the chat, so every agent turn in this conversation works on it.
   async function handleFolderAttached(repo) {
     await loadAgentContext();
-    if (repo?.id) setSelectedAgentRepoId(repo.id);
-  }
-
-  async function handleStartChatAgent(event) {
-    event.preventDefault();
-    const objective = composerValue.trim();
-    if (!objective || chatAgentBusy) {
-      if (!objective) setChatAgentMessage("Give Neo an objective.");
-      return;
-    }
-    if (!selectedAgentRepoId) {
-      // The server refuses this too; saying it here avoids a round trip and
-      // names the way out rather than only the problem.
-      setChatAgentMessage(
-        "Select a repository first. Upload a folder to give the agent code to work on.",
-      );
-      return;
-    }
-    setChatAgentBusy(true);
-    setChatAgentMessage("");
-    setStatusError("");
-    try {
-      const created = await api.createAgentSession({
-        objective: promptWithAttachments(objective),
-        mode: agentMode,
-        project_id: null,
-        repo_id: selectedAgentRepoId || null,
-        agent_definition_id: selectedAgentDefinitionId || null,
-        client_request_id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-      });
-      setComposerValue("");
-      setChatAttachments([]);
-      setAttachError("");
-      setAgentSessionId(created.session.id);
-      // The run belongs in the sidebar the moment it exists, not after the next
-      // unrelated refresh.
-      refreshSidebar().catch(() => {});
-    } catch (error) {
-      setChatAgentMessage(`Could not start the agent: ${errorMessage(error)}`);
-    } finally {
-      setChatAgentBusy(false);
-    }
-  }
-
-  function handleComposerSubmit(event) {
-    if (chatMode === "agent") return handleStartChatAgent(event);
-    return handleSendMessage(event);
+    if (repo?.id) await updateChatAgentSettings({ repo_id: repo.id });
   }
 
   function openWorkspaceFile(fileId) {
@@ -2731,6 +2808,38 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   }, []);
 
   const showEmptyState = messages.length === 0 && !sending;
+  // The run each agent turn is, keyed by the row that holds its place, with
+  // whatever is currently streaming laid over the top: the thread payload is a
+  // snapshot from when the chat was loaded, and a run moves on from there.
+  const agentRuns = useMemo(() => {
+    const byMessage = {};
+    for (const message of messages) {
+      if (!message.agent) continue;
+      byMessage[message.id] = mergeLiveRun(message.agent, live, message.id);
+    }
+    return byMessage;
+  }, [messages, live]);
+  const pendingApprovalRun = useMemo(
+    () => Object.values(agentRuns).find((run) => run?.pending_approval) || null,
+    [agentRuns],
+  );
+  // A run that is working takes what you type as steering, not as a new turn.
+  // One waiting on approval does not: it is waiting on a decision, and the
+  // buttons are the answer.
+  const steeringSessionId =
+    activeTurn?.kind === "agent" && live.sessionStatus !== "waiting_approval"
+      ? activeTurn.sessionId
+      : null;
+  // Only a plain reply gets the pending bubble; an agent turn has a row of its
+  // own to draw into, so a second placeholder would be the same turn twice.
+  const streamingAssistant = live.kind === "chat"
+    ? {
+      rawContent: live.text,
+      ...splitGeneratedText(live.text),
+      thinking: live.thinking || splitGeneratedText(live.text).thinking,
+      statusDetail: live.statusText,
+    }
+    : null;
   const activeView = showSettings ? "settings"
     : showMemory ? "memory"
       : showResearch ? "research"
@@ -2757,7 +2866,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={() => {
-          setAgentSessionId("");
           setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
         }}
         onOpenMemory={() => setShowMemory(true)}
@@ -2770,12 +2878,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onOpenTasks={() => {
           setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
         }}
-        onOpenAgentRun={(runId) => {
-          setShowResearch(false); setShowNotes(false); setShowProjects(false);
-          setShowTasks(false); setShowFiles(false); setShowRepos(false);
-          setChatMode("agent"); setAgentSessionId(runId);
-        }}
-        activeAgentRunId={agentSessionId}
         activeView={activeView}
         profile={profile}
         onSwitchProfile={onSwitchProfile}
@@ -2813,7 +2915,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           initialProjectId={initialTaskProjectId}
           onBack={() => { setShowTasks(false); setInitialTaskId(null); setInitialTaskProjectId(null); }}
           onTaskChange={setInitialTaskId}
-          onOpenAgentSession={(sessionId) => { setShowTasks(false); setAgentSessionId(sessionId); }}
+          onOpenAgentSession={handleOpenAgentSession}
           onOpenNote={(noteId) => {
             setInitialNoteId(noteId); setShowTasks(false); setShowProjects(false); setShowResearch(false); setShowNotes(true);
           }}
@@ -2846,18 +2948,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setShowNotes(true);
           }}
         />
-      ) : agentSessionId ? (
-        <main className="neo-main agent-session-main">
-          <AgentSession
-            sessionId={agentSessionId}
-            onClose={() => setAgentSessionId("")}
-            onMessage={setChatAgentMessage}
-            onLeaveAgentMode={() => {
-              setAgentSessionId("");
-              setChatMode("chatbot");
-            }}
-          />
-        </main>
       ) : (
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
         <header className="neo-view-header">
@@ -2892,10 +2982,18 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
                 setOpenThinkingMessageId((current) => (current === messageId ? null : messageId))
               }
               thinkingOpen={openThinkingMessageId === message.id}
+              agentRun={agentRuns[message.id]}
+              agentEntries={agentRuns[message.id]?.liveEntries}
+              agentBusy={agentBusy}
+              agentPatch={agentPatch}
+              onAgentDecide={handleAgentDecide}
+              onAgentDeliver={handleAgentDeliver}
+              onAgentUndo={handleAgentUndo}
+              onCloseAgentPatch={() => setAgentPatch("")}
             />
           ))}
 
-          {sending && generationChatId === activeChat?.id && (
+          {streamingAssistant && (
             <PendingAssistantMessage generation={streamingAssistant} elapsedMs={elapsedMs} />
           )}
 
@@ -2910,9 +3008,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         </section>
 
         <ChatComposer
-          generating={sending && Boolean(activeGenerationId)}
+          /* Stop is offered whenever something is running, and steering is not
+             something to stop -- a run waiting to be steered is waiting on you. */
+          generating={sending && Boolean(activeTurn) && !steeringSessionId}
           onStop={handleStopGeneration}
           stopping={stopping}
+          steering={Boolean(steeringSessionId)}
           attachments={chatAttachments}
           onAttachFiles={handleAttachFiles}
           onRemoveAttachment={handleRemoveAttachment}
@@ -2920,21 +3021,23 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           attachError={attachError}
           value={composerValue}
           onChange={setComposerValue}
-          onSubmit={handleComposerSubmit}
-          disabled={chatMode === "chatbot" ? sending || !activeChat?.id : chatAgentBusy}
+          onSubmit={handleSendMessage}
+          /* Never disabled by a missing workspace: an agent turn without one
+             runs with the folder tools withheld rather than being refused. */
+          disabled={sending && !steeringSessionId}
           llms={llms}
           llmId={selectedLlmId}
           onLlmChange={handleLlmChange}
           mode={chatMode}
           onModeChange={setChatMode}
           repos={agentRepos}
-          selectedRepoId={selectedAgentRepoId}
-          onRepoChange={setSelectedAgentRepoId}
+          selectedRepoId={activeChat?.repo_id || ""}
+          onRepoChange={(repoId) => updateChatAgentSettings({ repo_id: repoId })}
           agentDefinitions={agentDefinitions}
-          selectedAgentDefinitionId={selectedAgentDefinitionId}
-          onAgentDefinitionChange={setSelectedAgentDefinitionId}
-          agentMode={agentMode}
-          onAgentModeChange={setAgentMode}
+          selectedAgentDefinitionId={activeChat?.agent_definition_id || "general"}
+          onAgentDefinitionChange={(id) => updateChatAgentSettings({ agent_definition_id: id })}
+          agentMode={activeChat?.agent_mode || "normal"}
+          onAgentModeChange={(nextMode) => updateChatAgentSettings({ agent_mode: nextMode })}
           onOpenFolder={handleOpenFolder}
           folderAttaching={false}
           agentMessage={chatAgentMessage}
@@ -3092,7 +3195,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 // localStorage, which is scoped to the origin rather than to the profile, so a
 // profile transition has to drop them explicitly — otherwise the next profile
 // boots pointing at rows that only exist in the previous profile's store.
-export const PROFILE_SCOPED_STORAGE_KEYS = ["neo-active-chat-id", "neo-agent-session-id"];
+// An agent run is a turn of a chat, so the chat id is the only thing worth
+// remembering: reopening it reattaches to a run still executing on the server.
+export const PROFILE_SCOPED_STORAGE_KEYS = ["neo-active-chat-id"];
 
 export function clearProfileScopedState() {
   try {

@@ -87,6 +87,10 @@ def initialize_agent_core_tables() -> None:
                 task_id TEXT,
                 agent_definition_id TEXT,
                 agent_definition_snapshot_json TEXT,
+                -- The chat this run is a turn of, and the assistant row that
+                -- holds its place in that chat's transcript.
+                chat_id INTEGER,
+                anchor_message_id INTEGER,
                 todo_json TEXT,
                 evidence_json TEXT,
                 budgets_json TEXT,
@@ -204,7 +208,58 @@ def initialize_agent_core_tables() -> None:
             CREATE INDEX IF NOT EXISTS ix_agent_file_snapshots_session
                 ON workspace_agent_file_snapshots(session_id, relative_path);
         """)
+        # `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so the
+        # columns the unified thread added have to be applied separately -- and
+        # before anything indexes them. An index on `chat_id` inside the script
+        # above would run against a table that does not have the column yet, so
+        # every start against an existing database would fail there.
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(workspace_agent_sessions)").fetchall()
+        }
+        for name in ("chat_id", "anchor_message_id"):
+            if name not in existing:
+                conn.execute(f"ALTER TABLE workspace_agent_sessions ADD COLUMN {name} INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_agent_sessions_chat"
+            " ON workspace_agent_sessions(chat_id, created_at)"
+        )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_chatless_sessions() -> int:
+    """Drop runs that belong to no chat, once.
+
+    Every run is now a turn of a conversation.  Sessions from before that have
+    no chat to appear in and no surface left that could open them, so they are
+    removed rather than left as rows only the database knows about.  The child
+    tables go with them through their existing `ON DELETE CASCADE`.
+
+    Guarded by a marker so a later run started outside a chat -- which would be
+    a bug, not history -- is not silently deleted at the next restart.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS workspace_agent_migrations ("
+            " name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        already = conn.execute(
+            "SELECT 1 FROM workspace_agent_migrations WHERE name = ?",
+            ("drop_chatless_sessions",),
+        ).fetchone()
+        if already:
+            return 0
+        cursor = conn.execute("DELETE FROM workspace_agent_sessions WHERE chat_id IS NULL")
+        conn.execute(
+            "INSERT INTO workspace_agent_migrations (name, applied_at) VALUES (?,?)",
+            ("drop_chatless_sessions", now_iso()),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
     finally:
         conn.close()
 
@@ -242,9 +297,10 @@ def insert_session(item: dict) -> dict:
             """
             INSERT INTO workspace_agent_sessions (
                 id, objective, title, status, mode, project_id, repo_id, task_id,
-                agent_definition_id, agent_definition_snapshot_json, todo_json,
-                evidence_json, budgets_json, client_request_id, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                agent_definition_id, agent_definition_snapshot_json, chat_id,
+                anchor_message_id, todo_json, evidence_json, budgets_json,
+                client_request_id, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 item["id"],
@@ -259,6 +315,8 @@ def insert_session(item: dict) -> dict:
                 json.dumps(item.get("agent_definition_snapshot"))
                 if item.get("agent_definition_snapshot")
                 else None,
+                item.get("chat_id"),
+                item.get("anchor_message_id"),
                 json.dumps(item.get("todo") or []),
                 json.dumps(item.get("evidence") or []),
                 json.dumps(item.get("budgets") or {}),
@@ -334,6 +392,8 @@ _SESSION_COLUMNS = {
     "completed_at",
     "heartbeat_at",
     "agent_definition_snapshot",
+    "chat_id",
+    "anchor_message_id",
 }
 _JSON_COLUMNS = {
     "todo": "todo_json",
@@ -435,15 +495,201 @@ def list_messages(session_id: str) -> list[dict]:
 
 
 def append_event(session_id: str, event_type: str, payload: dict | None = None) -> int:
+    """Append to the run's own log, and mirror into its chat's log.
+
+    The session log stays the run's record -- it backs
+    ``GET /agent-sessions/{id}/events``, the CLI, and resumption -- while the
+    chat log is what a thread mixing plain replies and agent turns is read from.
+    Two sequences rather than one because each reader needs a cursor that only
+    its own stream advances.
+    """
+
     conn = _connect()
     try:
         cursor = conn.execute(
             "INSERT INTO workspace_agent_events (session_id, event_type, payload_json, created_at)"
             " VALUES (?,?,?,?)",
-            (session_id, event_type, json.dumps(payload or {}), now_iso()),
+            (session_id, event_type, json.dumps(payload or {}, default=str), now_iso()),
         )
         conn.commit()
-        return int(cursor.lastrowid or 0)
+        seq = int(cursor.lastrowid or 0)
+        row = conn.execute(
+            "SELECT chat_id, anchor_message_id FROM workspace_agent_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row and row["chat_id"] is not None:
+        from app.services import chat_events
+
+        chat_events.append(
+            int(row["chat_id"]),
+            event_type,
+            payload,
+            message_id=row["anchor_message_id"],
+            agent_session_id=session_id,
+        )
+    return seq
+
+
+def active_status_by_chat() -> dict[int, str]:
+    """The status of each chat's unfinished run, for the sidebar badge.
+
+    Only unfinished runs are reported: a chat whose last agent turn is done is
+    an ordinary chat again, and badging it would make every thread that ever
+    used the agent look permanently special.
+    """
+
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        rows = conn.execute(
+            "SELECT chat_id, status FROM workspace_agent_sessions"
+            f" WHERE chat_id IS NOT NULL AND status IN ({placeholders})"
+            " ORDER BY created_at",
+            tuple(ACTIVE_STATUSES),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        conn.close()
+    return {int(row["chat_id"]): str(row["status"]) for row in rows}
+
+
+def sessions_for_chat(chat_id: int) -> list[dict]:
+    """Every run that is a turn of this chat, oldest first."""
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM workspace_agent_sessions WHERE chat_id = ? ORDER BY created_at",
+            (int(chat_id),),
+        ).fetchall()
+        return [_row_to_session(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def create_chat_for_session(objective: str, title: str) -> tuple[int, int]:
+    """Open a conversation for a run that was not started from one.
+
+    Every run is a turn of a chat -- that is the whole shape of the thing now --
+    but a run can still be started from a task, or from the CLI, where no chat
+    exists yet. Rather than let those become sessions nothing can open, they get
+    a conversation of their own, indistinguishable afterwards from one begun by
+    typing into the composer.
+
+    Written directly for the same reason `update_anchor_message` is: this runs
+    below the request layer, with no ORM session to hand.
+
+    Returns the new chat's id and the assistant row holding the run's place.
+    """
+
+    now = now_iso()
+    conn = _connect()
+    try:
+        chat = conn.execute(
+            "INSERT INTO chats (title, project_id, archived, pinned, agent_mode,"
+            " created_at, updated_at) VALUES (?,?,0,0,?,?,?)",
+            (title[:160], None, "normal", now, now),
+        )
+        chat_id = int(chat.lastrowid or 0)
+        conn.execute(
+            "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?,?,?,?)",
+            (chat_id, "user", objective, now),
+        )
+        anchor = conn.execute(
+            "INSERT INTO chat_messages (chat_id, role, content, response_kind, created_at)"
+            " VALUES (?,?,?,?,?)",
+            (chat_id, "assistant", "", "agent_run", now),
+        )
+        conn.commit()
+        return chat_id, int(anchor.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def set_anchor_session(message_id: int, session_id: str) -> None:
+    """Point an anchor row at the run that fills it in."""
+
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE chat_messages SET metadata_json = ? WHERE id = ?",
+            (json.dumps({"agent_session_id": session_id}, sort_keys=True), int(message_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def chat_history_before(chat_id: int, message_id: int, limit: int = 40) -> list[dict]:
+    """The conversation a run is joining, as role/content rows.
+
+    An agent turn in a chat is a turn of that chat, so it starts from what was
+    already said rather than from its objective alone -- otherwise "now do that
+    for the other module" means nothing.  Rows are read directly for the same
+    reason `update_anchor_message` writes them directly: the loop has no
+    request-scoped session.
+
+    Only rows before the anchor are returned, so a run never reads its own
+    output, and empty rows are dropped -- an agent turn still in flight has an
+    anchor with no content yet, and a blank assistant turn teaches the model
+    that empty replies are acceptable.
+    """
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT role, content FROM chat_messages"
+            " WHERE chat_id = ? AND id < ? AND role IN ('user', 'assistant')"
+            " AND content IS NOT NULL AND TRIM(content) != ''"
+            " ORDER BY id DESC LIMIT ?",
+            (int(chat_id), int(message_id), max(0, limit)),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+
+def update_anchor_message(message_id: int, fields: dict) -> None:
+    """Write a finished run's answer back onto its row in the chat transcript.
+
+    The anchor is a `chat_messages` row owned by the ORM layer, but the loop
+    that finishes a run has no request-scoped session.  Writing it directly
+    follows the precedent set by `get_sidebar_project` above: the same database
+    file, one narrow statement, and no session dependency in the agent loop.
+    """
+
+    allowed = {
+        "content",
+        "thinking",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "duration_ms",
+        "provider_name",
+        "model_name",
+        "route_name",
+        "finish_reason",
+    }
+    clean = {key: value for key, value in fields.items() if key in allowed}
+    if not clean or not message_id:
+        return
+    columns = ", ".join(f"{name} = ?" for name in clean)
+    conn = _connect()
+    try:
+        conn.execute(
+            f"UPDATE chat_messages SET {columns} WHERE id = ?",
+            [*clean.values(), int(message_id)],
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        return
     finally:
         conn.close()
 

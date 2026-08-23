@@ -170,15 +170,6 @@ export const api = {
   retrieveMemory: (payload) => request("/workspace-memory/retrieve", { method: "POST", body: JSON.stringify(payload) }),
   memoryRetrievals: () => request("/workspace-memory/retrievals"),
   memoryPrunePreview: (payload = {}) => request("/workspace-memory/prune/preview", { method: "POST", body: JSON.stringify(payload) }),
-  agenticRuns: () => request("/agentic/runs"),
-  agenticRun: (id) => request(`/agentic/runs/${id}`),
-  startAgenticRun: (payload) => request("/agentic/runs", { method: "POST", body: JSON.stringify(payload) }),
-  planAgenticRun: (id, payload) => request(`/agentic/runs/${id}/plan`, { method: "POST", body: JSON.stringify(payload) }),
-  stepAgenticRun: (id, payload = {}) => request(`/agentic/runs/${id}/step`, { method: "POST", body: JSON.stringify(payload) }),
-  continueAgenticRun: (id, payload = {}) => request(`/agentic/runs/${id}/continue`, { method: "POST", body: JSON.stringify(payload) }),
-  reflectAgenticRun: (id) => request(`/agentic/runs/${id}/reflect`, { method: "POST" }),
-  stopAgenticRun: (id) => request(`/agentic/runs/${id}/stop`, { method: "POST" }),
-  agenticContext: (id) => request(`/agentic/runs/${id}/context`),
   commandRuns: (workspaceId = "") => request(`/command-sandbox/runs${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ""}`),
   commandRun: (id) => request(`/command-sandbox/runs/${id}`),
   validateCommand: (payload) => request("/command-sandbox/validate", { method: "POST", body: JSON.stringify(payload) }),
@@ -558,6 +549,11 @@ export const api = {
       memory_enabled: context.memoryEnabled ?? true,
       memory_incognito: context.memoryIncognito ?? false,
     }, onEvent),
+  /**
+   * Start the next turn. `context.mode` picks which kind: "chat" for a reply,
+   * "agent" for a run. One call either way, because from the thread's point of
+   * view the user did the same thing -- they sent a message.
+   */
   startChatGeneration: (
     chatId,
     prompt,
@@ -575,11 +571,21 @@ export const api = {
         locale: context.locale || null,
         memory_enabled: context.memoryEnabled ?? true,
         memory_incognito: context.memoryIncognito ?? false,
+        mode: context.mode || "chat",
+        repo_id: context.repoId ?? null,
+        agent_mode: context.agentMode ?? null,
+        agent_definition_id: context.agentDefinitionId ?? null,
       }),
     }),
+  updateChat: (chatId, changes) =>
+    request(`/chats/${chatId}`, { method: "PATCH", body: JSON.stringify(changes) }),
+  /**
+   * Tail a chat's live log. Both kinds of turn append to it, so this is the
+   * only live connection a thread needs, whatever it is doing.
+   */
+  streamChatEvents: (chatId, after, onEvent, signal) =>
+    streamGet(`/chats/${chatId}/events?after=${after || 0}`, onEvent, signal),
   activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
-  chatGeneration: (chatId, generationId) =>
-    request(`/chats/${chatId}/generations/${generationId}`),
   cancelChatGeneration: (chatId, generationId) =>
     request(`/chats/${chatId}/generations/${generationId}/cancel`, { method: "POST" }),
   llms: () => request("/llms"),
@@ -863,8 +869,6 @@ export const api = {
     const query = search.toString();
     return request(`/agent-sessions${query ? `?${query}` : ""}`);
   },
-  streamAgentSession: (sessionId, after, onEvent, signal) =>
-    streamGet(`/agent-sessions/${sessionId}/events?after=${after || 0}`, onEvent, signal),
   sendAgentMessage: (sessionId, content) =>
     request(`/agent-sessions/${sessionId}/messages`, {
       method: "POST",
@@ -889,15 +893,4 @@ export const api = {
   exportAgentSession: (sessionId, target) =>
     request(`/agent-sessions/${sessionId}/export?target=${target}`, { method: "POST" }),
 
-  agentRuns: (params = {}) => {
-    const search = new URLSearchParams();
-    if (params.taskId) search.set("task_id", params.taskId);
-    if (params.projectId) search.set("project_id", params.projectId);
-    if (params.status) search.set("status", params.status);
-    search.set("limit", String(params.limit ?? 50));
-    search.set("offset", String(params.offset ?? 0));
-    return request(`/agents/runs?${search.toString()}`);
-  },
-  taskAgentRuns: (taskId) => request(`/tasks/${taskId}/agent-runs`),
-  agentRun: (runId) => request(`/agents/runs/${runId}`),
 };

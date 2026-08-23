@@ -26,6 +26,14 @@ class Chat(TimestampMixin, Base):
     archived: Mapped[bool] = mapped_column(default=False, nullable=False)
     pinned: Mapped[bool] = mapped_column(default=False, nullable=False)
 
+    #: Agent turns run against the conversation's folder, not one picked per
+    #: message, so the workspace and the permission mode belong to the thread.
+    #: A chat with no repository still runs agent turns -- the registry simply
+    #: withholds the tools that need one.
+    repo_id: Mapped[str | None] = mapped_column(String(64))
+    agent_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
+    agent_definition_id: Mapped[str | None] = mapped_column(String(64))
+
     project = relationship("Project", back_populates="chats")
     messages = relationship(
         "ChatMessage",
@@ -119,3 +127,34 @@ class ChatGeneration(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ChatEvent(Base):
+    """Append-only live log for one chat, tailed as NDJSON.
+
+    Both kinds of turn write here: the chat generation worker appends coalesced
+    response deltas, and ``agent_core.store.append_event`` mirrors a run's events
+    whenever its session belongs to a chat.  That gives the browser a single
+    monotonic cursor for a thread that mixes both, so one reconnecting reader
+    replaces the old 250ms generation poll and the per-session event tail.
+
+    The agent's own ``workspace_agent_events`` log is unchanged and still backs
+    ``GET /agent-sessions/{id}/events``; this is a second, chat-scoped sequence.
+    """
+
+    __tablename__ = "chat_events"
+    __table_args__ = (Index("ix_chat_events_chat_seq", "chat_id", "seq"),)
+
+    seq: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
+    #: Exactly one of these is set, naming which turn produced the event.
+    generation_id: Mapped[str | None] = mapped_column(String(36))
+    agent_session_id: Mapped[str | None] = mapped_column(String(36))
+    #: The anchor ``chat_messages`` row the event belongs to, so a reader can
+    #: route an event to a turn without resolving the session first.
+    message_id: Mapped[int | None] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

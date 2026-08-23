@@ -83,19 +83,25 @@ def ensure_chat_columns(target_engine=engine) -> None:
 
     A database created before pinning existed has no `pinned` column, and the
     sidebar orders by it on every read, so the column is added with a default
-    rather than left to fail the first query.
+    rather than left to fail the first query.  The agent columns arrived with
+    the unified thread: an agent turn reads its workspace and permission mode
+    from the chat, so a database missing them answers every send with an error.
     """
 
     inspector = inspect(target_engine)
     if "chats" not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns("chats")}
-    if "pinned" in existing:
-        return
+    columns = {
+        "pinned": "BOOLEAN NOT NULL DEFAULT 0",
+        "repo_id": "VARCHAR(64)",
+        "agent_mode": "VARCHAR(16) NOT NULL DEFAULT 'normal'",
+        "agent_definition_id": "VARCHAR(64)",
+    }
     with target_engine.begin() as connection:
-        connection.execute(
-            text("ALTER TABLE chats ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT 0")
-        )
+        for name, column_type in columns.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE chats ADD COLUMN {name} {column_type}"))
 
 
 def ensure_chat_message_metadata_columns(target_engine=engine) -> None:

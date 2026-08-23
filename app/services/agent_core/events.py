@@ -11,6 +11,11 @@ from __future__ import annotations
 
 RUN_STARTED = "run.started"
 CHUNK = "chunk"
+#: The whole answer so far, replacing what came before rather than extending it.
+#: Only the chat path emits this -- it is how a reply that had to be validated
+#: and rewritten (web citations, for one) reaches a reader that was already
+#: shown the draft.
+REPLACE = "replace"
 THINKING = "thinking"
 STATUS = "run.status"
 TODO_UPDATED = "todo.updated"

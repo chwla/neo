@@ -116,8 +116,54 @@ class AgentLoop:
             "failed": events.RUN_FAILED,
             "cancelled": events.RUN_CANCELLED,
         }[status]
+        self._backfill_anchor(session, summary)
         self._emit(session.id, event, {"stop_reason": reason, "summary": summary})
         return self._session(session.id)
+
+    def _backfill_anchor(self, session: AgentSession, summary: str) -> None:
+        """Leave a finished run reading like any other reply in the chat.
+
+        The anchor row held the turn's place while the run worked; filling it in
+        is what makes the transcript one conversation rather than a chat with
+        gaps where the agent went.  It also puts the answer where the next plain
+        reply will read it, since the chat service sees message rows and knows
+        nothing about sessions.
+
+        Answer before summary, matching the run view: the summary adjudicates
+        whether the objective was met, which is not the same as what to say.
+        """
+
+        if not session.anchor_message_id:
+            return
+        try:
+            chunks = [
+                event
+                for event in store.list_events(session.id, limit=2000)
+                if event.get("type") == events.CHUNK and (event.get("content") or "").strip()
+            ]
+        except Exception:  # pragma: no cover - the run is over; this is cosmetic
+            chunks = []
+        last = chunks[-1] if chunks else {}
+        totals = {
+            "prompt_tokens": sum(int(item.get("prompt_tokens") or 0) for item in chunks),
+            "completion_tokens": sum(int(item.get("completion_tokens") or 0) for item in chunks),
+            "total_tokens": sum(int(item.get("total_tokens") or 0) for item in chunks),
+            "duration_ms": sum(int(item.get("duration_ms") or 0) for item in chunks),
+        }
+        try:
+            store.update_anchor_message(
+                session.anchor_message_id,
+                {
+                    "content": (last.get("content") or "").strip() or summary,
+                    "provider_name": last.get("provider_name"),
+                    "model_name": last.get("model_name"),
+                    "route_name": last.get("route_name") or "agent",
+                    "finish_reason": last.get("finish_reason"),
+                    **{key: value for key, value in totals.items() if value},
+                },
+            )
+        except Exception:  # pragma: no cover
+            _LOG.warning("agent_anchor_backfill_failed session=%s", session.id)
 
     # --- the loop ------------------------------------------------------------
 
@@ -236,7 +282,34 @@ class AgentLoop:
                 ),
             },
         )
+        for row in self._chat_history(session):
+            store.append_message(session.id, row)
         store.append_message(session.id, {"role": "user", "content": session.objective})
+
+    @staticmethod
+    def _chat_history(session: AgentSession) -> list[dict]:
+        """What was already said in the chat this run is a turn of.
+
+        Seeded as ordinary user/assistant messages so `fit` compacts them by the
+        same rules as the run's own transcript rather than by a second policy.
+
+        The message immediately before the anchor is the prompt that started
+        this run: it is dropped here because the objective is appended right
+        after, and the same instruction twice reads to a model as emphasis.
+        """
+
+        if not session.chat_id or not session.anchor_message_id:
+            return []
+        try:
+            history = store.chat_history_before(session.chat_id, session.anchor_message_id)
+        except Exception:  # pragma: no cover - history is context, never the run
+            return []
+        objective = session.objective.strip()
+        while history and history[-1]["role"] == "user":
+            if history[-1]["content"].strip() != objective:
+                break
+            history.pop()
+        return history
 
     @staticmethod
     def _context_records(session: AgentSession) -> tuple[dict | None, dict | None]:

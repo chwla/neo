@@ -1,10 +1,13 @@
 /**
- * The session view's pieces, rendered for real.
+ * An agent turn's pieces, rendered for real.
  *
  * These pin the distinctions the UI exists to make. The most important one is
  * that "the agent says it finished" and "the work was checked" look different
  * on screen -- collapsing them is exactly how a user ends up trusting an
  * unverified result.
+ *
+ * They moved from a view of their own into the chat transcript, which changed
+ * where they are drawn but not one thing about what they must say.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
@@ -20,7 +23,7 @@ import {
   groupEntries,
   TodoPanel,
   ToolCard,
-} from "../src/AgentSession.jsx";
+} from "../src/AgentTurn.jsx";
 
 const render = (component, props) => renderToStaticMarkup(createElement(component, props));
 

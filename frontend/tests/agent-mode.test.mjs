@@ -174,22 +174,26 @@ describe("agent mode composer", () => {
     assert.ok(html.includes(">researcher</option>"));
   });
 
-  test("there is a single Start action and no planning step", () => {
+  // One control for both kinds of turn. The toggle above it decides what the
+  // next one does; a separate "Start Agent" button would say that twice, and
+  // would have to be reconciled with Chat's Send every time either changed.
+  test("there is one send action, whichever kind of turn is next", () => {
     const html = render({ value: "add a docstring" });
 
-    assert.ok(html.includes('aria-label="Start Agent"'));
-    assert.ok(html.includes('class="neo-button send-button"'), "Start is the chat send button");
+    assert.ok(html.includes('aria-label="Send message"'));
+    assert.ok(html.includes('class="neo-button send-button"'));
+    assert.ok(!html.includes('aria-label="Start Agent"'), "agent mode is not a separate submit");
     assert.ok(!html.includes(">Plan</button>"), "the checklist step was removed");
     assert.ok(!html.includes("agent-plan-preview"));
     assert.ok(!html.includes("agent-created-tasks"));
   });
 
-  test("Start is disabled until there is an objective", () => {
+  test("send is disabled until there is something to send", () => {
     const blank = render({ value: "   ", selectedRepoId: "r1" });
     const typed = render({ value: "do the thing", selectedRepoId: "r1" });
 
-    assert.ok(blank.includes('disabled="" aria-label="Start Agent"'));
-    assert.ok(!typed.includes('disabled="" aria-label="Start Agent"'));
+    assert.ok(blank.includes('disabled="" aria-label="Send message"'));
+    assert.ok(!typed.includes('disabled="" aria-label="Send message"'));
   });
 
   // Agent runs resolve their model through the same picker chat uses, so it has
@@ -209,25 +213,24 @@ describe("agent mode composer", () => {
     }
   });
 
-  // Without a repository the agent has no file or command tools, so a run could
-  // only narrate work it cannot do. Start refuses and says why on itself; the
-  // way out is the "Open a folder" action in the menu.
-  test("without a repository the refusal is on Start, not a line of prose", () => {
+  // A repository is no longer a precondition. Without one the registry withholds
+  // the file and command tools and the run does what it still can, so blocking
+  // the composer would make the Agent toggle dead in any conversation that has
+  // not opened a folder -- which is most of them.
+  test("no repository does not block sending", () => {
     const html = render({ selectedRepoId: "", value: "do the thing" });
 
     assert.ok(!html.includes("Select a workspace first"));
-    assert.ok(html.includes('title="Select a repository first"'));
-    assert.ok(html.includes('aria-label="Open a folder"'), "the way out stays reachable");
+    assert.ok(!html.includes('title="Select a repository first"'));
+    assert.ok(!html.includes('disabled="" aria-label="Send message"'));
+    assert.ok(html.includes('aria-label="Open a folder"'), "attaching one stays reachable");
   });
 
-  test("Start is disabled until a repository is chosen", () => {
-    const typed = { value: "do the thing" };
-
-    assert.ok(
-      render({ ...typed, selectedRepoId: "" }).includes('title="Select a repository first"'),
-      "the disabled Start must explain itself",
-    );
-    assert.ok(render({ ...typed, selectedRepoId: "r1" }).includes('title="Start Agent"'));
+  // Typing while a run is working is a correction, not a second turn, so the
+  // composer has to say which of the two it is about to do.
+  test("the placeholder says when typing will steer a run", () => {
+    assert.ok(render({ steering: true }).includes("Steer the agent"));
+    assert.ok(render().includes("What should the agent work on?"));
   });
 
   test("a status message is surfaced when present", () => {

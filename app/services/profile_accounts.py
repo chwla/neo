@@ -700,6 +700,13 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_evaluation_tables,
         ):
             initializer()
+        # A migration rather than an initializer, and it has to run here: every
+        # profile has its own database, so a one-shot cleanup wired only into
+        # application startup would reach the base database and no one's actual
+        # data. Guarded by its own marker, so it still runs once per profile.
+        from app.services.agent_core.store import delete_chatless_sessions
+
+        delete_chatless_sessions()
         # Seed/reconcile provider defaults while profile storage is being
         # initialized, before any chat worker opens a transaction. Runtime
         # provider selection is deliberately read-only.

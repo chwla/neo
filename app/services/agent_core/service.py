@@ -34,6 +34,8 @@ class SessionCreate(BaseModel):
     project_id: str | None = None
     repo_id: str | None = None
     task_id: str | None = None
+    chat_id: int | None = None
+    anchor_message_id: int | None = None
     agent_definition_id: str | None = None
     client_request_id: str | None = Field(default=None, max_length=200)
 
@@ -71,14 +73,10 @@ class AgentCoreService:
         objective = payload.objective.strip()
         if not objective:
             raise AgentCoreValidationError("An objective is required.")
-        if not payload.repo_id:
-            # Without a repository the agent has no file or command tools at all,
-            # so it can only narrate work it cannot do. Refusing here is kinder
-            # than a run that looks busy and changes nothing.
-            raise AgentCoreValidationError(
-                "Select a workspace first. Open a folder on this machine to give "
-                "the agent something to work on."
-            )
+        # A run without a repository is allowed: the registry withholds the tools
+        # that need one, leaving search, fetch, recall and the checklist. Refusing
+        # instead would make the agent unreachable in any conversation that is not
+        # about a folder, which is the opposite of one thread doing both.
 
         if payload.client_request_id:
             # Idempotent submit: a retried POST must not start a second run.
@@ -99,10 +97,28 @@ class AgentCoreService:
             except Exception:
                 snapshot = None
 
+        # Every run is a turn of a conversation. A caller that has one -- the
+        # composer -- passes it in; a task or the CLI does not, so one is opened
+        # here. Without this a run could still be created that no chat contains,
+        # which is precisely the orphan the unified thread removed.
+        chat_id, anchor_message_id = payload.chat_id, payload.anchor_message_id
+        if not chat_id:
+            try:
+                chat_id, anchor_message_id = store.create_chat_for_session(
+                    objective, _title(objective)
+                )
+            except Exception:
+                # A run is still better than no run; it simply will not be
+                # reachable from the sidebar until the chat store recovers.
+                chat_id, anchor_message_id = None, None
+
         now = store.now_iso()
+        session_id = store.new_id()
+        if anchor_message_id and not payload.anchor_message_id:
+            store.set_anchor_session(anchor_message_id, session_id)
         row = store.insert_session(
             {
-                "id": store.new_id(),
+                "id": session_id,
                 "objective": objective[:MAX_OBJECTIVE],
                 "title": _title(objective),
                 "status": "queued",
@@ -110,6 +126,8 @@ class AgentCoreService:
                 "project_id": payload.project_id,
                 "repo_id": payload.repo_id,
                 "task_id": payload.task_id,
+                "chat_id": chat_id,
+                "anchor_message_id": anchor_message_id,
                 "agent_definition_id": payload.agent_definition_id,
                 "agent_definition_snapshot": snapshot,
                 "budgets": Budgets().model_dump(),
