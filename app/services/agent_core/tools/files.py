@@ -1,4 +1,4 @@
-"""File tools: read, list, glob, grep, write, edit.
+"""File tools: read, list, glob, grep, write, edit, delete.
 
 These are the agent's hands. Everything resolves through
 ``agent_core.workspace``, so containment is enforced in one place rather than
@@ -190,6 +190,23 @@ def edit_file(arguments: dict, context: ToolContext):
     return f"Edited {relative} ({occurrences} replacement{'s' if occurrences != 1 else ''})."
 
 
+def delete_file(arguments: dict, context: ToolContext):
+    root = repo_root(context.repo_id)
+    path = resolve(root, str(arguments.get("path", "")), must_exist=True)
+    relative = path.relative_to(root).as_posix()
+    live = is_live(context.repo_id)
+    # No record_after: the snapshot's "before" is what undo restores, and a
+    # missing after_sha256 is exactly what tells session_changes/undo the file
+    # was removed rather than rewritten.
+    if live:
+        journal.record_before(context.session_id, context.repo_id, root, relative)
+    try:
+        path.unlink()
+    except PermissionError as exc:
+        raise WorkspaceError(PERMISSION_HINT.format(path=relative)) from exc
+    return f"Deleted {relative}."
+
+
 def _text(handler):
     def run(arguments: dict, context: ToolContext):
         return handler(arguments, context)
@@ -299,5 +316,19 @@ TOOLS = [
         handler=_text(edit_file),
         path_arguments=("path",),
         summary=lambda a: f"Edit {a.get('path')}",
+    ),
+    AgentTool(
+        name="delete_file",
+        description="Delete a file from the repository.",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        risk="workspace_write",
+        requires_repo=True,
+        handler=_text(delete_file),
+        path_arguments=("path",),
+        summary=lambda a: f"Delete {a.get('path')}",
     ),
 ]
