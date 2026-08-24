@@ -354,6 +354,98 @@ class AgentCoreService:
             )
         return journal.undo(session_id, session.repo_id)
 
+    def clone_for_fork(
+        self, session_id: str, *, chat_id: int, anchor_message_id: int
+    ) -> AgentSession:
+        """Copy a finished run into a new chat's transcript.
+
+        Forking a conversation needs the run to look and behave exactly like the
+        original from its own new home, not merely describe it -- so this clones
+        the session row, its tool calls and its file snapshots (the diff and
+        undo journal) rather than referencing the original. Cloning the
+        snapshots is safe even though both copies now point at the same
+        repository: ``journal.undo`` drift-checks a file's content against
+        ``after_sha256`` before touching it, so whichever copy undoes first wins
+        and the other's later attempt is skipped rather than double-applied.
+
+        Events, approvals and grants are deliberately left behind -- a finished
+        session no worker will ever resume again has no use for them, and the
+        trace replays from ``tool_calls`` alone once there are no live events
+        (see ``AgentTurn.traceEntries`` on the frontend).
+        """
+
+        original = self.get(session_id)
+        new_id = store.new_id()
+        store.insert_session(
+            {
+                "id": new_id,
+                "objective": original.objective,
+                "title": original.title,
+                "mode": original.mode,
+                "project_id": original.project_id,
+                "repo_id": original.repo_id,
+                "task_id": original.task_id,
+                "agent_definition_id": original.agent_definition_id,
+                "agent_definition_snapshot": original.agent_definition_snapshot,
+                "disabled_tools": original.disabled_tools,
+                "chat_id": chat_id,
+                "anchor_message_id": anchor_message_id,
+                "todo": [item.model_dump() for item in original.todo],
+                "evidence": [item.model_dump() for item in original.evidence],
+                "budgets": original.budgets.model_dump(),
+                "client_request_id": None,
+                "created_at": original.created_at,
+                "updated_at": original.created_at,
+            }
+        )
+        # insert_session's column list has no room for a run's outcome -- it is
+        # shaped for a session that is only just starting. Backfilling these
+        # separately is what makes the clone read as already finished rather
+        # than as a fresh run silently stuck at "queued".
+        store.update_session(
+            new_id,
+            {
+                "status": original.status,
+                "stop_reason": original.stop_reason,
+                "iterations": original.iterations,
+                "tool_call_count": original.tool_call_count,
+                "consecutive_errors": original.consecutive_errors,
+                "adjudications": original.adjudications,
+                "summary": original.summary,
+                "error": original.error,
+                "started_at": original.started_at,
+                "completed_at": original.completed_at,
+            },
+        )
+        for row in store.list_tool_calls(session_id):
+            store.record_tool_call(
+                new_id,
+                {
+                    "call_id": row["call_id"],
+                    "name": row["tool_name"],
+                    "arguments": row["arguments"],
+                    "status": row["status"],
+                    "content": row["content"],
+                    "error": row["error"],
+                    "duration_ms": row["duration_ms"],
+                },
+            )
+        for row in store.list_file_snapshots(session_id):
+            store.insert_file_snapshot(
+                {
+                    "id": store.new_id(),
+                    "session_id": new_id,
+                    "repo_id": row["repo_id"],
+                    "relative_path": row["relative_path"],
+                    "existed_before": row["existed_before"],
+                    "before_text": row["before_text"],
+                    "before_newline": row["before_newline"],
+                    "after_sha256": row["after_sha256"],
+                    "created_at": row["created_at"],
+                }
+            )
+        return self.get(new_id)
+
     def export(self, session_id: str, target: str) -> dict:
         """Promote a finished run into Tasks or a Note, only when asked."""
 

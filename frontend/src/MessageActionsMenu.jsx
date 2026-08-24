@@ -6,9 +6,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
  * Same popover mechanics as the composer's "+": escape and an outside click
  * close it, and choosing an action closes it too.
  */
-//: Roughly the tallest this menu gets (four items plus padding). Measuring the
-//: menu itself would need it laid out first, which is the thing being decided.
-const MENU_SPACE = 170;
+//: Roughly the tallest this menu gets (six items plus padding, the agent-turn
+//: case). Measuring the menu itself would need it laid out first, which is the
+//: thing being decided.
+const MENU_SPACE = 210;
 
 export function MessageActionsMenu({ label, children }) {
   const [open, setOpen] = useState(false);

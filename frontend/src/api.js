@@ -454,6 +454,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ project_id: projectId }),
     }),
+  forkChat: (chatId, messageId) =>
+    request(`/chats/${chatId}/fork`, {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId }),
+    }),
   getChat: (chatId) => request(`/chats/${chatId}`),
   sendMessage: (chatId, prompt, llmId = null, context = {}) =>
     request(`/chats/${chatId}/messages`, {

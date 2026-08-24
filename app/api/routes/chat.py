@@ -226,6 +226,12 @@ class ChatCreateRequest(BaseModel):
     project_id: int | None = None
 
 
+class ChatForkRequest(BaseModel):
+    #: The message to branch from -- this message and everything before it is
+    #: copied into the new chat.
+    message_id: int
+
+
 class ChatSendRequest(BaseModel):
     prompt: str = Field(min_length=1)
     llm_id: str | None = Field(default=None, max_length=80)
@@ -1908,6 +1914,110 @@ def rerun_edited_chat_message(
         user_message_id=message_id,
     )
     return ChatGenerationStartResponse(generation=_generation_read(generation))
+
+
+@router.post("/chats/{chat_id}/fork", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
+def fork_chat(chat_id: int, request: ChatForkRequest, store: StoreDependency) -> ChatRead:
+    """Branch a conversation into a new, independent chat.
+
+    Every message up to and including the one forked from is copied verbatim
+    into a new chat carrying the same repo/agent settings. Any agent-run turn
+    among them gets its own cloned agent-core session -- same tool calls, same
+    file snapshots -- so its trace and diff render identically from the new
+    chat, and neither copy's undo can corrupt the other's (see
+    ``AgentCoreService.clone_for_fork`` for why sharing the same repository is
+    safe).
+    """
+
+    chat = _get_required_chat(store, chat_id)
+    messages = store.list_chat_messages(chat_id)
+    try:
+        cut = next(
+            index for index, message in enumerate(messages) if message.id == request.message_id
+        )
+    except StopIteration:
+        raise HTTPException(status_code=404, detail="Message not found in this chat.") from None
+    copied = messages[: cut + 1]
+    copied_ids = {message.id for message in copied}
+
+    from app.services.agent_core import store as agent_store
+
+    sessions_by_anchor = {
+        row["anchor_message_id"]: row
+        for row in agent_store.sessions_for_chat(chat_id)
+        if row.get("anchor_message_id")
+    }
+    still_running = [
+        row
+        for anchor_id, row in sessions_by_anchor.items()
+        if anchor_id in copied_ids and row["status"] in _ACTIVE_AGENT_STATUSES
+    ]
+    if still_running:
+        raise HTTPException(
+            status_code=400,
+            detail="This run hasn't finished yet, so this conversation can't be forked past it.",
+        )
+
+    new_chat = store.add(
+        Chat(
+            title=(f"{chat.title} (fork)")[:160],
+            project_id=chat.project_id,
+            repo_id=chat.repo_id,
+            agent_mode=chat.agent_mode,
+            agent_definition_id=chat.agent_definition_id,
+            disabled_tools=list(chat.disabled_tools or []),
+        )
+    )
+    id_map: dict[int, int] = {}
+    for message in copied:
+        clone = store.add(
+            ChatMessage(
+                chat_id=new_chat.id,
+                role=message.role,
+                content=message.content,
+                prompt_tokens=message.prompt_tokens,
+                completion_tokens=message.completion_tokens,
+                total_tokens=message.total_tokens,
+                duration_ms=message.duration_ms,
+                thinking=message.thinking,
+                response_kind=message.response_kind,
+                provider_name=message.provider_name,
+                model_name=message.model_name,
+                route_name=message.route_name,
+                finish_reason=message.finish_reason,
+                trace_id=message.trace_id,
+                metadata_json=message.metadata_json,
+                # A generation row is durable worker state for the original
+                # chat's own turn; the copy has no execution to resume, and the
+                # unique index on generation_id would collide on a literal copy.
+                generation_id=None,
+                created_at=message.created_at,
+            )
+        )
+        id_map[message.id] = clone.id
+    store.db.commit()
+    store.db.refresh(new_chat)
+
+    # Best-effort: the agent-core session store is a separate SQLite database
+    # from the chat ORM above, so this cannot share one transaction with it.
+    # A clone that fails here still leaves a complete, readable chat behind --
+    # that turn simply renders without a trace/diff, matching how AgentTurn
+    # already handles an anchor with no session.
+    from app.services.agent_core.service import AgentCoreService
+
+    service = AgentCoreService()
+    for old_anchor_id, session_row in sessions_by_anchor.items():
+        new_anchor_id = id_map.get(old_anchor_id)
+        if new_anchor_id is None:
+            continue
+        try:
+            service.clone_for_fork(
+                str(session_row["id"]), chat_id=new_chat.id, anchor_message_id=new_anchor_id
+            )
+        except Exception:
+            _CHAT_LOG.exception("Failed to clone agent session %s for fork", session_row["id"])
+
+    return ChatRead.model_validate(new_chat)
 
 
 @router.patch("/chats/{chat_id}", response_model=ChatRead)

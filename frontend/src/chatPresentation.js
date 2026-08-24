@@ -16,6 +16,47 @@ export function formatTokens(message) {
   return Number.isFinite(message.total_tokens) ? `${message.total_tokens} tokens` : null;
 }
 
+/** What this one reply cost -- completion tokens only, not the whole prompt it read. */
+export function formatOutputTokens(message) {
+  return Number.isFinite(message.completion_tokens)
+    ? `${formatCompactTokens(message.completion_tokens)} tokens`
+    : null;
+}
+
+/** "344" under 1000, "12.4k" / "128k" above -- the same shorthand the popover and its trigger both use. */
+export function formatCompactTokens(value) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  if (value < 1000) {
+    return String(value);
+  }
+  const thousands = value / 1000;
+  return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
+}
+
+/**
+ * A model's context window, if this message's provider+model was ever seen by the
+ * LLM registry (Settings -> LLM Providers). `provider_name`/`model_name` on a chat
+ * message are the literal provider-type and model-id strings the registry keys on
+ * (see `_sync_model_to_picker` server-side), so the pair is a reliable join key --
+ * but a legacy-only model with no registry entry genuinely has no known window.
+ */
+export function resolveContextWindow(message, contextWindowIndex) {
+  if (!contextWindowIndex) {
+    return null;
+  }
+  return contextWindowIndex.get(`${message.provider_name}::${message.model_name}`) ?? null;
+}
+
+/** Every turn's prompt+completion tokens, summed across the whole loaded session. */
+export function sumTotalTokens(messages) {
+  return messages.reduce(
+    (sum, message) => (Number.isFinite(message.total_tokens) ? sum + message.total_tokens : sum),
+    0,
+  );
+}
+
 export function formatDuration(durationMs) {
   if (!Number.isFinite(durationMs)) {
     return null;

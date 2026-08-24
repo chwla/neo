@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { api } from "./api.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
+import { ContextWindowIndicator } from "./ContextWindowIndicator.jsx";
 import AgentTurn, { TERMINAL } from "./AgentTurn.jsx";
 import { useChatStream } from "./chatStream.js";
 import { PaperclipIcon } from "./icons.jsx";
@@ -36,11 +37,12 @@ import MemoryDialog from "./MemoryDialog.jsx";
 import {
   formatDuration,
   formatMessageTime,
+  formatOutputTokens,
   formatResponseKind,
-  formatTokens,
   parseNeoTimestamp,
   renderMessageHtml,
   splitGeneratedText,
+  sumTotalTokens,
 } from "./chatPresentation.js";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
@@ -541,7 +543,17 @@ export function Sidebar({
       </label>
 
       {showNewProjectForm && (
-        <form className="sidebar-form" onSubmit={submitProject}>
+        <form
+          className="sidebar-form"
+          onSubmit={submitProject}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setProjectName("");
+              onToggleProjectForm();
+            }
+          }}
+        >
           <label>
             <span>Project name</span>
             <input
@@ -550,9 +562,21 @@ export function Sidebar({
               placeholder="Research, work, ideas..."
             />
           </label>
-          <NeoButton type="submit" className="sidebar-form-submit">
-            Create
-          </NeoButton>
+          <div className="sidebar-form-actions">
+            <NeoButton type="submit" className="sidebar-form-submit">
+              Create
+            </NeoButton>
+            <NeoButton
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setProjectName("");
+                onToggleProjectForm();
+              }}
+            >
+              Cancel
+            </NeoButton>
+          </div>
         </form>
       )}
 
@@ -725,10 +749,14 @@ export function ChatMessage({
   agentEntries,
   agentBusy,
   agentPatch,
+  agentPatchSessionId,
   onAgentDecide,
   onAgentDeliver,
   onAgentUndo,
+  onAgentFork,
   onCloseAgentPatch,
+  contextWindowIndex,
+  sessionTokensUsed,
 }) {
   const isUser = message.role === "user";
   const hasThinking = Boolean(message.thinking?.trim());
@@ -736,7 +764,7 @@ export function ChatMessage({
   const previousUser = isUser ? null : previousUserMessage(messages, message);
   const metadataItems = isUser
     ? []
-    : [formatResponseKind(message), formatTokens(message), formatDuration(message.duration_ms)]
+    : [formatResponseKind(message), formatDuration(message.duration_ms), formatOutputTokens(message)]
       .filter(Boolean);
 
   const sentAt = formatMessageTime(message.created_at);
@@ -748,6 +776,7 @@ export function ChatMessage({
   const delivery = run?.delivery;
   const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
   const canUndo = hasChanges && delivery?.mode === "live" && Boolean(delivery?.undoable);
+  const patchOpen = isAgentTurn && Boolean(run?.session?.id) && run.session.id === agentPatchSessionId;
   // While the run works the answer has not been written yet, so there is no
   // bubble to show -- the trace above is the whole turn.
   const hideEmptyBubble = isAgentTurn && !message.content?.trim();
@@ -763,7 +792,7 @@ export function ChatMessage({
             traceOpen={thinkingOpen}
             busy={agentBusy}
             onDecide={onAgentDecide}
-            patch={agentPatch}
+            patch={patchOpen ? agentPatch : ""}
             onClosePatch={onCloseAgentPatch}
           />
         ) : null}
@@ -804,14 +833,24 @@ export function ChatMessage({
                 you can do with it -- rides inside the bubble it belongs to. */}
             <div className="message-footer">
               {sentAt ? <time className="message-time">{sentAt}</time> : null}
-              {metadataItems.length > 0 ? (
+              {metadataItems.length > 0 || !isUser ? (
                 <span className="message-meta">
                   {metadataItems.map((item) => <span key={item}>{item}</span>)}
+                  {!isUser ? (
+                    <ContextWindowIndicator
+                      message={message}
+                      contextWindowIndex={contextWindowIndex}
+                      sessionTokensUsed={sessionTokensUsed}
+                    />
+                  ) : null}
                 </span>
               ) : null}
               <MessageActionsMenu label={isUser ? "Message actions" : "Response actions"}>
                 <button type="button" onClick={() => onCopy(message.content)}>
                   Copy
+                </button>
+                <button type="button" onClick={() => onAgentFork?.(message)}>
+                  Fork conversation
                 </button>
                 {isUser ? (
                   <button type="button" onClick={() => onEdit(message)}>
@@ -826,7 +865,7 @@ export function ChatMessage({
                         the menu never shows an action that would do nothing. */}
                     {hasChanges ? (
                       <button type="button" onClick={() => onAgentDeliver?.(run, "patch")}>
-                        View diff
+                        {patchOpen ? "Hide diff" : "View diff"}
                       </button>
                     ) : null}
                     {hasChanges && delivery?.mode !== "live" && delivery?.deliverable?.length ? (
@@ -1848,32 +1887,43 @@ function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOp
     },
   ];
 
+  const [activeGroup, setActiveGroup] = useState(groups[0].title);
+  const active = groups.find((group) => group.title === activeGroup) || groups[0];
+
   return (
     <Modal title="Settings" onClose={onClose} className="settings-dialog">
-      <div className="set-intro">
-        <h3>Control center</h3>
-        <p>Configure Neo without leaving your workspace.</p>
-      </div>
-      <div className="set-grid" aria-label="Settings categories">
-        {groups.map((group) => (
-          <section className="set-group" key={group.title}>
-            <div className="set-group-head">
+      <div className="set-shell">
+        <nav className="set-nav" aria-label="Settings categories">
+          {groups.map((group) => (
+            <button
+              className={`set-nav-item ${group.title === active.title ? "is-active" : ""}`.trim()}
+              type="button"
+              onClick={() => setActiveGroup(group.title)}
+              aria-current={group.title === active.title ? "true" : undefined}
+              key={group.title}
+            >
               <WorkspaceIcon name={group.icon} />
-              <h4>{group.title}</h4>
-            </div>
-            <div className="set-links">
-              {group.items.map(([title, description, onClick]) => (
-                <button className="set-link" type="button" onClick={onClick} key={title}>
-                  <span className="set-link-text">
-                    <strong>{title}</strong>
-                    <small>{description}</small>
-                  </span>
-                  <span className="set-link-arrow" aria-hidden="true">→</span>
-                </button>
-              ))}
-            </div>
-          </section>
-        ))}
+              <span>{group.title}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="set-detail">
+          <div className="set-detail-head">
+            <h3>{active.title}</h3>
+            <p>{active.description}</p>
+          </div>
+          <div className="set-detail-list">
+            {active.items.map(([title, description, onClick]) => (
+              <button className="set-row" type="button" onClick={onClick} key={title}>
+                <span className="set-row-text">
+                  <strong>{title}</strong>
+                  <small>{description}</small>
+                </span>
+                <span className="set-row-arrow" aria-hidden="true">→</span>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </Modal>
   );
@@ -1939,6 +1989,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const sendGuardRef = useRef(createSendGuard());
 
   const [messages, setMessages] = useState([]);
+  // The whole loaded chat's token spend, for the Context Window popover -- every
+  // message shows the same session-wide figure, regardless of which one you open
+  // it from.
+  const sessionTokensUsed = useMemo(() => sumTotalTokens(messages), [messages]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -1985,6 +2039,24 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [statusError, setStatusError] = useState("");
   const [llms, setLlms] = useState([]);
   const [selectedLlmId, setSelectedLlmId] = useState("");
+  const [llmRegistryProviders, setLlmRegistryProviders] = useState([]);
+  const [llmRegistryModels, setLlmRegistryModels] = useState([]);
+  // Keyed by "<provider type>::<model name>" -- the same pair a chat message
+  // stores as provider_name/model_name, so a response can be joined to the
+  // context window the registry discovered for that model without a backend
+  // change. A model the registry has never seen just resolves to nothing.
+  const contextWindowIndex = useMemo(() => {
+    const providerTypeById = new Map(llmRegistryProviders.map((provider) => [provider.id, provider.provider_type]));
+    const map = new Map();
+    for (const model of llmRegistryModels) {
+      const providerType = providerTypeById.get(model.provider_id);
+      if (!providerType || !model.context_window) {
+        continue;
+      }
+      map.set(`${providerType}::${model.model_name}`, model.context_window);
+    }
+    return map;
+  }, [llmRegistryProviders, llmRegistryModels]);
   const [showResearch, setShowResearch] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
@@ -2007,6 +2079,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [activeTurn, setActiveTurn] = useState(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentPatch, setAgentPatch] = useState("");
+  // Which run's diff is currently open, so "View diff" can toggle closed on a
+  // second click instead of only ever opening, and so a patch fetched for one
+  // run never renders under a different agent turn's DiffView.
+  const [agentPatchSessionId, setAgentPatchSessionId] = useState(null);
   // Where to tail this chat's log from. The server decides it -- only it knows
   // whether a turn is still running -- so it arrives with the thread.
   const [streamAfter, setStreamAfter] = useState(0);
@@ -2178,6 +2254,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           setSelectedLlmId(llmConfig.active_id || "");
         } catch (error) {
           setStatusError(`Could not load LLM configurations: ${errorMessage(error)}`);
+        }
+        try {
+          const [providers, models] = await Promise.all([api.llmProviders(), api.llmModels()]);
+          setLlmRegistryProviders(providers.providers || []);
+          setLlmRegistryModels(models.models || []);
+        } catch {
+          // Context-window lookups just degrade to "unknown" per message -- never
+          // worth surfacing an error over, let alone blocking the rest of bootstrap.
         }
         const params = new URLSearchParams(window.location.search);
         const permalink = parsePermalink();
@@ -2711,11 +2795,21 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
   async function handleAgentDeliver(run, deliverMode) {
     if (!run?.session?.id) return;
+    if (deliverMode === "patch" && agentPatchSessionId === run.session.id) {
+      // The diff for this run is already open -- this click is "Hide diff".
+      setAgentPatch("");
+      setAgentPatchSessionId(null);
+      return;
+    }
     setAgentBusy(true);
     try {
       const result = await api.deliverAgentChanges(run.session.id, { mode: deliverMode });
-      if (deliverMode === "patch") setAgentPatch(result.patch || "(no changes)");
-      else setChatAgentMessage(`Wrote ${result.written?.length ?? 0} file(s) into your repository.`);
+      if (deliverMode === "patch") {
+        setAgentPatch(result.patch || "(no changes)");
+        setAgentPatchSessionId(run.session.id);
+      } else {
+        setChatAgentMessage(`Wrote ${result.written?.length ?? 0} file(s) into your repository.`);
+      }
     } catch (error) {
       setChatAgentMessage(errorMessage(error));
     } finally {
@@ -2732,6 +2826,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       const reversed = (result.restored?.length ?? 0) + (result.removed?.length ?? 0);
       const skipped = result.skipped || [];
       setAgentPatch("");
+      setAgentPatchSessionId(null);
       setChatAgentMessage(
         skipped.length
           ? `Undid ${reversed} file(s). Left alone: ${skipped
@@ -2740,6 +2835,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           : `Undid ${reversed} file(s).`,
       );
       await loadChat(activeChat.id, { history: "none" });
+    } catch (error) {
+      setChatAgentMessage(errorMessage(error));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function handleAgentFork(message) {
+    if (!message?.id || !activeChat?.id) return;
+    setAgentBusy(true);
+    try {
+      const forked = await api.forkChat(activeChat.id, message.id);
+      await refreshSidebar();
+      await loadChat(forked.id);
     } catch (error) {
       setChatAgentMessage(errorMessage(error));
     } finally {
@@ -2972,6 +3081,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
               key={message.id}
               message={message}
               messages={messages}
+              contextWindowIndex={contextWindowIndex}
+              sessionTokensUsed={sessionTokensUsed}
               editingMessageId={editingMessageId}
               editingValue={editingValue}
               onCancelEdit={() => {
@@ -2991,10 +3102,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
               agentEntries={agentRuns[message.id]?.liveEntries}
               agentBusy={agentBusy}
               agentPatch={agentPatch}
+              agentPatchSessionId={agentPatchSessionId}
               onAgentDecide={handleAgentDecide}
               onAgentDeliver={handleAgentDeliver}
               onAgentUndo={handleAgentUndo}
-              onCloseAgentPatch={() => setAgentPatch("")}
+              onAgentFork={handleAgentFork}
+              onCloseAgentPatch={() => {
+                setAgentPatch("");
+                setAgentPatchSessionId(null);
+              }}
             />
           ))}
 
