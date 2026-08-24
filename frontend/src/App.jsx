@@ -45,17 +45,6 @@ import {
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 
-// Short labels: the sidebar row is narrow, and "waiting_approval" in full would
-// crowd out the title that identifies the chat. Only unfinished states appear --
-// a chat whose run is done is an ordinary chat again, and badging it forever
-// would make every thread that ever used the agent look permanently special.
-const AGENT_RUN_STATUS = {
-  queued: "QUEUED",
-  running: "RUNNING",
-  waiting_approval: "APPROVE",
-};
-
-
 function errorMessage(error) {
   if (!error) {
     return "";
@@ -413,13 +402,6 @@ function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteCha
         {chat.pinned ? <span className="chat-item-pin" aria-label="Pinned" title="Pinned">{"\u25c6"}</span> : null}
         {chat.title}
       </a>
-      {/* A run in flight has to be visible from here: without the old AGENT RUNS
-          section this is the only way back to work that is still happening. */}
-      {AGENT_RUN_STATUS[chat.agent_status] ? (
-        <span className={`agent-run-status status-${chat.agent_status}`}>
-          {AGENT_RUN_STATUS[chat.agent_status]}
-        </span>
-      ) : null}
       <RowActionsMenu label={`Actions for ${chat.title}`} className={classes.menu}>
         <button type="button" onClick={startRename}>
           Rename
@@ -3024,9 +3006,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         </section>
 
         <ChatComposer
-          /* Stop is offered whenever something is running, and steering is not
-             something to stop -- a run waiting to be steered is waiting on you. */
-          generating={sending && Boolean(activeTurn) && !steeringSessionId}
+          /* Stop is offered whenever something is running, full stop -- a run
+             being steered is still a run someone may want to cancel outright. */
+          generating={sending && Boolean(activeTurn)}
           onStop={handleStopGeneration}
           stopping={stopping}
           steering={Boolean(steeringSessionId)}

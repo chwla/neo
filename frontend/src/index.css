@@ -667,14 +667,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .agent-mode-message { margin: 10px 0 0; font: 10px "JetBrains Mono", monospace; }
 .agent-delivery-note { margin: 0 0 10px; color: #8a8a8a; font-size: 12px; line-height: 1.5; }
 
-/* Agent run rows reuse the chat row's shape so the sidebar stays one rhythm,
-   and add the status a chat thread does not have. */
-/* A chat with a run still going says so; a finished one is an ordinary chat
-   again and carries no badge at all. */
-.agent-run-status { flex: none; margin-left: 8px; color: var(--neo-muted); font: 600 8px "JetBrains Mono", monospace; letter-spacing: .08em; }
-.agent-run-status.status-running, .agent-run-status.status-queued { color: var(--neo-green); }
-.agent-run-status.status-waiting_approval { color: #e0a030; }
-.agent-run-status.status-failed { color: var(--neo-danger); }
 .agent-mode-message { color: var(--neo-green); }
 .coding-agent { display:grid; gap:18px; padding:20px 0 4px; color:#b7b7b7; }
 .coding-kicker { color:var(--neo-green); font:600 10px "JetBrains Mono", monospace; letter-spacing:.12em; text-transform:uppercase; }
