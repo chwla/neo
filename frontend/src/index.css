@@ -1774,7 +1774,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   padding: 0;
 }
 
-/* Hand-rolled dialogs (AgentSettings, ToolsSkillsSettings) get the same chrome. */
+/* Hand-rolled dialogs (AgentSettings) get the same chrome. */
 .settings-dialog:not(.neo-dialog) {
   width: min(1120px, 100%);
   max-height: calc(100vh - 56px);
@@ -2023,7 +2023,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
    =========================================================================== */
 
 /* --- shared: headers, eyebrows, headings -------------------------------- */
-.connector-modal-header, .provider-runtime-header, .agentic-header,
+.provider-runtime-header, .agentic-header,
 .code-index-header, .agent-runs-header, .artifact-viewer-header {
   display: flex;
   flex-wrap: wrap;
@@ -2031,34 +2031,13 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   justify-content: space-between;
   gap: 14px;
 }
-.connector-eyebrow, .settings-kicker {
+.settings-kicker {
   margin: 0 0 4px;
   color: var(--neo-green);
   font: 600 9px "JetBrains Mono", monospace;
   letter-spacing: .12em;
   text-transform: uppercase;
 }
-.connector-modal-header h2 { margin: 0 0 4px; color: var(--neo-text); font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
-.connector-modal-header > div > p:last-child { margin: 0; color: #555; font-size: 12px; line-height: 1.5; }
-.connector-section-heading, .connector-call-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 20px 0 10px;
-  border-bottom: 1px solid var(--neo-line);
-  padding-bottom: 8px;
-}
-.connector-section-heading.compact { margin-top: 14px; }
-.connector-section-heading h3, .connector-section-heading h4,
-.connector-call-heading h3, .connector-call-heading h4 {
-  margin: 0;
-  color: #cfcfcf;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-.connector-section-heading p, .connector-call-heading p { margin: 2px 0 0; color: #4f4f4f; font-size: 11px; }
 .recovery-title, .test-runner-title, .git-title {
   margin: 0 0 10px;
   color: #4a4a4a;
@@ -2068,14 +2047,14 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 }
 
 /* --- shared: tabs -------------------------------------------------------- */
-.connector-tabs, .code-index-tabs {
+.code-index-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   border-bottom: 1px solid var(--neo-line);
   margin-bottom: 14px;
 }
-.connector-tabs button, .code-index-tabs button {
+.code-index-tabs button {
   display: flex;
   min-height: 36px;
   align-items: center;
@@ -2089,17 +2068,11 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   letter-spacing: .06em;
   text-transform: uppercase;
 }
-.connector-tabs button:hover, .code-index-tabs button:hover { color: #aaa; }
-.connector-tabs button.active, .code-index-tabs button.active { border-bottom-color: var(--neo-green); color: var(--neo-green); }
-.connector-tabs button > span {
-  border-radius: 2px;
-  background: rgba(255, 255, 255, .06);
-  padding: 1px 5px;
-  font-size: 9px;
-}
+.code-index-tabs button:hover { color: #aaa; }
+.code-index-tabs button.active { border-bottom-color: var(--neo-green); color: var(--neo-green); }
 
 /* --- shared: two-column layouts ----------------------------------------- */
-.connector-layout, .connector-skills-layout, .test-runner-grid,
+.test-runner-grid,
 .provider-runtime-grid, .agentic-grid, .agentic-detail-grid, .patch-snapshot-grid {
   display: grid;
   grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
@@ -2109,15 +2082,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .agentic-grid, .patch-snapshot-grid, .provider-runtime-grid {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
-.connector-form-grid, .connector-choice-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
-}
-.connector-field-wide { grid-column: 1 / -1; }
 
 /* --- shared: selectable side lists -------------------------------------- */
-.connector-list, .connector-tool-list, .connector-advanced-list, .connector-call-list,
 .agent-run-list, .agent-step-list, .artifact-list, .patch-application-list,
 .patch-file-list, .git-history, .git-operation-history, .recovery-events,
 .test-command, .code-index-results, .memory-results, .coding-agent-runs {
@@ -2126,8 +2092,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   gap: 3px;
   min-width: 0;
 }
-.connector-list > button, .connector-tool-list > *, .connector-advanced-list > *,
-.connector-call-list > *, .agent-run-list > button, .agent-step-list > button,
+.agent-run-list > button, .agent-step-list > button,
 .artifact-list > button, .patch-application-list > button, .patch-file-list > *,
 .git-history > *, .git-operation-history > *, .recovery-events > *,
 .code-index-results > button, .memory-results > *, .coding-agent-runs > button {
@@ -2144,22 +2109,20 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 12px;
   text-align: left;
 }
-.connector-list > button:hover, .agent-run-list > button:hover, .artifact-list > button:hover,
+.agent-run-list > button:hover, .artifact-list > button:hover,
 .patch-application-list > button:hover, .code-index-results > button:hover,
 .agent-step-list > button:hover, .coding-agent-runs > button:hover {
   border-left-color: var(--neo-green);
   background: rgba(255, 255, 255, .02);
   color: #ddd;
 }
-.connector-list > button.selected, .agent-run-list > button.selected,
+.agent-run-list > button.selected,
 .artifact-list > button.selected, .agent-step-list > button.selected {
   border-color: var(--neo-line-bright);
   border-left-color: var(--neo-green);
   background: rgba(57, 255, 20, .05);
 }
-.connector-list > button > span:nth-child(2),
-.connector-tool-list > * > span:first-child { display: grid; min-width: 0; flex: 1; gap: 3px; }
-.connector-list strong, .connector-tool-list strong, .agent-run-list strong,
+.agent-run-list strong,
 .artifact-list strong, .patch-application-list strong, .code-index-results strong {
   overflow: hidden;
   color: #cfcfcf;
@@ -2168,33 +2131,16 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.connector-list small, .connector-tool-list small, .agent-run-list small,
+.agent-run-list small,
 .artifact-list small, .patch-application-list small, .code-index-results small {
   color: var(--neo-faint);
   font: 9px "JetBrains Mono", monospace;
   letter-spacing: .04em;
 }
-.connector-tool-id { color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
-.connector-empty, .connector-help, .connector-safety-note {
-  margin: 0 0 10px;
-  color: #4a4a4a;
-  font-size: 11.5px;
-  line-height: 1.6;
-}
 
 /* --- shared: state dots and badges -------------------------------------- */
-.connector-state-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #3a3a3a;
-}
-.connector-state-dot.ready { background: var(--neo-green); box-shadow: 0 0 6px rgba(57, 255, 20, .5); }
-.connector-state-dot.error { background: var(--neo-danger); }
-.connector-state-dot.disabled { background: #333; }
-.connector-badge, .test-status, .git-status, .coding-agent-status,
-.patch-application-status, .git-checkpoint-status, .connector-health {
+.test-status, .git-status, .coding-agent-status,
+.patch-application-status, .git-checkpoint-status {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2207,12 +2153,12 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-transform: uppercase;
   white-space: nowrap;
 }
-.connector-badge.success, .test-status.passed, .git-status.clean { border-color: rgba(57, 255, 20, .32); color: var(--neo-green); }
-.connector-badge.danger, .test-status.failed { border-color: rgba(255, 59, 48, .35); color: #d97974; }
-.connector-badge.warning, .test-status.running { border-color: rgba(224, 168, 0, .35); color: #d9a441; }
+.test-status.passed, .git-status.clean { border-color: rgba(57, 255, 20, .32); color: var(--neo-green); }
+.test-status.failed { border-color: rgba(255, 59, 48, .35); color: #d97974; }
+.test-status.running { border-color: rgba(224, 168, 0, .35); color: #d9a441; }
 
 /* --- shared: toolbars, rows, detail panes -------------------------------- */
-.connector-toolbar, .agent-run-toolbar, .connector-title-row, .provider-row, .test-run-row {
+.agent-run-toolbar, .provider-row, .test-run-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2220,17 +2166,13 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   gap: 12px;
   margin-bottom: 12px;
 }
-.connector-toolbar > div:first-child { display: grid; gap: 3px; }
-.connector-toolbar strong { color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
-.connector-toolbar span { color: #4f4f4f; font-size: 11px; }
-.connector-detail, .connector-detail-hero, .connector-detail-section, .agentic-detail,
+.agentic-detail,
 .agentic-summary, .agentic-step-detail, .bundle-detail, .coding-agent-detail,
 .coding-agent-summary, .agentic-coding-summary, .git-checkpoint-detail,
 .patch-application-detail, .test-run-detail, .recovery-summary, .recovery-panel,
 .artifacts-panel, .code-index-panel, .symbol-awareness-panel, .lsp-panel,
-.provider-card, .connector-credential-summary, .related-memories, .memory-retrieval,
-.patch-applications, .test-runner, .git-checkpoints, .agentic-workspace,
-.connector-approval-page, .connector-settings, .connector-wizard {
+.provider-card, .related-memories, .memory-retrieval,
+.patch-applications, .test-runner, .git-checkpoints, .agentic-workspace {
   min-width: 0;
   border: 1px solid var(--neo-line);
   border-radius: 2px;
@@ -2238,17 +2180,13 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   padding: 14px 16px;
   color: var(--neo-body);
 }
-.connector-detail-hero { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
-.connector-detail-hero h3 { margin: 0 0 3px; color: var(--neo-text); font-size: 15px; font-weight: 600; }
-.connector-detail-hero p { margin: 0; color: #555; font-size: 11.5px; }
 .agentic-workspace, .patch-applications, .test-runner, .git-checkpoints,
 .recovery-panel, .artifacts-panel, .code-index-panel, .symbol-awareness-panel,
 .lsp-panel, .related-memories, .memory-retrieval { margin-bottom: 16px; }
 
 /* --- shared: buttons ----------------------------------------------------- */
-.connector-button, .coding-agent-buttons button, .coding-agent-action,
-.connector-inline-actions button, .connector-form-actions button,
-.connector-tool-controls button, .patch-apply-controls button,
+.coding-agent-buttons button, .coding-agent-action,
+.patch-apply-controls button,
 .agent-approval-actions button, .task-patch-action {
   min-height: 30px;
   border: 1px solid var(--neo-line-bright);
@@ -2260,44 +2198,21 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   letter-spacing: .06em;
   white-space: nowrap;
 }
-.connector-button:hover:not(:disabled), .coding-agent-buttons button:hover:not(:disabled),
-.connector-inline-actions button:hover:not(:disabled),
-.connector-form-actions button:hover:not(:disabled),
-.connector-tool-controls button:hover:not(:disabled),
+.coding-agent-buttons button:hover:not(:disabled),
 .patch-apply-controls button:hover:not(:disabled),
 .agent-approval-actions button:hover:not(:disabled) {
   border-color: var(--neo-green);
   color: var(--neo-green);
 }
-.connector-button.primary {
-  border-color: rgba(57, 255, 20, .35);
-  background: rgba(57, 255, 20, .09);
-  color: var(--neo-green);
-  font-weight: 600;
-  text-transform: uppercase;
+.coding-agent-buttons, .patch-apply-controls, .agent-approval-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
 }
-.connector-button.primary:hover:not(:disabled) { border-color: var(--neo-green); background: rgba(57, 255, 20, .16); }
-.connector-button.danger:hover:not(:disabled) { border-color: rgba(255, 59, 48, .4); color: var(--neo-danger); }
-.coding-agent-buttons, .connector-inline-actions, .connector-form-actions,
-.connector-tool-controls, .patch-apply-controls, .agent-approval-actions,
-.connector-disclosure { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 
 /* --- shared: forms ------------------------------------------------------- */
-.connector-auth-form, .git-checkpoint-form, .test-command-form, .agentic-start,
-.connector-tool-picker, .connector-choice { display: grid; gap: 10px; }
-.connector-choice-grid > button, .connector-choice {
-  border: 1px solid var(--neo-line);
-  border-radius: 2px;
-  background: var(--neo-bg);
-  padding: 12px;
-  text-align: left;
-}
-.connector-choice-grid > button:hover { border-color: var(--neo-green); }
-.connector-choice-grid > button strong { display: block; margin-bottom: 4px; color: #cfcfcf; font-size: 12.5px; font-weight: 500; }
-.connector-choice-grid > button small { color: #4f4f4f; font-size: 11px; line-height: 1.5; }
+.git-checkpoint-form, .test-command-form, .agentic-start { display: grid; gap: 10px; }
 
 /* --- shared: notices, errors, code ------------------------------------- */
-.connector-notice, .settings-error, .connector-call-error, .chat-agent-error, .agent-failure {
+.connector-notice, .settings-error, .chat-agent-error, .agent-failure {
   border-left: 2px solid var(--neo-danger);
   border-radius: 2px;
   background: #160d0d;
@@ -2308,7 +2223,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 }
 .connector-notice { border-left-color: rgba(57, 255, 20, .4); background: rgba(57, 255, 20, .05); color: #8fbf80; }
 .git-diff, .patch-file-diffs, .code-index-stats, .agentic-plan, .agent-artifacts,
-.git-changed-files, .patch-snapshot-downloads, .test-suggestions, .connector-tab-content {
+.git-changed-files, .patch-snapshot-downloads, .test-suggestions {
   min-width: 0;
 }
 .git-diff pre, .patch-file-diffs pre, .agentic-plan pre {
@@ -2323,14 +2238,14 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font: 11.5px/1.6 "JetBrains Mono", monospace;
 }
 .agentic-phase, .agentic-timeline, .agent-run-objective, .agent-message,
-.task-completion-meta, .task-card-due, .task-card-updated, .connector-tool-id {
+.task-completion-meta, .task-card-due, .task-card-updated {
   color: #5f5f5f;
   font-size: 11.5px;
   line-height: 1.6;
 }
 
 @media (max-width: 900px) {
-  .connector-layout, .connector-skills-layout, .test-runner-grid { grid-template-columns: minmax(0, 1fr); }
+  .test-runner-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Labels that wrap a control stack their text above it. Checkbox and radio
@@ -2344,8 +2259,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .settings-section label:has(> input:not([type="checkbox"]):not([type="radio"])),
 .settings-section label:has(> select),
 .settings-section label:has(> textarea),
-.agentic-start label, .connector-auth-form label, .test-command-form label,
-.git-checkpoint-form label, .connector-tool-picker label {
+.agentic-start label, .test-command-form label,
+.git-checkpoint-form label {
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -2389,23 +2304,23 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 
 /* Panel body text defaults. Without these, bare <p>/<li>/<span> inherit the 16px
    document size and end up louder than the headings above them. */
-.settings-section, .connector-detail, .connector-detail-section, .agentic-detail,
+.settings-section, .agentic-detail,
 .agentic-summary, .agentic-step-detail, .bundle-detail, .coding-agent-detail,
 .coding-agent-summary, .git-checkpoint-detail, .patch-application-detail,
 .test-run-detail, .recovery-summary, .recovery-panel, .artifacts-panel,
 .code-index-panel, .symbol-awareness-panel, .lsp-panel, .provider-card,
 .related-memories, .memory-retrieval, .patch-applications, .test-runner,
-.git-checkpoints, .agentic-workspace, .connector-approval-page, .connector-settings {
+.git-checkpoints, .agentic-workspace {
   font-size: 12px;
   line-height: 1.6;
 }
-.settings-section > h2, .agentic-workspace h2, .connector-approval-page h2 {
+.settings-section > h2, .agentic-workspace h2 {
   margin: 0 0 4px;
   color: var(--neo-text);
   font-size: 14px;
   font-weight: 600;
 }
-.settings-section p, .agentic-workspace p, .bundle-detail p, .connector-detail p,
+.settings-section p, .agentic-workspace p, .bundle-detail p,
 .recovery-panel p, .artifacts-panel p, .test-runner p, .git-checkpoints p,
 .patch-applications p, .code-index-panel p, .lsp-panel p, .related-memories p,
 .memory-retrieval p, .provider-card p, .coding-agent-detail p {
@@ -2454,7 +2369,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   letter-spacing: .05em;
 }
 .settings-section li button:not(:first-child):hover { border-color: var(--neo-green); color: var(--neo-green); }
-.settings-section pre, .bundle-detail pre, .connector-detail pre, .agentic-detail pre {
+.settings-section pre, .bundle-detail pre, .agentic-detail pre {
   overflow: auto;
   max-height: 360px;
   border: 1px solid var(--neo-line);
@@ -2536,7 +2451,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .pending-message-timer { color: #fff; font: 9px "JetBrains Mono", monospace; }
 
 .artifact-viewer, .patch-hash-review, .patch-git-checkpoint, .patch-test-runner,
-.coding-agent-patch, .llm-usage-section, .connector-confirm {
+.coding-agent-patch, .llm-usage-section {
   min-width: 0;
   border: 1px solid var(--neo-line);
   border-radius: 2px;
@@ -2823,8 +2738,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   overflow-wrap: anywhere;
 }
 
-/* The Tools panel a chat opens from the "+" menu -- a chat-scoped view over
-   the same tool catalog Settings -> Tools & Skills manages. */
+/* The Tools panel a chat opens from the "+" menu: 4 toggles, one per category
+   of built-in tool, each disabling/enabling every tool in it for this chat. */
 .chat-tools-toolbar {
   display: flex;
   align-items: center;
@@ -2857,7 +2772,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .chat-tools-row-title { display: flex; align-items: center; gap: 8px; }
 .chat-tools-row-title strong { color: var(--neo-text); font-size: 12.5px; }
 .chat-tools-row-info p { margin: 3px 0 0; color: var(--neo-muted); font-size: 11.5px; line-height: 1.5; }
-.chat-tools-hint { display: block; margin-top: 4px; color: var(--neo-faint); font-size: 10.5px; }
 .chat-tools-toggle { flex: 0 0 auto; padding-top: 2px; }
 .chat-tools-toggle input { width: 16px; height: 16px; accent-color: var(--neo-green); cursor: pointer; }
 .chat-tools-toggle input:disabled { cursor: default; opacity: .5; }

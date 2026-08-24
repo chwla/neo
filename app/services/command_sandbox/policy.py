@@ -14,6 +14,19 @@ ALLOWED: dict[str, tuple[tuple[str, ...], ...]] = {
         ("tail",),
         ("wc",),
         ("tree",),
+        # Local, read-only git inspection. Each of these queries repository state
+        # without mutating it, so -- like cat or grep above -- any arguments are
+        # allowed. "branch" is the exception: bare or flag-only invocations list
+        # branches or name the current one, but a positional argument names one to
+        # create/delete/rename, so that shape is rejected below instead of here.
+        ("git", "status"),
+        ("git", "log"),
+        ("git", "diff"),
+        ("git", "show"),
+        ("git", "blame"),
+        ("git", "describe"),
+        ("git", "rev-parse"),
+        ("git", "branch"),
     ),
     "test": (
         ("python", "-m", "pytest"),
@@ -58,7 +71,6 @@ FORBIDDEN = {
     "dnf",
     "cargo",
     "go",
-    "git",
 }
 INSTALL = {"install", "add"}
 ENV_DUMP = {"env", "printenv", "set"}
@@ -105,6 +117,16 @@ def validate(command: list[str], category: str, cwd: str) -> dict:
             x in {"fetch", "pull", "push", "clone", "remote"} for x in command[1:]
         ):
             reasons.append("remote Git operations are forbidden")
+        if (
+            executable == "git"
+            and len(command) > 1
+            and command[1] == "branch"
+            and any(not arg.startswith("-") for arg in command[2:])
+        ):
+            reasons.append(
+                "git branch may only list branches or report the current one "
+                "(e.g. --show-current); creating, deleting or renaming a branch is forbidden"
+            )
         dangerous = DANGEROUS_FLAGS.get(executable, frozenset())
         for arg in command[1:]:
             # Match both "--flag value" and "--flag=value" spellings.

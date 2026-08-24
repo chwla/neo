@@ -1,41 +1,6 @@
-from app.services.tools.store import initialize_tool_tables
-from app.services.tools.types import (
-    ConnectorCredentialStatus,
-    ConnectorCredentialWrite,
-    ConnectorSelectionRequest,
-    ManualRestToolRequest,
-    OAuthCallbackRequest,
-    OpenAPIImportRequest,
-    SkillDefinition,
-    SkillDefinitionCreate,
-    SkillDefinitionUpdate,
-    ToolCall,
-    ToolCallCreate,
-    ToolDefinition,
-    ToolDefinitionCreate,
-    ToolDefinitionUpdate,
-    ToolServer,
-    ToolServerCreate,
-    ToolServerUpdate,
-)
+"""Shared, tool-adjacent infrastructure that outlived the connector system.
 
-__all__ = [
-    "ConnectorCredentialStatus",
-    "ConnectorCredentialWrite",
-    "ConnectorSelectionRequest",
-    "ManualRestToolRequest",
-    "OAuthCallbackRequest",
-    "OpenAPIImportRequest",
-    "SkillDefinition",
-    "SkillDefinitionCreate",
-    "SkillDefinitionUpdate",
-    "ToolCall",
-    "ToolCallCreate",
-    "ToolDefinition",
-    "ToolDefinitionCreate",
-    "ToolDefinitionUpdate",
-    "ToolServer",
-    "ToolServerCreate",
-    "ToolServerUpdate",
-    "initialize_tool_tables",
-]
+``permissions.py`` gates every agent tool call (built-in included), and
+``security.py`` provides DNS-rebinding defence for anything fetching a remote
+URL. Both are imported directly as submodules -- nothing is re-exported here.
+"""

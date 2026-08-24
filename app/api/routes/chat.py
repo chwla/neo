@@ -315,6 +315,7 @@ class ChatToolCatalogEntry(BaseModel):
     enabled: bool
     tool_id: str | None = None
     server_name: str | None = None
+    group: str | None = None
 
 
 class ChatToolsRead(BaseModel):

@@ -19,7 +19,6 @@ import Files from "./Files.jsx";
 import Repos from "./Repos.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
 import AgentSettings from "./AgentSettings.jsx";
-import ToolsSkillsSettings from "./ToolsSkillsSettings.jsx";
 import Bundles from "./Bundles.jsx";
 import GitHub from "./GitHub.jsx";
 import ContextMemory from "./ContextMemory.jsx";
@@ -1806,7 +1805,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenTools, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -1827,7 +1826,6 @@ function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOp
       icon: "terminal",
       description: "Connected tools and runtime services.",
       items: [
-        ["Tools & Skills", "Tool servers, definitions, and approvals", onOpenTools],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
         ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch],
         ["Language Server", "Workspace language intelligence", onOpenLsp],
@@ -1974,7 +1972,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
-  const [showToolsSettings, setShowToolsSettings] = useState(false);
   const [showBundles, setShowBundles] = useState(false);
   const [showGitHub, setShowGitHub] = useState(false);
   const [showContextMemory, setShowContextMemory] = useState(false);
@@ -3088,7 +3085,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onOpenAccount={() => { setShowSettings(false); setShowAccount(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
-          onOpenTools={() => { setShowSettings(false); setShowToolsSettings(true); }}
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
           onOpenGitHub={() => { setShowSettings(false); setShowGitHub(true); }}
           onOpenContextMemory={() => { setShowSettings(false); setShowContextMemory(true); }}
@@ -3180,7 +3176,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       {showContinuity && <Modal title="Continuity" onClose={() => setShowContinuity(false)} wide><Continuity /></Modal>}
       {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
       {showAgentSettings && <AgentSettings onClose={() => setShowAgentSettings(false)} />}
-      {showToolsSettings && <ToolsSkillsSettings onClose={() => setShowToolsSettings(false)} />}
       {showBundles && <Modal title="Bundles" onClose={() => setShowBundles(false)} wide><Bundles /></Modal>}
       {showGitHub && <Modal title="GitHub" onClose={() => setShowGitHub(false)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
       {showContextMemory && <Modal title="Context Memory" onClose={() => setShowContextMemory(false)} wide><ContextMemory /></Modal>}

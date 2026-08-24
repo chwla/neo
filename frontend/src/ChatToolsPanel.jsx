@@ -2,27 +2,48 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api } from "./api.js";
 import { Modal } from "./App.jsx";
-import { ConnectorWizard, submitConnectorWizard } from "./ConnectorWizard.jsx";
-import { CONNECTOR_FORM_EMPTY } from "./connectorForms.js";
 
 /**
- * The agent's tools for one chat: every built-in plus every enabled
- * connector tool, each toggleable on/off for this chat alone. "Add a tool"
- * reuses the same connector wizard Settings -> Tools & Skills uses -- a tool
- * created here is a global definition (visible in every chat, and in that
- * Settings page too), not scoped to this conversation. The per-chat toggle
- * is what lets a chat opt out of a tool it does not want.
+ * The agent's tools for one chat, collapsed into 4 toggles: Shell, File
+ * operations, Search, Memory. Each toggle covers every backend tool in that
+ * category (see TOOL_GROUP_ROWS below and the `group` field the backend
+ * annotates each tool with) -- turning one off disables every tool in it for
+ * this chat alone. A few tools (todo_write, create_checkpoint,
+ * deliver_changes) are ungrouped and always stay on; they never appear here.
  */
+const TOOL_GROUP_ROWS = [
+  {
+    key: "shell",
+    label: "Shell",
+    description: "Run shell commands and tests in the attached repository.",
+  },
+  {
+    key: "file_operations",
+    label: "File operations",
+    description: "Read, write, edit, and delete files in the attached repository.",
+  },
+  {
+    key: "search",
+    label: "Search",
+    description: "Search the repository and the web for information.",
+  },
+  {
+    key: "memory",
+    label: "Memory",
+    description: "Recall earlier context saved from past chats.",
+  },
+];
+
+function groupState(tools, groupKey) {
+  const members = tools.filter((tool) => tool.group === groupKey);
+  return { members, enabled: members.length > 0 && members.every((tool) => tool.enabled) };
+}
+
 export default function ChatToolsPanel({ chatId, onClose }) {
   const [tools, setTools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState(null);
-  const [busyName, setBusyName] = useState(null);
-  const [wizardOpen, setWizardOpen] = useState(false);
-  const [kind, setKind] = useState("mcp_http");
-  const [form, setForm] = useState({ ...CONNECTOR_FORM_EMPTY });
-  const [file, setFile] = useState(null);
-  const [wizardBusy, setWizardBusy] = useState(false);
+  const [busyKey, setBusyKey] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,39 +61,22 @@ export default function ChatToolsPanel({ chatId, onClose }) {
     load();
   }, [load]);
 
-  async function toggle(tool) {
-    setBusyName(tool.name);
+  async function toggleGroup(groupKey) {
+    setBusyKey(groupKey);
     setNotice(null);
-    const stillDisabled = tools.filter((t) => !t.enabled && t.name !== tool.name).map((t) => t.name);
-    const nextDisabled = tool.enabled ? [...stillDisabled, tool.name] : stillDisabled;
+    const { members, enabled } = groupState(tools, groupKey);
+    const memberNames = new Set(members.map((tool) => tool.name));
+    const stillDisabled = tools
+      .filter((tool) => !tool.enabled && !memberNames.has(tool.name))
+      .map((tool) => tool.name);
+    const nextDisabled = enabled ? [...stillDisabled, ...memberNames] : stillDisabled;
     try {
       await api.updateChat(chatId, { disabled_tools: nextDisabled });
       await load();
     } catch (error) {
       setNotice({ type: "error", text: error.message });
     } finally {
-      setBusyName(null);
-    }
-  }
-
-  async function submitWizard(event) {
-    event.preventDefault();
-    setWizardBusy(true);
-    setNotice(null);
-    try {
-      const result = await submitConnectorWizard(kind, form, file);
-      setWizardOpen(false);
-      setForm({ ...CONNECTOR_FORM_EMPTY });
-      setFile(null);
-      setNotice({
-        type: "success",
-        text: `${result.server.name} connected. ${result.definitions?.length ?? 0} tool(s) are ready to use.`,
-      });
-      await load();
-    } catch (error) {
-      setNotice({ type: "error", text: error.message });
-    } finally {
-      setWizardBusy(false);
+      setBusyKey(null);
     }
   }
 
@@ -80,64 +84,37 @@ export default function ChatToolsPanel({ chatId, onClose }) {
     <Modal title="Tools" onClose={onClose} wide className="chat-tools-panel">
       {notice ? <div className={`connector-notice ${notice.type}`}>{notice.text}</div> : null}
 
-      {wizardOpen ? (
-        <ConnectorWizard
-          busy={wizardBusy}
-          form={form}
-          kind={kind}
-          file={file}
-          onCancel={() => setWizardOpen(false)}
-          onFile={setFile}
-          onForm={setForm}
-          onKind={setKind}
-          onSubmit={submitWizard}
-        />
-      ) : (
-        <>
-          <div className="chat-tools-toolbar">
-            <p>Tools the agent can use in this chat. Turning one off here does not disable it elsewhere.</p>
-            <button
-              type="button"
-              className="connector-button primary"
-              onClick={() => setWizardOpen(true)}
-            >
-              Add a tool
-            </button>
-          </div>
+      <div className="chat-tools-toolbar">
+        <p>Tools the agent can use in this chat. Turning one off here does not disable it elsewhere.</p>
+      </div>
 
-          {loading ? (
-            <p className="open-folder-empty">Loading tools…</p>
-          ) : (
-            <ul className="chat-tools-list">
-              {tools.map((tool) => (
-                <li key={tool.name} className="chat-tools-row">
-                  <div className="chat-tools-row-info">
-                    <div className="chat-tools-row-title">
-                      <strong>{tool.display_name || tool.name}</strong>
-                      {tool.server_name ? (
-                        <span className="open-folder-tag muted">{tool.server_name}</span>
-                      ) : null}
-                    </div>
-                    {tool.description ? <p>{tool.description}</p> : null}
-                    {tool.requires_repo ? (
-                      <small className="chat-tools-hint">Needs a repository attached to this chat.</small>
-                    ) : null}
+      {loading ? (
+        <p className="open-folder-empty">Loading tools…</p>
+      ) : (
+        <ul className="chat-tools-list">
+          {TOOL_GROUP_ROWS.map((row) => {
+            const { enabled } = groupState(tools, row.key);
+            return (
+              <li key={row.key} className="chat-tools-row">
+                <div className="chat-tools-row-info">
+                  <div className="chat-tools-row-title">
+                    <strong>{row.label}</strong>
                   </div>
-                  <label className="chat-tools-toggle">
-                    <input
-                      type="checkbox"
-                      checked={tool.enabled}
-                      disabled={busyName === tool.name}
-                      onChange={() => toggle(tool)}
-                      aria-label={`${tool.enabled ? "Disable" : "Enable"} ${tool.display_name || tool.name} for this chat`}
-                    />
-                  </label>
-                </li>
-              ))}
-              {!tools.length ? <li className="open-folder-empty">No tools are available yet.</li> : null}
-            </ul>
-          )}
-        </>
+                  <p>{row.description}</p>
+                </div>
+                <label className="chat-tools-toggle">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    disabled={busyKey === row.key}
+                    onChange={() => toggleGroup(row.key)}
+                    aria-label={`${enabled ? "Disable" : "Enable"} ${row.label} for this chat`}
+                  />
+                </label>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </Modal>
   );

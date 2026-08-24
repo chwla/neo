@@ -12,9 +12,6 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.services.provider_runtime.service import ProviderRuntimeService
 from app.services.search.providers import ProviderRegistry, normalize_searxng_instance
-from app.services.tools.executor import ToolsService
-from app.services.tools.mcp import health_check as connector_health_check
-from app.services.tools.vault import master_key
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -127,32 +124,6 @@ def _readiness_checks() -> dict[str, dict[str, object]]:
             "error": str(exc),
         }
 
-    try:
-        key = master_key()
-        checks["vault"] = {"ok": len(key) == 32, "encrypted": True}
-    except Exception as exc:
-        checks["vault"] = {"ok": False, "error": str(exc)}
-
-    required_connectors: list[dict[str, object]] = []
-    try:
-        for server in ToolsService().list_servers(include_disabled=False):
-            metadata = server.metadata or {}
-            if not (metadata.get("required") or metadata.get("required_for_readiness")):
-                continue
-            result = connector_health_check(server.model_dump())
-            required_connectors.append(
-                {
-                    "id": server.id,
-                    "name": server.name,
-                    **result,
-                }
-            )
-        checks["connectors"] = {
-            "ok": all(item.get("ok") is True for item in required_connectors),
-            "required": required_connectors,
-        }
-    except Exception as exc:
-        checks["connectors"] = {"ok": False, "error": str(exc)}
     return checks
 
 

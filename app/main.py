@@ -39,7 +39,6 @@ from app.api.routes.search import router as search_router
 from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.test_runner import router as test_runner_router
-from app.api.routes.tools import router as tools_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
@@ -75,8 +74,6 @@ from app.services.research_mode import initialize_research_mode_tables
 from app.services.rules.store import initialize_rule_tables
 from app.services.tasks.store import initialize_task_tables
 from app.services.test_runner.store import initialize_test_runner_tables
-from app.services.tools import initialize_tool_tables
-from app.services.tools.executor import ToolsService
 from app.services.web_search import initialize_web_search_tables
 from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
 
@@ -175,15 +172,12 @@ def create_app() -> FastAPI:
     app.include_router(git_router, prefix="/api")
     app.include_router(github_router, prefix="/api")
     app.include_router(rules_router, prefix="/api")
-    app.include_router(tools_router, prefix="/api")
     initialize_notes_tables()
     initialize_profile_registry()
     initialize_project_tables()
     initialize_task_tables()
     initialize_agent_core_tables()
     initialize_bundle_tables()
-    initialize_tool_tables()
-    ToolsService().seed_builtins()
     initialize_agent_framework_tables()
     AgentDefinitionService().seed_builtins()
     initialize_command_sandbox_tables()

@@ -50,11 +50,21 @@ def default_tools() -> list[AgentTool]:
     ]
 
 
-def _default_tools_with_connectors() -> list[AgentTool]:
-    from app.services.agent_core.tools.connectors import bridged_connector_tools
+#: The 4 categories the per-chat Tools panel exposes. Toggling one off disables
+#: every tool named here for that chat. Names absent here (todo_write,
+#: create_checkpoint, deliver_changes) are ungrouped: always enabled, never
+#: shown in that panel.
+TOOL_GROUPS: dict[str, list[str]] = {
+    "shell": ["run_command", "run_tests"],
+    "file_operations": ["read_file", "list_dir", "write_file", "edit_file", "delete_file"],
+    "search": ["glob", "grep", "find_symbol", "web_search", "web_fetch"],
+    "memory": ["recall_memory"],
+}
 
-    base = default_tools()
-    return [*base, *bridged_connector_tools({tool.name for tool in base})]
+#: Reverse lookup: tool name -> its group key, or absent if ungrouped.
+TOOL_TO_GROUP: dict[str, str] = {
+    name: group for group, names in TOOL_GROUPS.items() for name in names
+}
 
 
 def truncate_output(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
@@ -69,8 +79,7 @@ def truncate_output(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
 class ToolRegistry:
     def __init__(self, tools: list[AgentTool] | None = None) -> None:
         self._tools = {
-            tool.name: tool
-            for tool in (tools if tools is not None else _default_tools_with_connectors())
+            tool.name: tool for tool in (tools if tools is not None else default_tools())
         }
         self.resolver = PermissionResolver()
 

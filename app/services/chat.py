@@ -61,7 +61,6 @@ from app.services.source_citations import CitationFormatter
 from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.tasks import TaskContextService
 from app.services.test_runner.service import TestRunnerContextService
-from app.services.tools.executor import ToolsService, ToolValidationError
 from app.services.web_search import (
     EXTRACTION_FAILURE_MESSAGE,
     GROUNDING_FAILURE_MESSAGE,
@@ -81,12 +80,6 @@ _MEMORY_FORGET_OUTCOMES = frozenset({"archived", "forgotten", "erased_permanentl
 # the model read the deleted fact straight off the transcript and repeat it back
 # while insisting it had forgotten it.
 _FORGOTTEN_TURN_PLACEHOLDER = "[A memory was removed in this turn. Its content is unavailable.]"
-_CONNECTOR_INFORMATIONAL_REQUEST = re.compile(
-    r"^\s*(?:please\s+)?(?:explain|describe|document|write\s+(?:documentation|docs)|"
-    r"compare|define|summari[sz]e|teach|tell\s+me\s+about|"
-    r"what\b|why\b|how\b|when\b|where\b|who\b|which\b)",
-    re.IGNORECASE,
-)
 
 
 class NeoChatService:
@@ -439,21 +432,6 @@ class NeoChatService:
                 "web_search_needed": False,
             }
             return task_direct_reply
-        connector_answer = self._connector_answer(prompt, search_intent)
-        if connector_answer is not None:
-            reply, metadata = connector_answer
-            self.store.add_chat_message(
-                chat_id,
-                "assistant",
-                reply,
-                **metadata,
-            )
-            self.db.commit()
-            self.last_web_debug = {
-                "web_search_needed": False,
-                "connector_trace": (metadata.get("metadata") or {}).get("connector_trace"),
-            }
-            return reply
         structured_live = self._structured_live_answer(
             prompt,
             search_intent,
@@ -900,31 +878,6 @@ class NeoChatService:
                 "total_tokens": None,
                 "duration_ms": None,
                 "web_debug": self.last_web_debug,
-            }
-            return
-        connector_answer = self._connector_answer(prompt, search_intent)
-        if connector_answer is not None:
-            reply, metadata = connector_answer
-            assistant = persist_assistant(
-                reply,
-                **metadata,
-            )
-            self.db.commit()
-            self.db.refresh(assistant)
-            connector_trace = (metadata.get("metadata") or {}).get("connector_trace")
-            self.last_web_debug = {
-                "web_search_needed": False,
-                "connector_trace": connector_trace,
-            }
-            yield {"type": "chunk", "content": reply}
-            yield {
-                "type": "done",
-                "message_id": assistant.id,
-                "reply": reply,
-                "thinking": None,
-                "connector_trace": connector_trace,
-                "web_debug": self.last_web_debug,
-                **{key: value for key, value in metadata.items() if key != "metadata"},
             }
             return
         structured_live = self._structured_live_answer(
@@ -1964,226 +1917,6 @@ class NeoChatService:
                 },
             }
         return None
-
-    def _connector_answer(
-        self,
-        prompt: str,
-        intent: ResolvedSearchIntent,
-    ) -> tuple[str, dict[str, Any]] | None:
-        """Invoke only a uniquely selected read, or queue an explicit write."""
-
-        started = time.perf_counter()
-        explicit = intent.kind == SearchIntentKind.CONNECTOR_TOOL
-        if not explicit and _CONNECTOR_INFORMATIONAL_REQUEST.match(prompt):
-            return None
-        service = ToolsService()
-        tool = None
-        explicit_tool = re.search(
-            r"\btool\s*[:=]\s*(?P<id>[A-Za-z0-9._-]{1,120})\b",
-            prompt,
-            re.IGNORECASE,
-        )
-        if explicit_tool is not None:
-            wanted_id = explicit_tool.group("id")
-            tool = next(
-                (
-                    item
-                    for item in service.list_tools(include_disabled=False)
-                    if item.id == wanted_id
-                ),
-                None,
-            )
-            if tool is None:
-                return self._connector_clarification(
-                    f"I could not find an enabled connector tool named {wanted_id}.",
-                    intent,
-                    started,
-                )
-        else:
-            tool = service.select_enabled_read_tool(prompt, intent=prompt)
-            if tool is None and explicit:
-                normalized_prompt = re.sub(r"[^a-z0-9]+", " ", prompt.lower())
-                named = []
-                for candidate in service.list_tools(include_disabled=False):
-                    if candidate.built_in:
-                        continue
-                    names = {
-                        re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
-                        for value in (candidate.name, candidate.display_name or "")
-                        if value
-                    }
-                    if any(name and f" {name} " in f" {normalized_prompt} " for name in names):
-                        named.append(candidate)
-                if len(named) == 1:
-                    tool = named[0]
-
-        if tool is None:
-            if explicit:
-                return self._connector_clarification(
-                    "I could not identify one connector with enough confidence. "
-                    "Please name the connector tool and provide its required inputs.",
-                    intent,
-                    started,
-                )
-            return None
-
-        arguments, missing = self._connector_arguments(prompt, tool.input_schema)
-        if missing:
-            if explicit:
-                return self._connector_clarification(
-                    "Before I call that connector, provide: " + ", ".join(missing) + ".",
-                    intent,
-                    started,
-                    tool_id=tool.id,
-                )
-            return None
-
-        try:
-            invocation = service.invoke_connector(
-                tool_id=tool.id,
-                arguments=arguments,
-                capability=prompt,
-                intent=prompt,
-            )
-        except (ToolValidationError, ValueError) as exc:
-            return self._connector_clarification(
-                f"The connector request was rejected safely: {exc}",
-                intent,
-                started,
-                tool_id=tool.id,
-            )
-
-        status = invocation.get("status")
-        if invocation.get("approval_required"):
-            reply = (
-                f"{tool.display_name or tool.name} is a write-capable connector. "
-                "I queued this call for your explicit approval in Tools & Skills; "
-                "nothing has been changed yet."
-            )
-            finish_reason = "approval_required"
-        elif status == "completed":
-            result = invocation.get("result")
-            serialized = json.dumps(result, indent=2, sort_keys=True, default=str)
-            reply = (
-                f"{tool.display_name or tool.name} returned this untrusted external data. "
-                f"Neo did not treat its contents as instructions:\n\n{serialized}"
-            )
-            finish_reason = "stop"
-        else:
-            error = invocation.get("error") or "The connector did not complete."
-            reply = f"{tool.display_name or tool.name} could not complete: {error}"
-            finish_reason = str(status or "connector_error")
-
-        return reply, {
-            "response_kind": "connector",
-            "provider_name": str(
-                (invocation.get("provenance") or {}).get("connector_name")
-                or tool.display_name
-                or tool.name
-            ),
-            "route_name": "connector",
-            "finish_reason": finish_reason,
-            "trace_id": invocation.get("call_id"),
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-            "metadata": {
-                "connector_trace": invocation,
-                "search_intent": intent.model_dump(mode="json"),
-            },
-        }
-
-    def _connector_clarification(
-        self,
-        reply: str,
-        intent: ResolvedSearchIntent,
-        started: float,
-        *,
-        tool_id: str | None = None,
-    ) -> tuple[str, dict[str, Any]]:
-        return reply, {
-            "response_kind": "connector",
-            "provider_name": "Neo connector router",
-            "route_name": "connector",
-            "finish_reason": "clarification_required",
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-            "metadata": {
-                "connector_trace": {
-                    "status": "clarification_required",
-                    "tool_id": tool_id,
-                },
-                "search_intent": intent.model_dump(mode="json"),
-            },
-        }
-
-    def _connector_arguments(
-        self,
-        prompt: str,
-        schema: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[str]]:
-        properties = schema.get("properties") or {}
-        required = list(schema.get("required") or [])
-        arguments: dict[str, Any] = {}
-
-        object_match = re.search(r"\{.*\}", prompt, re.DOTALL)
-        if object_match is not None:
-            try:
-                parsed = json.loads(object_match.group(0))
-                if isinstance(parsed, dict):
-                    arguments.update(parsed)
-            except json.JSONDecodeError:
-                pass
-
-        for key, specification in properties.items():
-            if key in arguments:
-                continue
-            match = re.search(
-                rf"\b{re.escape(str(key))}\s*(?:=|:)\s*"
-                r"(?P<value>\"[^\"]*\"|'[^']*'|[^,;]+)",
-                prompt,
-                re.IGNORECASE,
-            )
-            if match is not None:
-                raw_value = match.group("value").strip().strip("\"'")
-                arguments[str(key)] = self._coerce_connector_value(
-                    raw_value,
-                    specification,
-                )
-
-        missing = [str(key) for key in required if key not in arguments]
-        if len(missing) == 1:
-            key = missing[0]
-            specification = properties.get(key) or {}
-            if specification.get("type") in {None, "string"}:
-                contextual = re.search(
-                    r"\b(?:for|with|about)\s+(?P<value>.+)$",
-                    prompt,
-                    re.IGNORECASE,
-                )
-                if contextual is not None:
-                    arguments[key] = contextual.group("value").strip(" .?!")
-                elif key.lower() in {"input", "prompt", "q", "query", "text"}:
-                    arguments[key] = prompt
-        return arguments, [str(key) for key in required if key not in arguments]
-
-    @staticmethod
-    def _coerce_connector_value(value: str, specification: dict[str, Any]) -> Any:
-        expected = specification.get("type")
-        if expected == "integer":
-            try:
-                return int(value)
-            except ValueError:
-                return value
-        if expected == "number":
-            try:
-                return float(value)
-            except ValueError:
-                return value
-        if expected == "boolean":
-            normalized = value.lower()
-            if normalized in {"true", "yes", "1"}:
-                return True
-            if normalized in {"false", "no", "0"}:
-                return False
-        return value
 
     def _routing_diagnostic(
         self,

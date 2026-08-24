@@ -13,7 +13,6 @@ from app.services.agent_framework.types import (
 )
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.rules import store as rules_store
-from app.services.tools import store as tools_store
 
 
 class AgentFrameworkValidationError(ValueError):
@@ -140,12 +139,12 @@ class AgentDefinitionService:
             else:
                 warnings.append(f"Rules profile '{profile_id}' is unavailable and was ignored.")
         metadata = {**(data.get("metadata") or {}), "safety_warnings": warnings}
-        skill_ids = []
+        # Skills (connector tool bundles) no longer exist, so every id is
+        # unavailable by construction -- kept as a loop, not a bulk warning,
+        # so each id is named individually like every other dropped reference.
+        skill_ids: list[str] = []
         for skill_id in data.get("skills", []):
-            if tools_store.get_skill(skill_id):
-                skill_ids.append(skill_id)
-            else:
-                warnings.append(f"Skill '{skill_id}' is unavailable and was ignored.")
+            warnings.append(f"Skill '{skill_id}' is unavailable and was ignored.")
         return {
             **data,
             "default_route_name": route,

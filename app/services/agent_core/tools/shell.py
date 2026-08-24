@@ -57,9 +57,12 @@ def _render(record: dict) -> str:
 _RECOVERY: dict[str, str] = {
     "read_only": (
         "run_command only runs read-only inspection: pwd, ls, find, grep, rg, cat, head, "
-        "tail, wc, tree. It cannot execute scripts. To run tests, lint or a build, use "
-        "run_tests (pytest, python -m pytest, npm test, npm run test/build/lint, ruff "
-        "check, mypy). To check a file for syntax errors, read it and inspect it instead."
+        "tail, wc, tree, and local git inspection (git status, log, diff, show, blame, "
+        "describe, rev-parse, branch). It cannot execute scripts, mutate git state (no "
+        "commit/checkout/reset/merge/add), or reach a remote (no fetch/pull/push/clone). "
+        "To run tests, lint or a build, use run_tests (pytest, python -m pytest, npm test, "
+        "npm run test/build/lint, ruff check, mypy). To check a file for syntax errors, "
+        "read it and inspect it instead."
     ),
     "test": (
         "run_tests allows: pytest, python -m pytest, npm test, npm run test/build/lint, "
@@ -124,7 +127,10 @@ TOOLS = [
         name="run_command",
         description=(
             "Run a read-only inspection command inside the managed repository copy. "
-            "Allowed programs: pwd, ls, find, grep, rg, cat, head, tail, wc, tree."
+            "Allowed programs: pwd, ls, find, grep, rg, cat, head, tail, wc, tree. Also "
+            "allows local git inspection: git status, log, diff, show, blame, describe, "
+            "rev-parse, and branch (listing or --show-current only -- git cannot be used "
+            "to commit, checkout, reset, merge, or reach a remote)."
         ),
         parameters={
             "type": "object",

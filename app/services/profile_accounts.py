@@ -669,7 +669,6 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
         from app.services.rules.store import initialize_rule_tables
         from app.services.tasks.store import initialize_task_tables
         from app.services.test_runner.store import initialize_test_runner_tables
-        from app.services.tools import initialize_tool_tables
         from app.services.web_search import initialize_web_search_tables
         from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
 
@@ -679,7 +678,6 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_task_tables,
             initialize_agent_core_tables,
             initialize_bundle_tables,
-            initialize_tool_tables,
             initialize_agent_framework_tables,
             initialize_command_sandbox_tables,
             initialize_context_memory_tables,
