@@ -9,6 +9,7 @@ import { useChatStream } from "./chatStream.js";
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
+import ChatToolsPanel from "./ChatToolsPanel.jsx";
 import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
@@ -960,6 +961,15 @@ function FolderPlusIcon() {
   );
 }
 
+function WrenchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14.7 6.3a4 4 0 0 0-5.6 4.9L3 17.3l1.4 1.4 6-6.1a4 4 0 0 0 4.9-5.6z" />
+    </svg>
+  );
+}
+
 /** Attaching files reads the same in both modes, so it is written once. */
 function AttachFilesAction({ attaching, disabled, onPick }) {
   return (
@@ -1012,6 +1022,7 @@ export function ChatComposer({
   onAgentModeChange,
   onOpenFolder,
   folderAttaching = false,
+  onOpenToolsPanel,
   agentMessage,
   attachments = [],
   onAttachFiles,
@@ -1207,6 +1218,20 @@ export function ChatComposer({
                         attachInputRef.current?.click();
                       }}
                     />
+                    <button
+                      type="button"
+                      className="composer-menu-action agent-tools-button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenToolsPanel?.();
+                      }}
+                      disabled={disabled}
+                      title="Choose which tools the agent can use in this chat, or add a new one."
+                      aria-label="Tools"
+                    >
+                      <WrenchIcon />
+                      <span>Tools</span>
+                    </button>
                   </>
                 ) : (
                   <AttachFilesAction
@@ -2017,6 +2042,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   });
   const [chatAgentMessage, setChatAgentMessage] = useState("");
   const [showOpenFolder, setShowOpenFolder] = useState(false);
+  const [showChatTools, setShowChatTools] = useState(false);
   const bootstrapped = useRef(false);
   const createChatPromiseRef = useRef(null);
   const visibleChatIdRef = useRef(null);
@@ -2997,13 +3023,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             <PendingAssistantMessage generation={streamingAssistant} elapsedMs={elapsedMs} />
           )}
 
-          {showEmptyState && (
-            <div className="neo-status">
-              <span className="neo-pill">READY</span>
-              Start a conversation or open a previous chat from the sidebar.
-            </div>
-          )}
-
           {statusError && <div className="neo-error">{statusError}</div>}
         </section>
 
@@ -3040,6 +3059,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onAgentModeChange={(nextMode) => updateChatAgentSettings({ agent_mode: nextMode })}
           onOpenFolder={handleOpenFolder}
           folderAttaching={false}
+          onOpenToolsPanel={() => setShowChatTools(true)}
           agentMessage={chatAgentMessage}
         />
         {showOpenFolder && (
@@ -3048,6 +3068,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             onClose={() => setShowOpenFolder(false)}
             onAttached={handleFolderAttached}
           />
+        )}
+        {showChatTools && activeChat?.id && (
+          <ChatToolsPanel chatId={activeChat.id} onClose={() => setShowChatTools(false)} />
         )}
       </main>
       )}

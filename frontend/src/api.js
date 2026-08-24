@@ -254,6 +254,7 @@ export const api = {
     method: "PATCH", body: JSON.stringify(payload),
   }),
   disableToolDefinition: (id) => request(`/tools/definitions/${id}`, { method: "DELETE" }),
+  chatTools: (chatId) => request(`/chats/${chatId}/tools`),
   toolSkills: (includeDisabled = true) =>
     request(`/tools/skills?include_disabled=${includeDisabled ? "true" : "false"}`),
   createToolSkill: (payload) => request("/tools/skills", {

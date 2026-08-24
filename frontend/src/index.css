@@ -278,12 +278,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .neo-view-context { color: #3f3f3f; font: 10px "JetBrains Mono", monospace; letter-spacing: .06em; }
 .neo-shell { width: 100%; max-width: none; flex: 1; overflow-y: auto; padding: 20px 40px 176px; }
 .neo-shell > * { max-width: 860px; margin-right: auto; margin-left: auto; }
-.neo-empty-state { padding: min(22vh, 160px) 0 24px; }
+.neo-empty-state { padding: min(22vh, 160px) 0 24px; text-align: center; }
 .neo-title { margin: 0; color: var(--neo-text); font-size: 28px; font-weight: 600; letter-spacing: -.02em; }
 .neo-subtitle { margin: 8px 0 28px; color: #555; font-size: 14px; }
-.neo-status, .neo-card, .neo-error { border: 1px solid var(--neo-line); border-left: 2px solid var(--neo-green); border-radius: 2px; background: var(--neo-panel); padding: 12px 14px; color: #777; font-size: 12px; }
+.neo-card, .neo-error { border: 1px solid var(--neo-line); border-left: 2px solid var(--neo-green); border-radius: 2px; background: var(--neo-panel); padding: 12px 14px; color: #777; font-size: 12px; }
 .neo-error { border-left-color: var(--neo-danger); color: #e27570; }
-.neo-pill { margin-right: 8px; color: var(--neo-green); font: 600 10px "JetBrains Mono", monospace; letter-spacing: .08em; }
 
 /* ---------------------------------------------------------------------------
    Transcript. A conversation, not a log: each turn is a named bubble on its own
@@ -688,10 +687,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .coding-agent-form .task-help { margin:0; border-top:1px solid var(--neo-line); padding-top:12px; color:#5d5d5d; font-size:11px; }
 @media (max-width: 800px) { .coding-agent-selectors { grid-template-columns:1fr 1fr; } }
 
-.modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: auto; background: rgba(0,0,0,.78); padding: 28px; backdrop-filter: blur(3px); }
+.modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: auto; background: rgba(0,0,0,.78); padding: 28px; }
 .neo-dialog { width: min(620px, 100%); max-height: calc(100vh - 56px); overflow: auto; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-bg); box-shadow: 0 24px 80px rgba(0,0,0,.7); padding: 0 24px 24px; }
 .neo-dialog-wide { width: min(1120px, 100%); }
-.dialog-title-row { position: sticky; top: 0; z-index: 4; display: flex; min-height: 48px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--neo-line); background: var(--neo-bg); }
+.dialog-title-row { position: sticky; top: 0; z-index: 4; display: flex; min-height: 48px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--neo-line); }
 .dialog-title-row h2 { margin: 0; color: var(--neo-text); font-size: 14px; font-weight: 600; }
 .dialog-close { border: 0; background: transparent; color: #555; font: 18px "JetBrains Mono", monospace; }
 .dialog-close:hover { color: var(--neo-green); }
@@ -2823,3 +2822,42 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
+
+/* The Tools panel a chat opens from the "+" menu -- a chat-scoped view over
+   the same tool catalog Settings -> Tools & Skills manages. */
+.chat-tools-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.chat-tools-toolbar p { margin: 0; color: var(--neo-muted); font-size: 11.5px; line-height: 1.6; }
+
+.chat-tools-list {
+  display: grid;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: min(52vh, 460px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-tools-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--neo-line);
+  border-radius: 2px;
+  background: var(--neo-panel);
+  padding: 10px 12px;
+}
+.chat-tools-row-info { min-width: 0; }
+.chat-tools-row-title { display: flex; align-items: center; gap: 8px; }
+.chat-tools-row-title strong { color: var(--neo-text); font-size: 12.5px; }
+.chat-tools-row-info p { margin: 3px 0 0; color: var(--neo-muted); font-size: 11.5px; line-height: 1.5; }
+.chat-tools-hint { display: block; margin-top: 4px; color: var(--neo-faint); font-size: 10.5px; }
+.chat-tools-toggle { flex: 0 0 auto; padding-top: 2px; }
+.chat-tools-toggle input { width: 16px; height: 16px; accent-color: var(--neo-green); cursor: pointer; }
+.chat-tools-toggle input:disabled { cursor: default; opacity: .5; }

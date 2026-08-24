@@ -127,6 +127,13 @@ describe("agent mode composer", () => {
     assert.ok(menu.includes('aria-label="Open a folder"'));
   });
 
+  test("the menu offers a Tools entry", () => {
+    const html = render();
+
+    assert.ok(html.includes("agent-tools-button"), "the Tools entry is missing");
+    assert.ok(html.includes('aria-label="Tools"'));
+  });
+
   test("the clip reports an attach in progress", () => {
     const html = render({ folderAttaching: true });
 
@@ -247,7 +254,7 @@ describe("agent mode composer", () => {
   test("every control is disabled while a submission is in flight", () => {
     const html = render({ value: "go", disabled: true });
 
-    assert.equal(count(html, 'disabled=""'), 8, "3 chips + folder + attach + model + textarea + Start");
+    assert.equal(count(html, 'disabled=""'), 9, "3 chips + folder + tools + attach + model + textarea + Start");
   });
 });
 
@@ -258,6 +265,7 @@ describe("chat mode composer", () => {
     assert.ok(!html.includes("agent-context-pickers"));
     assert.ok(!html.includes('aria-label="Start Agent"'));
     assert.ok(!html.includes("agent-folder-button"));
+    assert.ok(!html.includes("agent-tools-button"));
     assert.ok(!html.includes('aria-label="Select permission mode"'));
   });
 
