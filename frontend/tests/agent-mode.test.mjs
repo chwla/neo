@@ -254,7 +254,7 @@ describe("agent mode composer", () => {
   test("every control is disabled while a submission is in flight", () => {
     const html = render({ value: "go", disabled: true });
 
-    assert.equal(count(html, 'disabled=""'), 9, "3 chips + folder + tools + attach + model + textarea + Start");
+    assert.equal(count(html, 'disabled=""'), 10, "3 chips + folder + tools + attach + compact + model + textarea + Start");
   });
 });
 

@@ -179,6 +179,43 @@ JSON: {"route":"web","confidence":0.93}
 
 _ROUTE_DECISION_JSON = re.compile(r"\{\s*\"route\".*?\}", re.DOTALL)
 
+_WEATHER_LOCATION_SYSTEM_PROMPT = """You are Neo's conservative place-name checker.
+
+A phrase was pulled out of a chat message as a possible location for a weather
+lookup. Decide whether it actually names a real-world place (a city, region,
+country, or other named geographic location) -- not a greeting, acknowledgement,
+instruction, opinion, or unrelated sentence fragment.
+
+Return exactly one JSON object with no Markdown or extra text:
+{"location": "<place name>"} if the phrase clearly names a real place, or
+{"location": null} if it does not, or you are unsure.
+
+Never guess. When the phrase could plausibly be something other than a place,
+return null.
+
+Examples:
+PHRASE: hi
+JSON: {"location": null}
+PHRASE: yeah got it
+JSON: {"location": null}
+PHRASE: stop using
+JSON: {"location": null}
+PHRASE: thanks
+JSON: {"location": null}
+PHRASE: I currently use a V60 dripper
+JSON: {"location": null}
+PHRASE: Tokyo
+JSON: {"location": "Tokyo"}
+PHRASE: what about Paris
+JSON: {"location": "Paris"}
+PHRASE: san francisco
+JSON: {"location": "San Francisco"}
+PHRASE: new york city
+JSON: {"location": "New York City"}
+"""
+
+_WEATHER_LOCATION_JSON = re.compile(r"\{\s*\"location\".*?\}", re.DOTALL)
+
 
 class SearchIntentResolver:
     """Resolve live-data intent conservatively.
@@ -192,6 +229,7 @@ class SearchIntentResolver:
         query: str,
         *,
         previous: ResolvedSearchIntent | None = None,
+        llm: LLMClient | None = None,
         timezone: str | None = None,
         locale: str | None = None,
     ) -> ResolvedSearchIntent:
@@ -279,7 +317,7 @@ class SearchIntentResolver:
                 decision_source="structured",
             )
 
-        weather = self._weather_intent(cleaned, previous)
+        weather = self._weather_intent(cleaned, previous, llm)
         if weather is not None:
             return weather.model_copy(
                 update={
@@ -360,7 +398,7 @@ class SearchIntentResolver:
         commands). All ordinary questions are deliberately model-routed so a single
         freshness word cannot force external search.
         """
-        base = self.resolve(query, previous=previous, timezone=timezone, locale=locale)
+        base = self.resolve(query, previous=previous, llm=llm, timezone=timezone, locale=locale)
         if base.kind is not SearchIntentKind.NONE or not base.original_query.strip():
             return base
 
@@ -424,6 +462,37 @@ class SearchIntentResolver:
         except (TypeError, ValueError):
             confidence = 0.8
         return route, min(1.0, max(0.0, confidence))
+
+    @staticmethod
+    def _model_confirm_location(fragment: str, llm: LLMClient | None) -> str | None:
+        """Ask the selected chat model whether ``fragment`` names a real place.
+
+        Mirrors ``_model_route``'s conservative-by-default contract: a missing
+        client, provider error, or an unparseable/ambiguous/wrongly-typed
+        reply all resolve to ``None`` (reject) -- never to a guessed location.
+        """
+        if llm is None or not fragment.strip():
+            return None
+        try:
+            raw = llm.chat(
+                [
+                    LLMMessage(role="system", content=_WEATHER_LOCATION_SYSTEM_PROMPT),
+                    LLMMessage(role="user", content=f"PHRASE: {fragment.strip()}"),
+                ],
+                temperature=0.0,
+            )
+            cleaned = llm.clean_response(raw) if hasattr(llm, "clean_response") else raw
+            match = _WEATHER_LOCATION_JSON.search(cleaned)
+            payload = json.loads(match.group(0) if match else cleaned.strip())
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        location = payload.get("location")
+        if not isinstance(location, str):
+            return None
+        location = location.strip()
+        return location or None
 
     def _is_personal_declaration(self, query: str) -> bool:
         match = _PERSONAL_DECLARATION.search(query)
@@ -517,7 +586,10 @@ class SearchIntentResolver:
         )
 
     def _weather_intent(
-        self, query: str, previous: ResolvedSearchIntent | None
+        self,
+        query: str,
+        previous: ResolvedSearchIntent | None,
+        llm: LLMClient | None = None,
     ) -> ResolvedSearchIntent | None:
         prior_is_weather = previous is not None and previous.kind == SearchIntentKind.WEATHER
         explicit = _WEATHER_SIGNAL.search(query) is not None
@@ -525,17 +597,19 @@ class SearchIntentResolver:
             return None
 
         location: str | None = None
-        for pattern in (
+        matched_pattern_index: int | None = None
+        for index, pattern in enumerate((
             r"\b(?:weather|forecast|temperature)\s+(?:in|for|at)\s+"
             r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
             r"^(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)\s+"
             r"(?:weather|forecast|temperature)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
             r"\bi\s+(?:live|am based|am located)\s+in\s+"
             r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:[,;]|$)",
-        ):
+        )):
             match = re.search(pattern, query, re.IGNORECASE)
             if match:
                 location = match.group("location").strip(" .,?!")
+                matched_pattern_index = index
                 break
         if location and re.search(
             r"\b(?:i|you|want|find|check|show|tell|what|when|where|how|today's)\b",
@@ -543,7 +617,23 @@ class SearchIntentResolver:
             re.IGNORECASE,
         ):
             location = None
-        if not explicit and prior_is_weather:
+
+        # Pattern index 1 ("<text> weather") accepts arbitrary leading text as
+        # a location -- e.g. "stop using weather" -> "stop using". The regex
+        # has no way to know whether that leading text names a real place, so
+        # a cheap, deterministic model check confirms the guess before it is
+        # trusted. A rejection must not silently fall back to "same place as
+        # before" either (see `pattern2_rejected` below) -- otherwise "stop
+        # using weather" right after a Tokyo query would resolve to Tokyo's
+        # weather instead of being recognised as unrelated.
+        pattern2_rejected = False
+        if matched_pattern_index == 1 and location:
+            confirmed = self._model_confirm_location(location, llm)
+            if confirmed is None:
+                pattern2_rejected = True
+            location = confirmed
+
+        if location is None and not explicit and prior_is_weather:
             fragment = re.sub(
                 r"\b(?:today|now|tomorrow|please|what about|and|try again|again|same)\b",
                 " ",
@@ -557,19 +647,23 @@ class SearchIntentResolver:
                 location = previous.location
             else:
                 # A genuine "for where?" follow-up answer is a short place
-                # name, not a new full sentence.  Without this bound, any
-                # unrelated message after a weather turn ("I currently use a
-                # V60 dripper...") was taken whole as a location to geocode,
-                # and because the result was again classified as WEATHER, the
-                # same trap caught every later turn with no way to recover.
+                # name, not a new full sentence. This length/punctuation
+                # bound is only a cheap pre-filter -- "hi" and "yeah got it"
+                # both pass it trivially -- so a plausible-looking fragment is
+                # additionally confirmed by the model before it is trusted as
+                # a location. A rejected or unconfirmable fragment falls
+                # through to `return None` below instead of resolving to
+                # WEATHER at all, which is what stops a single bad guess from
+                # re-arming this branch on the next turn: a non-WEATHER
+                # intent cannot make the next turn's `prior_is_weather` true.
                 looks_like_place = (
                     len(fragment.split()) <= 5
                     and not _QUESTION_WORD.search(fragment)
                     and not re.search(r"[.!?;:]", query)
                 )
                 if looks_like_place:
-                    location = fragment
-        if location is None and prior_is_weather and explicit:
+                    location = self._model_confirm_location(fragment, llm)
+        if location is None and prior_is_weather and explicit and not pattern2_rejected:
             location = previous.location
         if not location and not explicit:
             return None

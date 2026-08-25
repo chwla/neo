@@ -321,6 +321,20 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 }
 /* A failed send is the one bubble that has to read as wrong at a glance. */
 .neo-chat-message.user .message-bubble:has(.chat-message-status) { background: #4a1e1b; }
+.neo-chat-message.compaction-summary-message .message-bubble {
+  border: 1px dashed rgba(57, 255, 20, .28);
+  background: rgba(57, 255, 20, .03);
+}
+.compaction-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font: 11px "JetBrains Mono", monospace;
+  color: #79ef8b;
+}
+.compaction-summary-header svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.compaction-summary-count { margin-left: auto; color: rgba(233, 237, 239, .5); }
 .message-footer {
   display: flex;
   max-width: 100%;

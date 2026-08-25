@@ -28,7 +28,13 @@ from app.schemas.chat import ProjectRead
 from app.services import chat_events
 from app.services.agent_core import events as agent_events
 from app.services.chat import NeoChatService
-from app.services.llm import LLMClient, LLMRegistry, ProviderUsagePersistenceError, get_llm_client
+from app.services.llm import (
+    LLMClient,
+    LLMMessage,
+    LLMRegistry,
+    ProviderUsagePersistenceError,
+    get_llm_client,
+)
 from app.services.llm_registry.providers import ProviderConfigurationError
 from app.services.memory.contracts import DetachMemorySourceCommand, TargetRevision
 from app.services.memory.factory import build_memory_runtime
@@ -230,6 +236,17 @@ class ChatForkRequest(BaseModel):
     #: The message to branch from -- this message and everything before it is
     #: copied into the new chat.
     message_id: int
+
+
+class ChatCompactRequest(BaseModel):
+    llm_id: str | None = Field(default=None, max_length=80)
+
+
+class ChatCompactResponse(BaseModel):
+    chat: ChatRead
+    summary_message: ChatMessageRead | None = None
+    compacted_message_count: int
+    kept_message_count: int
 
 
 class ChatSendRequest(BaseModel):
@@ -2018,6 +2035,141 @@ def fork_chat(chat_id: int, request: ChatForkRequest, store: StoreDependency) ->
             _CHAT_LOG.exception("Failed to clone agent session %s for fork", session_row["id"])
 
     return ChatRead.model_validate(new_chat)
+
+
+#: How many of a chat's most recent messages compaction always leaves untouched.
+#: Matches both chat_history_turns' default and agent_core/context.py's
+#: KEEP_RECENT without coupling to either -- this governs which persisted rows
+#: survive a compact, not what one prompt sends to the model.
+COMPACT_KEEP_RECENT = 8
+
+_COMPACT_SUMMARY_SYSTEM_PROMPT = (
+    "You compress an earlier portion of a conversation into a compact, faithful "
+    "summary so the conversation can continue with less context. Preserve concrete "
+    "facts, decisions, names, numbers, code identifiers, file paths, and any "
+    "commitments made -- anything a later reply might need to stay consistent. Do "
+    "not add commentary or claim actions were taken that were not. Write it as "
+    "neutral third-person notes, not as a new reply in the conversation. Keep it "
+    "under roughly 400 words."
+)
+
+
+@router.post("/chats/{chat_id}/compact", response_model=ChatCompactResponse)
+def compact_chat(chat_id: int, request: ChatCompactRequest, store: StoreDependency) -> ChatCompactResponse:
+    """Fold the older part of a conversation into one summary message.
+
+    The most recent ``COMPACT_KEEP_RECENT`` messages, and any message that
+    anchors an agent run, are left untouched -- deleting an anchor would
+    permanently orphan that run's tool-call trace, diff and undo. Everything
+    else older is summarized by the model and replaced with a single assistant
+    message carrying ``response_kind="compaction_summary"``.
+    """
+
+    chat = _get_required_chat(store, chat_id)
+
+    active_generation = store.db.scalar(
+        select(ChatGeneration).where(
+            ChatGeneration.chat_id == chat_id,
+            ChatGeneration.status.in_(("queued", "running")),
+        )
+    )
+    if active_generation is not None:
+        raise HTTPException(status_code=409, detail="A response is still generating for this chat.")
+
+    from app.services.agent_core import store as agent_store
+
+    sessions = agent_store.sessions_for_chat(chat_id)
+    if any(row["status"] in _ACTIVE_AGENT_STATUSES for row in sessions):
+        raise HTTPException(status_code=409, detail="An agent run is still in progress for this chat.")
+
+    messages = store.list_chat_messages(chat_id)
+
+    def _no_op() -> ChatCompactResponse:
+        return ChatCompactResponse(
+            chat=ChatRead.model_validate(chat),
+            summary_message=None,
+            compacted_message_count=0,
+            kept_message_count=len(messages),
+        )
+
+    if not messages:
+        return _no_op()
+
+    candidates = messages[:-COMPACT_KEEP_RECENT] if len(messages) > COMPACT_KEEP_RECENT else []
+    to_keep = messages[-COMPACT_KEEP_RECENT:]
+    if not candidates:
+        return _no_op()
+
+    anchor_ids = {row["anchor_message_id"] for row in sessions if row.get("anchor_message_id")}
+    to_summarize = [message for message in candidates if message.id not in anchor_ids]
+    preserved_ids = [message.id for message in candidates if message.id in anchor_ids]
+    if not to_summarize:
+        return _no_op()
+
+    transcript = "\n\n".join(f"{message.role.upper()}: {message.content}" for message in to_summarize)
+    transcript = transcript[-120_000:]
+    try:
+        client = get_llm_client(request.llm_id, num_predict=900, timeout=180, route_name="chat")
+        result = client.chat_with_metadata(
+            [
+                LLMMessage(role="system", content=_COMPACT_SUMMARY_SYSTEM_PROMPT),
+                LLMMessage(role="user", content=f"{transcript}\n\nSummarize the conversation above."),
+            ],
+            temperature=0.2,
+            num_predict=900,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Could not generate a summary right now; nothing was changed."
+        ) from exc
+
+    summary = store.add(
+        ChatMessage(
+            chat_id=chat_id,
+            role="assistant",
+            content=result.content,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            duration_ms=result.duration_ms,
+            response_kind="compaction_summary",
+            provider_name=result.provider_name,
+            model_name=result.model_name,
+            route_name=result.route_name or "chat",
+            finish_reason=result.finish_reason,
+            metadata_json=json.dumps(
+                {
+                    "compacted_message_ids": [message.id for message in to_summarize],
+                    "compacted_message_count": len(to_summarize),
+                    "kept_message_ids": [message.id for message in to_keep],
+                    "preserved_agent_anchor_ids": preserved_ids,
+                },
+                sort_keys=True,
+            ),
+            created_at=to_summarize[-1].created_at,
+        )
+    )
+    # ChatGeneration.user_message_id/assistant_message_id are real FKs with
+    # ondelete="SET NULL", and PRAGMA foreign_keys=ON is set on every connection
+    # (app/db/session.py), so SQLite nulls those out on delete -- no cleanup
+    # needed here. ChatEvent.message_id has no FK and is only ever read live
+    # during an active generation (blocked above), so it going stale is harmless.
+    store.db.execute(
+        delete(ChatMessage).where(
+            ChatMessage.chat_id == chat_id,
+            ChatMessage.id.in_([message.id for message in to_summarize]),
+        )
+    )
+    store.db.commit()
+    store.db.refresh(summary)
+    store.db.refresh(chat)
+
+    return ChatCompactResponse(
+        chat=ChatRead.model_validate(chat),
+        summary_message=_chat_message_read(summary),
+        compacted_message_count=len(to_summarize),
+        kept_message_count=len(to_keep) + len(preserved_ids),
+    )
 
 
 @router.patch("/chats/{chat_id}", response_model=ChatRead)

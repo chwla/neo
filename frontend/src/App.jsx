@@ -41,6 +41,7 @@ import {
   formatResponseKind,
   parseNeoTimestamp,
   renderMessageHtml,
+  resolveContextWindow,
   splitGeneratedText,
   sumTotalTokens,
 } from "./chatPresentation.js";
@@ -772,6 +773,7 @@ export function ChatMessage({
   // drawn above the bubble; the bubble itself holds the answer, exactly as it
   // does for a reply, which is what makes the two read as one conversation.
   const isAgentTurn = message.response_kind === "agent_run";
+  const isCompactionSummary = message.response_kind === "compaction_summary";
   const run = isAgentTurn ? agentRun : null;
   const delivery = run?.delivery;
   const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
@@ -782,7 +784,7 @@ export function ChatMessage({
   const hideEmptyBubble = isAgentTurn && !message.content?.trim();
 
   return (
-    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}${isAgentTurn ? " agent-turn-message" : ""}`}>
+    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}${isAgentTurn ? " agent-turn-message" : ""}${isCompactionSummary ? " compaction-summary-message" : ""}`}>
       <div className="message-stack">
         <span className="message-sender">{isUser ? "You" : "Neo"}</span>
         {isAgentTurn ? (
@@ -821,6 +823,18 @@ export function ChatMessage({
           </form>
         ) : (
           <>
+            {isCompactionSummary && (
+              <div className="compaction-summary-header">
+                <CompactIcon />
+                <span>Conversation compacted</span>
+                {Number.isFinite(message.metadata?.compacted_message_count) ? (
+                  <span className="compaction-summary-count">
+                    {message.metadata.compacted_message_count} earlier message
+                    {message.metadata.compacted_message_count === 1 ? "" : "s"} summarized
+                  </span>
+                ) : null}
+              </div>
+            )}
             {/* Escaped by renderMessageHtml before any tag is emitted. */}
             <div
               className="chat-content"
@@ -883,7 +897,7 @@ export function ChatMessage({
                       </button>
                     ) : null}
                   </>
-                ) : (
+                ) : isCompactionSummary ? null : (
                   <>
                     <button
                       type="button"
@@ -907,7 +921,7 @@ export function ChatMessage({
                 )}
               </MessageActionsMenu>
             </div>
-            {!isUser && !isAgentTurn && thinkingOpen && (
+            {!isUser && !isAgentTurn && !isCompactionSummary && thinkingOpen && (
               <div className="thinking-panel">
                 {hasThinking ? (
                   message.thinking
@@ -1007,6 +1021,36 @@ function AttachFilesAction({ attaching, disabled, onPick }) {
   );
 }
 
+/** A shrinking bracket -- the closest glyph to "make this smaller". */
+function CompactIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 5H5v4" />
+      <path d="m5 5 6 6" />
+      <path d="M15 19h4v-4" />
+      <path d="m19 19-6-6" />
+    </svg>
+  );
+}
+
+/** Compacting reads the same in both modes, so it is written once, like AttachFilesAction. */
+function CompactConversationAction({ compacting, disabled, onCompact }) {
+  return (
+    <button
+      type="button"
+      className="composer-menu-action chat-compact-button"
+      onClick={onCompact}
+      disabled={disabled || compacting}
+      title="Summarize older messages to reduce context window usage."
+      aria-label={compacting ? "Compacting conversation" : "Compact conversation"}
+    >
+      <CompactIcon />
+      <span>{compacting ? "Compacting…" : "Compact conversation"}</span>
+    </button>
+  );
+}
+
 function SubmitArrowIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
@@ -1053,6 +1097,8 @@ export function ChatComposer({
   onStop,
   stopping = false,
   steering = false,
+  onCompactConversation,
+  compacting = false,
 }) {
   const textareaRef = useRef(null);
   const attachInputRef = useRef(null);
@@ -1252,16 +1298,34 @@ export function ChatComposer({
                       <WrenchIcon />
                       <span>Tools</span>
                     </button>
+                    <CompactConversationAction
+                      compacting={compacting}
+                      disabled={disabled}
+                      onCompact={() => {
+                        setMenuOpen(false);
+                        onCompactConversation?.();
+                      }}
+                    />
                   </>
                 ) : (
-                  <AttachFilesAction
-                    attaching={attaching}
-                    disabled={disabled}
-                    onPick={() => {
-                      setMenuOpen(false);
-                      attachInputRef.current?.click();
-                    }}
-                  />
+                  <>
+                    <AttachFilesAction
+                      attaching={attaching}
+                      disabled={disabled}
+                      onPick={() => {
+                        setMenuOpen(false);
+                        attachInputRef.current?.click();
+                      }}
+                    />
+                    <CompactConversationAction
+                      compacting={compacting}
+                      disabled={disabled}
+                      onCompact={() => {
+                        setMenuOpen(false);
+                        onCompactConversation?.();
+                      }}
+                    />
+                  </>
                 )}
               </div>
             </div>
@@ -1987,6 +2051,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   // Held in a ref, not state, so a second click in the same tick is refused before
   // React has had a chance to re-render the disabled button.
   const sendGuardRef = useRef(createSendGuard());
+  // Which reply last triggered an auto-compact, keyed by that message's id (a
+  // global PK) so the same reply never re-fires it while any new one always can.
+  const lastAutoCompactedMessageIdRef = useRef(null);
 
   const [messages, setMessages] = useState([]);
   // The whole loaded chat's token spend, for the Context Window popover -- every
@@ -2000,6 +2067,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [chatAttachments, setChatAttachments] = useState([]);
   const [attachingFiles, setAttachingFiles] = useState(false);
   const [attachError, setAttachError] = useState("");
+  const [compacting, setCompacting] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showProviderRuntime, setShowProviderRuntime] = useState(false);
   const [showEvaluationHarness, setShowEvaluationHarness] = useState(false);
@@ -2223,7 +2291,27 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       if (!chatId) return;
       if (event?.type === "run.failed" && event.error) setStatusError(event.error);
       try {
-        await loadChat(chatId, { history: "none" });
+        const thread = await loadChat(chatId, { history: "none" });
+        // Same math ContextWindowIndicator uses, so "100%" here matches what the
+        // ring shows -- checked once the turn has actually finished, never mid-stream.
+        const latest = [...thread.messages].reverse().find((message) => Number.isFinite(message.total_tokens));
+        if (latest && lastAutoCompactedMessageIdRef.current !== latest.id) {
+          const used = sumTotalTokens(thread.messages);
+          const windowSize = resolveContextWindow(latest, contextWindowIndex);
+          const pct = windowSize ? (used / windowSize) * 100 : null;
+          if (pct !== null && pct >= 100) {
+            lastAutoCompactedMessageIdRef.current = latest.id;
+            try {
+              const result = await api.compactChat(chatId);
+              if (result.compacted_message_count > 0) {
+                await loadChat(chatId, { history: "none" });
+              }
+            } catch {
+              // Silent: a background convenience, not a user-initiated action --
+              // the percentage simply stays elevated and the manual button remains.
+            }
+          }
+        }
       } catch (error) {
         setStatusError(`Could not reload the chat: ${errorMessage(error)}`);
       }
@@ -2233,7 +2321,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       setGenerationStartedAt(null);
       refreshSidebar().catch(() => {});
     },
-    [loadChat, refreshSidebar],
+    [loadChat, refreshSidebar, contextWindowIndex],
   );
 
   const { live } = useChatStream(activeChat?.id ?? null, streamAfter, { onTurnEnd: handleTurnEnd });
@@ -2883,6 +2971,24 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     setShowOpenFolder(true);
   }
 
+  async function handleCompactConversation() {
+    if (!activeChat?.id || compacting) return;
+    setStatusError("");
+    setCompacting(true);
+    try {
+      const result = await api.compactChat(activeChat.id);
+      await loadChat(activeChat.id, { history: "none" });
+      if (result.compacted_message_count === 0) {
+        setChatAgentMessage("Nothing to compact yet.");
+        window.setTimeout(() => setChatAgentMessage(""), 3000);
+      }
+    } catch (error) {
+      setStatusError(`Could not compact this conversation: ${errorMessage(error)}`);
+    } finally {
+      setCompacting(false);
+    }
+  }
+
   // The repo chip shows what was opened, so the attach says nothing further;
   // the composer's message line is left for failures. The folder is saved onto
   // the chat, so every agent turn in this conversation works on it.
@@ -3156,6 +3262,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           folderAttaching={false}
           onOpenToolsPanel={() => setShowChatTools(true)}
           agentMessage={chatAgentMessage}
+          onCompactConversation={handleCompactConversation}
+          compacting={compacting}
         />
         {showOpenFolder && (
           <OpenFolderDialog

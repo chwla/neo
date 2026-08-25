@@ -459,6 +459,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message_id: messageId }),
     }),
+  compactChat: (chatId, llmId = null) =>
+    request(`/chats/${chatId}/compact`, {
+      method: "POST",
+      body: JSON.stringify({ llm_id: llmId }),
+    }),
   getChat: (chatId) => request(`/chats/${chatId}`),
   sendMessage: (chatId, prompt, llmId = null, context = {}) =>
     request(`/chats/${chatId}/messages`, {
