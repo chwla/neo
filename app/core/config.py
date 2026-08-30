@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # Reasoning models spend part of this budget thinking before they emit any answer:
     # gemma4 uses ~550 tokens on reasoning alone, so a 512 budget hit the cap before
     # writing a word and every retry repeated it.
+    #: How long Ollama keeps a model resident after a request. Its own default
+    #: is 5 minutes, which is shorter than the gap between two chats -- so the
+    #: model is evicted and the next message pays a full cold load (seconds for
+    #: a small model, minutes for a large one). That cost lands on whoever
+    #: starts a new conversation, which is exactly when it is least expected.
+    ollama_keep_alive: str = Field(default="30m")
     chat_num_predict: int = Field(default=2048)
     chat_history_turns: int = Field(default=8, ge=1, le=24)
     llm_config_path: str = Field(default="neo_llms.json")

@@ -67,7 +67,11 @@ def build_client(provider: dict, model: dict, *, timeout=None, num_predict=None,
     if provider_type == "ollama":
         # Only Ollama takes a context size per request; the OpenAI-compatible API has no
         # equivalent option and infers the window from the model.
-        return OllamaClient(**common, num_ctx=num_ctx)
+        from app.core.config import get_settings
+
+        return OllamaClient(
+            **common, num_ctx=num_ctx, keep_alive=get_settings().ollama_keep_alive
+        )
     if provider_type == "openai_compatible":
         key_ref = provider.get("api_key_ref")
         api_key = os.getenv(key_ref) if key_ref else None

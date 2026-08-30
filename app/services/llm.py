@@ -248,10 +248,26 @@ class OllamaClient(BaseLLMClient):
         timeout: int,
         num_predict: int,
         num_ctx: int | None = None,
+        keep_alive: str | None = None,
     ) -> None:
         self.model, self.base_url = model, base_url.rstrip("/")
         self.timeout, self.num_predict = timeout, num_predict
         self.num_ctx = num_ctx
+        self.keep_alive = keep_alive
+
+    def _body(self, messages: list[LLMMessage], temperature: float, num_predict, *, stream: bool):
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": _ollama_messages(messages),
+            "stream": stream,
+            "options": self._options(temperature, num_predict),
+        }
+        if self.keep_alive:
+            # Without this Ollama applies its own 5-minute idle timeout, which
+            # is shorter than the pause before someone opens a new chat -- so
+            # the first message of that chat reloads the whole model.
+            body["keep_alive"] = self.keep_alive
+        return body
 
     def is_available(self) -> bool:
         try:
@@ -292,12 +308,9 @@ class OllamaClient(BaseLLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": _ollama_messages(messages),
-            "stream": False,
-            "options": self._options(temperature, num_predict),
-        }
+        body: dict[str, Any] = self._body(
+            messages, temperature, num_predict, stream=False
+        )
         if tools:
             body["tools"] = tools
         response = requests.post(
@@ -337,12 +350,7 @@ class OllamaClient(BaseLLMClient):
         started = time.perf_counter()
         response = requests.post(
             f"{self.base_url}/api/chat",
-            json={
-                "model": self.model,
-                "messages": _ollama_messages(messages),
-                "stream": True,
-                "options": self._options(temperature, num_predict),
-            },
+            json=self._body(messages, temperature, num_predict, stream=True),
             stream=True,
             timeout=self.timeout,
         )

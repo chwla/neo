@@ -14,6 +14,7 @@ import app.services.calendar.store as store
 from app.services.calendar.intent import (
     CalendarDraftDecision,
     CalendarIntentClassifier,
+    is_social_pleasantry,
     looks_like_a_declarative_calendar_statement,
     merge_modification_into_draft,
 )
@@ -723,6 +724,11 @@ class CalendarContextService:
         locale: str | None,
     ) -> tuple[str, dict[str, Any]] | None:
         self.last_execution = "none"
+        if is_social_pleasantry(prompt):
+            # Nothing the classifier could answer would make a greeting a
+            # calendar request, so the call is pure latency on the message
+            # most likely to be someone's first in a chat.
+            return None
         zone = resolve_timezone(timezone, None, "UTC")
         now = datetime.now(zone)
         candidates = [

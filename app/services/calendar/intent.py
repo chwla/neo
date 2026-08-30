@@ -735,6 +735,46 @@ _TEMPORAL_EXPRESSION = re.compile(
 )
 
 
+#: Whole messages that cannot be a calendar request whatever the model says.
+#: Matched against the entire normalized message, never against a substring:
+#: "hi" skips the classifier, "hi, book me a dentist Friday" does not.
+#:
+#: Confirmations ("ok", "sure", "yes") are deliberately absent even though
+#: they look equally harmless -- they carry meaning against a proposal, and
+#: the cost of being wrong there is a change the user did not approve.
+_SOCIAL_PLEASANTRIES = frozenset(
+    {
+        "hi", "hii", "hiya", "hello", "hey", "yo", "howdy", "sup",
+        "hi there", "hello there", "hey there",
+        "good morning", "good afternoon", "good evening", "good night",
+        "thanks", "thank you", "thanks a lot", "thank you so much", "ty", "cheers",
+        "bye", "goodbye", "see you", "see ya", "later",
+        "how are you", "how are you doing", "hows it going", "how's it going",
+        "whats up", "what's up",
+        "nice", "cool", "great", "awesome", "perfect", "lovely",
+        "no worries", "youre welcome", "you're welcome", "np", "yw",
+        "sorry", "my bad", "please",
+    }
+)
+
+
+def is_social_pleasantry(prompt: str) -> bool:
+    """A greeting or courtesy with nothing else in it.
+
+    This is a path *away* from calendar behavior, never into it, which is why
+    a fixed list is safe here when it would not be for recognising a request:
+    the worst a false positive can do is answer a greeting without first
+    asking a model whether "hello" was an appointment. A false negative costs
+    only the round-trip that happens today.
+
+    That round-trip is not free -- it is a separate request that evaluates a
+    ~2,600-token system prompt before it can answer "no", several seconds on
+    a local model, paid on the message most likely to be someone's first.
+    """
+    cleaned = " ".join((prompt or "").lower().split()).strip(" .!?,;:-")
+    return bool(cleaned) and cleaned in _SOCIAL_PLEASANTRIES
+
+
 def looks_like_a_declarative_calendar_statement(prompt: str) -> bool:
     """A narrow, deterministic trigger for the declarative-refinement pass.
 
