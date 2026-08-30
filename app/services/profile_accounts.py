@@ -650,6 +650,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
         from app.services.agent_core.store import initialize_agent_core_tables
         from app.services.agent_framework import initialize_agent_framework_tables
         from app.services.bundles import initialize_bundle_tables
+        from app.services.calendar import initialize_calendar_tables
         from app.services.command_sandbox import initialize_command_sandbox_tables
         from app.services.context_memory import initialize_context_memory_tables
         from app.services.continuity import initialize_continuity_tables
@@ -676,6 +677,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_notes_tables,
             initialize_project_tables,
             initialize_task_tables,
+            initialize_calendar_tables,
             initialize_agent_core_tables,
             initialize_bundle_tables,
             initialize_agent_framework_tables,

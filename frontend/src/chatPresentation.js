@@ -102,6 +102,10 @@ export function formatResponseKind(message) {
     structured_currency: "Currency",
     structured_weather: "Weather",
     web_search: "Web search",
+    calendar_proposal: "Calendar proposal",
+    calendar_proposal_reask: "Calendar",
+    calendar_clarification: "Calendar",
+    calendar_read: "Calendar",
   };
   if (message.response_kind && labels[message.response_kind]) {
     return labels[message.response_kind];

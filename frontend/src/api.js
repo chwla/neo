@@ -792,6 +792,26 @@ export const api = {
   createProjectTask: (projectId, payload) =>
     request(`/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(payload) }),
 
+  calendarEventsList: (start, end) =>
+    request(`/calendar/events?${new URLSearchParams({ start, end }).toString()}`),
+  calendarEvent: (eventId) => request(`/calendar/events/${eventId}`),
+  createCalendarEvent: (payload) =>
+    request("/calendar/events", { method: "POST", body: JSON.stringify(payload) }),
+  updateCalendarEvent: (eventId, payload) =>
+    request(`/calendar/events/${eventId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteCalendarEvent: (eventId) => request(`/calendar/events/${eventId}`, { method: "DELETE" }),
+  // Resolving a chat proposal goes through the proposal itself, not the generic
+  // event routes: the server writes the event and records the decision on the
+  // proposal message in one request, so the card can never disagree with the
+  // calendar after a reload.
+  approveCalendarProposal: (messageId) =>
+    request(`/calendar/proposals/${messageId}/approve`, { method: "POST" }),
+  declineCalendarProposal: (messageId) =>
+    request(`/calendar/proposals/${messageId}/decline`, { method: "POST" }),
+  calendarPendingReminders: () => request("/calendar/reminders/pending"),
+  ackCalendarReminder: (deliveryId) =>
+    request(`/calendar/reminders/${deliveryId}/ack`, { method: "POST" }),
+
   createAgentSession: (payload) =>
     request("/agent-sessions", { method: "POST", body: JSON.stringify(payload) }),
   agentSession: (sessionId) => request(`/agent-sessions/${sessionId}`),

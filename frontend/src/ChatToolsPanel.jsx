@@ -32,6 +32,11 @@ const TOOL_GROUP_ROWS = [
     label: "Memory",
     description: "Recall earlier context saved from past chats.",
   },
+  {
+    key: "calendar",
+    label: "Calendar",
+    description: "Read the calendar, and propose adding, changing, or removing events (always asks first).",
+  },
 ];
 
 function groupState(tools, groupKey) {

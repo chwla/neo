@@ -154,6 +154,13 @@ Never select web from a topic word alone. Words such as current, currently,
 latest, recovery, memory, research, files, projects, notes, tasks, agent, and
 restart are not web commands by themselves.
 
+When a request asks for current, latest, recent, today's, real-time, or
+otherwise time-sensitive information, or the answer materially depends on
+information that may have changed since your training, route to web --
+automatically, without waiting for the user to ask permission. Stable/general
+questions (how something works, an explanation, a general recommendation not
+tied to "now"/"currently"/a specific year) route to direct.
+
 Examples:
 USER: What am I currently building?
 JSON: {"route":"memory","confidence":0.99}
@@ -175,6 +182,16 @@ USER: What changed in the latest React release?
 JSON: {"route":"web","confidence":0.95}
 USER: What is new in Python 3.13?
 JSON: {"route":"web","confidence":0.93}
+USER: What is the latest version of Next.js?
+JSON: {"route":"web","confidence":0.95}
+USER: What happened in the news today?
+JSON: {"route":"web","confidence":0.97}
+USER: What are the best calendar apps in 2026?
+JSON: {"route":"web","confidence":0.9}
+USER: What is a good calendar app?
+JSON: {"route":"direct","confidence":0.9}
+USER: What is a binary search tree?
+JSON: {"route":"direct","confidence":0.97}
 """
 
 _ROUTE_DECISION_JSON = re.compile(r"\{\s*\"route\".*?\}", re.DOTALL)

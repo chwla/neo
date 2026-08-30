@@ -65,6 +65,21 @@ _UNAVAILABLE_MARKERS = (
     "network is unreachable",
 )
 
+#: Statuses that mean the provider answered and rejected the request as *wrong*,
+#: rather than failing to serve it at all. Asking Ollama for a model it has not
+#: pulled is a plain 404 -- which, as an ``HTTPError``, used to fall through to
+#: "transient_network" and tell the user "Neo could not reach Ollama. Check the
+#: connection", sending them after a connection that was never broken. What is
+#: actually wrong is the configured model, and that is what they should be told.
+#: 429 is deliberately absent: rate limiting is decided before this.
+_CONFIG_STATUSES = frozenset({400, 401, 403, 404, 405})
+
+
+def _status_code(exc: Exception) -> int | None:
+    """The HTTP status a provider answered with, if the failure carries one."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
 
 def provider_label(provider_type: str | None) -> str:
     return _PROVIDER_LABELS.get(str(provider_type or "").strip().lower(), _DEFAULT_LABEL)
@@ -82,6 +97,10 @@ def classify(exc: Exception) -> str:
         return "rate_limited"
     if isinstance(exc, (TimeoutError, requests.Timeout)) or "timeout" in message:
         return "timeout"
+    # Decided after rate limiting so a 429 stays a rate limit, and before the
+    # transport buckets below so a served rejection is never read as one.
+    if _status_code(exc) in _CONFIG_STATUSES:
+        return "auth_or_config"
     if "context" in message and ("large" in message or "length" in message):
         return "context_too_large"
     if "unsupported" in message or "capability" in message:

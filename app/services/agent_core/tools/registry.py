@@ -13,7 +13,15 @@ import time
 from typing import Any
 
 from app.services.agent_core.permissions import PermissionResolver
-from app.services.agent_core.tools import checkpoint, deliver, files, knowledge, shell, todo
+from app.services.agent_core.tools import (
+    calendar,
+    checkpoint,
+    deliver,
+    files,
+    knowledge,
+    shell,
+    todo,
+)
 from app.services.agent_core.tools.base import AgentTool, ToolContext
 from app.services.agent_core.types import PermissionMode, ToolCall, ToolResult
 from app.services.agent_core.workspace import is_live
@@ -47,6 +55,7 @@ def default_tools() -> list[AgentTool]:
         *todo.TOOLS,
         *checkpoint.TOOLS,
         *deliver.TOOLS,
+        *calendar.TOOLS,
     ]
 
 
@@ -59,6 +68,12 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "file_operations": ["read_file", "list_dir", "write_file", "edit_file", "delete_file"],
     "search": ["glob", "grep", "find_symbol", "web_search", "web_fetch"],
     "memory": ["recall_memory"],
+    "calendar": [
+        "list_calendar_events",
+        "create_calendar_event",
+        "update_calendar_event",
+        "delete_calendar_event",
+    ],
 }
 
 #: Reverse lookup: tool name -> its group key, or absent if ungrouped.

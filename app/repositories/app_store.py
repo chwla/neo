@@ -125,6 +125,9 @@ class AppStore:
             )
         return results
 
+    def get_chat_message(self, message_id: int) -> ChatMessage | None:
+        return self.db.get(ChatMessage, message_id)
+
     def list_chat_messages(self, chat_id: int) -> list[ChatMessage]:
         return list(
             self.db.scalars(
@@ -204,6 +207,48 @@ class AppStore:
         if message is not None:
             message.content = content
             self.db.flush()
+        return message
+
+    def resolve_calendar_proposal(
+        self,
+        message_id: int,
+        *,
+        status: str,
+        event_id: str | None = None,
+        note: str | None = None,
+    ) -> ChatMessage | None:
+        """Stamp the outcome of a card click onto the proposal message itself.
+
+        This is the durable record of "the user decided" -- the thing whose
+        absence let an approved card come back offering Approve again after a
+        view switch. It lives on the proposal's own metadata rather than in a
+        following message, so it is position-independent and survives a
+        reload.
+
+        Refuses a message that is not a proposal, and refuses one already
+        carrying a ``status``. That second refusal is what makes approving
+        idempotent: a double-click or a stale tab gets ``None`` here, and the
+        route turns it into a 409 rather than a second write to the calendar.
+        """
+        message = self.db.get(ChatMessage, message_id)
+        if message is None or message.response_kind != "calendar_proposal":
+            return None
+        try:
+            metadata = json.loads(message.metadata_json) if message.metadata_json else {}
+            proposal = metadata["calendar_proposal"]
+        except (TypeError, KeyError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(proposal, dict) or proposal.get("status"):
+            return None
+        proposal["status"] = status
+        proposal["resolved_at"] = datetime.now(UTC).isoformat()
+        if event_id is not None:
+            proposal["resolved_event_id"] = event_id
+        if note is not None:
+            proposal["resolution_note"] = note
+        metadata["calendar_proposal"] = proposal
+        message.metadata_json = json.dumps(metadata, sort_keys=True)
+        self.db.flush()
         return message
 
     def rename_chat_from_prompt(self, chat_id: int, prompt: str) -> None:

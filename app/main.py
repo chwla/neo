@@ -11,6 +11,7 @@ from app.api.routes.accounts import session_for
 from app.api.routes.agent_framework import router as agent_framework_router
 from app.api.routes.agent_sessions import router as agent_sessions_router
 from app.api.routes.bundles import router as bundles_router
+from app.api.routes.calendar import router as calendar_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.code_index import router as code_index_router
 from app.api.routes.command_sandbox import router as command_sandbox_router
@@ -50,6 +51,7 @@ from app.services.agent_core.store import (
 )
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.bundles import initialize_bundle_tables
+from app.services.calendar import initialize_calendar_tables, start_reminder_sweep
 from app.services.command_sandbox import initialize_command_sandbox_tables
 from app.services.context_memory import initialize_context_memory_tables
 from app.services.continuity import initialize_continuity_tables
@@ -153,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(search_router, prefix="/api")
     app.include_router(notes_router, prefix="/api")
     app.include_router(tasks_router, prefix="/api")
+    app.include_router(calendar_router, prefix="/api")
     app.include_router(research_router, prefix="/api")
     app.include_router(web_router)
     app.include_router(web_router, prefix="/api")
@@ -176,6 +179,7 @@ def create_app() -> FastAPI:
     initialize_profile_registry()
     initialize_project_tables()
     initialize_task_tables()
+    initialize_calendar_tables()
     initialize_agent_core_tables()
     initialize_bundle_tables()
     initialize_agent_framework_tables()
@@ -206,6 +210,7 @@ def create_app() -> FastAPI:
     # Runs from before every run was a turn of a chat have nowhere left to be
     # opened from, so they are dropped once rather than kept as orphans.
     delete_chatless_sessions()
+    start_reminder_sweep()
 
     @app.on_event("shutdown")
     def remove_temporary_guest_profiles() -> None:

@@ -796,7 +796,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 /* Existing full-page workspaces retain their real controls but use the redesign's flat visual language. */
 .project-page, .task-page, .notes-page, .files-page, .repos-page, .research-page { padding-left: 0 !important; }
 .project-page > main, .task-page > main, .notes-page > main, .files-page > main, .repos-page > main, .research-page > main,
-.projects-layout, .tasks-layout, .notes-layout, .files-layout, .repos-layout, .research-layout { flex: 1; overflow: auto; padding: 24px 40px; }
+.projects-layout, .tasks-layout, .notes-layout, .files-layout, .repos-layout, .research-layout, .calendar-layout { flex: 1; overflow: auto; padding: 24px 40px; }
 [class$="-toolbar"], [class$="-actions"] { gap: 8px; }
 [class$="-card"], [class$="-panel"], [class$="-item"] { border-color: var(--neo-line) !important; border-radius: 2px !important; box-shadow: none !important; }
 [class$="-card"], [class$="-panel"] { background: var(--neo-panel) !important; }
@@ -830,7 +830,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .profile-picker-error { border-left: 2px solid var(--neo-danger); background: #160d0d; padding: 10px; color: #d97974; font-size: 12px; }
 
 /* Data workspaces */
-.projects-layout, .tasks-layout, .notes-layout, .files-layout {
+.projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout {
   display: grid;
   grid-template-columns: minmax(260px, 34%) minmax(0, 1fr);
   width: 100%;
@@ -840,13 +840,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   padding: 0;
   background: var(--neo-bg);
 }
-.projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane {
+.calendar-layout { grid-template-columns: minmax(420px, 62%) minmax(0, 1fr); }
+.projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane, .calendar-grid-pane {
   min-width: 0;
   overflow: auto;
   border-right: 1px solid var(--neo-line);
   padding: 0 20px 24px;
 }
-.projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane {
+.projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane, .calendar-detail-pane {
   min-width: 0;
   overflow: auto;
   padding: 20px 28px 36px;
@@ -916,6 +917,53 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .task-status, .task-priority, .agent-status, .research-status-badge { color: var(--neo-green); font: 9px "JetBrains Mono", monospace; text-transform: uppercase; }
 .task-help { color: #444; font: 10px/1.5 "JetBrains Mono", monospace; }
 
+.calendar-toolbar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; }
+.calendar-month-label { flex: 1; color: var(--neo-text); font-size: 13px; }
+.calendar-weekday-row, .calendar-month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.calendar-weekday-cell { padding: 4px 0; color: #444; font: 9px "JetBrains Mono", monospace; text-align: center; text-transform: uppercase; }
+.calendar-day-cell { display: flex; flex-direction: column; gap: 4px; min-height: 84px; border: 1px solid #141414; background: transparent; padding: 6px; color: #777; text-align: left; align-items: stretch; }
+.calendar-day-cell:hover { background: rgba(255,255,255,.018); }
+.calendar-day-cell.selected { border-color: var(--neo-green); background: rgba(57,255,20,.035); }
+.calendar-day-cell.is-today .calendar-day-number { color: var(--neo-green); }
+.calendar-day-cell.outside-month { opacity: .35; }
+.calendar-day-number { font: 11px "JetBrains Mono", monospace; }
+.calendar-day-events { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.calendar-event-pill { overflow: hidden; border-radius: 2px; background: rgba(57,255,20,.1); padding: 1px 4px; color: #ccc; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.calendar-event-pill.neo { background: rgba(120,170,255,.12); }
+.calendar-event-overflow { color: #444; font-size: 9px; }
+.calendar-agenda-list { display: grid; gap: 2px; }
+.calendar-agenda-row { display: flex; align-items: center; gap: 10px; border: 0; border-bottom: 1px solid #141414; background: transparent; padding: 10px; color: #ccc; text-align: left; }
+.calendar-agenda-row:hover { background: rgba(255,255,255,.018); }
+.calendar-agenda-time { min-width: 68px; color: #555; font: 10px "JetBrains Mono", monospace; }
+.calendar-agenda-title { flex: 1; font-size: 12px; }
+.calendar-agenda-badge { border: 1px solid var(--neo-line-bright); border-radius: 2px; padding: 1px 6px; color: #555; font: 9px "JetBrains Mono", monospace; text-transform: uppercase; }
+.calendar-agenda-badge.neo { color: var(--neo-green); border-color: rgba(57,255,20,.3); }
+.calendar-editor { display: grid; gap: 10px; }
+.calendar-recurrence, .calendar-reminders { display: grid; gap: 8px; margin-top: 4px; border-top: 1px solid var(--neo-line); padding-top: 12px; }
+.calendar-recurrence label { display: grid; gap: 5px; color: #555; font-size: 10px; }
+.calendar-recurrence select, .calendar-recurrence input { min-height: 34px; padding: 6px 8px; }
+.calendar-weekday-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.calendar-weekday-toggle { display: flex; align-items: center; gap: 4px; color: #777; font-size: 10px; }
+
+.calendar-proposal-card { display: grid; gap: 8px; margin-top: 10px; border: 1px solid var(--neo-line-bright); border-left: 2px solid var(--neo-green); border-radius: 2px; padding: 12px; }
+.calendar-proposal-title { color: var(--neo-text); font-size: 12px; }
+.calendar-proposal-when { color: #666; font: 10px "JetBrains Mono", monospace; }
+.calendar-proposal-status { color: #777; font-size: 11px; }
+.calendar-proposal-status.success { color: var(--neo-green); }
+.calendar-proposal-status.error { color: var(--neo-danger); }
+.calendar-proposal-link { border: 0; background: transparent; padding: 0; color: var(--neo-green); text-decoration: underline; }
+
+.reminder-toast-stack { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: grid; gap: 8px; width: min(320px, calc(100vw - 40px)); }
+.reminder-toast { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--neo-line-bright); border-left: 2px solid var(--neo-green); border-radius: 2px; background: var(--neo-panel); padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.reminder-toast-body { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.reminder-toast-body strong { overflow: hidden; color: var(--neo-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.reminder-toast-body span { color: #666; font: 10px "JetBrains Mono", monospace; }
+.reminder-toast-dismiss { border: 0; background: transparent; padding: 0; color: #555; font-size: 16px; line-height: 1; }
+.reminder-toast-dismiss:hover { color: var(--neo-green); }
+
+@media (max-width: 900px) { .calendar-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); } }
+@media (max-width: 640px) { .calendar-day-cell { min-height: 56px; } }
+
 .research-layout { display: grid; grid-template-columns: minmax(0,1fr) 280px; width: 100%; height: 100vh; overflow: hidden; padding: 0; }
 .research-main { min-width: 0; overflow: auto; padding: 0 32px 32px; }
 .research-header { margin: 0 -32px 16px; padding: 0 32px; }
@@ -955,7 +1003,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .chat-input-wrap { padding-right: 22px; padding-left: 22px; }
   .neo-shell, .neo-view-header, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
   .settings-menu, .llm-settings-layout, .agent-settings-grid, .tools-settings-grid { grid-template-columns: 1fr; }
-  .projects-layout, .tasks-layout, .notes-layout, .files-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
+  .projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
   .research-layout { grid-template-columns: 1fr; overflow: auto; }
   .research-sidebar { border-top: 1px solid var(--neo-line); border-left: 0; }
   .repos-browser { grid-template-columns: 1fr; }
@@ -978,9 +1026,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .modal-backdrop { padding: 10px; }
   .neo-dialog { max-height: calc(100vh - 20px); padding: 0 16px 18px; }
   .profile-picker { padding: 16px; }
-  .projects-layout, .tasks-layout, .notes-layout, .files-layout { display: block; height: auto; min-height: 56vh; overflow: auto; }
-  .projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
-  .projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane { min-height: 320px; }
+  .projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout { display: block; height: auto; min-height: 56vh; overflow: auto; }
+  .projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane, .calendar-grid-pane { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
+  .projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane, .calendar-detail-pane { min-height: 320px; }
   .repos-register form { grid-template-columns: 1fr; }
   .projects-editor-grid, .task-field-grid { grid-template-columns: 1fr; }
 }

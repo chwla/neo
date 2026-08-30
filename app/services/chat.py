@@ -19,6 +19,11 @@ from app.db.session import build_engine
 from app.models import ChatGeneration, ChatMessage
 from app.repositories.app_store import AppStore
 from app.services.agent_core.guidance import agent_run_guidance
+from app.services.calendar.service import (
+    CalendarContextService,
+    CalendarTurnExecution,
+    describe_calendar_draft,
+)
 from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
 from app.services.context import ContextPackage
@@ -44,6 +49,13 @@ from app.services.memory_chat import (
     RecallPromptOrchestrator,
     RecallPromptSelection,
     RecallQuery,
+)
+from app.services.pending_action import (
+    PROPOSAL_REASK_KIND,
+    PendingCalendarProposal,
+    calendar_proposal_status,
+    find_pending_calendar_proposal,
+    resolve_pending_action_reply,
 )
 from app.services.projects import ProjectContextService
 from app.services.rules.resolver import RuleResolver
@@ -80,6 +92,71 @@ _MEMORY_FORGET_OUTCOMES = frozenset({"archived", "forgotten", "erased_permanentl
 # the model read the deleted fact straight off the transcript and repeat it back
 # while insisting it had forgotten it.
 _FORGOTTEN_TURN_PLACEHOLDER = "[A memory was removed in this turn. Its content is unavailable.]"
+
+#: A calendar proposal that was never carried out is an *expired offer*, not a
+#: record that anything was written. Replayed verbatim it supplies both the
+#: event details and an open "Want me to create it?" question sitting directly
+#: above the user's next reply -- which is how "I've added the dentist
+#: appointment to your calendar" got produced on a turn that executed nothing.
+#: Annotating the text was tried first and was not enough: the model kept
+#: completing the offer/answer pattern from the details still in front of it.
+#: So the expired offer is replaced the same way a forgotten memory is, for
+#: the same reason -- the fact that an offer happened survives, the material
+#: that lets it be restated as an accomplished change does not. A proposal
+#: that *was* carried out is left untouched: the mutation result that follows
+#: it is the truthful record, and blanking the offer would contradict it.
+_EXPIRED_CALENDAR_OFFER_PLACEHOLDER = (
+    "[Earlier I offered to make a calendar change and asked the user to "
+    "confirm. That offer was never confirmed, so no calendar change was made "
+    "and the offer is no longer open.]"
+)
+
+#: The other half of the same rule. An approval is a click on the proposal
+#: card, which stamps the proposal message itself and writes nothing to the
+#: transcript -- so without this the model reads an offer with no answer
+#: after it and is told, by the placeholder above, that nothing happened.
+#: That was false for every event the user actually approved.
+_APPROVED_CALENDAR_OFFER_PLACEHOLDER = (
+    "[Earlier I offered to make a calendar change and the user approved it. "
+    "The change was made and the offer is no longer open.]"
+)
+
+_CALENDAR_EXECUTION_STATEMENT: dict[str, str] = {
+    "none": (
+        "No calendar event was created, updated, or deleted during this turn."
+    ),
+    "create": "A calendar event was created during this turn.",
+    "update": "A calendar event was updated during this turn.",
+    "delete": "A calendar event was deleted during this turn.",
+    "failed": (
+        "A calendar change was attempted during this turn and did not succeed."
+    ),
+}
+
+#: The whole answer for a turn whose authoritative execution state is
+#: ``"failed"``. A calendar change was asked for, the application refused to
+#: complete it, and the request itself is the only thing left in front of the
+#: model -- which is exactly the material free-text generation completes into
+#: "I've scheduled that for you". So generation is not given the turn at all;
+#: the application states what it did, which it alone knows. Deliberately
+#: says nothing about *which* event or *what* was wrong: the reasons are
+#: several (no such event, unparseable time, no date at all) and guessing
+#: between them would be inventing detail again.
+_CALENDAR_NOT_COMPLETED_REPLY = (
+    "I couldn't work out that calendar change, so I didn't make one -- nothing "
+    "was added, changed, or removed. Tell me the event and the exact day and "
+    "time you want and I'll set it up."
+)
+
+#: Recorded under the kind used for a change that was asked for and not
+#: made, so this reply reads back through history, the API and the UI exactly
+#: like every other unperformed calendar change -- and so it is never mistaken
+#: for an executed one by ``_calendar_offer_outcomes``, which counts only a
+#: proposal stamped ``status="approved"`` by its card.
+_CALENDAR_NOT_COMPLETED_METADATA: dict[str, Any] = {
+    "response_kind": "calendar_mutation_failed",
+    "metadata": {"calendar_mutation": {"completed": False}},
+}
 
 
 class NeoChatService:
@@ -140,6 +217,7 @@ class NeoChatService:
         self.web_search = WebSearchService(llm=self.ollama)
         self.project_context = ProjectContextService()
         self.task_context = TaskContextService()
+        self.calendar_context = CalendarContextService()
         self.file_context = WorkspaceFilesService()
         self.code_index = CodeIndexService()
         self.symbol_awareness = SymbolAwarenessService()
@@ -150,6 +228,13 @@ class NeoChatService:
         self.last_routing_debug: dict[str, Any] = {}
         self.last_search_intent: ResolvedSearchIntent | None = None
         self.search_intent_resolver = SearchIntentResolver()
+        #: The single authoritative record of what this turn did to the
+        #: calendar. Written only from the application's own deterministic
+        #: outcomes -- a verified mutation, or a committed mutation the
+        #: calendar layer refused to complete -- and never inferred from the
+        #: conversation, from a reply's wording, or from the model. Every
+        #: turn resets it, and generation is told its value.
+        self.calendar_execution: CalendarTurnExecution = "none"
 
     def build_context(self, prompt: str) -> ContextPackage:
         return ContextPackage(
@@ -170,6 +255,7 @@ class NeoChatService:
         web_context: WebContext | None = None,
         project_context: str | None = None,
         task_context: str | None = None,
+        calendar_execution: CalendarTurnExecution = "none",
     ) -> list[LLMMessage]:
         web_section = self._compact_web_context(web_context)
         project_section = project_context or "No project context loaded."
@@ -203,7 +289,9 @@ class NeoChatService:
             "by an answer attempt. If you know the answer, state it directly. If you do not "
             "know, say only: I'm not sure about that. I can look it up if you'd like. "
             "Never produce dead-end responses like 'I don't know yet' for general factual "
-            "questions. "
+            "questions. Whether this question needed current web information was already "
+            "decided before you were asked to answer. Do not re-decide that here or offer "
+            "to look things up yourself. "
             "Memory context and web context are separate. Use web context only for current, "
             "recent, or explicitly searched information. When web context is provided, cite "
             "web-grounded claims using bracket markers like [1]. Do not place raw URLs "
@@ -233,7 +321,15 @@ class NeoChatService:
             "by the backend before this answer is generated. Never claim that you saved, "
             "updated, stored, noted, remembered, removed, deleted, or forgot user information. "
             "If no deterministic memory-status response was returned before reaching you, "
-            "then no user-visible memory mutation is confirmed.\n\n"
+            "then no user-visible memory mutation is confirmed. "
+            "Calendar changes are controlled by the backend the same way. The calendar "
+            "state below is supplied by the application and is the only authority on "
+            "what happened this turn. Never say you created, updated, deleted, "
+            "scheduled, moved, or cancelled a calendar event unless that state says one "
+            "happened. An earlier offer to change the calendar is not evidence that the "
+            "change was carried out.\n\n"
+            f"Calendar activity this turn: {_CALENDAR_EXECUTION_STATEMENT[calendar_execution]}"
+            "\n\n"
             f"{memory_policy}\n\n"
             f"{memory_section}\n\n"
             f"Project context:\n{project_section}\n\n"
@@ -337,6 +433,7 @@ class NeoChatService:
         timezone: str | None = None,
         locale: str | None = None,
     ) -> str:
+        self.calendar_execution = "none"
         persisted_messages = self.store.list_chat_messages(chat_id)
         history = self._history_turns(persisted_messages)
         search_intent = self._resolve_search_intent(
@@ -432,6 +529,59 @@ class NeoChatService:
                 "web_search_needed": False,
             }
             return task_direct_reply
+        pending_calendar_result = self._handle_pending_calendar_reply(
+            prompt,
+            chat_id=chat_id,
+            history=persisted_messages,
+            llm=self.ollama,
+            timezone=timezone,
+            locale=locale,
+        )
+        if pending_calendar_result is not None:
+            reply, metadata = pending_calendar_result
+            self.store.add_chat_message(chat_id, "assistant", reply, **metadata)
+            self.db.commit()
+            self.last_web_debug = {"pending_action_resolved": True, "web_search_needed": False}
+            return reply
+        calendar_result = self.calendar_context.handle_prompt(
+            prompt, llm=self.ollama, timezone=timezone, locale=locale
+        )
+        if calendar_result is not None:
+            reply, metadata = calendar_result
+            calendar_refinement = metadata.pop("_calendar_refinement", None)
+            if calendar_refinement:
+                self._routing_diagnostic(
+                    chat_id,
+                    prompt,
+                    message_id=None,
+                    selected_route="calendar",
+                    component="calendar_declarative_refinement",
+                    final_status="refined",
+                    extra=calendar_refinement,
+                )
+            self.store.add_chat_message(chat_id, "assistant", reply, **metadata)
+            self.db.commit()
+            kind = metadata.get("response_kind")
+            self.last_web_debug = {
+                "calendar_context_loaded": kind == "calendar_read",
+                "calendar_proposal": kind == "calendar_proposal",
+                "web_search_needed": False,
+            }
+            return reply
+        self._adopt_calendar_execution()
+        if self.calendar_execution == "failed":
+            self.store.add_chat_message(
+                chat_id,
+                "assistant",
+                _CALENDAR_NOT_COMPLETED_REPLY,
+                **_CALENDAR_NOT_COMPLETED_METADATA,
+            )
+            self.db.commit()
+            self.last_web_debug = {
+                "calendar_failed_closed": True,
+                "web_search_needed": False,
+            }
+            return _CALENDAR_NOT_COMPLETED_REPLY
         structured_live = self._structured_live_answer(
             prompt,
             search_intent,
@@ -531,7 +681,13 @@ class NeoChatService:
             self.db.commit()
             return direct_web_reply
         messages = self.build_messages(
-            prompt, history, context, web_context, project_context, task_context
+            prompt,
+            history,
+            context,
+            web_context,
+            project_context,
+            task_context,
+            calendar_execution=self.calendar_execution,
         )
         self._finalize_memory_usage()
         self._persist_memory_diagnostic(user_message.id)
@@ -549,6 +705,7 @@ class NeoChatService:
         model_name = None
         route_name = "web_search" if web_context.needed else "chat"
         trace_id = None
+        uncertainty_refinement: dict[str, Any] | None = None
         try:
             result = self._generate_complete(
                 messages,
@@ -564,6 +721,23 @@ class NeoChatService:
                 )
             else:
                 reply = self._with_web_citations(result.content, web_context)
+            if (
+                search_intent.kind is SearchIntentKind.NONE
+                and not web_context.needed
+                and _reply_expresses_uncertainty(reply)
+            ):
+                refined = self._refine_uncertain_reply(
+                    prompt,
+                    context=context,
+                    history=history,
+                    project_context=project_context,
+                    task_context=task_context,
+                )
+                if refined is not None:
+                    reply, web_context, refined_result, uncertainty_refinement = refined
+                    route_name = "web_search" if web_context.needed else route_name
+                    if refined_result is not None:
+                        result = refined_result
             prompt_tokens = result.prompt_tokens
             completion_tokens = result.completion_tokens
             total_tokens = result.total_tokens
@@ -591,6 +765,16 @@ class NeoChatService:
                 )
                 raise
         memory_extraction = {"status": "scheduled", "source_message_id": str(user_message.id)}
+        if uncertainty_refinement is not None:
+            self._routing_diagnostic(
+                chat_id,
+                prompt,
+                message_id=user_message.id,
+                selected_route="web_search",
+                component="uncertainty_refinement",
+                final_status="refined",
+                extra=uncertainty_refinement,
+            )
         assistant = self.store.add_chat_message(
             chat_id,
             "assistant",
@@ -614,6 +798,11 @@ class NeoChatService:
                     context=context,
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                     final_answer=reply,
+                ),
+                **(
+                    {"uncertainty_refinement": uncertainty_refinement}
+                    if uncertainty_refinement
+                    else {}
                 ),
             },
         )
@@ -681,6 +870,8 @@ class NeoChatService:
         generation_id: str | None = None,
         generation_lease_token: str | None = None,
     ) -> Iterator[dict[str, Any]]:
+        self.calendar_execution = "none"
+
         def persist_assistant(content: str, **metadata) -> ChatMessage:
             return self._persist_stream_assistant(
                 chat_id,
@@ -880,6 +1071,97 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
+        pending_calendar_result = self._handle_pending_calendar_reply(
+            prompt,
+            chat_id=chat_id,
+            history=search_history,
+            llm=self.ollama,
+            timezone=timezone,
+            locale=locale,
+        )
+        if pending_calendar_result is not None:
+            reply, metadata = pending_calendar_result
+            assistant = persist_assistant(reply, **metadata)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {"pending_action_resolved": True, "web_search_needed": False}
+            yield {"type": "chunk", "content": reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+            }
+            return
+        calendar_result = self.calendar_context.handle_prompt(
+            prompt, llm=self.ollama, timezone=timezone, locale=locale
+        )
+        if calendar_result is not None:
+            reply, metadata = calendar_result
+            calendar_refinement = metadata.pop("_calendar_refinement", None)
+            if calendar_refinement:
+                self._routing_diagnostic(
+                    chat_id,
+                    prompt,
+                    message_id=None,
+                    selected_route="calendar",
+                    component="calendar_declarative_refinement",
+                    final_status="refined",
+                    extra=calendar_refinement,
+                )
+            assistant = persist_assistant(reply, **metadata)
+            self.db.commit()
+            self.db.refresh(assistant)
+            kind = metadata.get("response_kind")
+            self.last_web_debug = {
+                "calendar_context_loaded": kind == "calendar_read",
+                "calendar_proposal": kind == "calendar_proposal",
+                "web_search_needed": False,
+            }
+            yield {"type": "chunk", "content": reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": reply,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+                **{key: value for key, value in metadata.items() if key != "metadata"},
+            }
+            return
+        self._adopt_calendar_execution()
+        if self.calendar_execution == "failed":
+            assistant = persist_assistant(
+                _CALENDAR_NOT_COMPLETED_REPLY, **_CALENDAR_NOT_COMPLETED_METADATA
+            )
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {
+                "calendar_failed_closed": True,
+                "web_search_needed": False,
+            }
+            yield {"type": "chunk", "content": _CALENDAR_NOT_COMPLETED_REPLY}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": _CALENDAR_NOT_COMPLETED_REPLY,
+                "thinking": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "duration_ms": None,
+                "web_debug": self.last_web_debug,
+                "response_kind": _CALENDAR_NOT_COMPLETED_METADATA["response_kind"],
+            }
+            return
         structured_live = self._structured_live_answer(
             prompt,
             search_intent,
@@ -1045,7 +1327,13 @@ class NeoChatService:
             }
             return
         messages = self.build_messages(
-            prompt, history, context, web_context, project_context, task_context
+            prompt,
+            history,
+            context,
+            web_context,
+            project_context,
+            task_context,
+            calendar_execution=self.calendar_execution,
         )
         self._routing_diagnostic(
             chat_id,
@@ -1224,6 +1512,47 @@ class NeoChatService:
             )
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
+        uncertainty_refinement: dict[str, Any] | None = None
+        if (
+            not incomplete
+            and search_intent.kind is SearchIntentKind.NONE
+            and not web_context.needed
+            and _reply_expresses_uncertainty(reply)
+        ):
+            yield {"type": "status", "content": "Searching trusted sources"}
+            refined = self._refine_uncertain_reply(
+                prompt,
+                context=context,
+                history=history,
+                project_context=project_context,
+                task_context=task_context,
+            )
+            if refined is not None:
+                reply, web_context, refined_result, uncertainty_refinement = refined
+                if refined_result is not None:
+                    final_metadata["prompt_tokens"] = refined_result.prompt_tokens
+                    final_metadata["completion_tokens"] = refined_result.completion_tokens
+                    final_metadata["total_tokens"] = refined_result.total_tokens
+                    final_metadata["duration_ms"] = refined_result.duration_ms
+                    final_metadata["thinking"] = refined_result.thinking
+                    final_metadata["finish_reason"] = refined_result.finish_reason
+                    final_metadata["provider_name"] = (
+                        refined_result.provider_name or refined_result.provider_id
+                    )
+                    final_metadata["model_name"] = (
+                        refined_result.model_name or refined_result.model_id
+                    )
+                    final_metadata["route_name"] = refined_result.route_name or "web_search"
+                    final_metadata["provider_request_id"] = refined_result.provider_request_id
+                self._routing_diagnostic(
+                    chat_id,
+                    prompt,
+                    message_id=routing_message_id,
+                    selected_route="web_search",
+                    component="uncertainty_refinement",
+                    final_status="refined",
+                    extra=uncertainty_refinement,
+                )
         memory_extraction = {"status": "scheduled", "source_message_id": str(routing_message_id)}
         if buffer_for_validation or reply != streamed_reply:
             yield {"type": "replace", "content": reply}
@@ -1253,6 +1582,11 @@ class NeoChatService:
                     context=context,
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                     final_answer=reply,
+                ),
+                **(
+                    {"uncertainty_refinement": uncertainty_refinement}
+                    if uncertainty_refinement
+                    else {}
                 ),
             },
         )
@@ -1590,15 +1924,59 @@ class NeoChatService:
                 if messages[previous].role == "user":
                     redacted.add(previous)
                     break
-        return [
-            ChatTurn(
-                role=message.role,
-                content=(
-                    _FORGOTTEN_TURN_PLACEHOLDER if index in redacted else message.content
-                ),
-            )
-            for index, message in enumerate(messages)
-        ]
+        expired, approved = cls._calendar_offer_outcomes(messages)
+        turns: list[ChatTurn] = []
+        for index, message in enumerate(messages):
+            if index in redacted:
+                content = _FORGOTTEN_TURN_PLACEHOLDER
+            elif index in expired:
+                content = _EXPIRED_CALENDAR_OFFER_PLACEHOLDER
+            elif index in approved:
+                content = _APPROVED_CALENDAR_OFFER_PLACEHOLDER
+            else:
+                content = message.content
+            turns.append(ChatTurn(role=message.role, content=content))
+        return turns
+
+    @staticmethod
+    def _calendar_offer_outcomes(
+        messages: list[ChatMessage],
+    ) -> tuple[set[int], set[int]]:
+        """Indexes of proposals to rewrite before generation reads them.
+
+        Returns ``(expired, approved)``. The authority is the application's
+        own record of what it did, never an inference from wording: a
+        proposal carries ``status`` on its own metadata the moment its card
+        is clicked, so both answers are read straight from there.
+
+        Rows written before resolution was stamped on the proposal are still
+        handled the old way -- a following ``calendar_mutation_result`` was
+        the record back then -- and, as before, such a proposal is left
+        untouched rather than replaced, because the mutation result that
+        follows it is already the truthful account.
+        """
+        expired: set[int] = set()
+        approved: set[int] = set()
+        for index, message in enumerate(messages):
+            if message.role != "assistant" or message.response_kind != "calendar_proposal":
+                continue
+            status = calendar_proposal_status(message)
+            if status == "approved":
+                approved.add(index)
+                continue
+            if status is not None:
+                # Declined: the existing placeholder is already accurate.
+                expired.add(index)
+                continue
+            executed = False
+            for following in messages[index + 1 :]:
+                if following.role != "assistant":
+                    continue
+                executed = following.response_kind == "calendar_mutation_result"
+                break
+            if not executed:
+                expired.add(index)
+        return expired, approved
 
     def _record_memory_extraction_result(
         self,
@@ -1918,6 +2296,147 @@ class NeoChatService:
             }
         return None
 
+    def _adopt_calendar_execution(self) -> None:
+        """Take the calendar layer's report of this turn as the turn's state.
+
+        ``CalendarContextService`` knows whether its ``None`` meant "not a
+        calendar message" or "a calendar change I refused to complete"; only
+        this class knows what the whole turn did. Adopting rather than
+        overwriting keeps a mutation already recorded by the confirmation
+        path authoritative -- a failure to classify afterwards cannot erase
+        a write that really happened.
+        """
+        if self.calendar_execution == "none":
+            self.calendar_execution = self.calendar_context.last_execution
+
+    def _proposal_reask(
+        self, pending: PendingCalendarProposal, message: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Point back at the card instead of acting on the proposal.
+
+        Nothing typed can approve or decline -- the card's buttons are the
+        only path, and they resolve the proposal message itself. So a "yes",
+        a "no", or anything unplaceable gets an answer that says where the
+        decision actually lives, and the draft is left exactly as it was.
+
+        Crucially this does *not* re-persist the proposal. The older
+        behaviour echoed the whole draft back under
+        ``response_kind="calendar_proposal"`` to keep it reachable, which
+        drew a second identical card every time and re-armed the same
+        misclassification on the next message -- the loop that showed three
+        dentist cards in a row. The reference below keeps the proposal
+        reachable for one more typed message without duplicating anything,
+        and ``MAX_REASKS`` bounds how long it can do so.
+        """
+        return message, {
+            "response_kind": PROPOSAL_REASK_KIND,
+            "metadata": {
+                "calendar_proposal_ref": {
+                    "message_id": pending.source_message_id,
+                    "reask_count": pending.reask_count + 1,
+                }
+            },
+        }
+
+    def _handle_pending_calendar_reply(
+        self,
+        prompt: str,
+        *,
+        chat_id: int,
+        history: list[ChatMessage],
+        llm: LLMClient | None,
+        timezone: str | None = None,
+        locale: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """What a typed reply means while a proposal is on screen.
+
+        This method cannot write to the calendar, and no longer contains a
+        path that could: approving is a click on the proposal card, which
+        goes to ``POST /calendar/proposals/{id}/approve`` and is the only
+        caller of ``execute_calendar_proposal``. The single thing decided
+        here is whether the reply is an *edit* of the draft on screen -- the
+        one case where Neo should build something new from it.
+
+        Everything else either lets go of the turn (``new_request``,
+        ``unrelated``: a fresh classification runs, which is how "schedule a
+        haircut" stops being read as an edit to a dentist appointment) or
+        points at the card without touching the draft.
+        """
+        pending = find_pending_calendar_proposal(history)
+        if pending is None:
+            return None
+        decision = resolve_pending_action_reply(prompt, pending=pending, llm=llm)
+        self._routing_diagnostic(
+            chat_id,
+            prompt,
+            message_id=pending.source_message_id,
+            selected_route="pending_action",
+            component="pending_action_confirmation",
+            matched_intent=pending.action,
+            confidence=decision.confidence,
+            final_status=decision.outcome,
+            extra={
+                "pending_action_outcome": decision.outcome,
+                "reask_count": pending.reask_count,
+            },
+        )
+
+        if decision.outcome in ("new_request", "unrelated"):
+            # The user has moved on. Releasing the turn lets the ordinary
+            # classifier read the message on its own terms; the proposal
+            # retires by itself, since whatever answers now becomes the most
+            # recent message and the old card is not referenced.
+            return None
+
+        title = (pending.draft or {}).get("title") or pending.event_title or "that event"
+        summary = describe_calendar_draft(pending.action, title, pending.draft)
+
+        if decision.outcome == "modify":
+            # The old draft is never executed -- but the proposal the user is
+            # looking at is what they're changing, so it is carried through as
+            # the baseline rather than re-discovered from the calendar. The
+            # result is always a fresh proposal needing its own approval.
+            modified = self.calendar_context.handle_proposal_modification(
+                prompt,
+                llm=llm,
+                timezone=timezone,
+                locale=locale,
+                action=pending.action,
+                event_id=pending.event_id,
+                event_title=pending.event_title,
+                draft=pending.draft,
+            )
+            if modified is not None:
+                return modified
+            # Fail closed *inside* the pending-proposal flow. Falling through
+            # to the ordinary context-free classification is exactly what let
+            # a bare fragment get matched against an unrelated calendar event,
+            # so an undetermined modification never leaves this branch.
+            return self._proposal_reask(
+                pending,
+                f"I couldn't tell what you'd like to change. {summary} "
+                "Tell me what to change and I'll update it, or use the buttons "
+                "on the proposal above.",
+            )
+
+        if decision.outcome == "confirm":
+            return self._proposal_reask(
+                pending,
+                f"{summary} Use **Approve** on the proposal above and I'll make the "
+                "change -- that button is the only thing that can.",
+            )
+        if decision.outcome == "decline":
+            return self._proposal_reask(
+                pending,
+                f"Use **Decline** on the proposal above and I'll leave **{title}** alone.",
+            )
+        # Ambiguous: re-ask rather than guess, and say where the decision lives.
+        return self._proposal_reask(
+            pending,
+            f"{summary} Use **Approve** or **Decline** on the proposal above, "
+            "or tell me what to change.",
+        )
+
     def _routing_diagnostic(
         self,
         chat_id: int,
@@ -1936,8 +2455,15 @@ class NeoChatService:
         fallback_reason: str | None = None,
         response_source: str | None = None,
         final_status: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Emit a privacy-safe trace for the production chat-routing decision."""
+        """Emit a privacy-safe trace for the production chat-routing decision.
+
+        ``extra`` carries additional decision-specific fields (pending-action
+        outcome, whether/why a refinement pass ran, ...) without widening the
+        fixed field list every caller has to pass -- the same logger and
+        payload shape, just with a few more distinctly-named keys merged in.
+        """
 
         normalized = re.sub(r"\s+", " ", (prompt or "").strip())
         payload = {
@@ -1958,6 +2484,8 @@ class NeoChatService:
             "response_source": response_source,
             "final_status": final_status,
         }
+        if extra:
+            payload.update(extra)
         self.last_routing_debug = payload
         _ROUTING_LOG.warning("chat_routing=%s", json.dumps(payload, sort_keys=True))
         return payload
@@ -2145,6 +2673,55 @@ class NeoChatService:
         # _web_generation_fallback when generation fails or skips its citations,
         # which is the same shape fact_lookup already relies on.
         return None
+
+    def _refine_uncertain_reply(
+        self,
+        prompt: str,
+        *,
+        context: ContextPackage,
+        history: list[ChatTurn],
+        project_context: str | None,
+        task_context: str | None,
+    ) -> tuple[str, WebContext, LLMChatResult | None, dict[str, Any]] | None:
+        """Bounded, one-shot safety net: the draft reply hedged even though
+        ``search_intent`` (see ``SearchIntentResolver``/Mechanism B0) already
+        said no search was needed. Redo the turn once with search forced on,
+        reusing the exact building blocks the ``GENERAL_WEB`` route already
+        uses -- never re-checked for uncertainty afterward, so this can only
+        ever run once per turn.
+        """
+        web_query = self._web_query_with_memory_region(prompt, context)
+        web_context = self.web_search.build_context_forced(web_query)
+
+        direct = self._direct_web_reply(web_query, web_context)
+        if direct is not None:
+            return direct, web_context, None, {"step": "direct"}
+
+        failure = self._web_failure_reply(web_context)
+        if failure is not None:
+            return failure, web_context, None, {"step": "failure"}
+
+        messages = self.build_messages(
+            prompt,
+            history,
+            context,
+            web_context,
+            project_context,
+            task_context,
+            calendar_execution=self.calendar_execution,
+        )
+        result = self._generate_complete(messages, num_predict=self._num_predict(prompt, context))
+        if web_context.citations and not self._has_web_citation_marker(
+            result.content, web_context
+        ):
+            reply = self._web_generation_fallback(
+                prompt,
+                web_context,
+                RuntimeError("refined web answer lacked citation markers"),
+            )
+        else:
+            reply = self._with_web_citations(result.content, web_context)
+        return reply, web_context, result, {"step": "generated"}
 
     def _evidence_digest(self, prompt: str, web_context: WebContext) -> str:
         """Render evidence chunks directly, for when generation cannot be used."""

@@ -16,6 +16,9 @@ import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
 import Research from "./Research.jsx";
 import Tasks from "./Tasks.jsx";
+import Calendar from "./Calendar.jsx";
+import CalendarProposalCard from "./CalendarProposalCard.jsx";
+import ReminderToast from "./ReminderToast.jsx";
 import Files from "./Files.jsx";
 import Repos from "./Repos.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
@@ -193,6 +196,7 @@ function NavIcon({ name }) {
     notes: ["M5 3h14v18H5z", "M8 8h8", "M8 12h8", "M8 16h5"],
     projects: ["M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2", "M3 8h18v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
     tasks: ["M5 4h14v16H5z", "m8 12 2 2 5-5"],
+    calendar: ["M5 4h14v16H5z", "M5 9h14", "M8 2v4", "M16 2v4"],
     files: ["M6 2h8l4 4v16H6z", "M14 2v5h5"],
     repos: ["M4 4h6l2 3h8v13H4z", "M8 12h8", "M8 16h5"],
     settings: ["M4 6h16", "M4 12h16", "M4 18h16"],
@@ -439,6 +443,7 @@ export function Sidebar({
   onOpenResearch,
   onOpenNotes,
   onOpenTasks,
+  onOpenCalendar,
   activeView,
   profile,
   onSwitchProfile,
@@ -472,6 +477,7 @@ export function Sidebar({
     ["memory", "Memory", onOpenMemory],
     ["research", "Research", onOpenResearch],
     ["notes", "Notes", onOpenNotes],
+    ["calendar", "Calendar", onOpenCalendar],
   ];
 
   // Minimised, the sidebar keeps only what you would reopen it for: the way
@@ -746,6 +752,8 @@ export function ChatMessage({
   onSetEditingValue,
   onToggleThinking,
   thinkingOpen,
+  onOpenCalendar,
+  onProposalResolved,
   agentRun,
   agentEntries,
   agentBusy,
@@ -774,6 +782,8 @@ export function ChatMessage({
   // does for a reply, which is what makes the two read as one conversation.
   const isAgentTurn = message.response_kind === "agent_run";
   const isCompactionSummary = message.response_kind === "compaction_summary";
+  const calendarProposal =
+    message.response_kind === "calendar_proposal" ? message.metadata?.calendar_proposal : null;
   const run = isAgentTurn ? agentRun : null;
   const delivery = run?.delivery;
   const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
@@ -840,6 +850,14 @@ export function ChatMessage({
               className="chat-content"
               dangerouslySetInnerHTML={{ __html: renderMessageHtml(message.content) }}
             />
+            {calendarProposal ? (
+              <CalendarProposalCard
+                proposal={calendarProposal}
+                messageId={message.id}
+                onResolved={onProposalResolved}
+                onOpenCalendar={onOpenCalendar}
+              />
+            ) : null}
             {message.failed && (
               <div className="chat-message-status">Not sent. Edit and try again.</div>
             )}
@@ -2129,6 +2147,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showNotes, setShowNotes] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
   const [showRepos, setShowRepos] = useState(false);
   const [initialFileId, setInitialFileId] = useState(null);
@@ -2136,6 +2155,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [initialNoteId, setInitialNoteId] = useState(null);
   const [initialTaskId, setInitialTaskId] = useState(null);
   const [initialTaskProjectId, setInitialTaskProjectId] = useState(null);
+  const [initialCalendarEventId, setInitialCalendarEventId] = useState(null);
   // What the next turn will be. A per-message choice, not a view: the thread
   // stays where it is either way.
   const [chatMode, setChatMode] = useState("chatbot");
@@ -2246,6 +2266,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       setSending(false);
     }
     return thread;
+  }, []);
+
+  // A proposal's resolution is server state now, so the transcript only needs
+  // the stamped metadata swapped in. Patching the one message keeps the scroll
+  // position where a reload of the whole thread would not, and the next
+  // loadChat reads back exactly the same thing from the database.
+  const handleProposalResolved = useCallback((messageId, proposal) => {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId
+          ? { ...message, metadata: { ...message.metadata, calendar_proposal: proposal } }
+          : message,
+      ),
+    );
   }, []);
 
   const createActiveChat = useCallback(
@@ -2472,8 +2506,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   }, [generationStartedAt]);
 
   useEffect(() => {
-    visibleChatIdRef.current = showProjects || showTasks || showNotes || showResearch ? null : activeChat?.id ?? null;
-  }, [activeChat?.id, showNotes, showProjects, showResearch, showTasks]);
+    visibleChatIdRef.current = showProjects || showTasks || showCalendar || showNotes || showResearch ? null : activeChat?.id ?? null;
+  }, [activeChat?.id, showCalendar, showNotes, showProjects, showResearch, showTasks]);
 
   async function handleCreateProject(name) {
     setStatusError("");
@@ -3066,9 +3100,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         : showNotes ? "notes"
           : showProjects ? "projects"
             : showTasks ? "tasks"
-              : showFiles ? "files"
-                : showRepos ? "repos"
-                  : "chat";
+              : showCalendar ? "calendar"
+                : showFiles ? "files"
+                  : showRepos ? "repos"
+                    : "chat";
   return (
     <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
@@ -3086,17 +3121,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={() => {
-          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
+          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false);
         }}
         onOpenMemory={() => setShowMemory(true)}
         onOpenResearch={() => {
-          setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowResearch(true);
+          setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowResearch(true);
         }}
         onOpenNotes={() => {
-          setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowNotes(true);
+          setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowNotes(true);
         }}
         onOpenTasks={() => {
-          setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
+          setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
+        }}
+        onOpenCalendar={() => {
+          setInitialCalendarEventId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowCalendar(true);
         }}
         activeView={activeView}
         profile={profile}
@@ -3140,6 +3178,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setInitialNoteId(noteId); setShowTasks(false); setShowProjects(false); setShowResearch(false); setShowNotes(true);
           }}
           onOpenFile={openWorkspaceFile}
+        />
+      ) : showCalendar ? (
+        <Calendar
+          initialEventId={initialCalendarEventId}
+          onBack={() => { setShowCalendar(false); setInitialCalendarEventId(null); }}
         />
       ) : showNotes ? (
         <Notes
@@ -3204,6 +3247,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
                 setOpenThinkingMessageId((current) => (current === messageId ? null : messageId))
               }
               thinkingOpen={openThinkingMessageId === message.id}
+              onOpenCalendar={() => {
+                setInitialCalendarEventId(null);
+                setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
+                setShowCalendar(true);
+              }}
+              onProposalResolved={handleProposalResolved}
               agentRun={agentRuns[message.id]}
               agentEntries={agentRuns[message.id]?.liveEntries}
               agentBusy={agentBusy}
@@ -3411,6 +3460,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onCancel={() => setPendingDelete(null)}
         onConfirm={confirmDeletion}
       />
+      <ReminderToast />
     </div>
   );
 }
