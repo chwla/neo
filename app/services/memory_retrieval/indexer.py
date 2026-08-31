@@ -77,6 +77,13 @@ SOURCE_CONFIG = {
         ("status", "report", "evidence_json"),
         "research_id",
     ),
+    "gallery_image": (
+        "gallery_items",
+        "visual_reference",
+        "title",
+        ("caption", "ocr_text", "tags_json"),
+        "gallery_item_id",
+    ),
 }
 
 

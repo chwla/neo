@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
 
-const types = ["decision", "constraint", "summary", "failure", "fix", "test_result", "checkpoint", "file_context", "project_note", "research_finding", "user_instruction", "open_item", "completed_item", "safety_note"];
+const types = ["decision", "constraint", "summary", "failure", "fix", "test_result", "checkpoint", "file_context", "project_note", "research_finding", "user_instruction", "open_item", "completed_item", "safety_note", "visual_reference"];
 
 export default function MemoryRetrieval() {
   const [query, setQuery] = useState(""); const [scopeType, setScopeType] = useState(""); const [scopeId, setScopeId] = useState(""); const [type, setType] = useState("");

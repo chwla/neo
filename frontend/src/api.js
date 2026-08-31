@@ -417,6 +417,43 @@ export const api = {
   }),
   detachFile: (fileId, linkId) => request(`/files/${fileId}/links/${linkId}`, { method: "DELETE" }),
   fileDownloadUrl: (fileId) => `${API_BASE}/files/${fileId}/download`,
+
+  galleryList: (params = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries({
+      q: params.q, chat_id: params.chatId, project_id: params.projectId,
+      status: params.status, origin: params.origin, since: params.since, until: params.until,
+    })) if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+    for (const tag of params.tags ?? []) search.append("tag", tag);
+    if (params.pinned !== undefined) search.set("pinned", String(params.pinned));
+    search.set("limit", String(params.limit ?? 60));
+    if (params.offset) search.set("offset", String(params.offset));
+    return request(`/gallery/items?${search.toString()}`);
+  },
+  galleryItem: (itemId) => request(`/gallery/items/${itemId}`),
+  // Sending ids rather than bytes is the whole point: an image Neo has already
+  // seen is referred to, never re-uploaded.
+  uploadGalleryImage: (file, context = {}) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("origin", context.origin ?? "upload");
+    if (context.chatId) form.append("chat_id", String(context.chatId));
+    if (context.messageId) form.append("message_id", String(context.messageId));
+    if (context.projectId) form.append("project_id", context.projectId);
+    return request("/gallery/items", { method: "POST", body: form });
+  },
+  enrolGalleryImage: (payload) =>
+    request("/gallery/items/enrol", { method: "POST", body: JSON.stringify(payload) }),
+  updateGalleryItem: (itemId, payload) =>
+    request(`/gallery/items/${itemId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteGalleryItem: (itemId, { purge = false } = {}) =>
+    request(`/gallery/items/${itemId}${purge ? "?purge=true" : ""}`, { method: "DELETE" }),
+  describeGalleryItem: (itemId) =>
+    request(`/gallery/items/${itemId}/describe`, { method: "POST" }),
+  searchGallery: (payload) =>
+    request("/gallery/search", { method: "POST", body: JSON.stringify(payload) }),
+  galleryImageUrl: (itemId) => `${API_BASE}/gallery/items/${itemId}/image`,
+  galleryThumbnailUrl: (itemId) => `${API_BASE}/gallery/items/${itemId}/thumbnail`,
   artifactsList: (params = {}) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries({ project_id: params.projectId, task_id: params.taskId,
@@ -508,6 +545,7 @@ export const api = {
         repo_id: context.repoId ?? null,
         agent_mode: context.agentMode ?? null,
         agent_definition_id: context.agentDefinitionId ?? null,
+        image_ids: context.imageIds ?? [],
       }),
     }),
   updateChat: (chatId, changes) =>

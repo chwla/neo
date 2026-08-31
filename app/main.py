@@ -19,6 +19,7 @@ from app.api.routes.context_memory import router as context_memory_router
 from app.api.routes.continuity import router as continuity_router
 from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.files import router as files_router
+from app.api.routes.gallery import router as gallery_router
 from app.api.routes.git import router as git_router
 from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
@@ -57,6 +58,7 @@ from app.services.context_memory import initialize_context_memory_tables
 from app.services.continuity import initialize_continuity_tables
 from app.services.evaluation import EvaluationService, initialize_evaluation_tables
 from app.services.files.store import initialize_workspace_file_tables
+from app.services.gallery.store import initialize_gallery_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.llm_registry.service import LLMRegistryService
@@ -164,6 +166,7 @@ def create_app() -> FastAPI:
     app.include_router(continuity_router, prefix="/api")
     app.include_router(integration_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
+    app.include_router(gallery_router, prefix="/api")
     app.include_router(health_router, prefix="/api")
     app.include_router(patches_router, prefix="/api")
     app.include_router(repos_router, prefix="/api")
@@ -190,6 +193,7 @@ def create_app() -> FastAPI:
     initialize_research_tables()
     initialize_research_mode_tables()
     initialize_workspace_file_tables()
+    initialize_gallery_tables()
     initialize_test_runner_tables()
     initialize_git_tables()
     initialize_github_tables()

@@ -11,7 +11,7 @@ from typing import Any
 import requests
 
 from app.core.config import get_settings
-from app.services.llm import LLMConfig, LLMRegistry
+from app.services.llm import LLMConfig, LLMRegistry, ollama_supports_vision
 from app.services.llm_registry import store
 from app.services.llm_registry.types import (
     ModelCreate,
@@ -38,7 +38,12 @@ DEFAULT_ROUTES = (
     "summarization",
     "embedding",
     "title_generation",
+    "vision",
 )
+
+#: Routes that want a model with a particular capability rather than whatever
+#: answers chat. Anything absent here follows the chat route.
+_ROUTE_CAPABILITY = {"embedding": "supports_embeddings", "vision": "supports_vision"}
 
 
 def _slug(value: str, fallback: str) -> str:
@@ -138,6 +143,7 @@ class LLMRegistryService:
         self._refresh_environment_default()
         self._migrate_legacy_json()
         self._autodiscover_once()
+        self._ensure_default_routes()
 
     def _autodiscover_once(self) -> None:
         """Register whatever the local Ollama already serves, once per provider.
@@ -450,6 +456,81 @@ class LLMRegistryService:
             repaired.append(model["model_name"])
         return repaired
 
+    def _backfill_vision_support(self, provider: dict[str, Any], timeout: int) -> list[str]:
+        """Record which models can actually see.
+
+        ``supports_vision`` has been a column, a Pydantic field and a checkbox since
+        before anything read it, and it defaults to 0 -- so every model reports as
+        blind. This is the same defect the tool-calling probe was added to fix.
+
+        Only ever sets the flag true. A probe that says no leaves the column alone
+        rather than overwriting a deliberate yes, so a value the user ticked by hand
+        survives every rediscovery.
+        """
+        base_url = (provider.get("base_url") or "").rstrip("/")
+        if not base_url or provider.get("provider_type") != "ollama":
+            return []
+        repaired: list[str] = []
+        for model in self.list_models(provider["id"]):
+            if model.get("supports_vision") or model.get("supports_embeddings"):
+                continue
+            if not ollama_supports_vision(base_url, model["model_name"], timeout):
+                continue
+            self.update_model(model["id"], ModelUpdate(supports_vision=True))
+            repaired.append(model["model_name"])
+        return repaired
+
+    def _ensure_default_routes(self) -> list[str]:
+        """Create any route that was added after this profile was first seeded.
+
+        ``ensure_defaults`` writes routes only when the provider table is empty, so
+        an existing profile never receives a newly introduced route and every caller
+        of it fails with "route is missing or disabled" -- on a database that looks
+        perfectly healthy. Seeding the gap is idempotent and cannot disturb a route
+        the user has already pointed somewhere.
+        """
+        missing = [name for name in DEFAULT_ROUTES if not self.get_route(name)]
+        if not missing:
+            return []
+        chat = self.get_route("chat")
+        if not chat:
+            # Nothing to model a new route on. ensure_defaults seeds the whole set
+            # the first time a provider appears, so this resolves itself.
+            return []
+        now = store.now_iso()
+        created: list[str] = []
+        for route_name in missing:
+            model_id = self._capable_model_id(route_name, chat["provider_id"], chat["model_id"])
+            store.insert_route(
+                {
+                    "id": str(uuid.uuid4()),
+                    "route_name": route_name,
+                    "provider_id": chat["provider_id"],
+                    "model_id": model_id,
+                    "fallback_provider_id": None,
+                    "fallback_model_id": None,
+                    "temperature": 0.4 if route_name == "chat" else 0.2,
+                    "max_output_tokens": chat.get("max_output_tokens"),
+                    "enabled": True,
+                    "metadata": {"source": "route_backfill"},
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            created.append(route_name)
+        return created
+
+    def _capable_model_id(self, route_name: str, provider_id: str, default_model_id: str) -> str:
+        """Prefer a model that can do what the route is for, else follow chat."""
+
+        capability = _ROUTE_CAPABILITY.get(route_name)
+        if not capability:
+            return default_model_id
+        for model in self.list_models(provider_id):
+            if model.get(capability) and model.get("enabled"):
+                return model["id"]
+        return default_model_id
+
     def discover_provider_models(self, provider_id: str, *, timeout: int = 5) -> dict[str, Any]:
         """Register any model the provider already serves but the registry does not know.
 
@@ -505,6 +586,7 @@ class LLMRegistryService:
             known.add(name)
 
         context_repaired = self._backfill_context_windows(provider, timeout)
+        vision_repaired = self._backfill_vision_support(provider, timeout)
 
         # Mirror every chat model, not just the new ones, so a registry model that is
         # missing from the picker is repaired rather than skipped.
@@ -515,6 +597,7 @@ class LLMRegistryService:
             "already_registered": sorted(known - {model["model_name"] for model in added}),
             "picker_added": picker_added,
             "context_repaired": context_repaired,
+            "vision_repaired": vision_repaired,
         }
 
     def bind_picker_routes(self, model_name: str, base_url: str | None) -> bool:

@@ -19,6 +19,7 @@ MEMORY_TYPES = {
     "open_item",
     "completed_item",
     "safety_note",
+    "visual_reference",
 }
 SCOPE_TYPES = {
     "chat",

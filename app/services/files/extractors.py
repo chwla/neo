@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from app.services.files.safety import is_preview_supported
+from app.services.files.safety import is_image, is_preview_supported
 
 
 def extract_text(filename: str, content: bytes, max_chars: int) -> tuple[str | None, dict]:
+    if is_image(filename):
+        # There is no text to extract, but the file is very much previewable --
+        # as pixels. Saying so is what stops the Files page reporting "Preview is
+        # not supported" for something it can simply show.
+        return None, {"preview_supported": True, "preview_kind": "image", "truncated": False}
     if not is_preview_supported(filename):
         return None, {"preview_supported": False, "truncated": False}
     if b"\x00" in content[:8192]:

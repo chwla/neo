@@ -25,6 +25,11 @@ class LLMMessage(BaseModel):
     optional so every existing two-field call site keeps working untouched, and
     provider serialisation drops them when unset -- a provider that is sent
     ``"tool_calls": null`` rejects the request.
+
+    ``images`` carries what the turn shows the model. Each entry is base64 image
+    data, with or without a ``data:`` prefix; the two providers disagree about
+    which they want, so both forms are accepted here and each serialiser emits
+    the one its provider expects.
     """
 
     role: str
@@ -32,6 +37,7 @@ class LLMMessage(BaseModel):
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
     name: str | None = None
+    images: list[str] | None = None
 
 
 class LLMChatResult(BaseModel):
@@ -151,6 +157,31 @@ def normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
     return calls
 
 
+#: Base64 opens with a stable prefix per container format, so the media type can
+#: be read off the encoded string without decoding it or carrying it separately.
+_B64_MAGIC = (
+    ("iVBORw0KGgo", "image/png"),
+    ("/9j/", "image/jpeg"),
+    ("R0lGOD", "image/gif"),
+    ("UklGR", "image/webp"),
+)
+
+
+def _image_b64(value: str) -> str:
+    """Bare base64, whether a data URL or bare base64 came in."""
+
+    return value.split(";base64,", 1)[1] if value.startswith("data:") else value
+
+
+def _image_data_url(value: str) -> str:
+    """A data URL, whether a data URL or bare base64 came in."""
+
+    if value.startswith("data:"):
+        return value
+    mime = next((m for prefix, m in _B64_MAGIC if value.startswith(prefix)), "image/png")
+    return f"data:{mime};base64,{value}"
+
+
 def _ollama_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
     """Serialise for Ollama's /api/chat, which takes object arguments and no ids."""
 
@@ -164,6 +195,10 @@ def _ollama_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
             ]
         if message.role == "tool" and message.name:
             item["tool_name"] = message.name
+        if message.images:
+            # Ollama takes a per-message array of bare base64 -- a data URL in
+            # here is accepted and then silently ignored.
+            item["images"] = [_image_b64(image) for image in message.images]
         payload.append(item)
     return payload
 
@@ -188,6 +223,16 @@ def _openai_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
             ]
         if message.role == "tool" and message.tool_call_id:
             item["tool_call_id"] = message.tool_call_id
+        if message.images:
+            # The block form is only emitted when there is something to show:
+            # some gateways reject a block list where they expected a string.
+            item["content"] = [
+                {"type": "text", "text": message.content},
+                *(
+                    {"type": "image_url", "image_url": {"url": _image_data_url(image)}}
+                    for image in message.images
+                ),
+            ]
         payload.append(item)
     return payload
 
@@ -240,6 +285,32 @@ def ollama_supports_tools(base_url: str, model: str, timeout: int = 5) -> bool:
     return supported
 
 
+_VISION_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def ollama_supports_vision(base_url: str, model: str, timeout: int = 5) -> bool:
+    """Ask Ollama whether a model can accept images.
+
+    The same shape as ``ollama_supports_tools``, and for the same reason: the
+    registry's ``supports_vision`` column defaults to false and nothing has ever
+    populated it, so trusting it alone reports every model as blind.
+    """
+
+    key = (base_url.rstrip("/"), model)
+    if key in _VISION_SUPPORT_CACHE:
+        return _VISION_SUPPORT_CACHE[key]
+    supported = False
+    try:
+        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        supported = "vision" in (payload.get("capabilities") or [])
+    except Exception:
+        supported = False
+    _VISION_SUPPORT_CACHE[key] = supported
+    return supported
+
+
 class OllamaClient(BaseLLMClient):
     def __init__(
         self,
@@ -279,6 +350,9 @@ class OllamaClient(BaseLLMClient):
 
     def supports_tools(self) -> bool:
         return ollama_supports_tools(self.base_url, self.model)
+
+    def supports_vision(self) -> bool:
+        return ollama_supports_vision(self.base_url, self.model)
 
     def model_is_installed(self) -> bool:
         try:

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from threading import Thread
@@ -173,9 +174,16 @@ class NeoChatService:
         memory_runtime: MemoryRuntime | None = None,
         active_project_id: str | None = None,
         active_project_name: str | None = None,
+        image_ids: list[str] | None = None,
     ) -> None:
         self.db = db
         self.store = AppStore(db)
+        #: Gallery items the user attached to this turn, already resolved to
+        #: base64 so the provider layer never touches the gallery. Empty when the
+        #: turn carries no image or when the routed model cannot see one.
+        self.turn_images: list[str] = []
+        self.turn_image_items: list[dict] = []
+        self._pending_image_ids = list(image_ids or [])
         if ollama is None:
             from app.services.llm import get_llm_client
 
@@ -219,6 +227,7 @@ class NeoChatService:
         self.task_context = TaskContextService()
         self.calendar_context = CalendarContextService()
         self.file_context = WorkspaceFilesService()
+        self._resolve_turn_images()
         self.code_index = CodeIndexService()
         self.symbol_awareness = SymbolAwarenessService()
         self.test_runner = TestRunnerContextService()
@@ -256,6 +265,7 @@ class NeoChatService:
         project_context: str | None = None,
         task_context: str | None = None,
         calendar_execution: CalendarTurnExecution = "none",
+        images: list[str] | None = None,
     ) -> list[LLMMessage]:
         web_section = self._compact_web_context(web_context)
         project_section = project_context or "No project context loaded."
@@ -345,8 +355,112 @@ class NeoChatService:
             LLMMessage(role=turn.role, content=turn.content)
             for turn in history[-self.settings.chat_history_turns :]
         )
-        messages.append(LLMMessage(role="user", content=prompt))
+        # The images ride on the final user turn, which is the one the model is
+        # being asked about. A model that cannot see is told what the gallery
+        # already knows about them instead of being handed an error, so a
+        # text-only route still gives a useful answer.
+        fallback = self.image_text_fallback()
+        messages.append(
+            LLMMessage(
+                role="user",
+                content=f"{prompt}\n\n{fallback}" if fallback else prompt,
+                images=images or self.turn_images or None,
+            )
+        )
         return messages
+
+    def _resolve_turn_images(self) -> None:
+        """Load attached gallery images, if the model can actually see them.
+
+        A model without vision is given nothing here; ``_image_text_fallback``
+        supplies the captions instead, so the user gets a worse answer rather
+        than an error. Any failure to read an image is skipped for the same
+        reason -- one unreadable attachment must not cost the whole message.
+        """
+
+        if not self._pending_image_ids:
+            return
+        if not self._model_supports_vision():
+            self.turn_image_items = self._image_items(self._pending_image_ids)
+            return
+        try:
+            from app.services.gallery.service import GalleryService
+
+            payloads, items = GalleryService().attachments_for_prompt(self._pending_image_ids)
+        except Exception:
+            return
+        self.turn_images, self.turn_image_items = payloads, items
+
+    def _model_supports_vision(self) -> bool:
+        """The registry's flag first, then the provider probe.
+
+        The checkbox is the user's own statement about a gateway Neo cannot
+        interrogate, so it wins; the probe is what fills the flag in for Ollama,
+        where it has always defaulted to false with nothing populating it.
+        """
+
+        probe = getattr(self.ollama, "supports_vision", None)
+        try:
+            return bool(probe()) if callable(probe) else False
+        except Exception:
+            return False
+
+    @staticmethod
+    def _image_items(image_ids: list[str]) -> list[dict]:
+        try:
+            from app.services.gallery.service import GalleryService
+
+            service = GalleryService()
+            items = []
+            for image_id in image_ids:
+                try:
+                    items.append(service.get(image_id))
+                except LookupError:
+                    continue
+            return items
+        except Exception:
+            return []
+
+    def _record_image_appearances(self, chat_id: int, message_id: int) -> None:
+        """Note where each attached image was seen.
+
+        This is what makes "that image I showed you last week" answerable: the
+        sighting, not the upload, is what the user remembers. Failures are
+        swallowed -- an appearance is a convenience, and losing one must never
+        cost the message it belongs to.
+        """
+
+        if not self._pending_image_ids:
+            return
+        try:
+            from app.services.gallery import store as gallery_store
+
+            for image_id in self._pending_image_ids:
+                gallery_store.record_appearance(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "item_id": image_id,
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "role": "user",
+                    }
+                )
+        except Exception:
+            return
+
+    def image_text_fallback(self) -> str:
+        """What a blind model is told about the images it cannot see."""
+
+        if self.turn_images or not self.turn_image_items:
+            return ""
+        blocks = []
+        for item in self.turn_image_items:
+            described = item.get("caption") or "No description is available yet."
+            block = f"[Attached image: {item.get('title') or item['id']}]\n{described}"
+            if item.get("ocr_text"):
+                block += f"\nText in image: {item['ocr_text'][:1200]}"
+            blocks.append(block)
+        return "\n\n".join(blocks)
 
     def _memory_query_context(self, prompt: str) -> MemoryQueryContext | None:
         if not self.memory_enabled or self.memory_context_factory is None:
@@ -448,9 +562,14 @@ class NeoChatService:
             prompt,
             metadata={
                 "search_intent": search_intent.model_dump(mode="json"),
+                # Recorded on the turn so a reloaded transcript still shows the
+                # images the user attached, rather than a message that reads as
+                # if they had sent nothing.
+                **({"image_ids": self._pending_image_ids} if self._pending_image_ids else {}),
             },
         )
         self.store.rename_chat_from_prompt(chat_id, prompt)
+        self._record_image_appearances(chat_id, user_message.id)
         self.db.commit()
         self._routing_diagnostic(
             chat_id,
@@ -909,9 +1028,11 @@ class NeoChatService:
                 prompt,
                 metadata={
                     "search_intent": search_intent.model_dump(mode="json"),
+                    **({"image_ids": self._pending_image_ids} if self._pending_image_ids else {}),
                 },
             )
             self.store.rename_chat_from_prompt(chat_id, prompt)
+            self._record_image_appearances(chat_id, user_message.id)
             self.db.commit()
             routing_message_id = user_message.id
         if existing_user_message_id is not None:

@@ -18,6 +18,7 @@ from app.services.agent_core.tools import (
     checkpoint,
     deliver,
     files,
+    gallery,
     knowledge,
     shell,
     todo,
@@ -56,10 +57,11 @@ def default_tools() -> list[AgentTool]:
         *checkpoint.TOOLS,
         *deliver.TOOLS,
         *calendar.TOOLS,
+        *gallery.TOOLS,
     ]
 
 
-#: The 4 categories the per-chat Tools panel exposes. Toggling one off disables
+#: The categories the per-chat Tools panel exposes. Toggling one off disables
 #: every tool named here for that chat. Names absent here (todo_write,
 #: create_checkpoint, deliver_changes) are ungrouped: always enabled, never
 #: shown in that panel.
@@ -68,6 +70,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "file_operations": ["read_file", "list_dir", "write_file", "edit_file", "delete_file"],
     "search": ["glob", "grep", "find_symbol", "web_search", "web_fetch"],
     "memory": ["recall_memory"],
+    "gallery": ["search_gallery", "view_image"],
     "calendar": [
         "list_calendar_events",
         "create_calendar_event",

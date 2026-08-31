@@ -37,6 +37,11 @@ const TOOL_GROUP_ROWS = [
     label: "Calendar",
     description: "Read the calendar, and propose adding, changing, or removing events (always asks first).",
   },
+  {
+    key: "gallery",
+    label: "Gallery",
+    description: "Find and read images you have shown Neo before, by what was in them.",
+  },
 ];
 
 function groupState(tools, groupKey) {

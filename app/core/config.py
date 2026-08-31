@@ -70,6 +70,21 @@ class Settings(BaseSettings):
     workspace_repo_max_file_bytes: int = Field(default=1024 * 1024, ge=1)
     workspace_file_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1)
     workspace_extracted_text_max_chars: int = Field(default=500_000, ge=1)
+    gallery_thumbnails_dir: str = Field(default="data/gallery_thumbnails")
+    #: Images get their own ceiling: a retina screenshot routinely clears the
+    #: 5 MiB that is generous for a source file, and refusing it would make the
+    #: gallery useless for exactly the case it exists to serve.
+    gallery_image_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    gallery_thumbnail_max_px: int = Field(default=512, ge=32, le=4096)
+    #: What the describer sends the vision model. Full resolution costs minutes
+    #: per image on a laptop and buys nothing: the caption and the on-screen text
+    #: both survive the downscale.
+    gallery_describe_max_px: int = Field(default=1024, ge=128, le=4096)
+    gallery_semantic_weight: float = Field(default=0.35, ge=0, le=1)
+    gallery_min_score: float = Field(default=0.12, ge=0, le=1)
+    gallery_auto_describe: bool = Field(default=True)
+    vision_model: str = Field(default="qwen2.5vl:7b")
+    vision_timeout_seconds: int = Field(default=60, ge=1, le=600)
     simple_chat_num_predict: int = Field(default=1024)
     default_timezone: str = Field(default="UTC")
     memory_enabled: bool = Field(default=True)
@@ -263,6 +278,8 @@ class Settings(BaseSettings):
             self.database_url = f"sqlite:///{data_root / 'neo.db'}"
         if "workspace_files_dir" not in fields_set:
             self.workspace_files_dir = str(data_root / "workspace_files")
+        if "gallery_thumbnails_dir" not in fields_set:
+            self.gallery_thumbnails_dir = str(data_root / "gallery_thumbnails")
         if "workspace_repos_dir" not in fields_set:
             self.workspace_repos_dir = str(data_root / "workspace_repos")
         if "llm_config_path" not in fields_set:
@@ -290,6 +307,7 @@ def get_settings() -> Settings:
             {
                 "data_dir": str(root),
                 "workspace_files_dir": str(root / "workspace_files"),
+                "gallery_thumbnails_dir": str(root / "gallery_thumbnails"),
                 "workspace_repos_dir": str(root / "workspace_repos"),
                 "llm_config_path": str(root / "neo_llms.json"),
             }

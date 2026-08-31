@@ -257,6 +257,10 @@ class ChatSendRequest(BaseModel):
     locale: str | None = Field(default=None, min_length=2, max_length=40)
     memory_enabled: bool = True
     memory_incognito: bool = False
+    #: Gallery items shown to the model with this message. Ids rather than bytes:
+    #: the image is already stored, and the whole point of the gallery is that it
+    #: is not uploaded again on every turn that refers to it.
+    image_ids: list[str] = Field(default_factory=list, max_length=8)
     #: Which kind of turn this message starts. Chosen per message, defaulting to
     #: whatever the chat was last set to, so a thread can answer a question and
     #: then go and do the work without changing where the user is.
@@ -624,6 +628,7 @@ def _generation_service(
     *,
     memory_enabled: bool,
     memory_incognito: bool,
+    image_ids: list[str] | None = None,
 ) -> NeoChatService:
     rule_result = RuleResolver().resolve(
         RuleResolveRequest(
@@ -641,6 +646,7 @@ def _generation_service(
         rule_result=rule_result,
         memory_enabled=memory_enabled,
         memory_incognito=memory_incognito,
+        image_ids=image_ids,
         active_project_id=str(chat.project_id) if chat.project_id is not None else None,
     )
 
@@ -655,6 +661,7 @@ def _chat_service(
     memory_enabled: bool = True,
     memory_incognito: bool = False,
     active_project_id: str | None = None,
+    image_ids: list[str] | None = None,
 ) -> NeoChatService:
     runtime = None
     mutation_runtime = None
@@ -688,6 +695,7 @@ def _chat_service(
         memory_orchestrator=runtime.orchestrator if runtime is not None else None,
         memory_context_factory=runtime.context_factory if runtime is not None else None,
         memory_runtime=mutation_runtime,
+        image_ids=image_ids,
         active_project_id=active_project_id,
         active_project_name=(
             db.scalar(select(Project.name).where(Project.id == int(active_project_id)))
@@ -915,6 +923,7 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 generation.llm_id,
                 memory_enabled=bool(generation_options.get("memory_enabled", True)),
                 memory_incognito=bool(generation_options.get("memory_incognito", False)),
+                image_ids=list(generation_options.get("image_ids") or []),
             )
             partial_response = ""
             thinking = ""
@@ -1162,6 +1171,7 @@ def _start_chat_generation(
             {
                 "memory_enabled": payload.memory_enabled,
                 "memory_incognito": payload.memory_incognito,
+                "image_ids": payload.image_ids,
             }
         ),
         worker_id=None,
@@ -1357,6 +1367,7 @@ def _acquire_sync_claim(
             {
                 "memory_enabled": payload.memory_enabled,
                 "memory_incognito": payload.memory_incognito,
+                "image_ids": payload.image_ids,
                 "transport": "sync",
             }
         ),
@@ -1495,6 +1506,7 @@ def send_chat_message(
         rule_result=rule_result,
         memory_enabled=request.memory_enabled,
         memory_incognito=request.memory_incognito,
+        image_ids=request.image_ids,
         active_project_id=str(chat.project_id) if chat.project_id is not None else None,
     )
     try:
@@ -1790,6 +1802,7 @@ def stream_chat_message(
         rule_result=rule_result,
         memory_enabled=request.memory_enabled,
         memory_incognito=request.memory_incognito,
+        image_ids=request.image_ids,
         active_project_id=str(chat.project_id) if chat.project_id is not None else None,
     )
 

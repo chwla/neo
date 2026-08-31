@@ -20,6 +20,8 @@ import Calendar from "./Calendar.jsx";
 import CalendarProposalCard from "./CalendarProposalCard.jsx";
 import ReminderToast from "./ReminderToast.jsx";
 import Files from "./Files.jsx";
+import Gallery from "./Gallery.jsx";
+import GalleryImages from "./GalleryImages.jsx";
 import Repos from "./Repos.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
 import AgentSettings from "./AgentSettings.jsx";
@@ -444,6 +446,7 @@ export function Sidebar({
   onOpenNotes,
   onOpenTasks,
   onOpenCalendar,
+  onOpenGallery,
   activeView,
   profile,
   onSwitchProfile,
@@ -478,6 +481,7 @@ export function Sidebar({
     ["research", "Research", onOpenResearch],
     ["notes", "Notes", onOpenNotes],
     ["calendar", "Calendar", onOpenCalendar],
+    ["gallery", "Gallery", onOpenGallery],
   ];
 
   // Minimised, the sidebar keeps only what you would reopen it for: the way
@@ -753,6 +757,7 @@ export function ChatMessage({
   onToggleThinking,
   thinkingOpen,
   onOpenCalendar,
+  onOpenGalleryItem,
   onProposalResolved,
   agentRun,
   agentEntries,
@@ -784,6 +789,10 @@ export function ChatMessage({
   const isCompactionSummary = message.response_kind === "compaction_summary";
   const calendarProposal =
     message.response_kind === "calendar_proposal" ? message.metadata?.calendar_proposal : null;
+  // What this turn showed Neo. Read from the stored turn rather than from
+  // composer state, so a reloaded thread still shows the picture instead of a
+  // message that reads as though nothing was sent with it.
+  const messageImageIds = message.metadata?.image_ids ?? [];
   const run = isAgentTurn ? agentRun : null;
   const delivery = run?.delivery;
   const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
@@ -850,6 +859,9 @@ export function ChatMessage({
               className="chat-content"
               dangerouslySetInnerHTML={{ __html: renderMessageHtml(message.content) }}
             />
+            {messageImageIds.length ? (
+              <GalleryImages items={messageImageIds} onOpenGallery={onOpenGalleryItem} />
+            ) : null}
             {calendarProposal ? (
               <CalendarProposalCard
                 proposal={calendarProposal}
@@ -1107,6 +1119,7 @@ export function ChatComposer({
   onOpenToolsPanel,
   agentMessage,
   attachments = [],
+  images = [],
   onAttachFiles,
   onRemoveAttachment,
   attaching = false,
@@ -1192,6 +1205,25 @@ export function ChatComposer({
   return (
     <div className={`chat-input-wrap ${mode === "agent" ? "agent-mode" : "chatbot-mode"}`}>
       <div className="chat-input-shell">
+        {images.length > 0 ? (
+          <div className="chat-attachments chat-attachment-images">
+            {images.map((item) => (
+              <span className="chat-attachment-image" key={item.id}>
+                <img
+                  src={api.galleryThumbnailUrl(item.id)}
+                  alt={item.title || "Pasted image"}
+                />
+                <button
+                  type="button"
+                  onClick={() => onRemoveAttachment?.(item.id)}
+                  aria-label={`Remove ${item.title || "image"}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         {attachments.length > 0 ? (
           <div className="chat-attachments">
             {attachments.map((file) => (
@@ -1369,6 +1401,18 @@ export function ChatComposer({
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }
+              }}
+              /* Ctrl+V is how a screenshot actually arrives. Without this the
+                 only way in is the file picker, which means saving the capture
+                 to disk first. */
+              onPaste={(event) => {
+                const pasted = Array.from(event.clipboardData?.items ?? [])
+                  .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+                  .map((item) => item.getAsFile())
+                  .filter(Boolean);
+                if (!pasted.length) return;
+                event.preventDefault();
+                onAttachFiles?.(pasted);
               }}
             />
             <div className="chat-llm-picker">
@@ -2083,6 +2127,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showSettings, setShowSettings] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   const [chatAttachments, setChatAttachments] = useState([]);
+  //: Images travel separately from text attachments: they are enrolled in the
+  //: gallery on the way in and then referred to by id, so the same screenshot is
+  //: never uploaded twice and stays findable long after the thread scrolls away.
+  const [chatImages, setChatImages] = useState([]);
   const [attachingFiles, setAttachingFiles] = useState(false);
   const [attachError, setAttachError] = useState("");
   const [compacting, setCompacting] = useState(false);
@@ -2149,6 +2197,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showTasks, setShowTasks] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
+  const [initialGalleryItemId, setInitialGalleryItemId] = useState(null);
   const [showRepos, setShowRepos] = useState(false);
   const [initialFileId, setInitialFileId] = useState(null);
   const [initialProjectId, setInitialProjectId] = useState(null);
@@ -2735,7 +2785,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
    * user bubble and the failure handling are the same work either way. Only the
    * `mode` differs, and what the server does with it.
    */
-  async function sendPrompt(prompt, turnMode = "chat") {
+  async function sendPrompt(prompt, turnMode = "chat", imageIds = []) {
     // `sending` catches a send started by another flow (a rerun, or a generation resumed
     // after reload). It cannot catch a second click in the same tick, because it only
     // becomes true on the next render -- that window is what the guard closes.
@@ -2759,6 +2809,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       role: "user",
       content: prompt,
       created_at: new Date().toISOString(),
+      metadata: imageIds.length ? { image_ids: imageIds } : undefined,
     };
     setMessages((current) => [...current, optimisticMessage]);
 
@@ -2777,6 +2828,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           repoId: chat.repo_id ?? null,
           agentMode: chat.agent_mode ?? null,
           agentDefinitionId: chat.agent_definition_id ?? null,
+          imageIds,
         },
       );
       if (result.agent_session_id) {
@@ -2809,11 +2861,28 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     setAttachError("");
     try {
       const uploaded = [];
+      const enrolled = [];
       for (const file of files) {
-        const data = await api.uploadFile(file);
-        uploaded.push(data.file);
+        // An image goes to the gallery, where it is described, embedded and
+        // remembered. Everything else stays a plain workspace file.
+        if (file.type?.startsWith("image/")) {
+          const data = await api.uploadGalleryImage(file, {
+            origin: "paste",
+            chatId: activeChat?.id ?? null,
+          });
+          enrolled.push(data.item);
+        } else {
+          const data = await api.uploadFile(file);
+          uploaded.push(data.file);
+        }
       }
-      setChatAttachments((current) => [...current, ...uploaded]);
+      if (uploaded.length) setChatAttachments((current) => [...current, ...uploaded]);
+      if (enrolled.length) {
+        setChatImages((current) => {
+          const seen = new Set(current.map((item) => item.id));
+          return [...current, ...enrolled.filter((item) => !seen.has(item.id))];
+        });
+      }
     } catch (error) {
       setAttachError(errorMessage(error));
     } finally {
@@ -2823,6 +2892,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
   function handleRemoveAttachment(fileId) {
     setChatAttachments((current) => current.filter((file) => file.id !== fileId));
+    setChatImages((current) => current.filter((item) => item.id !== fileId));
   }
 
   /**
@@ -2870,6 +2940,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (steeringSessionId) {
       setComposerValue("");
       setChatAttachments([]);
+      setChatImages([]);
       setAttachError("");
       try {
         await api.sendAgentMessage(steeringSessionId, outgoing);
@@ -2882,10 +2953,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (sending) {
       return;
     }
+    const imageIds = chatImages.map((item) => item.id);
     setComposerValue("");
     setChatAttachments([]);
+    setChatImages([]);
     setAttachError("");
-    await sendPrompt(outgoing, chatMode === "agent" ? "agent" : "chat");
+    await sendPrompt(outgoing, chatMode === "agent" ? "agent" : "chat", imageIds);
   }
 
   /** Persist a composer chip onto the chat it belongs to. */
@@ -3102,8 +3175,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             : showTasks ? "tasks"
               : showCalendar ? "calendar"
                 : showFiles ? "files"
-                  : showRepos ? "repos"
-                    : "chat";
+                  : showGallery ? "gallery"
+                    : showRepos ? "repos"
+                      : "chat";
   return (
     <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
@@ -3134,7 +3208,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
         }}
         onOpenCalendar={() => {
-          setInitialCalendarEventId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowCalendar(true);
+          setInitialCalendarEventId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowGallery(false); setShowCalendar(true);
+        }}
+        onOpenGallery={() => {
+          setInitialGalleryItemId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowCalendar(false); setShowGallery(true);
         }}
         activeView={activeView}
         profile={profile}
@@ -3183,6 +3260,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         <Calendar
           initialEventId={initialCalendarEventId}
           onBack={() => { setShowCalendar(false); setInitialCalendarEventId(null); }}
+        />
+      ) : showGallery ? (
+        <Gallery
+          initialItemId={initialGalleryItemId}
+          onBack={() => { setShowGallery(false); setInitialGalleryItemId(null); }}
+          onOpenChat={(chatId) => {
+            setShowGallery(false);
+            setInitialGalleryItemId(null);
+            loadChat(chatId).catch(() => {});
+          }}
         />
       ) : showNotes ? (
         <Notes
@@ -3240,6 +3327,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
               }}
               onCopy={copyText}
               onEdit={handleEditMessage}
+              onOpenGalleryItem={(itemId) => {
+                setInitialGalleryItemId(itemId);
+                setShowGallery(true);
+              }}
               onRerun={(prompt) => sendPrompt(prompt)}
               onSaveEdit={handleSaveEditedMessage}
               onSetEditingValue={setEditingValue}
@@ -3284,6 +3375,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           stopping={stopping}
           steering={Boolean(steeringSessionId)}
           attachments={chatAttachments}
+          images={chatImages}
           onAttachFiles={handleAttachFiles}
           onRemoveAttachment={handleRemoveAttachment}
           attaching={attachingFiles}
