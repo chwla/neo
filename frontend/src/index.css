@@ -492,6 +492,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   --composer-edge: rgba(57, 255, 20, .34);
   --composer-ink: #4f9e52;
   --composer-accent: #5cf07a;
+  --composer-tool-size: 38px;
+  --composer-head-gap: 12px;
+  --composer-gutter: calc(var(--composer-tool-size) + var(--composer-head-gap));
   position: relative;
   width: 100%;
   max-width: none;
@@ -507,7 +510,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   box-shadow: 0 16px 40px rgba(0, 0, 0, .55), 0 0 42px rgba(57, 255, 20, .1);
 }
 .chat-input-form { display: flex; flex-direction: column; gap: 14px; }
-.composer-head { display: flex; align-items: flex-start; gap: 12px; }
+.composer-head { display: flex; align-items: flex-start; gap: var(--composer-head-gap); }
 .composer-head .composer-tools { margin-top: -7px; }
 .chat-input-form textarea {
   --composer-min-height: 26;
@@ -554,8 +557,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .composer-actions { display: flex; align-items: center; gap: 12px; }
 .composer-tool {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: var(--composer-tool-size, 38px);
+  height: var(--composer-tool-size, 38px);
   flex: 0 0 auto;
   place-items: center;
   border: 0;
@@ -2269,7 +2272,12 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .account-section .ws-save { justify-self: start; padding: 0 16px; }
 
 /* --- chat attachments ---------------------------------------------------- */
-.chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 8px; }
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 0 10px var(--composer-gutter, 0px);
+}
 .chat-attachment {
   display: inline-flex;
   align-items: center;
@@ -2287,7 +2295,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .chat-attachment small { flex: 0 0 auto; color: var(--neo-faint); font: 9px "JetBrains Mono", monospace; }
 .chat-attachment button { border: 0; background: transparent; padding: 0 2px; color: #555; font-size: 13px; line-height: 1; }
 .chat-attachment button:hover { color: var(--neo-danger); }
-.chat-attach-error { margin-bottom: 8px; border-left: 2px solid var(--neo-danger); background: #160d0d; padding: 7px 9px; color: #d97974; font-size: 11px; }
+.chat-attach-error { margin-bottom: 8px; margin-left: var(--composer-gutter, 0px); border-left: 2px solid var(--neo-danger); background: #160d0d; padding: 7px 9px; color: #d97974; font-size: 11px; }
 .chat-attach-button:disabled { opacity: .4; }
 
 /* ===========================================================================
@@ -3062,7 +3070,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .gallery-strip-button img { display: block; max-width: 160px; max-height: 160px; object-fit: cover; }
 .gallery-strip-item figcaption { margin-top: 4px; overflow: hidden; color: var(--neo-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
-.chat-attachment-images { display: flex; flex-wrap: wrap; gap: 6px; }
 .chat-attachment-image { position: relative; display: inline-flex; line-height: 0; }
 .chat-attachment-image img { width: 56px; height: 56px; object-fit: cover; border: 1px solid var(--neo-line); border-radius: 6px; }
 .chat-attachment-image button { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border: 1px solid var(--neo-line); border-radius: 50%; background: var(--neo-bg, #fff); color: var(--neo-text); font-size: 12px; line-height: 1; cursor: pointer; }

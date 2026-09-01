@@ -1172,6 +1172,11 @@ def _start_chat_generation(
             metadata={
                 "generation_id": generation_id,
                 "client_request_id": payload.client_request_id,
+                # What this turn showed Neo. Recorded on the message, not only on
+                # the generation: the generation is execution state that the
+                # transcript never reads, so without this the picture reached the
+                # model and then vanished from the conversation it was part of.
+                **({"image_ids": payload.image_ids} if payload.image_ids else {}),
             },
         )
         store.rename_chat_from_prompt(chat.id, cleaned_prompt)
