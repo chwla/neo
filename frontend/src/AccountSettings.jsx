@@ -96,7 +96,7 @@ export default function AccountSettings({ profile, onClose, onProfileUpdated }) 
         {isGuest ? (
           <p className="dialog-caption">
             You are in a guest session. Guest profiles are temporary and cannot be renamed or given
-            a password — create a profile to keep your work.
+            a password. Create a profile to keep your work.
           </p>
         ) : (
           <>

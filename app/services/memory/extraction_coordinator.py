@@ -207,8 +207,8 @@ class MemoryExtractionCoordinator:
         Only reached once the deterministic resolver has decided this is a new
         fact, so this is the last check before a second copy of one memory is
         written.  Comparison is restricted to records the candidate could
-        legitimately be a restatement of — same subject, type, domain and scope
-        — so a semantic near-miss can never reach across categories.
+        legitimately be a restatement of (same subject, type, domain and scope)
+        so a semantic near-miss can never reach across categories.
         """
 
         if self.duplicate_finder is None:

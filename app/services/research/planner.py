@@ -32,7 +32,7 @@ You are a research planner. Given a user's research question, produce a JSON res
 
 Output ONLY valid JSON with this structure:
 {
-  "objective": "one sentence describing the research goal — include the FULL entity name",
+  "objective": "one sentence describing the research goal; include the FULL entity name",
   "subquestions": ["list of 3-6 specific sub-questions to investigate"],
   "queries": ["list of web search queries to run"],
   "freshness_required": true or false,
@@ -296,7 +296,7 @@ def generate_followup_queries(
                 if "pricing" in gap_lower or "price" in gap_lower:
                     followups.append(f"{pair} pricing plans comparison")
                     continue
-                # "Missing <label>-specific evidence" — target that tool directly.
+                # "Missing <label>-specific evidence": target that tool directly.
                 matched = next((lbl for lbl in labels if lbl.lower() in gap_lower), None)
                 if matched:
                     followups.append(f"{matched} official documentation features")

@@ -22,6 +22,7 @@ import ReminderToast from "./ReminderToast.jsx";
 import Files from "./Files.jsx";
 import Gallery from "./Gallery.jsx";
 import GalleryImages from "./GalleryImages.jsx";
+import ImageLightbox from "./ImageLightbox.jsx";
 import Repos from "./Repos.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
 import AgentSettings from "./AgentSettings.jsx";
@@ -1138,6 +1139,8 @@ export function ChatComposer({
   // Everything the run needs but the objective itself lives behind the "+":
   // repo, permission mode, agent, and whatever the clip attaches.
   const [menuOpen, setMenuOpen] = useState(false);
+  // Which attached image is open full-screen, or -1 for none.
+  const [zoomedImage, setZoomedImage] = useState(-1);
   const menuRef = useRef(null);
   const menuButtonRef = useRef(null);
 
@@ -1209,14 +1212,23 @@ export function ChatComposer({
       <div className="chat-input-shell">
         {images.length > 0 ? (
           <div className="chat-attachments chat-attachment-images">
-            {images.map((item) => (
+            {images.map((item, position) => (
               <span className="chat-attachment-image" key={item.id}>
-                <img
-                  src={api.galleryThumbnailUrl(item.id)}
-                  alt={item.title || "Pasted image"}
-                />
                 <button
                   type="button"
+                  className="chat-attachment-open"
+                  onClick={() => setZoomedImage(position)}
+                  title={`${item.title || "Pasted image"} (click to enlarge)`}
+                  aria-label={`Enlarge ${item.title || "image"}`}
+                >
+                  <img
+                    src={api.galleryThumbnailUrl(item.id)}
+                    alt={item.title || "Pasted image"}
+                  />
+                </button>
+                <button
+                  type="button"
+                  className="chat-attachment-remove"
                   onClick={() => onRemoveAttachment?.(item.id)}
                   aria-label={`Remove ${item.title || "image"}`}
                 >
@@ -1225,6 +1237,18 @@ export function ChatComposer({
               </span>
             ))}
           </div>
+        ) : null}
+        {zoomedImage >= 0 && images[zoomedImage] ? (
+          <ImageLightbox
+            images={images.map((item) => ({
+              id: item.id,
+              title: item.title || "",
+              alt: item.alt_text || item.title || "Pasted image",
+            }))}
+            index={zoomedImage}
+            onIndexChange={setZoomedImage}
+            onClose={() => setZoomedImage(-1)}
+          />
         ) : null}
         {attachments.length > 0 ? (
           <div className="chat-attachments">
@@ -1963,7 +1987,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
           {registry.routes.map((route) => <div className="llm-route-row" key={route.id}><strong>{route.route_name}</strong><select aria-label={`${route.route_name} primary model`} value={route.model_id || ""} onChange={(event) => updateRoute(route, event.target.value)}>{registry.models.filter((model) => model.enabled).map((model) => <option key={model.id} value={model.id}>{model.display_name || model.model_name}</option>)}</select><select aria-label={`${route.route_name} fallback model`} value={route.fallback_model_id || ""} onChange={(event) => updateRoute(route, event.target.value, true)}><option value="">No fallback</option>{registry.models.filter((model) => model.enabled && model.id !== route.model_id).map((model) => <option key={model.id} value={model.id}>{model.display_name || model.model_name}</option>)}</select><NeoButton onClick={() => testRoute(route.route_name)}>{testingId === route.route_name ? "Testing..." : "Test"}</NeoButton></div>)}
         </section>
       </div>
-      <section className="llm-usage-section"><div className="llm-section-heading">Usage history</div>{registry.calls.length === 0 ? <p className="dialog-caption">No routed calls recorded yet.</p> : <div className="llm-usage-list">{registry.calls.slice(0, 20).map((call) => <div key={call.id}><strong>{call.route_name}</strong> · {call.status} · {call.total_tokens ?? "—"} tokens · {call.latency_ms ?? "—"} ms{call.fallback_used ? " · fallback" : ""}{call.error ? ` · ${call.error}` : ""}</div>)}</div>}</section>
+      <section className="llm-usage-section"><div className="llm-section-heading">Usage history</div>{registry.calls.length === 0 ? <p className="dialog-caption">No routed calls recorded yet.</p> : <div className="llm-usage-list">{registry.calls.slice(0, 20).map((call) => <div key={call.id}><strong>{call.route_name}</strong> · {call.status} · {call.total_tokens ?? "-"} tokens · {call.latency_ms ?? "-"} ms{call.fallback_used ? " · fallback" : ""}{call.error ? ` · ${call.error}` : ""}</div>)}</div>}</section>
       {error && <div className="neo-error">{error}</div>}
       {status && <div className="settings-status">{status}</div>}
     </Modal>
@@ -3059,7 +3083,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         skipped.length
           ? `Undid ${reversed} file(s). Left alone: ${skipped
             .map((item) => item.path)
-            .join(", ")} — changed after the run finished.`
+            .join(", ")}, changed after the run finished.`
           : `Undid ${reversed} file(s).`,
       );
       await loadChat(activeChat.id, { history: "none" });
@@ -3586,7 +3610,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
 // Every key here holds state that belongs to one profile. They live in
 // localStorage, which is scoped to the origin rather than to the profile, so a
-// profile transition has to drop them explicitly — otherwise the next profile
+// profile transition has to drop them explicitly, otherwise the next profile
 // boots pointing at rows that only exist in the previous profile's store.
 // An agent run is a turn of a chat, so the chat id is the only thing worth
 // remembering: reopening it reattaches to a run still executing on the server.

@@ -688,7 +688,7 @@ class CalendarContextService:
             except CalendarValidationError:
                 # Never drop an event over a value we cannot read: show it
                 # verbatim under its own heading rather than hiding it.
-                lines.append(f"- {occurrence.title} — {occurrence.occurrence_start}")
+                lines.append(f"- {occurrence.title}: {occurrence.occurrence_start}")
                 current_day = None
                 continue
             if start.date() != current_day:
@@ -709,7 +709,7 @@ class CalendarContextService:
                     when = f"{start:%H:%M}"
             else:
                 when = f"{start:%H:%M}"
-            lines.append(f"- {when} — {occurrence.title}")
+            lines.append(f"- {when}: {occurrence.title}")
         if len(occurrences) > 20:
             lines.append("")
             lines.append(f"...and {len(occurrences) - 20} more.")

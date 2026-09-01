@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { Modal } from "./App.jsx";
 import { api } from "./api.js";
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -230,6 +231,12 @@ export default function Calendar({ initialEventId = null, onBack }) {
     }));
   }
 
+  function closeEditor() {
+    setEditing(false);
+    setSelectedEvent(null);
+    setError("");
+  }
+
   async function saveEvent(event) {
     event.preventDefault();
     setBusy(true);
@@ -299,19 +306,9 @@ export default function Calendar({ initialEventId = null, onBack }) {
           >
             ›
           </button>
-          <button
-            className="neo-button secondary"
-            type="button"
-            onClick={() => {
-              setMonthCursor(startOfMonth(new Date()));
-              setSelectedDay(today);
-            }}
-          >
-            Today
-          </button>
         </div>
 
-        {error ? <div className="task-error">{error}</div> : null}
+        {error && !editing ? <div className="task-error">{error}</div> : null}
 
         <div className="calendar-weekday-row">
           {WEEKDAY_LABELS.map((label) => (
@@ -335,7 +332,7 @@ export default function Calendar({ initialEventId = null, onBack }) {
               >
                 <span className="calendar-day-number">{day.getDate()}</span>
                 <div className="calendar-day-events">
-                  {items.slice(0, 3).map((occurrence) => (
+                  {items.slice(0, 2).map((occurrence) => (
                     <span
                       key={`${occurrence.id}-${occurrence.occurrence_start}`}
                       className={`calendar-event-pill ${occurrence.source === "neo" ? "neo" : "user"}`}
@@ -343,8 +340,8 @@ export default function Calendar({ initialEventId = null, onBack }) {
                       {occurrence.title}
                     </span>
                   ))}
-                  {items.length > 3 ? (
-                    <span className="calendar-event-overflow">+{items.length - 3} more</span>
+                  {items.length > 2 ? (
+                    <span className="calendar-event-overflow">+{items.length - 2} more</span>
                   ) : null}
                 </div>
               </button>
@@ -354,151 +351,178 @@ export default function Calendar({ initialEventId = null, onBack }) {
       </section>
 
       <section className="calendar-detail-pane">
-        {editing ? (
-          <form className="calendar-editor" onSubmit={saveEvent}>
-            <input
-              className="task-title-input"
-              value={draft.title}
-              maxLength={200}
-              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-              placeholder="Event title"
-              autoFocus
-            />
-            <textarea
-              value={draft.description}
-              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-              placeholder="Description"
-            />
-            <input
-              value={draft.location}
-              onChange={(e) => setDraft({ ...draft, location: e.target.value })}
-              placeholder="Location"
-            />
-            <div className="task-field-grid">
-              <label>
-                Starts
-                <input
-                  type="datetime-local"
-                  value={draft.start_at}
-                  onChange={(e) => setDraft({ ...draft, start_at: e.target.value })}
-                  required
-                />
-              </label>
-              <label>
-                Ends
-                <input
-                  type="datetime-local"
-                  value={draft.end_at}
-                  onChange={(e) => setDraft({ ...draft, end_at: e.target.value })}
-                />
-              </label>
-            </div>
-            <label className="tasks-check">
-              <input
-                type="checkbox"
-                checked={draft.all_day}
-                onChange={(e) => setDraft({ ...draft, all_day: e.target.checked })}
-              />{" "}
-              All day
-            </label>
-
-            <div className="calendar-recurrence">
-              <label>
-                Repeats
-                <select
-                  value={draft.repeats}
-                  onChange={(e) => setDraft({ ...draft, repeats: e.target.value })}
+        <div className="calendar-agenda">
+          <div className="tasks-pane-header">
+            <h3>{new Date(`${selectedDay}T00:00:00`).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</h3>
+            <button className="neo-button" type="button" onClick={() => openNewEvent(new Date(`${selectedDay}T00:00:00`))}>
+              Add
+            </button>
+          </div>
+          {dayOccurrences.length === 0 ? (
+            <p className="tasks-empty editor">Nothing on the calendar this day.</p>
+          ) : (
+            <div className="calendar-agenda-list">
+              {dayOccurrences.map((occurrence) => (
+                <button
+                  type="button"
+                  key={`${occurrence.id}-${occurrence.occurrence_start}`}
+                  className="calendar-agenda-row"
+                  onClick={() => openOccurrence(occurrence)}
                 >
-                  <option value="none">Does not repeat</option>
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </label>
-              {draft.repeats !== "none" ? (
-                <>
-                  <label>
-                    Every
-                    <input
-                      type="number"
-                      min={1}
-                      max={365}
-                      value={draft.interval}
-                      onChange={(e) => setDraft({ ...draft, interval: e.target.value })}
-                    />
-                  </label>
-                  {draft.repeats === "weekly" ? (
-                    <div className="calendar-weekday-picker">
-                      {WEEKDAY_LABELS.map((label, index) => (
-                        <label key={label} className="calendar-weekday-toggle">
-                          <input
-                            type="checkbox"
-                            checked={draft.by_weekday.includes(index)}
-                            onChange={() => toggleWeekday(index)}
-                          />
-                          {label}
-                        </label>
-                      ))}
-                    </div>
+                  <span className="calendar-agenda-time">{formatEventTime(occurrence)}</span>
+                  <span className="calendar-agenda-title">{occurrence.title}</span>
+                  {occurrence.is_recurring_instance ? (
+                    <span className="calendar-agenda-badge">repeats</span>
                   ) : null}
-                  <label>
-                    Ends
-                    <select
-                      value={draft.ends}
-                      onChange={(e) => setDraft({ ...draft, ends: e.target.value })}
-                    >
-                      <option value="never">Never</option>
-                      <option value="on">On date</option>
-                      <option value="after">After N times</option>
-                    </select>
-                  </label>
-                  {draft.ends === "on" ? (
-                    <input
-                      type="date"
-                      value={draft.until}
-                      onChange={(e) => setDraft({ ...draft, until: e.target.value })}
-                    />
+                  {occurrence.source === "neo" ? (
+                    <span className="calendar-agenda-badge neo">added by Neo</span>
                   ) : null}
-                  {draft.ends === "after" ? (
-                    <input
-                      type="number"
-                      min={1}
-                      max={730}
-                      value={draft.count}
-                      onChange={(e) => setDraft({ ...draft, count: e.target.value })}
-                    />
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-
-            <div className="calendar-reminders">
-              <div className="task-section-title">Reminders</div>
-              {REMINDER_PRESETS.map(([minutes, label]) => (
-                <label key={minutes} className="tasks-check">
-                  <input
-                    type="checkbox"
-                    checked={draft.reminders.includes(minutes)}
-                    onChange={() => toggleReminder(minutes)}
-                  />{" "}
-                  {label}
-                </label>
+                </button>
               ))}
             </div>
+          )}
+        </div>
+      </section>
 
+      {/* The editor is a dialog now: opening it no longer replaces the day's
+          agenda, so the list you were reading is still there behind it. */}
+      {editing ? (
+        <Modal title={selectedEvent ? "Edit event" : "New event"} onClose={closeEditor}>
+          <form className="calendar-editor" onSubmit={saveEvent}>
+          <input
+            className="task-title-input"
+            value={draft.title}
+            maxLength={200}
+            onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+            placeholder="Event title"
+            autoFocus
+          />
+          <textarea
+            value={draft.description}
+            onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            placeholder="Description"
+          />
+          <input
+            value={draft.location}
+            onChange={(e) => setDraft({ ...draft, location: e.target.value })}
+            placeholder="Location"
+          />
+          <div className="task-field-grid">
+            <label>
+              Starts
+              <input
+                type="datetime-local"
+                value={draft.start_at}
+                onChange={(e) => setDraft({ ...draft, start_at: e.target.value })}
+                required
+              />
+            </label>
+            <label>
+              Ends
+              <input
+                type="datetime-local"
+                value={draft.end_at}
+                onChange={(e) => setDraft({ ...draft, end_at: e.target.value })}
+              />
+            </label>
+          </div>
+          <label className="tasks-check">
+            <input
+              type="checkbox"
+              checked={draft.all_day}
+              onChange={(e) => setDraft({ ...draft, all_day: e.target.checked })}
+            />{" "}
+            All day
+          </label>
+
+          <div className="calendar-recurrence">
+            <label>
+              Repeats
+              <select
+                value={draft.repeats}
+                onChange={(e) => setDraft({ ...draft, repeats: e.target.value })}
+              >
+                <option value="none">Does not repeat</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </label>
+            {draft.repeats !== "none" ? (
+              <>
+                <label>
+                  Every
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={draft.interval}
+                    onChange={(e) => setDraft({ ...draft, interval: e.target.value })}
+                  />
+                </label>
+                {draft.repeats === "weekly" ? (
+                  <div className="calendar-weekday-picker">
+                    {WEEKDAY_LABELS.map((label, index) => (
+                      <label key={label} className="calendar-weekday-toggle">
+                        <input
+                          type="checkbox"
+                          checked={draft.by_weekday.includes(index)}
+                          onChange={() => toggleWeekday(index)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
+                <label>
+                  Ends
+                  <select
+                    value={draft.ends}
+                    onChange={(e) => setDraft({ ...draft, ends: e.target.value })}
+                  >
+                    <option value="never">Never</option>
+                    <option value="on">On date</option>
+                    <option value="after">After N times</option>
+                  </select>
+                </label>
+                {draft.ends === "on" ? (
+                  <input
+                    type="date"
+                    value={draft.until}
+                    onChange={(e) => setDraft({ ...draft, until: e.target.value })}
+                  />
+                ) : null}
+                {draft.ends === "after" ? (
+                  <input
+                    type="number"
+                    min={1}
+                    max={730}
+                    value={draft.count}
+                    onChange={(e) => setDraft({ ...draft, count: e.target.value })}
+                  />
+                ) : null}
+              </>
+            ) : null}
+          </div>
+
+          <div className="calendar-reminders">
+            <div className="task-section-title">Reminders</div>
+            {REMINDER_PRESETS.map(([minutes, label]) => (
+              <label key={minutes} className="tasks-check">
+                <input
+                  type="checkbox"
+                  checked={draft.reminders.includes(minutes)}
+                  onChange={() => toggleReminder(minutes)}
+                />{" "}
+                {label}
+              </label>
+            ))}
+          </div>
+
+            {error ? <div className="task-error">{error}</div> : null}
             <div className="task-actions">
               <button className="neo-button" type="submit" disabled={busy || !draft.title.trim()}>
                 Save
-              </button>
-              <button
-                className="neo-button secondary"
-                type="button"
-                onClick={() => {
-                  setEditing(false);
-                  setSelectedEvent(null);
-                }}
-              >
-                Cancel
               </button>
               {selectedEvent ? (
                 <button className="neo-button danger" type="button" onClick={removeEvent}>
@@ -507,40 +531,8 @@ export default function Calendar({ initialEventId = null, onBack }) {
               ) : null}
             </div>
           </form>
-        ) : (
-          <div className="calendar-agenda">
-            <div className="tasks-pane-header">
-              <h3>{new Date(`${selectedDay}T00:00:00`).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</h3>
-              <button className="neo-button" type="button" onClick={() => openNewEvent(new Date(`${selectedDay}T00:00:00`))}>
-                Add
-              </button>
-            </div>
-            {dayOccurrences.length === 0 ? (
-              <p className="tasks-empty editor">Nothing on the calendar this day.</p>
-            ) : (
-              <div className="calendar-agenda-list">
-                {dayOccurrences.map((occurrence) => (
-                  <button
-                    type="button"
-                    key={`${occurrence.id}-${occurrence.occurrence_start}`}
-                    className="calendar-agenda-row"
-                    onClick={() => openOccurrence(occurrence)}
-                  >
-                    <span className="calendar-agenda-time">{formatEventTime(occurrence)}</span>
-                    <span className="calendar-agenda-title">{occurrence.title}</span>
-                    {occurrence.is_recurring_instance ? (
-                      <span className="calendar-agenda-badge">repeats</span>
-                    ) : null}
-                    {occurrence.source === "neo" ? (
-                      <span className="calendar-agenda-badge neo">added by Neo</span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+        </Modal>
+      ) : null}
     </main>
   );
 }

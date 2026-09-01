@@ -95,7 +95,7 @@ def render_tool_docs(schemas: list[dict[str, Any]]) -> str:
             f"{name}: {spec.get('type', 'any')}{'' if name in required else ' (optional)'}"
             for name, spec in properties.items()
         )
-        lines.append(f"- {function.get('name')}({arguments}) — {function.get('description', '')}")
+        lines.append(f"- {function.get('name')}({arguments}): {function.get('description', '')}")
     return "\n".join(lines)
 
 

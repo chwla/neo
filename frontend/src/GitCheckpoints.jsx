@@ -4,7 +4,7 @@ import { api } from "./api.js";
 
 const WARNING = "Git operations affect only Neo’s managed workspace copy.\n\nThe original repository is never modified. No remote Git operations are supported.";
 
-function shortSha(value) { return value ? value.slice(0, 12) : "—"; }
+function shortSha(value) { return value ? value.slice(0, 12) : "-"; }
 
 export default function GitCheckpoints({ repo, compact = false }) {
   const [status, setStatus] = useState(null);

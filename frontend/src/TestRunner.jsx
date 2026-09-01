@@ -5,7 +5,7 @@ import { api } from "./api.js";
 const WARNING = "This command will run inside Neo’s managed workspace copy only.\n\nIt will not run in the original repository. It cannot use shell chaining, Git, package install commands, or destructive commands.";
 
 function argvText(command) { return JSON.stringify(command || []); }
-function duration(value) { return value == null ? "—" : `${value} ms`; }
+function duration(value) { return value == null ? "-" : `${value} ms`; }
 
 export default function TestRunner({ repo, compact = false }) {
   const [commands, setCommands] = useState([]);
@@ -76,8 +76,8 @@ export default function TestRunner({ repo, compact = false }) {
       <button type="submit" disabled={busy}>Save command</button>
     </form>}
     <div className="test-runner-grid"><div><h4>Saved commands</h4>{commands.length ? commands.map((item) => <div className="test-command" key={item.id}><span><strong>{item.name}</strong><code>{argvText(item.command)}</code><small>{item.working_directory} · {item.timeout_seconds}s {item.enabled ? "" : "· disabled"}</small></span><button type="button" disabled={busy || !item.enabled} onClick={() => run(item)}>Run</button></div>) : <p>No saved commands.</p>}</div>
-      <div><h4>Latest runs</h4>{runs.length ? runs.map((item) => <button className="test-run-row" type="button" key={item.id} onClick={() => open(item.id)}><strong>{item.name}</strong><span className={`test-status ${item.status}`}>{item.status}</span><small>exit {item.exit_code ?? "—"} · {duration(item.duration_ms)}</small></button>) : <p>No test runs yet.</p>}</div></div>
-    {selected && <div className="test-run-detail"><div><strong>Test run details</strong><button type="button" onClick={() => setSelected(null)}>Close</button></div><p><span className={`test-status ${selected.status}`}>{selected.status}</span> · exit {selected.exit_code ?? "—"} · {duration(selected.duration_ms)}<br /><code>{argvText(selected.command)}</code><br />cwd: {selected.working_directory}</p><label>stdout<pre>{selected.stdout_text || "(empty)"}</pre></label><label>stderr<pre>{selected.stderr_text || "(empty)"}</pre></label>{selected.error && <div className="task-error">{selected.error}</div>}<button type="button" disabled={busy} onClick={checkpointFromRun}>Create checkpoint from this test result</button></div>}
+      <div><h4>Latest runs</h4>{runs.length ? runs.map((item) => <button className="test-run-row" type="button" key={item.id} onClick={() => open(item.id)}><strong>{item.name}</strong><span className={`test-status ${item.status}`}>{item.status}</span><small>exit {item.exit_code ?? "-"} · {duration(item.duration_ms)}</small></button>) : <p>No test runs yet.</p>}</div></div>
+    {selected && <div className="test-run-detail"><div><strong>Test run details</strong><button type="button" onClick={() => setSelected(null)}>Close</button></div><p><span className={`test-status ${selected.status}`}>{selected.status}</span> · exit {selected.exit_code ?? "-"} · {duration(selected.duration_ms)}<br /><code>{argvText(selected.command)}</code><br />cwd: {selected.working_directory}</p><label>stdout<pre>{selected.stdout_text || "(empty)"}</pre></label><label>stderr<pre>{selected.stderr_text || "(empty)"}</pre></label>{selected.error && <div className="task-error">{selected.error}</div>}<button type="button" disabled={busy} onClick={checkpointFromRun}>Create checkpoint from this test result</button></div>}
     {message && <div className={message.includes("Running") || message.includes("run ") || message.includes("created") ? "repos-message" : "task-error"}>{message}</div>}
   </section>;
 }

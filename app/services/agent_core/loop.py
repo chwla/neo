@@ -416,7 +416,7 @@ class AgentLoop:
                         name=call.name,
                         status="proposed",
                         content=(
-                            "PLAN MODE — not executed. This would: "
+                            "PLAN MODE, not executed. This would: "
                             f"{tool.describe(call.arguments)}. "
                             "Continue planning; describe the remaining steps."
                         ),

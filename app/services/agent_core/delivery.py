@@ -346,5 +346,5 @@ def summarize(plan: DeliveryPlan) -> str:
     lines += [f"  {change.status}: {change.relative_path}" for change in plan.deliverable]
     if plan.blocked:
         lines.append(f"{len(plan.blocked)} file(s) blocked:")
-        lines += [f"  {change.relative_path} — {change.reason}" for change in plan.blocked]
+        lines += [f"  {change.relative_path}: {change.reason}" for change in plan.blocked]
     return "\n".join(lines)

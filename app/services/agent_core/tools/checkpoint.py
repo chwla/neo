@@ -59,7 +59,7 @@ TOOLS = [
         name="create_checkpoint",
         description=(
             "Commit the current state of the managed repository copy as a local "
-            "checkpoint you can roll back to. Local only — never pushed, and the "
+            "checkpoint you can roll back to. Local only, never pushed, and the "
             "user's own repository is untouched."
         ),
         parameters={

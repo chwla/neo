@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 TOPIC_AI_CODING_TOOLS = "ai_coding_tools_comparison"
 
-# Recognition hints only — NOT a comparison pair. Longer keys first for greedy matching.
+# Recognition hints only, NOT a comparison pair. Longer keys first for greedy matching.
 # Any tool named in the question is supported whether or not it appears here; this table
 # exists to give known names a tidy label and to confirm a query is about coding tools.
 KNOWN_CODING_TOOLS: list[tuple[str, str]] = [
@@ -217,7 +217,7 @@ def classify_topic_intent(user_query: str, original_query: str | None = None) ->
 
     is_comparison = bool(_COMPARISON_SIGNAL.search(q)) or len(tools) >= 2
     if not is_comparison and len(tools) == 1:
-        # Single tool mention without comparison — not this intent path.
+        # Single tool mention without comparison, not this intent path.
         if not _PRICING_SIGNAL.search(q):
             return None
 
@@ -403,7 +403,7 @@ def build_ai_coding_plan(intent: TopicIntent, user_query: str) -> dict:
 
     joined = " vs ".join(entities) if entities else user_query
     objective = (
-        f"Compare {joined} as software development / AI coding tools — "
+        f"Compare {joined} as software development / AI coding tools, "
         "focus on the software products, not unrelated meanings of their names."
     )
 
@@ -479,7 +479,7 @@ def _mentions_any_tool(text: str, intent: TopicIntent) -> bool:
 def _mentions_entity_strongly(text: str, slug: str, label: str) -> bool:
     """A mention that survives an ambiguous name.
 
-    When a tool's name is also an everyday word, the bare word proves nothing — SQL
+    When a tool's name is also an everyday word, the bare word proves nothing. SQL
     cursors and mouse cursors both "mention cursor". A mention only counts if the tool's
     own domain appears, or the name sits in an explicit software/coding context.
     """
@@ -581,7 +581,7 @@ def is_official_source_for_entity(source: ResearchSource, slug: str, label: str)
 def is_preferred_ai_coding_source(
     source: ResearchSource, intent: TopicIntent | None = None
 ) -> bool:
-    """Prefer a tool's own site/docs, derived from the entity name — no vendor table."""
+    """Prefer a tool's own site/docs, derived from the entity name, with no vendor table."""
     if intent and any(
         is_official_source_for_entity(source, slug, intent.normalized_entities.get(slug, slug))
         for slug in intent.tools

@@ -123,7 +123,7 @@ class ExtractionRequest(ExtractionContractModel):
         stripped before ``validate_trusted_request`` compares the two.  Hashing
         the caller's unstripped string therefore raised
         ``source_content_hash_mismatch`` for any message with a leading or
-        trailing space or newline — a pasted block, or anything typed into a box
+        trailing space or newline, a pasted block, or anything typed into a box
         that keeps its final newline.  In the chat path that exception is caught
         and logged, so the turn survived and extraction simply never ran: the
         user stated a fact, was answered normally, and nothing was remembered.

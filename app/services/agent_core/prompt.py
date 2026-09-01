@@ -33,7 +33,7 @@ Verifying your work:
 
 Working notes:
 - Use todo_write for objectives that span several steps or files, and revise it as
-  you learn. Skip it entirely for simple objectives — do not invent a checklist for
+  you learn. Skip it entirely for simple objectives. Do not invent a checklist for
   a one-step task.
 
 Permissions:

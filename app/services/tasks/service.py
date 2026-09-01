@@ -407,9 +407,9 @@ def _format_task_line(task: TaskListItem, intent: str) -> str:
         details.append(f"due {task.due_at}")
     if intent == "completed" and task.completed_at:
         details.append(f"completed {task.completed_at}")
-    line = f"- {task.title} — {', '.join(details)}"
+    line = f"- {task.title}: {', '.join(details)}"
     if intent == "blocked" and task.description:
-        line += f" — {task.description[:220]}"
+        line += f". {task.description[:220]}"
     return line
 
 

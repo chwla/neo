@@ -115,7 +115,7 @@ export function ContextWindowIndicator({ message, contextWindowIndex, sessionTok
         onClick={() => setOpen((current) => !current)}
       >
         <ContextRing pct={pct} />
-        <span className="context-window-pct-label">{pct === null ? "—" : `${Math.round(pct)}%`}</span>
+        <span className="context-window-pct-label">{pct === null ? "-" : `${Math.round(pct)}%`}</span>
       </button>
       <span
         ref={menuRef}
@@ -135,7 +135,7 @@ export function ContextWindowIndicator({ message, contextWindowIndex, sessionTok
             </span>
             <span className="context-window-fact-row">
               <span>Model</span>
-              <span>{message.model_name || "—"}</span>
+              <span>{message.model_name || "-"}</span>
             </span>
             <span className="context-window-fact-row">
               <span>Usage</span>
@@ -151,7 +151,7 @@ export function ContextWindowIndicator({ message, contextWindowIndex, sessionTok
             <span className="context-window-totals">{formatCompactTokens(used)} tokens used</span>
             <span className="context-window-fact-row">
               <span>Model</span>
-              <span>{message.model_name || "—"}</span>
+              <span>{message.model_name || "-"}</span>
             </span>
             <span className="context-window-fact-row">
               <span>Maximum context</span>

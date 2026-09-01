@@ -843,7 +843,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   padding: 0;
   background: var(--neo-bg);
 }
-.calendar-layout { grid-template-columns: minmax(420px, 62%) minmax(0, 1fr); }
+.calendar-layout { grid-template-columns: minmax(430px, 58%) minmax(280px, 1fr); }
 .projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane, .calendar-grid-pane {
   min-width: 0;
   overflow: auto;
@@ -861,6 +861,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   z-index: 3;
   display: flex;
   min-height: 48px;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin: 0 -20px 14px;
@@ -920,20 +921,58 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .task-status, .task-priority, .agent-status, .research-status-badge { color: var(--neo-green); font: 9px "JetBrains Mono", monospace; text-transform: uppercase; }
 .task-help { color: #444; font: 10px/1.5 "JetBrains Mono", monospace; }
 
-.calendar-toolbar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; }
-.calendar-month-label { flex: 1; color: var(--neo-text); font-size: 13px; }
-.calendar-weekday-row, .calendar-month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
-.calendar-weekday-cell { padding: 4px 0; color: #444; font: 9px "JetBrains Mono", monospace; text-align: center; text-transform: uppercase; }
-.calendar-day-cell { display: flex; flex-direction: column; gap: 4px; min-height: 84px; border: 1px solid #141414; background: transparent; padding: 6px; color: #777; text-align: left; align-items: stretch; }
-.calendar-day-cell:hover { background: rgba(255,255,255,.018); }
-.calendar-day-cell.selected { border-color: var(--neo-green); background: rgba(57,255,20,.035); }
-.calendar-day-cell.is-today .calendar-day-number { color: var(--neo-green); }
-.calendar-day-cell.outside-month { opacity: .35; }
-.calendar-day-number { font: 11px "JetBrains Mono", monospace; }
-.calendar-day-events { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
-.calendar-event-pill { overflow: hidden; border-radius: 2px; background: rgba(57,255,20,.1); padding: 1px 4px; color: #ccc; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.calendar-event-pill.neo { background: rgba(120,170,255,.12); }
-.calendar-event-overflow { color: #444; font-size: 9px; }
+/* The month and its two arrows are one centred control. The label is given a
+   fixed minimum so the arrows hold their place as the month name changes
+   length, instead of shuffling between "May" and "September". */
+.calendar-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; margin: 4px 0 14px; }
+.calendar-month-label { min-width: 160px; color: var(--neo-text); font-size: 13px; text-align: center; }
+
+.calendar-weekday-row, .calendar-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+.calendar-weekday-row { margin-bottom: 4px; }
+.calendar-weekday-cell { padding: 4px 0; color: #4a4a4a; font: 9.5px "JetBrains Mono", monospace; letter-spacing: .06em; text-align: center; text-transform: uppercase; }
+
+/* A day is sized by its column, not by a fixed height. The old min-height held
+   84px while the column collapsed with the pane, so at a narrow width every day
+   became a 28px-wide, 84px-tall sliver. The ratio keeps a cell a cell; the
+   floor and ceiling stop it turning into a stamp or a billboard. */
+.calendar-day-cell {
+  display: flex;
+  aspect-ratio: 1 / .92;
+  min-height: 46px;
+  max-height: 116px;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  border: 1px solid var(--neo-line);
+  border-radius: 6px;
+  background: transparent;
+  padding: 5px 6px;
+  color: #777;
+  text-align: left;
+  transition: border-color .12s ease, background .12s ease;
+}
+.calendar-day-cell:hover { border-color: var(--neo-line-bright); background: rgba(255, 255, 255, .03); }
+.calendar-day-cell.selected { border-color: var(--neo-green); background: rgba(57, 255, 20, .06); }
+.calendar-day-cell.outside-month { opacity: .32; }
+.calendar-day-number { align-self: flex-start; font: 11px "JetBrains Mono", monospace; line-height: 1.4; }
+/* Today reads as a marked date rather than merely a green numeral. */
+.calendar-day-cell.is-today .calendar-day-number {
+  min-width: 19px;
+  border-radius: 20px;
+  background: rgba(57, 255, 20, .16);
+  padding: 0 5px;
+  color: var(--neo-green);
+  text-align: center;
+}
+.calendar-day-events { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 2px; overflow: hidden; }
+.calendar-event-pill { flex: 0 0 auto; overflow: hidden; border-radius: 3px; background: rgba(57, 255, 20, .12); padding: 0 4px; color: #ccc; font-size: 9px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.calendar-event-pill.neo { background: rgba(120, 170, 255, .14); }
+.calendar-event-overflow { flex: 0 0 auto; color: #4a4a4a; font: 8.5px "JetBrains Mono", monospace; }
 .calendar-agenda-list { display: grid; gap: 2px; }
 .calendar-agenda-row { display: flex; align-items: center; gap: 10px; border: 0; border-bottom: 1px solid #141414; background: transparent; padding: 10px; color: #ccc; text-align: left; }
 .calendar-agenda-row:hover { background: rgba(255,255,255,.018); }
@@ -964,8 +1003,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .reminder-toast-dismiss { border: 0; background: transparent; padding: 0; color: #555; font-size: 16px; line-height: 1; }
 .reminder-toast-dismiss:hover { color: var(--neo-green); }
 
-@media (max-width: 900px) { .calendar-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); } }
-@media (max-width: 640px) { .calendar-day-cell { min-height: 56px; } }
+@media (max-width: 1000px) {
+  .calendar-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .calendar-grid-pane { border-right: 0; border-bottom: 1px solid var(--neo-line); }
+  .calendar-day-cell { max-height: 88px; }
+}
+@media (max-width: 560px) {
+  .calendar-weekday-row, .calendar-month-grid { gap: 3px; }
+  .calendar-day-cell { padding: 4px; max-height: 68px; }
+  .calendar-event-pill { font-size: 8.5px; }
+}
 
 .research-layout { display: grid; grid-template-columns: minmax(0,1fr) 280px; width: 100%; height: 100vh; overflow: hidden; padding: 0; }
 .research-main { min-width: 0; overflow: auto; padding: 0 32px 32px; }
@@ -1006,7 +1053,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .chat-input-wrap { padding-right: 22px; padding-left: 22px; }
   .neo-shell, .neo-view-header, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
   .settings-menu, .llm-settings-layout, .agent-settings-grid, .tools-settings-grid { grid-template-columns: 1fr; }
-  .projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
+  .projects-layout, .tasks-layout, .notes-layout, .files-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
   .research-layout { grid-template-columns: 1fr; overflow: auto; }
   .research-sidebar { border-top: 1px solid var(--neo-line); border-left: 0; }
   .repos-browser { grid-template-columns: 1fr; }
@@ -1030,7 +1077,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .neo-dialog { max-height: calc(100vh - 20px); padding: 0 16px 18px; }
   .profile-picker { padding: 16px; }
   .projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout { display: block; height: auto; min-height: 56vh; overflow: auto; }
-  .projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane, .calendar-grid-pane { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
+  .projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
+  .calendar-grid-pane { max-height: none; border-right: 0; border-bottom: 1px solid var(--neo-line); }
   .projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane, .calendar-detail-pane { min-height: 320px; }
   .repos-register form { grid-template-columns: 1fr; }
   .projects-editor-grid, .task-field-grid { grid-template-columns: 1fr; }
@@ -3061,18 +3109,66 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 
 /* Images inside a turn, so the transcript reads the way the conversation
    actually happened rather than as a filename. */
-.gallery-strip { margin: 8px 0 0; }
+.gallery-strip { --strip-tile: 132px; margin: 10px 0 0; }
 .gallery-strip-caption { margin: 0 0 6px; color: var(--neo-faint); font-size: 12px; }
-.gallery-strip-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.gallery-strip-item { margin: 0; max-width: 160px; }
-.gallery-strip-button { padding: 0; border: 1px solid var(--neo-line); border-radius: 8px; background: none; cursor: pointer; overflow: hidden; line-height: 0; }
-.gallery-strip-button:hover { border-color: var(--neo-text); }
-.gallery-strip-button img { display: block; max-width: 160px; max-height: 160px; object-fit: cover; }
-.gallery-strip-item figcaption { margin-top: 4px; overflow: hidden; color: var(--neo-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.gallery-strip-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.gallery-strip-item { margin: 0; width: var(--strip-tile); }
+.gallery-strip-button {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  border: 1px solid var(--neo-line);
+  border-radius: 10px;
+  background: #0d0d0d;
+  padding: 0;
+  line-height: 0;
+  cursor: zoom-in;
+  transition: border-color .14s ease, transform .14s ease, box-shadow .14s ease;
+}
+.gallery-strip-button:hover {
+  border-color: rgba(57, 255, 20, .45);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, .5);
+}
+/* A fixed box with a cropped fill, so a tall screenshot and a wide one occupy
+   the same space. The crop is only the preview -- clicking gives the whole
+   picture, uncropped. */
+.gallery-strip-button img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+.gallery-strip-item figcaption { margin-top: 5px; overflow: hidden; color: var(--neo-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
 .chat-attachment-image { position: relative; display: inline-flex; line-height: 0; }
-.chat-attachment-image img { width: 56px; height: 56px; object-fit: cover; border: 1px solid var(--neo-line); border-radius: 6px; }
-.chat-attachment-image button { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border: 1px solid var(--neo-line); border-radius: 50%; background: var(--neo-bg, #fff); color: var(--neo-text); font-size: 12px; line-height: 1; cursor: pointer; }
+.chat-attachment-open {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  background: #0d0d0d;
+  padding: 0;
+  line-height: 0;
+  cursor: zoom-in;
+  transition: border-color .14s ease;
+}
+.chat-attachment-open:hover { border-color: rgba(57, 255, 20, .5); }
+.chat-attachment-open img { display: block; width: 56px; height: 56px; object-fit: cover; }
+.chat-attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid var(--neo-line);
+  border-radius: 50%;
+  background: var(--neo-bg, #fff);
+  padding: 0;
+  color: var(--neo-text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-attachment-remove:hover { border-color: var(--neo-danger); color: var(--neo-danger); }
 
 /* ===========================================================================
    Gallery (.gal-*).
@@ -3541,48 +3637,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .gal-panel-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-top: 1px solid var(--gal-edge); padding: 10px 16px; }
 .gal-confirm-text { flex: 1; color: #d0938c; font-size: 11.5px; }
 
-/* --- lightbox ------------------------------------------------------------ */
-.gal-lightbox { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; }
-.gal-lightbox-scrim { position: absolute; inset: 0; border: 0; background: rgba(4, 4, 4, .93); padding: 0; backdrop-filter: blur(6px); }
-.gal-lightbox-figure {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  gap: 14px;
-  justify-items: center;
-  margin: 0;
-  max-width: min(1200px, 88vw);
-  pointer-events: none;
-}
-.gal-lightbox-figure img {
-  max-width: min(1200px, 88vw);
-  max-height: 78vh;
-  border-radius: 8px;
-  object-fit: contain;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, .8);
-}
-.gal-lightbox-figure figcaption { display: grid; gap: 4px; justify-items: center; text-align: center; }
-.gal-lightbox-figure strong { color: #e8e8e8; font-size: 14px; font-weight: 600; }
-.gal-lightbox-figure span { color: #6a6a6a; font: 10.5px "JetBrains Mono", monospace; }
-.gal-lightbox-step, .gal-lightbox-close {
-  position: absolute;
-  z-index: 2;
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, .1);
-  border-radius: 50%;
-  background: rgba(20, 20, 20, .8);
-  padding: 0;
-  color: #b5b5b5;
-  transition: border-color .12s ease, color .12s ease, background .12s ease;
-}
-.gal-lightbox-step:hover:not(:disabled), .gal-lightbox-close:hover { border-color: rgba(57, 255, 20, .4); background: rgba(30, 30, 30, .95); color: var(--neo-green); }
-.gal-lightbox-step:disabled { opacity: .2; }
-.gal-lightbox-step.left { left: 24px; }
-.gal-lightbox-step.right { right: 24px; }
-.gal-lightbox-close { top: 24px; right: 24px; }
 
 @media (max-width: 1100px) {
   .gal.has-panel { grid-template-columns: minmax(0, 1fr) 320px; }
@@ -3591,8 +3645,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   .gal, .gal.has-panel { grid-template-columns: minmax(0, 1fr); }
   .gal-panel { position: fixed; inset: 0; z-index: 120; border-left: 0; }
   .gal-head, .gal-scroll { padding-right: 16px; padding-left: 16px; }
-  .gal-lightbox-step.left { left: 8px; }
-  .gal-lightbox-step.right { right: 8px; }
 }
 
 /* ===========================================================================
@@ -4022,4 +4074,97 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   .rs-rail { display: none; }
   .rs-scroll, .rs-bar { padding-right: 16px; padding-left: 16px; }
   .rs-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ===========================================================================
+   Image lightbox (.lbx-*). Shared by the composer, the transcript and the
+   gallery, so "click the picture to see it properly" means the same thing and
+   looks the same wherever a thumbnail appears.
+   =========================================================================== */
+.lbx { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; }
+.lbx-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(4, 4, 4, .93);
+  padding: 0;
+  backdrop-filter: blur(6px);
+}
+.lbx-figure {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  margin: 0;
+  max-width: min(1280px, 88vw);
+  pointer-events: none;
+}
+.lbx-figure img {
+  max-width: min(1280px, 88vw);
+  max-height: 78vh;
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .8);
+}
+.lbx-figure figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 14px;
+  text-align: center;
+}
+.lbx-figure strong { color: #e8e8e8; font-size: 14px; font-weight: 600; }
+.lbx-figure span { color: #6a6a6a; font: 10.5px "JetBrains Mono", monospace; }
+.lbx-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(57, 255, 20, .3);
+  border-radius: 20px;
+  background: rgba(57, 255, 20, .08);
+  padding: 4px 12px;
+  color: var(--neo-green);
+  font: 10.5px "JetBrains Mono", monospace;
+  letter-spacing: .04em;
+  pointer-events: auto;
+}
+.lbx-action:hover { border-color: var(--neo-green); background: rgba(57, 255, 20, .16); }
+.lbx-step, .lbx-close {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 50%;
+  background: rgba(20, 20, 20, .82);
+  padding: 0;
+  color: #c5c5c5;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.lbx-step:hover, .lbx-close:hover { border-color: rgba(57, 255, 20, .45); background: rgba(30, 30, 30, .96); color: var(--neo-green); }
+.lbx-step .ws-icon, .lbx-close .ws-icon { width: 17px; height: 17px; }
+.lbx-step.left { left: 24px; }
+.lbx-step.right { right: 24px; }
+.lbx-close { top: 24px; right: 24px; }
+.lbx-count {
+  position: absolute;
+  z-index: 2;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  border-radius: 20px;
+  background: rgba(20, 20, 20, .82);
+  padding: 4px 12px;
+  color: #8a8a8a;
+  font: 10.5px "JetBrains Mono", monospace;
+}
+@media (max-width: 640px) {
+  .lbx-step.left { left: 8px; }
+  .lbx-step.right { right: 8px; }
+  .lbx-close { top: 12px; right: 12px; }
 }

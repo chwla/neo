@@ -168,11 +168,11 @@ class WorkspaceFilesService:
             block = f"File: {label} ({item.get('extension') or 'unknown'})\n{body}"
             if used + len(block) > max_chars:
                 detail = summary[:400] or "listed; context limit reached"
-                block = f"File: {label} — {detail}"
+                block = f"File: {label} ({detail})"
             if used + len(block) > max_chars:
                 break
             blocks.append(block)
-            considered.append(f"- {label} — linked workspace file")
+            considered.append(f"- {label}: linked workspace file")
             used += len(block)
         return "\n\n".join(blocks), considered
 

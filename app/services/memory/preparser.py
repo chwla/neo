@@ -60,7 +60,7 @@ _PURE_LOCATION_RETRACTION = re.compile(
 # A retraction with nothing to put in its place.  The compound forms above pair
 # "I no longer want X" with "I want Y" and the location form is handled on its
 # own, but somebody who has simply stopped wanting something says only the first
-# half — and that fell through to the model, so the goal survived a request to
+# half, and that fell through to the model, so the goal survived a request to
 # drop it whenever the model was unavailable or read the sentence as a new goal.
 #
 # Safe to decide here for the same reason the location form is: the user spells
@@ -99,7 +99,7 @@ _CURRENT_LOCATION = re.compile(
 #
 # A bare copula ("I'm Soham") is deliberately *not* here.  It cannot be told
 # apart from "I am British", "I am Muslim" or "I am Deaf" by any rule this file
-# could carry — the last two are sensitive categories, and filing one as a name
+# could carry: the last two are sensitive categories, and filing one as a name
 # would both be wrong and skip the judgement the model exists to apply.
 _DIRECT_NAME = re.compile(
     r"^(?:My\s+(?:full\s+)?name\s+is"
@@ -220,7 +220,7 @@ _AMBIGUOUS_PRONOUN = re.compile(r"^(?:That|It|This)\b", re.IGNORECASE)
 # "Forget my name" names the *attribute* to clear, not the value stored in it.
 # Every other forget the user writes spells the value out ("forget that I live
 # in Berlin"), which is what the retraction resolver matches on, so an attribute
-# reference resolved to no target and quietly became a review item — the memory
+# reference resolved to no target and quietly became a review item, and the memory
 # stayed, and the assistant went on using the name it had just been asked to
 # drop.  Naming the slot here lets the resolver find the one record occupying it.
 #
@@ -517,8 +517,8 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
     # Checked ahead of the hypothetical and temporary guards, because the polite
     # opener trips them on its own: "could" is hypothetical language, and every
     # "could you remember that ..." was discarded on the strength of that word
-    # alone.  The guards still apply to what is actually being stored — the
-    # captured value is re-tested against both — so "can you remember that I
+    # alone.  The guards still apply to what is actually being stored (the
+    # captured value is re-tested against both) so "can you remember that I
     # might move to Berlin?" and "... that I have a headache right now?" fall
     # through to them exactly as the bare statements would.
     question_command = _QUESTION_MEMORY_COMMAND.fullmatch(text)

@@ -37,7 +37,7 @@ def deliver_changes(arguments: dict, context: ToolContext) -> str:
         lines = [f"Wrote {len(result['written'])} file(s) into the repository working tree."]
         lines += [f"  {path}" for path in result["written"]]
         for item in result["skipped"] + result["blocked"]:
-            lines.append(f"  skipped {item['path']} — {item['reason']}")
+            lines.append(f"  skipped {item['path']}: {item['reason']}")
         lines.append("Nothing was staged, committed, or pushed.")
         return "\n".join(lines)
     raise ValueError("`mode` must be 'patch' or 'working_tree'.")

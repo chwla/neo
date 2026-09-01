@@ -247,7 +247,7 @@ class CodeIndexService:
             for item in results:
                 location = f":{item['line_start']}" if item.get("line_start") else ""
                 lines.append(
-                    f"- {item['relative_path']}{location} — {item['name']} — "
+                    f"- {item['relative_path']}{location}: {item['name']}, "
                     f"{item.get('summary') or item.get('symbol_type')}"
                 )
             block = "\n".join(lines)
@@ -289,7 +289,7 @@ class CodeIndexService:
             for result in self.search(repo["id"], query, limit=8):
                 path = result["relative_path"]
                 location = f":{result['line_start']}" if result.get("line_start") else ""
-                line = f"- {path}{location} — {result['name']}"
+                line = f"- {path}{location}: {result['name']}"
                 if used + len(line) > max_chars:
                     break
                 lines.append(line)

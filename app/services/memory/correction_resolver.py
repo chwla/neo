@@ -183,7 +183,7 @@ def _value_entity_id(
     same fact restated on a later turn produced a different slot, therefore a
     different canonical fingerprint, and therefore a brand new record instead of
     a reconfirmation of the existing one.  Every re-extraction of an earlier
-    message — including the ones triggered by merely asking what is remembered —
+    message, including the ones triggered by merely asking what is remembered,
     appended another copy, and a delete could then never resolve to a single
     target.
 
@@ -257,7 +257,7 @@ def _display_text_for(
     """Return display text the user actually said, preferring the model's phrasing.
 
     A proposal is accepted when either its value or its display hint is grounded,
-    but only the display hint was ever stored — so a model that grounded the
+    but only the display hint was ever stored, so a model that grounded the
     value and then summarised it in its own words ("preference for structured
     sketching practice sessions", where the user never wrote "structured") had
     that summary saved.  The invention is what the memory list shows the user and
@@ -488,7 +488,7 @@ class DeterministicCorrectionResolver:
         # second reading: they moved.  Sending it to review instead left the
         # stale value in the exclusive slot and, because these slots are always
         # eligible for recall, made it the answer to "what city do I live in?"
-        # indefinitely — the user restates the fact, is told it is understood,
+        # indefinitely: the user restates the fact, is told it is understood,
         # and keeps being called by their old name.
         #
         # This is the opposite of the goal case immediately below, where "now I
@@ -537,8 +537,8 @@ class DeterministicCorrectionResolver:
             and (proposal.domain_hint is None or item.domain_key == proposal.domain_hint)
             and (proposal.slot_hint is None or item.slot_key.endswith(f":{proposal.slot_hint}"))
         )
-        # A user names the value inside a sentence — "forget that I use a
-        # fineliner pen and a pocket watercolor set for urban sketching" — while
+        # A user names the value inside a sentence ("forget that I use a
+        # fineliner pen and a pocket watercolor set for urban sketching") while
         # the stored value is the bare phrase.  Requiring the two to be equal
         # meant an explicit delete resolved to no target at all and silently
         # became a review item, so accept a stored value the user's own words
@@ -551,7 +551,7 @@ class DeterministicCorrectionResolver:
         )
         if not matches:
             # A forget that names a core identity attribute rather than its
-            # value — "forget my name" — has nothing for the value comparison
+            # value ("forget my name") has nothing for the value comparison
             # above to match, because the user never wrote "Soham".  The slot
             # they named holds exactly one thing by construction, so when one
             # record occupies it there is no ambiguity left to review.

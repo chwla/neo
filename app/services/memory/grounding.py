@@ -100,7 +100,7 @@ def _value_supported(value: str | None, evidence: str, cited: str) -> bool:
     proposes "V60 dripper and manual burr grinder", dropping the articles.  A
     strict substring test rejected that and the memory was silently lost, so
     fall back to requiring every word of the value to appear in the same source
-    text.  Provenance still holds — each word came from the user's own message —
+    text.  Provenance still holds, each word came from the user's own message,
     while a value containing anything the user did not write is still refused.
     """
 
@@ -148,7 +148,7 @@ def _content_supported(value: str | None, *haystacks: str) -> bool:
     "Frontend engineer working on Aurora design system" for a message that said
     "I work on…", and "working" is not "work", so a correctly extracted fact was
     dropped.  Stemming both sides and ignoring function words lets the wording
-    differ while keeping the property that matters — every substantive word,
+    differ while keeping the property that matters: every substantive word,
     including every name and number, came from the user's own message, so an
     invented employer or date still cannot pass.
     """
@@ -165,8 +165,8 @@ def _groundable_texts(proposal: ModelAssertionProposal) -> tuple[str, ...]:
     """Return the proposal texts that are supposed to quote the user.
 
     ``typed_value`` is not always a quote.  For the richer memory types the model
-    returns a classification object — ``{"role": …, "project": …, "domain_hint":
-    "software_development"}`` — and the old check JSON-dumped it and demanded the
+    returns a classification object, ``{"role": …, "project": …, "domain_hint":
+    "software_development"}``, and the old check JSON-dumped it and demanded the
     whole blob appear in the source.  It never can: ``domain_hint`` is a taxonomy
     label the model assigns, not something the user wrote.  Ground the leaf values
     of such an object instead, and let ``display_hint`` carry the sentence.

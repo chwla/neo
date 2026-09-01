@@ -125,7 +125,7 @@ def user_message(category: str | None, provider_type: str | None = None) -> str:
         return f"{label} is unavailable. {_RESTART_HINTS.get(key, _DEFAULT_RESTART_HINT)}"
     if category == "timeout":
         return (
-            f"{label} did not respond in time. It may still be loading the model — "
+            f"{label} did not respond in time. It may still be loading the model, "
             "try again in a moment."
         )
     if category == "transient_network":

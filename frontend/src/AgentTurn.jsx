@@ -210,7 +210,7 @@ function ApprovalCard({ approval, busy, onDecide }) {
         <label className="agent-approval-scope">
           <span>
             {grantsWholeRepo
-              ? `${pathArgument} is at the repository root — narrow the scope, or leave this empty`
+              ? `${pathArgument} is at the repository root. Narrow the scope, or leave this empty`
               : "Allow always for paths starting with"}
           </span>
           <input

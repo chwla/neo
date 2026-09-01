@@ -16,7 +16,7 @@ def snapshot(view: str, data: dict) -> str:
     elif view == "commands":
         for item in data.get("commands", {}).get("runs", []):
             command = " ".join(item.get("command", []))
-            lines.append(f"{item.get('status')} · {command} · exit {item.get('exit_code', '—')}")
+            lines.append(f"{item.get('status')} · {command} · exit {item.get('exit_code', '-')}")
     elif view == "context":
         for item in data.get("context", {}).get("summaries", []):
             estimates = f"{item.get('token_estimate_before')}→{item.get('token_estimate_after')}"

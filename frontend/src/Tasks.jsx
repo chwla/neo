@@ -344,9 +344,9 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
               <label className="agent-chip">
                 <span>Mode</span>
                 <select value={agentMode} onChange={(event) => setAgentMode(event.target.value)} aria-label="Permission mode">
-                  <option value="plan">Plan — propose only</option>
-                  <option value="normal">Normal — ask before changes</option>
-                  <option value="auto">Auto — change without asking</option>
+                  <option value="plan">Plan: propose only</option>
+                  <option value="normal">Normal: ask before changes</option>
+                  <option value="auto">Auto: change without asking</option>
                 </select>
               </label>
               {agentMessage ? <div className="agent-message">{agentMessage}</div> : null}

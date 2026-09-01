@@ -14,8 +14,8 @@ from app.services.memory.taxonomy import CORE_IDENTITY_SLOT_KEYS, MemoryType
 
 # "Who am I" names no attribute, so every keyword rule below missed it and the
 # question that most obviously belongs to this service was the one it declined to
-# answer.  It is not a broad request either — somebody asking who they are wants
-# their profile, not their goals and preferences — so it is routed to the core
+# answer.  It is not a broad request either: somebody asking who they are wants
+# their profile, not their goals and preferences, so it is routed to the core
 # identity slots as a group.
 _IDENTITY_PROFILE_QUESTION = re.compile(
     r"\bwho\s+(?:am\s+i|i\s+am)\b"

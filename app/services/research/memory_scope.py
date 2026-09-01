@@ -1,4 +1,4 @@
-"""Scoped memory retrieval for research context — only fetches relevant memories."""
+"""Scoped memory retrieval for research context: only fetches relevant memories."""
 
 from __future__ import annotations
 

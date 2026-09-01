@@ -73,8 +73,8 @@ CRITICAL RULES:
 4. If evidence is weak or contradictory, say so explicitly.
 5. Do NOT invent facts, URLs, source titles, statistics, dates, names, or story details.
 6. If a question cannot be answered, write "No reliable evidence was found for this."
-7. Be direct — no filler like "This report delves into..." or "In conclusion..."
-8. NEVER write a Sources or References section — it is appended by the system.
+7. Be direct. No filler like "This report delves into..." or "In conclusion..."
+8. NEVER write a Sources or References section; it is appended by the system.
 9. If you are unsure about a claim, do NOT include it.
 
 STRICT REPORT STRUCTURE (follow exactly, put each ## heading on its own line):
@@ -100,7 +100,7 @@ If evidence is weak, say that clearly.
 
 Use numbered findings:
 
-### Finding 1 — {short title}
+### Finding 1: {short title}
 
 {1 paragraph explaining the finding.} [1]
 
@@ -236,7 +236,7 @@ def synthesize_report(
         mode_instruction += (
             f"\n\nTOPIC INTENT: AI coding tools comparison ({entities}). "
             f"Compare {entities} strictly as software development tools. "
-            "Treat every tool name as the software product only — ignore unrelated "
+            "Treat every tool name as the software product only, ignoring unrelated "
             "dictionary, historical, hardware or user-interface meanings of those names. "
             "Section 6 MUST be a comparison table with columns for each tool and real evidence-backed values."
         )
@@ -259,12 +259,12 @@ def synthesize_report(
             "| --- | --- | --- | --- |\n"
             "Required dimensions: Product role, Performance, Battery life, Display, Ports, "
             "Weight/portability, RAM/storage options, Price/value, Best for. "
-            "Section 7 MUST include a clear recommendation — NEVER write 'No recommendation is needed.' "
+            "Section 7 MUST include a clear recommendation. NEVER write 'No recommendation is needed.' "
             "If evidence is weak, prefix with 'Based on limited evidence...'"
         )
         if plan.normalization_reason:
             mode_instruction += (
-                f'\nUser originally typed: "{plan.original_query}" — '
+                f'\nUser originally typed: "{plan.original_query}", '
                 f'normalized to: "{plan.normalized_query}" ({plan.normalization_reason}). '
                 "Mention this normalization briefly in Research Scope."
             )
@@ -1565,7 +1565,7 @@ def _append_verified_sources(
             continue
         seen_urls.add(url)
         title = src.title.strip() or src.domain
-        lines.append(f"[{src.id}] {title} — {url}")
+        lines.append(f"[{src.id}] {title}: {url}")
 
     return report + "\n".join(lines)
 
@@ -1774,7 +1774,7 @@ def _insufficient_evidence_report(
         lines.append("## Usable sources found")
         lines.append("")
         for src in relevant:
-            lines.append(f"[{src.id}] {src.title} — {src.url}")
+            lines.append(f"[{src.id}] {src.title}: {src.url}")
     else:
         lines.append("")
         lines.append("## Usable sources found")
@@ -1873,6 +1873,6 @@ def _fallback_report(
     lines.append("## 10. Sources")
     lines.append("")
     for src in fetched[:10]:
-        lines.append(f"[{src.id}] {src.title} — {src.url}")
+        lines.append(f"[{src.id}] {src.title}: {src.url}")
 
     return "\n".join(lines)

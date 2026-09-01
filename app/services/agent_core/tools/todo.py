@@ -64,7 +64,7 @@ TOOLS = [
             "Record or rewrite your working checklist. Send the complete list every time. "
             "Use it for objectives that span several steps or files so progress stays "
             "visible, and revise it as you learn. Skip it for simple objectives you can "
-            "finish directly — do not invent a checklist for a one-step task."
+            "finish directly. Do not invent a checklist for a one-step task."
         ),
         parameters={
             "type": "object",

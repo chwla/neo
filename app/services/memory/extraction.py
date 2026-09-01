@@ -88,8 +88,8 @@ goals, profile details and events belong to their own field even when the user
 happens to mention them while working on a project."""
 
 # What to extract, in every request mode.  This guidance used to live inside the JSON
-# mode contract below, so schema mode — which `auto` selects whenever Ollama advertises
-# grammar support — never received it.  The model then saw only the terse instruction
+# mode contract below, so schema mode (which `auto` selects whenever Ollama advertises
+# grammar support) never received it.  The model then saw only the terse instruction
 # above and returned zero assertions for every implicitly stated fact.  Grammar mode
 # constrains the response *shape*; nothing but this text constrains the response
 # *content*, so it must be sent regardless of mode.
@@ -137,8 +137,8 @@ def proposal_response_schema() -> dict[str, Any]:
     Pydantic omits a field from ``required`` when it has a default, and all four
     top-level fields default to empty.  A grammar built from that schema therefore
     accepts ``{}``, and a constrained model takes the cheapest path the grammar
-    allows: ``qwen3-coder:30b`` returned ``{"exclusions": []}`` — one key, no
-    assertions — for every message, because emitting nothing was valid.  Forcing the
+    allows: ``qwen3-coder:30b`` returned ``{"exclusions": []}``, one key and no
+    assertions, for every message, because emitting nothing was valid.  Forcing the
     keys to be required makes the grammar demand an ``assertions`` array, so the model
     has to decide what belongs in it instead of declining to answer.
 
@@ -944,7 +944,7 @@ class TwoStageOllamaChatExtractionProvider(OllamaChatExtractionProvider):
     classification object in ``typed_value`` and a taxonomy label such as
     ``"location"`` in ``display_hint``, so a correctly understood sentence still
     produced an unusable memory.  Constrained decoding makes this worse rather
-    than better — the grammar guarantees the shape, never the meaning.
+    than better: the grammar guarantees the shape, never the meaning.
 
     Splitting it lets each call be easy.  Stage A asks only for short natural
     sentences plus the words the user actually wrote, which local models get right

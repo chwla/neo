@@ -226,8 +226,8 @@ def turn_may_contain_memory(text: str) -> bool:
     """Return whether a turn can plausibly contain a fact worth storing.
 
     Extraction used to run on every turn, so asking "what do you remember about
-    my goals?" spent a local model call on a message that states nothing, and —
-    because extraction also reads the supporting window — re-asserted facts from
+    my goals?" spent a local model call on a message that states nothing, and,
+    because extraction also reads the supporting window, re-asserted facts from
     earlier messages as brand new candidates.  A question is the one shape that
     reliably carries nothing to store, so it is the only shape skipped here.
 

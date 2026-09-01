@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import ImageLightbox from "./ImageLightbox.jsx";
 import Icon from "./WorkspaceIcon.jsx";
 
 const STATUS_LABEL = {
@@ -187,6 +188,10 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
   /* Arrow keys walk the grid, Enter opens the image, Escape steps back out. */
   useEffect(() => {
     function onKeyDown(event) {
+      /* While the lightbox is up it owns the keyboard: it steps with the arrows
+         and closes on Escape through the modal stack. Handling either here as
+         well would move the selection twice per press. */
+      if (zoomed) return;
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName || "");
       if (event.key === "/" && !typing) {
         event.preventDefault();
@@ -194,8 +199,7 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
         return;
       }
       if (event.key === "Escape") {
-        if (zoomed) setZoomed(false);
-        else if (typing) event.target.blur();
+        if (typing) event.target.blur();
         else if (selectedId) setSelectedId(null);
         return;
       }
@@ -429,7 +433,7 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
           {window_ && (
             <p className="gal-window">
               <Icon name="clock" />
-              Narrowed to “{window_.phrase}” — {shortDate(window_.start)} to {shortDate(window_.end)}
+              Narrowed to “{window_.phrase}”: {shortDate(window_.start)} to {shortDate(window_.end)}
             </p>
           )}
 
@@ -454,7 +458,7 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
               {filtered ? (
                 <>
                   <h2>Nothing matched</h2>
-                  <p>Try fewer words, or drop the filters — search reads what was in the picture, not the filename.</p>
+                  <p>Try fewer words, or drop the filters. Search reads what was in the picture, not the filename.</p>
                   <button className="gal-add" type="button" onClick={clearFilters}>Clear filters</button>
                 </>
               ) : (
@@ -630,7 +634,7 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
                   </div>
                 )}
                 {selected.user_edited && (
-                  <p className="gal-hint">Edited by you — describing again keeps your words.</p>
+                  <p className="gal-hint">Edited by you. Describing again keeps your words.</p>
                 )}
               </section>
             )}
@@ -694,26 +698,18 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
         </aside>
       )}
 
-      {zoomed && selected && (
-        <div className="gal-lightbox" role="dialog" aria-modal="true" aria-label={selected.title || "Image"}>
-          <button className="gal-lightbox-scrim" type="button" onClick={() => setZoomed(false)} aria-label="Close" />
-          <button className="gal-lightbox-step left" type="button" onClick={() => step(-1)} disabled={index <= 0} aria-label="Previous">
-            <Icon name="back" />
-          </button>
-          <figure className="gal-lightbox-figure">
-            <img src={api.galleryImageUrl(selected.id)} alt={selected.alt_text || selected.title || "Gallery image"} />
-            <figcaption>
-              <strong>{selected.title || "Untitled"}</strong>
-              <span>{[dimensions(selected), shortDate(selected.created_at)].filter(Boolean).join(" · ")}</span>
-            </figcaption>
-          </figure>
-          <button className="gal-lightbox-step right" type="button" onClick={() => step(1)} disabled={index >= ordered.length - 1} aria-label="Next">
-            <Icon name="next" />
-          </button>
-          <button className="gal-lightbox-close" type="button" onClick={() => setZoomed(false)} aria-label="Close">
-            <Icon name="close" />
-          </button>
-        </div>
+      {zoomed && index >= 0 && (
+        <ImageLightbox
+          images={ordered.map((item) => ({
+            id: item.id,
+            title: item.title || "Untitled",
+            alt: item.alt_text || item.title || "Gallery image",
+            meta: [dimensions(item), shortDate(item.created_at)].filter(Boolean).join(" · "),
+          }))}
+          index={index}
+          onIndexChange={(next) => open(ordered[next].id)}
+          onClose={() => setZoomed(false)}
+        />
       )}
     </div>
   );

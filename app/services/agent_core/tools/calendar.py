@@ -56,7 +56,7 @@ def list_calendar_events(arguments: dict, context: ToolContext) -> str:
     occurrences = _service().list_events(str(start), str(end))
     if not occurrences:
         return "No events in that range."
-    lines = [f"{occ.id} — {occ.title} — {occ.occurrence_start}" for occ in occurrences]
+    lines = [f"{occ.id}: {occ.title} ({occ.occurrence_start})" for occ in occurrences]
     return "\n".join(lines)
 
 
@@ -81,7 +81,7 @@ def update_calendar_event(arguments: dict, context: ToolContext) -> str:
     event = _service().update_event(str(event_id), payload)
     if event is None:
         raise ValueError(f"No event with id '{event_id}'.")
-    return f"Updated '{event.title}' — now at {event.start_at}."
+    return f"Updated '{event.title}', now at {event.start_at}."
 
 
 def delete_calendar_event(arguments: dict, context: ToolContext) -> str:
@@ -108,7 +108,7 @@ TOOLS = [
         },
         risk="read",
         handler=list_calendar_events,
-        summary=lambda a: f"List calendar events {a.get('start')} — {a.get('end')}",
+        summary=lambda a: f"List calendar events {a.get('start')} to {a.get('end')}",
     ),
     AgentTool(
         name="create_calendar_event",
@@ -123,7 +123,7 @@ TOOLS = [
         },
         risk="external_write",
         handler=create_calendar_event,
-        summary=lambda a: f"Add '{a.get('title', '(untitled)')}' — {a.get('start_at', '')}",
+        summary=lambda a: f"Add '{a.get('title', '(untitled)')}' at {a.get('start_at', '')}",
     ),
     AgentTool(
         name="update_calendar_event",

@@ -15,7 +15,7 @@ _LIMIT = 6000
 
 def _describe_hit(entry: dict) -> str:
     item = entry["item"]
-    parts = [f"{item['id']} — {item.get('title') or 'untitled'}"]
+    parts = [f"{item['id']}: {item.get('title') or 'untitled'}"]
     if item.get("caption"):
         parts.append(f"  {item['caption']}")
     seen = [a for a in entry.get("appearances", []) if a.get("seen_at")]
@@ -84,7 +84,7 @@ def view_image(arguments: dict, _context: ToolContext) -> str:
         reason = item.get("description_error") or "it has not been described yet"
         return (
             f"{item.get('title') or image_id}: no description is available "
-            f"({status} — {reason}). Ask the user what it shows rather than guessing."
+            f"({status}: {reason}). Ask the user what it shows rather than guessing."
         )
     lines = [
         f"Title: {item.get('title')}",

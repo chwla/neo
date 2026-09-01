@@ -217,7 +217,7 @@ class SymbolAwarenessService:
                 for reference in references:
                     lines.append(
                         f"- Reference {name}: {reference['source_relative_path']}:"
-                        f"{reference.get('line_start') or '?'} — "
+                        f"{reference.get('line_start') or '?'}: "
                         f"{reference.get('context_text') or ''}"
                     )
             if len(lines) > 1:

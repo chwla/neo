@@ -22,7 +22,7 @@ _PRICING_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 
-# Explicit AI-workload queries — do NOT normalize "ai" → "air"
+# Explicit AI-workload queries: do NOT normalize "ai" to "air"
 _AI_WORKLOAD_EXPLICIT = re.compile(
     r"\b("
     r"best\s+macbook\s+for\s+ai|macbook\s+for\s+local\s+ai|macbook\s+for\s+ai|"
@@ -216,7 +216,7 @@ def normalize_user_query(user_query: str) -> QueryNormalization:
         return QueryNormalization(original_query=original, effective_query=original)
 
     if _AI_WORKLOAD_EXPLICIT.search(original):
-        # Explicit AI workload — never rewrite ai → air
+        # Explicit AI workload, never rewrite ai to air
         if _MACBOOK_AI_TYPO.search(original) or _MACBOOK_PRO_AI_TYPO.search(original):
             # This already has Air, or a comparison with an explicit AI focus.
             effective = re.sub(r"macbook\s+ai\b", "macbook air", original, flags=re.IGNORECASE)
@@ -254,7 +254,7 @@ def classify_product_intent(user_query: str, original_query: str = "") -> Produc
     ai_workload = bool(_AI_WORKLOAD_EXPLICIT.search(effective))
     is_comparison = bool(_COMPARISON_SIGNAL.search(effective))
 
-    # "best macbook for AI" — AI workload recommendation, not Air vs Pro typo
+    # "best macbook for AI" is an AI workload recommendation, not an Air vs Pro typo
     if ai_workload and not is_comparison:
         if re.search(r"\bmacbook\b", effective, re.I):
             return ProductIntent(
@@ -354,7 +354,7 @@ def _macbook_air_pro_plan(intent: ProductIntent, user_query: str) -> dict:
         queries.insert(2, "MacBook Air vs MacBook Pro pricing India")
 
     objective = (
-        f"Compare {air} vs {pro} as Apple laptop products — "
+        f"Compare {air} vs {pro} as Apple laptop products, "
         "NOT MacBook AI, MacBook Neo, generic AI laptops, or rumor/future products."
     )
     if intent.normalization_reason:
@@ -379,12 +379,12 @@ def _macbook_ai_workload_plan(intent: ProductIntent) -> dict:
     return {
         "objective": (
             "Research which MacBook models are best suited for AI/ML workloads "
-            "(local LLM inference, machine learning) — NOT a MacBook Air vs Pro typo fix."
+            "(local LLM inference, machine learning), NOT a MacBook Air vs Pro typo fix."
         ),
         "subquestions": [
             "Which MacBook models support local AI/ML workloads well?",
             "How much RAM and GPU do AI workloads on MacBook require?",
-            "MacBook Air vs MacBook Pro for local AI — tradeoffs?",
+            "MacBook Air vs MacBook Pro for local AI: tradeoffs?",
             "What do official Apple and reputable sources say about AI on Mac?",
         ],
         "queries": [

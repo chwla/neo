@@ -61,7 +61,7 @@ def find_symbol(arguments: dict, context: ToolContext) -> str:
         if item.get("line_start"):
             location = f"{location}:{item['line_start']}"
         kind = item.get("symbol_type") or item.get("result_type") or "match"
-        lines.append(f"{location} — {kind} {item.get('name') or ''}".rstrip())
+        lines.append(f"{location}: {kind} {item.get('name') or ''}".rstrip())
     return "\n".join(lines)
 
 

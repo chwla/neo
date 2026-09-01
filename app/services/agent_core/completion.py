@@ -76,7 +76,7 @@ class CompletionAdjudicator:
     def _prompt(self, session: AgentSession, transcript: list[LLMMessage]) -> str:
         ledger = (
             "\n".join(
-                f"- {item.kind}: {'passed' if item.passed else 'FAILED'} — {item.detail}"
+                f"- {item.kind}: {'passed' if item.passed else 'FAILED'}: {item.detail}"
                 for item in session.evidence
             )
             or "(no verification evidence was recorded)"

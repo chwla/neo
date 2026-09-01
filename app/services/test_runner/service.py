@@ -220,7 +220,7 @@ class TestRunnerContextService:
         exit_code = latest.get("exit_code")
         exit_label = exit_code if exit_code is not None else "none"
         return (
-            f"Latest stored test run: {latest['name']} — {latest['status']}. "
+            f"Latest stored test run: {latest['name']} ({latest['status']}). "
             f"Exit code: {exit_label}.\n\n{excerpt}"
         )
 

@@ -143,7 +143,7 @@ def _chat_failure(exc: Exception, config_id: str | None = None) -> tuple[int, st
 
 
 def _provider_type_for(config_id: str | None) -> str:
-    """The provider's type, for wording only — never its name, URL, or model.
+    """The provider's type, for wording only, never its name, URL, or model.
 
     This runs on the failure path, so it must never raise on its own: an unknown or
     disabled configuration would otherwise mask the provider error being reported.
@@ -1510,8 +1510,8 @@ def send_chat_message(
     cleaned_prompt = request.prompt.strip()
 
     # A client_request_id makes the send idempotent. The claim is taken and committed
-    # before any model work, so a duplicate — whether it arrives after the first
-    # finished or concurrently with it — reuses that turn instead of creating another.
+    # before any model work, so a duplicate (whether it arrives after the first
+    # finished or concurrently with it) reuses that turn instead of creating another.
     claim: ChatGeneration | None = None
     if request.client_request_id:
         ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)

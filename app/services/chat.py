@@ -2117,7 +2117,7 @@ class NeoChatService:
                     )
             finally:
                 # Indexing ran only on the success path, so a turn that extracted
-                # nothing — or failed — left the outbox untouched.  Because the queue
+                # nothing (or failed) left the outbox untouched.  Because the queue
                 # is drained by nothing else, one such turn stranded every earlier
                 # write: profiles still hold `pending` events whose records were
                 # written weeks ago and were never searchable.  Draining here means
@@ -2274,7 +2274,7 @@ class NeoChatService:
         facts, the model returned an empty response, its output failed schema
         validation, or policy rejected every candidate.  The coordinator already
         builds an ``ExtractionDiagnostic`` carrying that answer, then files it in an
-        in-memory deque that is rebuilt each turn and never read — so a fully broken
+        in-memory deque that is rebuilt each turn and never read, so a fully broken
         extractor looked exactly like a quiet one for weeks.
 
         Only bounded codes and counts are copied here, never model output or user
@@ -2795,8 +2795,8 @@ class NeoChatService:
     def _with_web_citations(self, reply: str, web_context: WebContext | None) -> str:
         body = _strip_llm_sources_block(reply)
         if web_context is None or not web_context.needed:
-            # No web search was involved, so a link here is ordinary content — a repo or
-            # documentation URL the user asked for — not a citation claiming evidence.
+            # No web search was involved, so a link here is ordinary content, a repo or
+            # documentation URL the user asked for, not a citation claiming evidence.
             # Deleting those corrupted normal answers, so they are left alone.
             return self._strip_orphan_citation_markers(body)
         if not web_context.citations:
@@ -3456,7 +3456,7 @@ def _referenced_citation_indices(text: str) -> set[int]:
 
 
 def _strip_llm_sources_block(reply: str) -> str:
-    """Remove any Sources/References block the LLM generated — backend appends its own."""
+    """Remove any Sources/References block the LLM generated; the backend appends its own."""
     cleaned = re.split(
         r"(?:^|\s)(?:Sources|References|Citations)\s*:",
         reply,
