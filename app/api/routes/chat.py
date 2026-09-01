@@ -937,6 +937,10 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 locale=generation.locale,
                 generation_id=generation.id,
                 generation_lease_token=lease_token,
+                # The user's clock starts when the turn was accepted, not when a
+                # worker got to it, so a turn that waited its way through the
+                # queue reports the wait the composer showed.
+                turn_started_at=generation.created_at,
             ):
                 values: dict[str, object] = {"heartbeat_at": datetime.now(UTC)}
                 if event["type"] == "chunk":

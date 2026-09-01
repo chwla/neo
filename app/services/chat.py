@@ -539,6 +539,38 @@ class NeoChatService:
         message.metadata_json = json.dumps(metadata, sort_keys=True)
         self.db.flush()
 
+    def _begin_turn(self, turn_started_at: datetime | None = None) -> None:
+        """Start the clock the reply's reported duration is measured against.
+
+        A turn is much more than the one generate call a provider times for us.
+        Route selection, memory retrieval, web search and any refinement pass are
+        all model or network work the user watches the composer count through, and
+        several of them are extra provider calls in their own right. Reporting only
+        the final call's own `total_duration` made a thirty second wait read as
+        thirteen seconds. The clock starts when the turn was accepted -- including
+        any time it sat queued, which the user also waited through -- so the badge
+        on the reply matches the wait it describes.
+        """
+        self._turn_started = time.perf_counter()
+        self._turn_queued_ms = 0
+        if turn_started_at is None:
+            return
+        # A stored timestamp comes back naive on SQLite, and every one this
+        # codebase writes is UTC.
+        accepted = (
+            turn_started_at.replace(tzinfo=UTC)
+            if turn_started_at.tzinfo is None
+            else turn_started_at
+        )
+        self._turn_queued_ms = max(0, int((datetime.now(UTC) - accepted).total_seconds() * 1000))
+
+    def _turn_duration_ms(self) -> int:
+        """Wall-clock milliseconds from accepting this turn until now."""
+        started = getattr(self, "_turn_started", None)
+        if started is None:
+            return 0
+        return getattr(self, "_turn_queued_ms", 0) + int((time.perf_counter() - started) * 1000)
+
     def send_message(
         self,
         chat_id: int,
@@ -547,6 +579,7 @@ class NeoChatService:
         timezone: str | None = None,
         locale: str | None = None,
     ) -> str:
+        self._begin_turn()
         self.calendar_execution = "none"
         persisted_messages = self.store.list_chat_messages(chat_id)
         history = self._history_turns(persisted_messages)
@@ -716,7 +749,6 @@ class NeoChatService:
                 "structured_intent": search_intent.model_dump(mode="json"),
             }
             return reply
-        web_started = time.perf_counter()
         if search_intent.kind in {
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
@@ -740,7 +772,7 @@ class NeoChatService:
                 provider_name="Neo memory",
                 route_name="memory",
                 finish_reason="stop",
-                duration_ms=0,
+                duration_ms=self._turn_duration_ms(),
                 metadata={"search_intent": search_intent.model_dump(mode="json")},
             )
             self.db.commit()
@@ -765,7 +797,7 @@ class NeoChatService:
                 ),
                 route_name="web_search",
                 finish_reason="evidence_unavailable",
-                duration_ms=int((time.perf_counter() - web_started) * 1000),
+                duration_ms=self._turn_duration_ms(),
                 metadata={
                     "search_intent": search_intent.model_dump(mode="json"),
                     "web_debug": self.last_web_debug,
@@ -791,7 +823,7 @@ class NeoChatService:
                 ),
                 route_name="web_search",
                 finish_reason="stop",
-                duration_ms=int((time.perf_counter() - web_started) * 1000),
+                duration_ms=self._turn_duration_ms(),
                 metadata={
                     "search_intent": search_intent.model_dump(mode="json"),
                     "web_debug": self.last_web_debug,
@@ -860,7 +892,6 @@ class NeoChatService:
             prompt_tokens = result.prompt_tokens
             completion_tokens = result.completion_tokens
             total_tokens = result.total_tokens
-            duration_ms = result.duration_ms
             thinking = result.thinking
             finish_reason = result.finish_reason
             provider_name = result.provider_name or result.provider_id
@@ -873,7 +904,6 @@ class NeoChatService:
                 prompt_tokens = None
                 completion_tokens = None
                 total_tokens = None
-                duration_ms = int((time.perf_counter() - web_started) * 1000)
                 thinking = None
                 finish_reason = "provider_error"
             else:
@@ -901,7 +931,7 @@ class NeoChatService:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
-            duration_ms=duration_ms,
+            duration_ms=self._turn_duration_ms(),
             thinking=thinking,
             response_kind="web_search" if web_context.needed else "normal_chat",
             provider_name=provider_name,
@@ -953,6 +983,11 @@ class NeoChatService:
     ) -> ChatMessage:
         """Persist one streamed result and fence workers that lost their lease."""
 
+        # Every route through the turn lands here exactly once, with its final
+        # answer, so this is where the reported duration is settled -- the whole
+        # turn, matching the timer the user watched, not whatever slice of it the
+        # caller happened to have measured.
+        metadata["duration_ms"] = self._turn_duration_ms()
         if generation_id is None:
             return self.store.add_chat_message(chat_id, "assistant", content, **metadata)
         if generation_lease_token is None:
@@ -982,6 +1017,41 @@ class NeoChatService:
         self,
         chat_id: int,
         prompt: str,
+        after_reply: Callable[[str, str], None] | None = None,
+        existing_user_message_id: int | None = None,
+        timezone: str | None = None,
+        locale: str | None = None,
+        generation_id: str | None = None,
+        generation_lease_token: str | None = None,
+        turn_started_at: datetime | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream one turn, timing the whole of it rather than its last model call.
+
+        The duration a turn reports is decided here, on the way out, so every
+        route through the body -- a direct memory answer, a web search, a plain
+        generation -- is measured the same way: from when the turn was accepted
+        to when its final event leaves.
+        """
+        self._begin_turn(turn_started_at)
+        for event in self._stream_message_events(
+            chat_id,
+            prompt,
+            after_reply=after_reply,
+            existing_user_message_id=existing_user_message_id,
+            timezone=timezone,
+            locale=locale,
+            generation_id=generation_id,
+            generation_lease_token=generation_lease_token,
+        ):
+            if event.get("type") == "done":
+                event = {**event, "duration_ms": self._turn_duration_ms()}
+            yield event
+
+    def _stream_message_events(
+        self,
+        chat_id: int,
+        prompt: str,
+        *,
         after_reply: Callable[[str, str], None] | None = None,
         existing_user_message_id: int | None = None,
         timezone: str | None = None,
