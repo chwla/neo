@@ -430,6 +430,9 @@ export const api = {
     if (params.offset) search.set("offset", String(params.offset));
     return request(`/gallery/items?${search.toString()}`);
   },
+  galleryConfig: () => request("/gallery/config"),
+  updateGalleryConfig: (payload) =>
+    request("/gallery/config", { method: "POST", body: JSON.stringify(payload) }),
   galleryItem: (itemId) => request(`/gallery/items/${itemId}`),
   // Sending ids rather than bytes is the whole point: an image Neo has already
   // seen is referred to, never re-uploaded.

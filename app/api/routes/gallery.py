@@ -42,6 +42,27 @@ class GalleryListResponse(BaseModel):
     total: int
 
 
+class GalleryConfig(BaseModel):
+    allow_duplicates: bool
+
+
+@router.get("/config", response_model=GalleryConfig)
+def read_config() -> GalleryConfig:
+    return GalleryConfig(allow_duplicates=_service().allow_duplicates())
+
+
+@router.post("/config", response_model=GalleryConfig)
+def update_config(request: GalleryConfig) -> GalleryConfig:
+    """Set whether the same image may be enrolled more than once.
+
+    Off, identical bytes resolve to the image already held and the upload adds an
+    appearance rather than a second entry. On, each upload gets its own file, its
+    own id and its own row, so the gallery can hold the same picture twice.
+    """
+
+    return GalleryConfig(allow_duplicates=_service().set_allow_duplicates(request.allow_duplicates))
+
+
 @router.post("/items", status_code=201)
 async def enrol_image(
     file: Annotated[UploadFile | None, File()] = None,

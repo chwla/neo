@@ -30,14 +30,23 @@ class WorkspaceFilesService:
         content: bytes,
         mime_type: str | None = None,
         links: list[tuple[str, str]] | None = None,
+        deduplicate: bool = True,
     ) -> dict:
+        """Store bytes, reusing the row that already holds them.
+
+        ``deduplicate=False`` writes a second row for content already on disk.
+        The gallery uses it for the duplicate-uploads preference: identical bytes
+        then get their own file, and so their own gallery item and id, rather
+        than collapsing into the first copy.
+        """
+
         if not content:
             raise ValueError("Empty files cannot be uploaded.")
         if len(content) > self.max_bytes:
             raise ValueError(f"File exceeds the {self.max_bytes}-byte upload limit.")
         safe_name = sanitize_filename(original_filename)
         digest = hashlib.sha256(content).hexdigest()
-        existing = store.get_file_by_sha(digest)
+        existing = store.get_file_by_sha(digest) if deduplicate else None
         if existing:
             for link_type, target_id in links or []:
                 self.attach(

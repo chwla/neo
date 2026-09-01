@@ -32,6 +32,25 @@ class GalleryService:
         self.thumbnail_max_px = settings.gallery_thumbnail_max_px
         self.describe_max_px = settings.gallery_describe_max_px
         self.auto_describe = settings.gallery_auto_describe
+        self.default_allow_duplicates = settings.gallery_allow_duplicates
+
+    ALLOW_DUPLICATES_KEY = "allow_duplicates"
+
+    def allow_duplicates(self) -> bool:
+        """Whether the same image may be enrolled more than once.
+
+        Stored per profile, because it is a preference about this person's
+        gallery rather than a property of the deployment.
+        """
+
+        stored = store.get_preference(self.ALLOW_DUPLICATES_KEY)
+        if stored is None:
+            return self.default_allow_duplicates
+        return stored == "1"
+
+    def set_allow_duplicates(self, allowed: bool) -> bool:
+        store.set_preference(self.ALLOW_DUPLICATES_KEY, "1" if allowed else "0")
+        return allowed
 
     # ------------------------------------------------------------------ ingest
 
@@ -121,6 +140,7 @@ class GalleryService:
             original_filename=original_filename,
             content=content,
             mime_type=mime_type,
+            deduplicate=not self.allow_duplicates(),
         )
         return self.enrol(
             record["id"],

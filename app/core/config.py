@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     #: An embedder scores almost any two strings above zero, so without a
     #: floor the ranker's fail-closed check passes everything it indexed.
     gallery_semantic_floor: float = Field(default=0.45, ge=0, le=1)
+    #: Default for the gallery's duplicate policy. A profile that has set
+    #: the toggle overrides this; it only decides what a fresh profile does.
+    gallery_allow_duplicates: bool = False
     gallery_auto_describe: bool = Field(default=True)
     vision_model: str = Field(default="qwen2.5vl:7b")
     vision_timeout_seconds: int = Field(default=60, ge=1, le=600)

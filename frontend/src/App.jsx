@@ -1994,7 +1994,88 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onClose }) {
+/**
+ * Whether the gallery may hold the same picture twice.
+ *
+ * Off (the default) identical bytes resolve to the image already held, so a
+ * re-upload records that it was seen again rather than adding a second entry.
+ * On, each upload is its own image with its own id, which is what you want when
+ * the same file is genuinely a separate occasion.
+ */
+function GallerySettingsDialog({ onClose }) {
+  const [allowDuplicates, setAllowDuplicates] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .galleryConfig()
+      .then((config) => {
+        if (!cancelled) setAllowDuplicates(Boolean(config.allow_duplicates));
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(errorMessage(requestError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function toggle(next) {
+    setSaving(true);
+    setError("");
+    // Shown as chosen straight away, and put back if the write fails: a
+    // checkbox that lags a round trip reads as an unresponsive one.
+    setAllowDuplicates(next);
+    try {
+      const config = await api.updateGalleryConfig({ allow_duplicates: next });
+      setAllowDuplicates(Boolean(config.allow_duplicates));
+    } catch (requestError) {
+      setAllowDuplicates(!next);
+      setError(errorMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title="Gallery" onClose={onClose}>
+      <p className="dialog-caption">
+        Every image you paste into a chat or add here is kept in the gallery, described and
+        searchable by what was in it.
+      </p>
+      <div className="chat-tools-row">
+        <div className="chat-tools-row-info">
+          <div className="chat-tools-row-title">
+            <strong>Allow the same image twice</strong>
+          </div>
+          <p>
+            Off, uploading a picture you have already added keeps the one entry and notes that it
+            came up again. On, every upload becomes its own image with its own id, so the same
+            file can appear more than once.
+          </p>
+        </div>
+        <label className="chat-tools-toggle">
+          <input
+            type="checkbox"
+            checked={allowDuplicates}
+            disabled={loading || saving}
+            onChange={(event) => toggle(event.target.checked)}
+            aria-label="Allow the same image twice"
+          />
+        </label>
+      </div>
+      {error && <div className="neo-error">{error}</div>}
+    </Modal>
+  );
+}
+
+function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -2031,6 +2112,7 @@ function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOp
         ["Workspace Retrieval", "Searchable workspace history, scoring, and audit", onOpenMemoryRetrieval],
         ["Research", "Sources and research sessions", onOpenResearch],
         ["Notes", "Saved working notes", onOpenNotes],
+        ["Gallery", "Images Neo has seen, and whether duplicates are kept", onOpenGallerySettings],
       ],
     },
     {
@@ -2182,6 +2264,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showWorkspaceOrchestration, setShowWorkspaceOrchestration] = useState(false);
   const [showContinuity, setShowContinuity] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
+  const [showGallerySettings, setShowGallerySettings] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showBundles, setShowBundles] = useState(false);
@@ -3502,6 +3585,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setShowWebSearchSettings(true);
           }}
           onOpenReliableWebSearch={() => { setShowSettings(false); setShowReliableWebSearch(true); }}
+          onOpenGallerySettings={() => { setShowSettings(false); setShowGallerySettings(true); }}
           onOpenMemory={() => {
             setShowSettings(false);
             setShowMemory(true);
@@ -3584,6 +3668,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
       {showWebSearchSettings && (
         <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />
+      )}
+
+      {showGallerySettings && (
+        <GallerySettingsDialog onClose={() => setShowGallerySettings(false)} />
       )}
 
       {showMemory && (

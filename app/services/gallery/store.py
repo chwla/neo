@@ -97,6 +97,11 @@ def initialize_gallery_tables() -> None:
                 FOREIGN KEY (item_id) REFERENCES gallery_items(id),
                 UNIQUE(item_id, chat_id, message_id)
             );
+            CREATE TABLE IF NOT EXISTS gallery_preferences (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS gallery_vectors (
                 item_id TEXT PRIMARY KEY,
                 provider TEXT NOT NULL, model TEXT NOT NULL, provider_version TEXT NOT NULL,
@@ -252,6 +257,33 @@ def get_item(item_id: str, *, include_deleted: bool = False) -> dict | None:
         if not include_deleted:
             sql += " AND deleted = 0"
         return _item_row(conn.execute(sql, (item_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def get_preference(key: str) -> str | None:
+    """The stored value for a gallery preference, or None if never set."""
+
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM gallery_preferences WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def set_preference(key: str, value: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            """INSERT INTO gallery_preferences (key, value, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                              updated_at = excluded.updated_at""",
+            (key, value, now_iso()),
+        )
+        conn.commit()
     finally:
         conn.close()
 
