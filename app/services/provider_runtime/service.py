@@ -32,9 +32,12 @@ _LOG = logging.getLogger("neo.provider_runtime")
 
 
 class ProviderRuntimeService:
-    def __init__(self, *, initialize: bool = True) -> None:
+    def __init__(self, *, initialize: bool = True, disable_thinking: bool = False) -> None:
         if initialize:
             store.initialize_provider_runtime_tables()
+        #: Ask the routed model not to reason before answering. Set for a
+        #: low-effort turn; ignored by any model that cannot be told.
+        self.disable_thinking = disable_thinking
 
     def status(self) -> dict:
         return {
@@ -201,7 +204,10 @@ class ProviderRuntimeService:
                     budget["required_tokens"],
                     model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
                 )
-                client = build_client(provider, model, num_predict=max_tokens, num_ctx=num_ctx)
+                client = build_client(
+                    provider, model, num_predict=max_tokens, num_ctx=num_ctx,
+                    disable_thinking=self.disable_thinking,
+                )
                 tool_calls: list[dict[str, Any]] = []
                 if stream:
                     partial = ""
@@ -293,7 +299,8 @@ class ProviderRuntimeService:
                     attempts += 1
                     try:
                         client = build_client(
-                            provider, model, num_predict=max_tokens, num_ctx=num_ctx
+                            provider, model, num_predict=max_tokens, num_ctx=num_ctx,
+                            disable_thinking=self.disable_thinking,
                         )
                         result = client.chat_with_metadata(
                             messages, num_predict=max_tokens, tools=tools

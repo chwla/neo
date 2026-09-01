@@ -96,6 +96,7 @@ def ensure_chat_columns(target_engine=engine) -> None:
         "pinned": "BOOLEAN NOT NULL DEFAULT 0",
         "repo_id": "VARCHAR(64)",
         "agent_mode": "VARCHAR(16) NOT NULL DEFAULT 'normal'",
+        "effort": "VARCHAR(16) NOT NULL DEFAULT 'high'",
         "agent_definition_id": "VARCHAR(64)",
         "disabled_tools": "JSON NOT NULL DEFAULT '[]'",
     }

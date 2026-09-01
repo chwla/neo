@@ -510,6 +510,7 @@ export const api = {
         llm_id: llmId,
         memory_enabled: context.memoryEnabled ?? true,
         memory_incognito: context.memoryIncognito ?? false,
+        effort: context.effort ?? null,
       }),
     }),
   streamMessage: (chatId, prompt, onEvent, llmId = null, context = {}) =>
@@ -518,6 +519,7 @@ export const api = {
       llm_id: llmId,
       memory_enabled: context.memoryEnabled ?? true,
       memory_incognito: context.memoryIncognito ?? false,
+      effort: context.effort ?? null,
     }, onEvent),
   /**
    * Start the next turn. `context.mode` picks which kind: "chat" for a reply,
@@ -545,6 +547,7 @@ export const api = {
         repo_id: context.repoId ?? null,
         agent_mode: context.agentMode ?? null,
         agent_definition_id: context.agentDefinitionId ?? null,
+        effort: context.effort ?? null,
         image_ids: context.imageIds ?? [],
       }),
     }),

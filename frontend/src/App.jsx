@@ -1114,6 +1114,8 @@ export function ChatComposer({
   onRepoChange,
   agentMode = "normal",
   onAgentModeChange,
+  effort = "high",
+  onEffortChange = () => {},
   onOpenFolder,
   folderAttaching = false,
   onOpenToolsPanel,
@@ -1359,6 +1361,20 @@ export function ChatComposer({
                   </>
                 ) : (
                   <>
+                    {/* Replies only. An agent run leans on the model's reasoning
+                        for tool choice, planning and knowing when it is done, so
+                        it is always given it -- and a setting that governed runs
+                        from a menu that does not show it would be worse than no
+                        setting at all. */}
+                    <label className="agent-chip">
+                      <span className="agent-chip-label">Effort</span>
+                      <select value={effort} onChange={(event) => onEffortChange(event.target.value)}
+                        disabled={disabled} aria-label="Select effort"
+                        title="High lets a model choose the route and reason before replying. Low keeps the deterministic parts only -- it answers far faster, and it will not decide on its own that a question needs the web.">
+                        <option value="high">High · more thorough</option>
+                        <option value="low">Low · faster replies</option>
+                      </select>
+                    </label>
                     <AttachFilesAction
                       attaching={attaching}
                       disabled={disabled}
@@ -1433,14 +1449,16 @@ export function ChatComposer({
             </div>
           </div>
           <div className="composer-foot">
+            {/* What the next turn will be, kept away from the button that sends
+                it: the choice is made before typing, the send after it. */}
+            <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
+              <button type="button" role="tab" aria-selected={mode === "chatbot"}
+                className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
+              <button type="button" role="tab" aria-selected={mode === "agent"}
+                className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
+            </div>
             <div className="composer-actions">
-              <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
-                <button type="button" role="tab" aria-selected={mode === "chatbot"}
-                  className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
-                <button type="button" role="tab" aria-selected={mode === "agent"}
-                  className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
-              </div>
-              {/* One control for both kinds of turn. The toggle above decides
+              {/* One control for both kinds of turn. The toggle opposite decides
                   what the next one does, not what the button is called -- and a
                   turn already running is stopped the same way whichever it is. */}
               {generating ? (
@@ -2842,6 +2860,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           repoId: chat.repo_id ?? null,
           agentMode: chat.agent_mode ?? null,
           agentDefinitionId: chat.agent_definition_id ?? null,
+          effort: chat.effort ?? null,
           imageIds,
         },
       );
@@ -3303,7 +3322,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       ) : (
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
         <header className="neo-view-header">
-          <span>{activeChat?.title || "New conversation"}</span>
+          {/* The same words the backend names a new chat with. On a refresh the
+              chat is briefly not loaded yet, so this placeholder renders first
+              and the real title replaces it -- and when the two disagreed that
+              swap was visible as a flash from "New conversation" to "New chat". */}
+          <span>{activeChat?.title || "New chat"}</span>
           <span className="neo-view-context">{chatMode === "agent" ? "Agent Mode" : "Chat Mode"}</span>
         </header>
         <section className="neo-shell">
@@ -3401,6 +3424,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onAgentDefinitionChange={(id) => updateChatAgentSettings({ agent_definition_id: id })}
           agentMode={activeChat?.agent_mode || "normal"}
           onAgentModeChange={(nextMode) => updateChatAgentSettings({ agent_mode: nextMode })}
+          effort={activeChat?.effort || "high"}
+          onEffortChange={(next) => updateChatAgentSettings({ effort: next })}
           onOpenFolder={handleOpenFolder}
           folderAttaching={false}
           onOpenToolsPanel={() => setShowChatTools(true)}

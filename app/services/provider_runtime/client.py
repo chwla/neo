@@ -44,11 +44,12 @@ class ProviderRuntimeClient(BaseLLMClient):
         *,
         num_predict: int | None = None,
         timeout: int | None = None,
+        disable_thinking: bool = False,
     ) -> None:
         self.route_name, self.num_predict, self.timeout = route_name, num_predict, timeout
         # Profile initialization owns schema creation. Model requests must not
         # run SQLite DDL in their hot path.
-        self.runtime = ProviderRuntimeService(initialize=False)
+        self.runtime = ProviderRuntimeService(initialize=False, disable_thinking=disable_thinking)
         self.model = "runtime"
         self.last_metadata: dict[str, Any] = {}
 

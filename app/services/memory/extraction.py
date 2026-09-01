@@ -34,6 +34,31 @@ _IDENTITY_KEYS = frozenset(
     key.removeprefix("identity:global:") for key in CORE_IDENTITY_SLOT_KEYS
 )
 SYNTHETIC_PROBE_INPUT = "PHASE4_OLLAMA_SYNTHETIC_CAPABILITY_PROBE"
+#: What the capability probe asks for. Exact and tiny on purpose -- see the
+#: comment on ``base_payload`` in ``probe_ollama_provider``.
+OLLAMA_PROBE_INSTRUCTION = (
+    "Reply with exactly this JSON object and nothing else, on one line, "
+    'with no code fence and no explanation: {"probe":"ok"}'
+)
+#: Generous next to the six tokens the instruction above actually produces. Low
+#: enough to bound a model that ignores it, high enough that no honest reply is
+#: cut off and misread as an unsupported option.
+PROBE_NUM_PREDICT = 256
+
+
+def _extraction_keep_alive() -> str:
+    """How long extraction asks Ollama to keep the model resident.
+
+    Read from the same setting the chat client uses rather than pinned here.
+    Ollama applies whichever value arrived last, so a hardcoded "10m" on a
+    background extraction quietly overrode the chat client's "30m" and the next
+    message paid a full cold load -- about six seconds on this hardware, landing
+    on the user rather than on the background job that caused it.
+    """
+
+    from app.core.config import get_settings
+
+    return get_settings().ollama_keep_alive
 
 OLLAMA_SYSTEM_INSTRUCTION = """You are a bounded memory proposal extractor.
 Return exactly one JSON object matching the supplied schema. Do not return prose,
@@ -722,7 +747,7 @@ class OllamaChatExtractionProvider(_JsonHttpExtractionProvider):
         if self.capabilities.num_predict_option_supported:
             payload["options"]["num_predict"] = 2048
         if self.capabilities.keep_alive_supported:
-            payload["keep_alive"] = "10m"
+            payload["keep_alive"] = _extraction_keep_alive()
         return payload
 
     def _decode_response(
@@ -956,7 +981,7 @@ class TwoStageOllamaChatExtractionProvider(OllamaChatExtractionProvider):
         if self.capabilities.num_predict_option_supported:
             payload["options"]["num_predict"] = 2048
         if self.capabilities.keep_alive_supported:
-            payload["keep_alive"] = "10m"
+            payload["keep_alive"] = _extraction_keep_alive()
         status, body = self._post(payload, forbidden_texts=forbidden_texts)
         decoded = self._decode_response(status, body, forbidden_texts=forbidden_texts)
         raw = decoded.raw_output
@@ -1218,11 +1243,23 @@ def probe_ollama_provider(
         "messages": [
             {
                 "role": "system",
-                "content": "Return only the requested synthetic JSON. Do not reason.",
+                # Name the exact reply. "Return only the requested synthetic JSON"
+                # left the shape to the model, and a reasoning model answered a
+                # yes/no capability question with 449 tokens -- roughly 18s each,
+                # seven times over, on the single llama-server slot the user's turn
+                # needs. Nothing here reads the content: every probe below asks only
+                # whether the envelope came back decodable, and six tokens answer
+                # that as well as four hundred do.
+                "content": OLLAMA_PROBE_INSTRUCTION,
             },
             {"role": "user", "content": SYNTHETIC_PROBE_INPUT},
         ],
         "stream": False,
+        # A backstop, not the mechanism: the instruction above is what makes the
+        # reply short. The cap has to stay well clear of it, because a truncated
+        # reply decodes as empty content -- which this probe would then record as
+        # the *option* being unsupported rather than the answer being cut off.
+        "options": {"temperature": 0, "num_predict": PROBE_NUM_PREDICT},
     }
     warmup_success, failure_code, failure_message, warmup_latency = _probe_chat(
         provider,
@@ -1262,9 +1299,13 @@ def probe_ollama_provider(
     think_supported, _think_code, _think_message = (
         supports({"format": "json", "think": False}) if json_supported else (False, None, None)
     )
-    seed_supported, _seed_code, _seed_message = supports({"options": {"temperature": 0, "seed": 0}})
+    # ``supports`` merges at the top level, so an update carrying ``options``
+    # replaces the base's wholesale -- each of these has to re-state the cap.
+    seed_supported, _seed_code, _seed_message = supports(
+        {"options": {"temperature": 0, "seed": 0, "num_predict": PROBE_NUM_PREDICT}}
+    )
     num_predict_supported, _num_code, _num_message = supports(
-        {"options": {"temperature": 0, "num_predict": 32}}
+        {"options": {"temperature": 0, "num_predict": PROBE_NUM_PREDICT}}
     )
     keep_alive_supported, _keep_code, _keep_message = supports({"keep_alive": "5m"})
     capabilities = OllamaCapabilities(

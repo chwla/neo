@@ -160,6 +160,80 @@ _CALENDAR_NOT_COMPLETED_METADATA: dict[str, Any] = {
 }
 
 
+#: Who Neo is and how it must handle not knowing. Every turn carries this.
+_PROMPT_CORE = (
+    "You are Neo, a local personal AI assistant. Use the provided memory context "
+    "when it is relevant. Do not claim memories that are not present. If memory "
+    "context conflicts, prefer active goals, active projects, current profile facts, "
+    "and current preferences. For personal questions about the user's name, age, "
+    "location, preferences, goals, or projects, answer only from memory context or "
+    "conversation history. If the fact is not in memory and not a time-sensitive "
+    "question, you may answer from general knowledge confidently. "
+    "IMPORTANT: Either answer confidently or say you are unsure. Never combine "
+    "uncertainty with a partial answer. Do NOT say 'I'm not sure, but...' followed "
+    "by an answer attempt. If you know the answer, state it directly. If you do not "
+    "know, say only: I'm not sure about that. I can look it up if you'd like. "
+    "Never produce dead-end responses like 'I don't know yet' for general factual "
+    "questions. Whether this question needed current web information was already "
+    "decided before you were asked to answer. Do not re-decide that here or offer "
+    "to look things up yourself. "
+)
+
+#: How to use and cite retrieved evidence. Meaningless on a turn that
+#: retrieved none, and the largest block here -- so a low-effort turn without
+#: web context leaves it out rather than re-reading it at 188 tok/s.
+_PROMPT_WEB = (
+    "Memory context and web context are separate. Use web context only for current, "
+    "recent, or explicitly searched information. When web context is provided, cite "
+    "web-grounded claims using bracket markers like [1]. Do not place raw URLs "
+    "inline in your answer text; citations go in the Sources block appended after "
+    "your answer. For web-grounded prompts, do not use memory, conversation history, "
+    "or general knowledge to fill gaps in the retrieved web evidence. The web context "
+    "contains extracted evidence only; do not infer beyond it. "
+    "For questions about current rankings, latest products, prices, versions, news, "
+    "release dates, champions, schedules, or any time-sensitive fact: answer ONLY "
+    "from the web evidence. If the web evidence does not contain the answer, say "
+    "only: I searched the web but could not find sufficiently reliable current "
+    "sources. Do NOT add general knowledge or filler after that statement. Do NOT "
+    "answer from your training data for time-sensitive questions. "
+    "If search results cover multiple unrelated entities with the same name (e.g. "
+    "'Fable' the Xbox game vs other uses), note the ambiguity and present results "
+    "grouped by entity. Do not merge unrelated entities into one answer. "
+    "Do NOT generate a Sources or References block yourself. The backend will "
+    "append verified sources automatically. Do NOT invent URLs or cite pages that "
+    "were not provided in the web context. "
+    "Answer the user's question directly first, then provide brief supporting "
+    "evidence. Do not output raw search-result titles or snippet labels. "
+)
+
+#: How to treat project and task context. Left out when the turn carries
+#: neither, on the same reasoning as the web block.
+_PROMPT_WORKSPACE = (
+    "Project context is a user-owned workspace layer separate from Memory. Use "
+    "project context only when it is provided and relevant. Never write project "
+    "details to memory automatically. Task context is also a user-owned workspace "
+    "layer. Use it only when relevant, treat it as read-only, and never write task "
+    "details to Memory automatically. "
+)
+
+#: What Neo may claim to have *done*. Never omitted: generation always sees
+#: `calendar_execution == "none"` (every path that changes the calendar answers
+#: its own turn), so this is the only thing standing between the model and a
+#: confident lie about having saved or scheduled something.
+_PROMPT_AUTHORITY = (
+    "Memory persistence is controlled exclusively "
+    "by the backend before this answer is generated. Never claim that you saved, "
+    "updated, stored, noted, remembered, removed, deleted, or forgot user information. "
+    "If no deterministic memory-status response was returned before reaching you, "
+    "then no user-visible memory mutation is confirmed. "
+    "Calendar changes are controlled by the backend the same way. The calendar "
+    "state below is supplied by the application and is the only authority on "
+    "what happened this turn. Never say you created, updated, deleted, "
+    "scheduled, moved, or cancelled a calendar event unless that state says one "
+    "happened. An earlier offer to change the calendar is not evidence that the "
+    "change was carried out.\n\n"
+)
+
 class NeoChatService:
     """Connects memory context, Ollama generation, archiving, and extraction."""
 
@@ -175,9 +249,17 @@ class NeoChatService:
         active_project_id: str | None = None,
         active_project_name: str | None = None,
         image_ids: list[str] | None = None,
+        effort: str = "high",
     ) -> None:
         self.db = db
         self.store = AppStore(db)
+        #: Low effort keeps only the deterministic half of the pipeline. What it
+        #: drops is every step that spends a *second* model call to improve an
+        #: answer the first call could already give: choosing the route, and
+        #: re-examining a reply that sounds unsure. On a local single-slot runtime
+        #: those calls are not overlapped with anything -- they are added to the
+        #: wait, and on a greeting they change nothing about the answer.
+        self.low_effort = effort == "low"
         #: Gallery items the user attached to this turn, already resolved to
         #: base64 so the provider layer never touches the gallery. Empty when the
         #: turn carries no image or when the routed model cannot see one.
@@ -286,59 +368,24 @@ class NeoChatService:
             if self.memory_enabled
             else f"Memory context:\n{self._compact_context(context)}"
         )
+        # Only what the turn can actually use. A low-effort turn drops the blocks
+        # whose subject is absent -- there is nothing to cite when nothing was
+        # retrieved -- because gemma4-class models use sliding-window attention
+        # and llama.cpp re-processes the whole prompt on every call, so an unused
+        # block is paid for again on every single turn, not just the first.
+        carries_web = bool(
+            web_context is not None and (web_context.needed or web_context.citations)
+        )
+        carries_workspace = bool(project_context or task_context)
+        sections = [_PROMPT_CORE]
+        if carries_web or not self.low_effort:
+            sections.append(_PROMPT_WEB)
+        if carries_workspace or not self.low_effort:
+            sections.append(_PROMPT_WORKSPACE)
+        sections.append(_PROMPT_AUTHORITY)
         system_prompt = (
-            "You are Neo, a local personal AI assistant. Use the provided memory context "
-            "when it is relevant. Do not claim memories that are not present. If memory "
-            "context conflicts, prefer active goals, active projects, current profile facts, "
-            "and current preferences. For personal questions about the user's name, age, "
-            "location, preferences, goals, or projects, answer only from memory context or "
-            "conversation history. If the fact is not in memory and not a time-sensitive "
-            "question, you may answer from general knowledge confidently. "
-            "IMPORTANT: Either answer confidently or say you are unsure. Never combine "
-            "uncertainty with a partial answer. Do NOT say 'I'm not sure, but...' followed "
-            "by an answer attempt. If you know the answer, state it directly. If you do not "
-            "know, say only: I'm not sure about that. I can look it up if you'd like. "
-            "Never produce dead-end responses like 'I don't know yet' for general factual "
-            "questions. Whether this question needed current web information was already "
-            "decided before you were asked to answer. Do not re-decide that here or offer "
-            "to look things up yourself. "
-            "Memory context and web context are separate. Use web context only for current, "
-            "recent, or explicitly searched information. When web context is provided, cite "
-            "web-grounded claims using bracket markers like [1]. Do not place raw URLs "
-            "inline in your answer text; citations go in the Sources block appended after "
-            "your answer. For web-grounded prompts, do not use memory, conversation history, "
-            "or general knowledge to fill gaps in the retrieved web evidence. The web context "
-            "contains extracted evidence only; do not infer beyond it. "
-            "For questions about current rankings, latest products, prices, versions, news, "
-            "release dates, champions, schedules, or any time-sensitive fact: answer ONLY "
-            "from the web evidence. If the web evidence does not contain the answer, say "
-            "only: I searched the web but could not find sufficiently reliable current "
-            "sources. Do NOT add general knowledge or filler after that statement. Do NOT "
-            "answer from your training data for time-sensitive questions. "
-            "If search results cover multiple unrelated entities with the same name (e.g. "
-            "'Fable' the Xbox game vs other uses), note the ambiguity and present results "
-            "grouped by entity. Do not merge unrelated entities into one answer. "
-            "Do NOT generate a Sources or References block yourself. The backend will "
-            "append verified sources automatically. Do NOT invent URLs or cite pages that "
-            "were not provided in the web context. "
-            "Answer the user's question directly first, then provide brief supporting "
-            "evidence. Do not output raw search-result titles or snippet labels. "
-            "Project context is a user-owned workspace layer separate from Memory. Use "
-            "project context only when it is provided and relevant. Never write project "
-            "details to memory automatically. Task context is also a user-owned workspace "
-            "layer. Use it only when relevant, treat it as read-only, and never write task "
-            "details to Memory automatically. Memory persistence is controlled exclusively "
-            "by the backend before this answer is generated. Never claim that you saved, "
-            "updated, stored, noted, remembered, removed, deleted, or forgot user information. "
-            "If no deterministic memory-status response was returned before reaching you, "
-            "then no user-visible memory mutation is confirmed. "
-            "Calendar changes are controlled by the backend the same way. The calendar "
-            "state below is supplied by the application and is the only authority on "
-            "what happened this turn. Never say you created, updated, deleted, "
-            "scheduled, moved, or cancelled a calendar event unless that state says one "
-            "happened. An earlier offer to change the calendar is not evidence that the "
-            "change was carried out.\n\n"
-            f"Calendar activity this turn: {_CALENDAR_EXECUTION_STATEMENT[calendar_execution]}"
+            "".join(sections)
+            + f"Calendar activity this turn: {_CALENDAR_EXECUTION_STATEMENT[calendar_execution]}"
             "\n\n"
             f"{memory_policy}\n\n"
             f"{memory_section}\n\n"
@@ -873,7 +920,8 @@ class NeoChatService:
             else:
                 reply = self._with_web_citations(result.content, web_context)
             if (
-                search_intent.kind is SearchIntentKind.NONE
+                not self.low_effort
+                and search_intent.kind is SearchIntentKind.NONE
                 and not web_context.needed
                 and _reply_expresses_uncertainty(reply)
             ):
@@ -1706,6 +1754,7 @@ class NeoChatService:
         uncertainty_refinement: dict[str, Any] | None = None
         if (
             not incomplete
+            and not self.low_effort
             and search_intent.kind is SearchIntentKind.NONE
             and not web_context.needed
             and _reply_expresses_uncertainty(reply)
@@ -1952,6 +2001,10 @@ class NeoChatService:
         message_id: int,
         history: list[ChatMessage],
     ) -> CurrentTurnOverride | None:
+        # A second model call before the first token, to catch a correction the
+        # post-turn pass would catch anyway -- just one turn later.
+        if self.low_effort:
+            return None
         if not re.search(
             r"\b(?:changed my mind|instead|no longer|not anymore|forget|remove|correct)\b",
             prompt,
@@ -2331,6 +2384,7 @@ class NeoChatService:
             previous=previous,
             timezone=timezone,
             locale=locale,
+            model_routing=not self.low_effort,
         )
         self.last_search_intent = intent
         return intent

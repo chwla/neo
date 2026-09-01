@@ -47,7 +47,10 @@ class MockClient(BaseLLMClient):
         yield {"type": "done", "total_tokens": 0, "duration_ms": 0}
 
 
-def build_client(provider: dict, model: dict, *, timeout=None, num_predict=None, num_ctx=None):
+def build_client(
+    provider: dict, model: dict, *, timeout=None, num_predict=None,
+    num_ctx=None, disable_thinking=False,
+):
     if not provider.get("enabled") or not model.get("enabled"):
         return DisabledClient(model.get("model_name") or "disabled")
     provider_type = provider["provider_type"]
@@ -70,7 +73,10 @@ def build_client(provider: dict, model: dict, *, timeout=None, num_predict=None,
         from app.core.config import get_settings
 
         return OllamaClient(
-            **common, num_ctx=num_ctx, keep_alive=get_settings().ollama_keep_alive
+            **common,
+            num_ctx=num_ctx,
+            keep_alive=get_settings().ollama_keep_alive,
+            disable_thinking=disable_thinking,
         )
     if provider_type == "openai_compatible":
         key_ref = provider.get("api_key_ref")

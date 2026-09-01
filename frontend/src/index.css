@@ -548,8 +548,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-llm-picker:hover, .chat-llm-picker:focus-within { color: var(--composer-accent); }
 .chat-llm-caret { position: absolute; top: 50%; right: 1px; width: 11px; height: 11px; transform: translateY(-50%); pointer-events: none; }
 
-/* Control row: tools left, mode switch and send right. */
-.composer-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+/* Control row: mode switch left, send right. */
+.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-tools { display: flex; align-items: center; gap: 10px; }
 .composer-actions { display: flex; align-items: center; gap: 12px; }
 .composer-tool {

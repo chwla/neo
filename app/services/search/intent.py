@@ -407,6 +407,7 @@ class SearchIntentResolver:
         previous: ResolvedSearchIntent | None = None,
         timezone: str | None = None,
         locale: str | None = None,
+        model_routing: bool = True,
     ) -> ResolvedSearchIntent:
         """Use the selected chat model for ordinary route choice.
 
@@ -414,16 +415,27 @@ class SearchIntentResolver:
         operations (weather, currency, date/time, explicit tools and explicit web
         commands). All ordinary questions are deliberately model-routed so a single
         freshness word cannot force external search.
+
+        ``model_routing=False`` stops before that model call and keeps the
+        deterministic answer. It is the low-effort setting: the structured routes
+        above still fire, and so does an explicit request to search, but nothing
+        *infers* that an ordinary question needs the web. That inference is the
+        accuracy being traded, and it is the only thing traded here -- this is the
+        same value the method already returns when the model declines to decide.
         """
         base = self.resolve(query, previous=previous, llm=llm, timezone=timezone, locale=locale)
         if base.kind is not SearchIntentKind.NONE or not base.original_query.strip():
             return base
 
-        decision = self._model_route(query, llm)
+        decision = self._model_route(query, llm) if model_routing else None
         if decision is None:
             return base.model_copy(
                 update={
-                    "reason": "No reliable model route decision; defaulting to local chat.",
+                    "reason": (
+                        "Model routing skipped for a low-effort turn; keeping local chat."
+                        if not model_routing
+                        else "No reliable model route decision; defaulting to local chat."
+                    ),
                     "confidence": 0.7,
                     "decision_source": "fallback",
                 }

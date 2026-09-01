@@ -61,9 +61,13 @@ _GENERATION_LOG = logging.getLogger("neo.chat.generation")
 _CHAT_LOG = logging.getLogger("neo.chat")
 
 
-def _llm_client(config_id: str | None = None, route_name: str = "chat") -> LLMClient:
+def _llm_client(
+    config_id: str | None = None, route_name: str = "chat", *, effort: str = "high"
+) -> LLMClient:
     try:
-        return get_llm_client(config_id, route_name=route_name)
+        return get_llm_client(
+            config_id, route_name=route_name, disable_thinking=effort == "low"
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -165,6 +169,7 @@ class ChatRead(BaseModel):
     agent_mode: str = "normal"
     agent_definition_id: str | None = None
     disabled_tools: list[str] = Field(default_factory=list)
+    effort: str = "high"
     #: Set only while a run in this chat is unfinished, so the sidebar can badge
     #: the row without a second request. A chat whose agent turns are all done
     #: is an ordinary chat again.
@@ -271,6 +276,10 @@ class ChatSendRequest(BaseModel):
     repo_id: str | None = Field(default=None, max_length=64)
     agent_mode: Literal["plan", "normal", "auto"] | None = None
     agent_definition_id: str | None = Field(default=None, max_length=64)
+    #: How much work this turn may spend. Absent means "whatever the chat is set
+    #: to", so the thread carries the choice and one message can still override
+    #: it without changing where the user is.
+    effort: Literal["low", "high"] | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -317,6 +326,7 @@ class ChatUpdateRequest(BaseModel):
     agent_mode: Literal["plan", "normal", "auto"] | None = None
     agent_definition_id: str | None = Field(default=None, max_length=64)
     disabled_tools: list[str] | None = None
+    effort: Literal["low", "high"] | None = None
 
     @field_validator("title")
     @classmethod
@@ -629,6 +639,7 @@ def _generation_service(
     memory_enabled: bool,
     memory_incognito: bool,
     image_ids: list[str] | None = None,
+    effort: str = "high",
 ) -> NeoChatService:
     rule_result = RuleResolver().resolve(
         RuleResolveRequest(
@@ -642,12 +653,13 @@ def _generation_service(
         db,
         db.info.get("neo_authenticated_profile"),
         request_id=f"generation:{chat.id}",
-        ollama=_llm_client(llm_id, route_name),
+        ollama=_llm_client(llm_id, route_name, effort=effort),
         rule_result=rule_result,
         memory_enabled=memory_enabled,
         memory_incognito=memory_incognito,
         image_ids=image_ids,
         active_project_id=str(chat.project_id) if chat.project_id is not None else None,
+        effort=effort,
     )
 
 
@@ -662,6 +674,7 @@ def _chat_service(
     memory_incognito: bool = False,
     active_project_id: str | None = None,
     image_ids: list[str] | None = None,
+    effort: str = "high",
 ) -> NeoChatService:
     runtime = None
     mutation_runtime = None
@@ -702,6 +715,7 @@ def _chat_service(
             if active_project_id is not None
             else None
         ),
+        effort=effort,
     )
 
 
@@ -923,6 +937,7 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 generation.llm_id,
                 memory_enabled=bool(generation_options.get("memory_enabled", True)),
                 memory_incognito=bool(generation_options.get("memory_incognito", False)),
+                effort=str(generation_options.get("effort") or "high"),
                 image_ids=list(generation_options.get("image_ids") or []),
             )
             partial_response = ""
@@ -1134,6 +1149,11 @@ def _start_chat_generation(
         raise HTTPException(status_code=401, detail="Choose a profile to continue.")
     chat = _get_required_chat(store, chat_id)
     ChatGeneration.__table__.create(bind=store.db.get_bind(), checkfirst=True)
+    # Chosen per message, but remembered: answering one question carefully must
+    # not leave the user somewhere they did not ask to be next time they type.
+    if payload.effort is not None and payload.effort != chat.effort:
+        chat.effort = payload.effort
+        store.db.commit()
     cleaned_prompt = payload.prompt.strip()
     if payload.client_request_id:
         # Same key space as the synchronous path, so a key cannot be spent twice across
@@ -1176,6 +1196,7 @@ def _start_chat_generation(
                 "memory_enabled": payload.memory_enabled,
                 "memory_incognito": payload.memory_incognito,
                 "image_ids": payload.image_ids,
+                "effort": payload.effort or chat.effort,
             }
         ),
         worker_id=None,
@@ -1506,12 +1527,13 @@ def send_chat_message(
         store.db,
         session_for(http_request),
         request_id=f"chat:{chat_id}:{uuid.uuid4()}",
-        ollama=_llm_client(request.llm_id, route_name),
+        ollama=_llm_client(request.llm_id, route_name, effort=request.effort or chat.effort),
         rule_result=rule_result,
         memory_enabled=request.memory_enabled,
         memory_incognito=request.memory_incognito,
         image_ids=request.image_ids,
         active_project_id=str(chat.project_id) if chat.project_id is not None else None,
+        effort=request.effort or chat.effort,
     )
     try:
         reply = service.send_message(
@@ -1802,12 +1824,13 @@ def stream_chat_message(
         store.db,
         session_for(http_request),
         request_id=f"chat-stream:{chat_id}:{uuid.uuid4()}",
-        ollama=_llm_client(request.llm_id, route_name),
+        ollama=_llm_client(request.llm_id, route_name, effort=request.effort or chat.effort),
         rule_result=rule_result,
         memory_enabled=request.memory_enabled,
         memory_incognito=request.memory_incognito,
         image_ids=request.image_ids,
         active_project_id=str(chat.project_id) if chat.project_id is not None else None,
+        effort=request.effort or chat.effort,
     )
 
     def events():
@@ -2206,6 +2229,8 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat.agent_definition_id = request.agent_definition_id or None
     if request.disabled_tools is not None:
         chat.disabled_tools = request.disabled_tools
+    if request.effort is not None:
+        chat.effort = request.effort
     store.db.commit()
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)

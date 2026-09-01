@@ -32,6 +32,22 @@ class Chat(TimestampMixin, Base):
     #: withholds the tools that need one.
     repo_id: Mapped[str | None] = mapped_column(String(64))
     agent_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
+
+    #: How much work a turn in this chat is allowed to spend before answering.
+    #: ``high`` is the full pipeline: a model decides the route, and the reply is
+    #: re-examined when it sounds unsure. ``low`` keeps only the deterministic
+    #: parts of that, which is roughly half the model calls. It belongs to the
+    #: thread, like the agent settings beside it, and is chosen per message so a
+    #: single question can be answered carefully without changing the thread.
+    #: ``server_default`` is load-bearing here in a way it is not for the columns
+    #: around it: the raw-sqlite3 INSERT in ``create_chat_for_session`` names
+    #: every one of those but not this, so a NOT NULL with only a Python-side
+    #: default rejects the row outright. Note the value is unquoted -- SQLAlchemy
+    #: quotes it, and writing ``"'high'"`` here renders a default with the quotes,
+    #: which stores the quote characters as part of the value.
+    effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="high", server_default="high"
+    )
     agent_definition_id: Mapped[str | None] = mapped_column(String(64))
     #: Tool names withheld from every agent turn in this chat. Applies to both
     #: built-in tools and bridged connector tools -- see agent_core.tools.registry.

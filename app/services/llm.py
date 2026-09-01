@@ -311,6 +311,31 @@ def ollama_supports_vision(base_url: str, model: str, timeout: int = 5) -> bool:
     return supported
 
 
+_THINKING_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def ollama_supports_thinking(base_url: str, model: str, timeout: int = 5) -> bool:
+    """Ask Ollama whether a model reasons before it answers.
+
+    Asked so that ``think`` can be *turned off* safely. A model that has never
+    heard of the field rejects the request outright, so the answer has to come
+    from the provider rather than from an assumption about the model name.
+    """
+
+    key = (base_url.rstrip("/"), model)
+    if key in _THINKING_SUPPORT_CACHE:
+        return _THINKING_SUPPORT_CACHE[key]
+    supported = False
+    try:
+        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
+        response.raise_for_status()
+        supported = "thinking" in (response.json().get("capabilities") or [])
+    except Exception:
+        supported = False
+    _THINKING_SUPPORT_CACHE[key] = supported
+    return supported
+
+
 class OllamaClient(BaseLLMClient):
     def __init__(
         self,
@@ -320,11 +345,13 @@ class OllamaClient(BaseLLMClient):
         num_predict: int,
         num_ctx: int | None = None,
         keep_alive: str | None = None,
+        disable_thinking: bool = False,
     ) -> None:
         self.model, self.base_url = model, base_url.rstrip("/")
         self.timeout, self.num_predict = timeout, num_predict
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
+        self.disable_thinking = disable_thinking
 
     def _body(self, messages: list[LLMMessage], temperature: float, num_predict, *, stream: bool):
         body: dict[str, Any] = {
@@ -338,6 +365,13 @@ class OllamaClient(BaseLLMClient):
             # is shorter than the pause before someone opens a new chat -- so
             # the first message of that chat reloads the whole model.
             body["keep_alive"] = self.keep_alive
+        if self.disable_thinking and self.supports_thinking():
+            # By far the largest thing a low-effort turn gives up. Measured on
+            # gemma4 answering "hi": 137 of the 151 tokens it generated were
+            # reasoning about how to greet someone, and at 23 tok/s that is the
+            # whole of the wait. Worth every token on a hard question, which is
+            # why this is a setting and not a change.
+            body["think"] = False
         return body
 
     def is_available(self) -> bool:
@@ -353,6 +387,9 @@ class OllamaClient(BaseLLMClient):
 
     def supports_vision(self) -> bool:
         return ollama_supports_vision(self.base_url, self.model)
+
+    def supports_thinking(self) -> bool:
+        return ollama_supports_thinking(self.base_url, self.model)
 
     def model_is_installed(self) -> bool:
         try:
@@ -710,9 +747,15 @@ def get_llm_client(
     num_predict: int | None = None,
     timeout: int | None = None,
     route_name: str = "chat",
+    disable_thinking: bool = False,
 ) -> LLMClient:
     # Provider Runtime retains the registry's routes while adding bounded
     # retries, rate limits, redacted audit records, and fallback metadata.
     from app.services.provider_runtime.client import ProviderRuntimeClient
 
-    return ProviderRuntimeClient(route_name, num_predict=num_predict, timeout=timeout)
+    return ProviderRuntimeClient(
+        route_name,
+        num_predict=num_predict,
+        timeout=timeout,
+        disable_thinking=disable_thinking,
+    )
