@@ -55,6 +55,11 @@ PROCESS_WORKER_ID = str(uuid.uuid4())
 GENERATION_LEASE_SECONDS = 120
 _GENERATION_THREADS: set[str] = set()
 _GENERATION_THREADS_LOCK = Lock()
+
+#: Serialises the read-decide-write in ``create_chat``. Two clicks of New chat
+#: land in two threadpool threads, and without this both can see no empty chat
+#: and both insert one -- the exact duplicate the endpoint exists to avoid.
+_CHAT_CREATION_LOCK = Lock()
 _GENERATION_LOG = logging.getLogger("neo.chat.generation")
 #: Where a failed send records what actually went wrong. The response carries only
 #: the safe sentence, so this is the only place the provider's own text survives.
@@ -1299,11 +1304,32 @@ def _active_agent_status_by_chat() -> dict[int, str]:
 
 
 @router.post("/chats", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
-def create_chat(request: ChatCreateRequest, store: StoreDependency) -> ChatRead:
+def create_chat(
+    request: ChatCreateRequest, response: Response, store: StoreDependency
+) -> ChatRead:
+    """Hand back a thread with nothing in it yet.
+
+    Clicking New chat twice is one intent, not two conversations -- so an empty
+    chat already sitting in that scope is what the second click gets, reset to
+    the state a new one would have been in, rather than another id spent on a
+    conversation nobody started. A thread only earns an id of its own once
+    something is actually said in it, which is why the id in the URL stops
+    climbing while the composer stays empty.
+
+    The reuse is honest about which it did: ``200`` for a recycled thread,
+    ``201`` only when a row was really inserted.
+    """
+
     if request.project_id is not None:
         _get_required_project(store, request.project_id)
-    chat = store.create_chat(project_id=request.project_id)
-    store.db.commit()
+    with _CHAT_CREATION_LOCK:
+        chat = store.find_empty_chat(request.project_id)
+        if chat is not None:
+            store.reset_chat_for_reuse(chat)
+            response.status_code = status.HTTP_200_OK
+        else:
+            chat = store.create_chat(project_id=request.project_id)
+        store.db.commit()
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)
 

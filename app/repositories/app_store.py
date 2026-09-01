@@ -7,9 +7,36 @@ from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.chat import Chat, ChatMessage
+from app.models.chat import Chat, ChatGeneration, ChatMessage
 from app.models.enums import ProjectStatus
 from app.models.project import Project
+
+#: Everything ``ChatUpdateRequest`` can change on a chat that has no messages
+#: yet, minus ``pinned`` -- a pinned chat is never offered for reuse, so its pin
+#: must survive rather than be reset out from under the user.
+REUSABLE_CHAT_FIELDS = (
+    "title",
+    "repo_id",
+    "agent_mode",
+    "effort",
+    "agent_definition_id",
+    "disabled_tools",
+)
+
+
+def _column_default(name: str):
+    """The value a fresh INSERT would give this column of ``chats``.
+
+    Read off the column rather than restated here: a default written down in two
+    places is a default that will disagree with itself after the next edit to the
+    model, and the whole point of resetting a recycled chat is that the caller
+    cannot tell it apart from one that was just inserted.
+    """
+
+    default = Chat.__table__.c[name].default
+    if default is None:
+        return None
+    return default.arg(None) if default.is_callable else default.arg
 
 
 def _like_pattern(value: str) -> str:
@@ -45,6 +72,48 @@ class AppStore:
 
     def create_chat(self, project_id: int | None = None, title: str = "New chat") -> Chat:
         return self.add(Chat(title=title, project_id=project_id, archived=False))
+
+    def find_empty_chat(self, project_id: int | None = None) -> Chat | None:
+        """The scratch thread a fresh "New chat" should land on, if one is already there.
+
+        Deliberately narrower than "has no messages": a pinned or archived empty
+        chat is one the user put somewhere on purpose, and a chat carrying a
+        generation is mid-turn even in the moment before its rows land.
+
+        The scope test is exact rather than convenient. A chat's project is fixed
+        at creation -- nothing reassigns it -- so ``IS NULL`` against ``= :id``
+        partitions the chats completely, and an empty chat inside a project can
+        never be handed back as the unprojected one.
+        """
+
+        statement = (
+            select(Chat)
+            .where(
+                Chat.archived.is_(False),
+                Chat.pinned.is_(False),
+                ~exists().where(ChatMessage.chat_id == Chat.id),
+                ~exists().where(ChatGeneration.chat_id == Chat.id),
+            )
+            .order_by(Chat.updated_at.desc(), Chat.id.desc())
+            .limit(1)
+        )
+        if project_id is None:
+            statement = statement.where(Chat.project_id.is_(None))
+        else:
+            statement = statement.where(Chat.project_id == project_id)
+        return self.db.scalar(statement)
+
+    def reset_chat_for_reuse(self, chat: Chat) -> Chat:
+        """Give a recycled thread back in the state a brand-new one would be in.
+
+        ``project_id`` is untouched: it is the scope this chat was found under,
+        not a setting. So are ``archived`` and ``pinned`` -- a chat carrying
+        either is never offered for reuse in the first place.
+        """
+
+        for name in REUSABLE_CHAT_FIELDS:
+            setattr(chat, name, _column_default(name))
+        return chat
 
     def get_chat(self, chat_id: int) -> Chat | None:
         return self.db.get(Chat, chat_id)

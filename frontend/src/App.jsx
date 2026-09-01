@@ -2484,7 +2484,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         }
         setSelectedProjectId(chat.project_id);
         localStorage.setItem("neo-active-chat-id", String(chat.id));
-        updatePermalink(chatPermalink(chat.id, chat.project_id), { replace: options.history === "replace" });
+        // An empty chat is reused rather than replaced, so asking for a new one
+        // twice can land on the thread already in the address bar. Pushing there
+        // would stack identical entries and turn one Back press into several.
+        const current = parsePermalink();
+        const samePlace =
+          (current?.type === "chat" || current?.type === "projectChat") && current.id === chat.id;
+        updatePermalink(chatPermalink(chat.id, chat.project_id), {
+          replace: options.history === "replace" || samePlace,
+        });
         await refreshSidebar();
         return chat;
       })();
