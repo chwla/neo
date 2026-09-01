@@ -656,6 +656,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
         from app.services.continuity import initialize_continuity_tables
         from app.services.evaluation import initialize_evaluation_tables
         from app.services.files.store import initialize_workspace_file_tables
+        from app.services.gallery.store import initialize_gallery_tables
         from app.services.git.store import initialize_git_tables
         from app.services.github import initialize_github_tables
         from app.services.llm_registry.service import LLMRegistryService
@@ -687,6 +688,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_research_tables,
             initialize_research_mode_tables,
             initialize_workspace_file_tables,
+            initialize_gallery_tables,
             initialize_test_runner_tables,
             initialize_git_tables,
             initialize_github_tables,

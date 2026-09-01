@@ -2200,6 +2200,20 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showGallery, setShowGallery] = useState(false);
   const [initialGalleryItemId, setInitialGalleryItemId] = useState(null);
   const [showRepos, setShowRepos] = useState(false);
+  /* Closing every workspace in one place. Written out at each call site, one
+     of these lists always ends up missing a view -- the gallery was missing
+     from four of them, so opening Notes or Research from the sidebar while the
+     gallery was up silently did nothing. */
+  const closeWorkspaces = useCallback(() => {
+    setShowResearch(false);
+    setShowNotes(false);
+    setShowProjects(false);
+    setShowTasks(false);
+    setShowCalendar(false);
+    setShowFiles(false);
+    setShowRepos(false);
+    setShowGallery(false);
+  }, []);
   const [initialFileId, setInitialFileId] = useState(null);
   const [initialProjectId, setInitialProjectId] = useState(null);
   const [initialNoteId, setInitialNoteId] = useState(null);
@@ -3194,25 +3208,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onPinChat={handlePinChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
-        onOpenChatHome={() => {
-          setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false);
-        }}
+        onOpenChatHome={closeWorkspaces}
         onOpenMemory={() => setShowMemory(true)}
-        onOpenResearch={() => {
-          setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowResearch(true);
-        }}
-        onOpenNotes={() => {
-          setInitialNoteId(null); setShowResearch(false); setShowProjects(false); setShowTasks(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowNotes(true);
-        }}
+        onOpenResearch={() => { closeWorkspaces(); setShowResearch(true); }}
+        onOpenNotes={() => { closeWorkspaces(); setInitialNoteId(null); setShowNotes(true); }}
         onOpenTasks={() => {
-          setInitialTaskId(null); setInitialTaskProjectId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowCalendar(false); setShowFiles(false); setShowRepos(false); setShowTasks(true);
+          closeWorkspaces(); setInitialTaskId(null); setInitialTaskProjectId(null); setShowTasks(true);
         }}
-        onOpenCalendar={() => {
-          setInitialCalendarEventId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowGallery(false); setShowCalendar(true);
-        }}
-        onOpenGallery={() => {
-          setInitialGalleryItemId(null); setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false); setShowCalendar(false); setShowGallery(true);
-        }}
+        onOpenCalendar={() => { closeWorkspaces(); setInitialCalendarEventId(null); setShowCalendar(true); }}
+        onOpenGallery={() => { closeWorkspaces(); setInitialGalleryItemId(null); setShowGallery(true); }}
         activeView={activeView}
         profile={profile}
         onSwitchProfile={onSwitchProfile}
@@ -3279,7 +3283,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setInitialNoteId(null);
           }}
           onOpenTask={(taskId) => {
-            setInitialTaskId(taskId); setInitialTaskProjectId(null); setShowNotes(false); setShowProjects(false); setShowResearch(false); setShowTasks(true);
+            closeWorkspaces(); setInitialTaskId(taskId); setInitialTaskProjectId(null); setShowTasks(true);
           }}
           onOpenFile={openWorkspaceFile}
         />
@@ -3293,9 +3297,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           memoryIncognito={memoryIncognito}
           onBack={() => setShowResearch(false)}
           onOpenNote={(noteId) => {
-            setInitialNoteId(noteId);
-            setShowResearch(false);
-            setShowNotes(true);
+            closeWorkspaces(); setInitialNoteId(noteId); setShowNotes(true);
           }}
         />
       ) : (
