@@ -3271,13 +3271,19 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .gal-control-end { margin-left: auto; }
 .gal .gal-controls select {
   min-height: 30px;
+  /* No caret: the row already reads as a set of controls, and four arrows
+     pointing down at an empty grid was the loudest thing on the page. */
+  appearance: none;
+  -webkit-appearance: none;
   border: 1px solid var(--gal-edge-lit);
   border-radius: 5px;
   background: var(--neo-panel);
-  padding: 4px 8px;
+  padding: 4px 11px;
   color: #9a9a9a;
   font-size: 11.5px;
+  text-align: center;
 }
+.gal .gal-controls select:hover { border-color: #383838; color: #ccc; }
 .gal-toggle {
   display: inline-flex;
   min-height: 30px;

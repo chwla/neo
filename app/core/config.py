@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     gallery_describe_max_px: int = Field(default=1024, ge=128, le=4096)
     gallery_semantic_weight: float = Field(default=0.35, ge=0, le=1)
     gallery_min_score: float = Field(default=0.12, ge=0, le=1)
+    #: Cosine similarity below which a semantic hit is treated as no hit.
+    #: An embedder scores almost any two strings above zero, so without a
+    #: floor the ranker's fail-closed check passes everything it indexed.
+    gallery_semantic_floor: float = Field(default=0.45, ge=0, le=1)
     gallery_auto_describe: bool = Field(default=True)
     vision_model: str = Field(default="qwen2.5vl:7b")
     vision_timeout_seconds: int = Field(default=60, ge=1, le=600)

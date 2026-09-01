@@ -84,6 +84,7 @@ class GallerySearch:
         settings = get_settings()
         self.semantic_weight = settings.gallery_semantic_weight
         self.min_score = settings.gallery_min_score
+        self.semantic_floor = settings.gallery_semantic_floor
         self._vector_index = vector_index
 
     def _semantic_scores(self, query: str, limit: int) -> dict[str, float]:
@@ -187,6 +188,8 @@ class GallerySearch:
         project_id: str | None,
         now: datetime,
     ) -> dict[str, float]:
+        if semantic < self.semantic_floor:
+            semantic = 0.0
         word_match, tag_match = _text_match(item, terms)
         recency = _recency(item, appearances, now)
         pinned = 1.0 if item.get("pinned") else 0.0
