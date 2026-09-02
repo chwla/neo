@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,8 +25,9 @@ from app.models.enums import ProjectStatus
 from app.models.memory import MemoryRecord, MemorySource
 from app.repositories.app_store import AppStore
 from app.schemas.chat import ProjectRead
-from app.services import chat_events
+from app.services import chat_events, chat_prefs
 from app.services.agent_core import events as agent_events
+from app.services.agent_core import worker as agent_worker
 from app.services.chat import NeoChatService
 from app.services.llm import (
     LLMClient,
@@ -60,6 +61,16 @@ _GENERATION_THREADS_LOCK = Lock()
 #: land in two threadpool threads, and without this both can see no empty chat
 #: and both insert one -- the exact duplicate the endpoint exists to avoid.
 _CHAT_CREATION_LOCK = Lock()
+
+#: Serialises "decide whether this turn may start, then start it". The decision
+#: spans a database read and two in-process sets, and the row a spawned worker
+#: will flip to ``running`` does not exist yet at spawn time -- so without this
+#: two submissions landing together both see a free slot and both take it, and
+#: two sends to one chat both see no active turn.
+#:
+#: Re-entrant because the admission path calls ``_recover_generation``, which
+#: admits in turn; a plain lock would deadlock a thread against itself.
+_ADMISSION_LOCK = RLock()
 _GENERATION_LOG = logging.getLogger("neo.chat.generation")
 #: Where a failed send records what actually went wrong. The response carries only
 #: the safe sentence, so this is the only place the provider's own text survives.
@@ -179,6 +190,11 @@ class ChatRead(BaseModel):
     #: the row without a second request. A chat whose agent turns are all done
     #: is an ordinary chat again.
     agent_status: str | None = None
+    #: Set while *any* turn in this chat is unfinished, agent or plain reply.
+    #: Kept apart from ``agent_status`` rather than widening it: that field means
+    #: "an agent run is unfinished here" and the transcript reads it that way, so
+    #: overloading it would make every caller guess which sense was meant.
+    turn_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1100,6 +1116,17 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
             db.close()
             with _GENERATION_THREADS_LOCK:
                 _GENERATION_THREADS.discard(generation_id)
+            # After the discard, never before: until this turn has let go of its
+            # slot, the pump would count it and find no room for the turn waiting
+            # on it. Still inside ``profile_database``, so the pump reads the
+            # right database. This is the fast path -- the next turn starts in
+            # milliseconds rather than waiting for a poll.
+            try:
+                _pump_turn_queue(profile)
+            except Exception:
+                # A queue that fails to drain here is drained by the tail within
+                # two seconds. Never let it turn a finished turn into a failed one.
+                _GENERATION_LOG.exception("Draining the turn queue failed after %s", generation_id)
 
 
 def _spawn_generation(profile: dict, generation_id: str) -> None:
@@ -1122,6 +1149,106 @@ def _spawn_generation(profile: dict, generation_id: str) -> None:
         raise
 
 
+def _occupied_slots() -> int:
+    """How many turns are using a concurrency slot right now.
+
+    Counted as a union of ids rather than a sum of counts, and that is the point:
+    ``_GENERATION_THREADS`` holds a generation from the moment a thread is handed
+    to it until that thread's ``finally``, which strictly contains the window in
+    which the row still says ``queued`` because the worker has not claimed it
+    yet.  Summing the two sources would double-count every turn outside that
+    window; unioning them counts each turn exactly once on both sides of it.
+
+    After a restart both sets are empty and the rows are the whole answer, which
+    is exactly right -- nothing is running, whatever the rows last said.
+    """
+
+    running_generations, running_sessions = chat_events.running_turn_ids()
+    # A row whose worker was killed says "running" until something reclaims it.
+    # Letting it hold a slot means three such rows wedge the profile, and nothing
+    # clears them until someone opens each of those chats -- so a lease that has
+    # verifiably expired stops counting here, exactly as it stops blocking a
+    # re-claim in ``_claim_generation``.
+    generations = {
+        identifier
+        for identifier, heartbeat in running_generations.items()
+        if not _heartbeat_is_stale(heartbeat)
+    }
+    sessions = {
+        identifier
+        for identifier, heartbeat in running_sessions.items()
+        if not _heartbeat_is_stale(heartbeat)
+    }
+    with _GENERATION_THREADS_LOCK:
+        generations |= set(_GENERATION_THREADS)
+    sessions |= agent_worker.active_ids()
+    return len(generations) + len(sessions)
+
+
+def _free_slots() -> int:
+    return chat_prefs.max_concurrent_turns() - _occupied_slots()
+
+
+def _admit_or_queue(
+    profile: dict, generation_id: str, chat_id: int, *, announce: bool = True
+) -> bool:
+    """Start this turn now, or leave it queued for the pump to pick up.
+
+    The caller must hold ``_ADMISSION_LOCK``: the count this reads is only
+    meaningful if nothing else can claim a slot between reading it and taking one.
+
+    ``announce`` is False on the recovery path.  Recovery runs on every poll of a
+    waiting generation, and telling the browser "queued" once per poll would bury
+    the turn's real events under a repeating one.  The turn is announced when it
+    is first refused a slot, which is the only moment the news is new.
+    """
+
+    if _free_slots() <= 0:
+        if not announce:
+            return False
+        chat_events.append(
+            chat_id,
+            agent_events.QUEUED,
+            {"reason": "concurrency_cap", "limit": chat_prefs.max_concurrent_turns()},
+            generation_id=generation_id,
+        )
+        return False
+    _spawn_generation(profile, generation_id)
+    return True
+
+
+def _pump_turn_queue(profile: dict) -> None:
+    """Start as many waiting turns as there are free slots, oldest first.
+
+    Oldest first because it is the only order a user can predict, and the
+    composer told them the turn was accepted the moment it was written.
+
+    Safe to call from anywhere and as often as anything likes: ``_spawn_generation``
+    and ``worker.start`` both dedupe on their in-process sets, and the database
+    claims underneath them are atomic, so a double pump costs a wasted read.
+    """
+
+    # Cheapest possible answer first. This is called from the sidebar, which is
+    # polled, and from a tail that wakes every couple of seconds -- and almost
+    # every one of those calls has nothing to do. Asking the queue before taking
+    # the lock or counting slots keeps the whole spawn path out of the common
+    # case, where it would only be a side effect nobody asked for.
+    if not chat_events.queued_generations(1) and not chat_events.queued_agent_sessions(1):
+        return
+    with _ADMISSION_LOCK:
+        free = _free_slots()
+        if free <= 0:
+            return
+        for generation_id, _chat_id in chat_events.queued_generations(free):
+            _spawn_generation(profile, generation_id)
+            free -= 1
+        if free <= 0:
+            return
+        for session_id, _chat_id in chat_events.queued_agent_sessions(free):
+            agent_worker.start(session_id)
+            free -= 1
+
+
 def _recover_generation(
     request: Request,
     store: AppStore,
@@ -1135,10 +1262,57 @@ def _recover_generation(
     if profile is None:
         return
     if generation.status == "queued":
-        _spawn_generation(profile, generation.id)
+        # Through admission, not around it. This runs on every poll of a waiting
+        # turn, and after a restart it runs for every queued row at once -- so
+        # spawning unconditionally here would start the whole backlog together
+        # and make the cap a suggestion.
+        with _ADMISSION_LOCK:
+            _admit_or_queue(profile, generation.id, generation.chat_id, announce=False)
         return
     if _heartbeat_is_stale(generation.heartbeat_at):
+        # This turn already holds its slot; taking the work back after a crashed
+        # worker is resumption, not a new admission.
         _spawn_generation(profile, generation.id)
+
+
+def _active_turn_in_chat(store: AppStore, chat_id: int) -> bool:
+    """Whether this chat already has a turn that has not finished.
+
+    Read through the request's ORM session rather than a fresh sqlite3
+    connection, and that is the whole subtlety: ``rerun_edited_chat_message``
+    fences the turn it is replacing with an ``UPDATE`` that is still
+    **uncommitted** when it calls into here.  A separate connection cannot see
+    that write, so it would report the superseded turn as live and refuse every
+    rerun.  Agent sessions are a different store and are never modified in this
+    transaction, so reading those through their own layer is correct.
+    """
+
+    generation = store.db.scalar(
+        select(ChatGeneration).where(
+            ChatGeneration.chat_id == chat_id,
+            ChatGeneration.status.in_(("queued", "running")),
+        )
+    )
+    if generation is not None:
+        return True
+    return chat_id in _active_agent_status_by_chat()
+
+
+def _refuse_if_busy(store: AppStore, chat_id: int) -> None:
+    """Refuse a second concurrent turn in one chat.
+
+    One chat answers one thing at a time.  Two live turns would interleave into
+    a single event log that ``_stream_cursor`` reads with a ``scalar()`` -- it
+    would silently pick one and replay the other from the wrong offset.  The
+    composer already prevents this per browser tab; this is what makes it true
+    for a stale tab, a retry, or the CLI.
+    """
+
+    if _active_turn_in_chat(store, chat_id):
+        raise HTTPException(
+            status_code=409,
+            detail="This chat is already working on a reply. Wait for it to finish or stop it.",
+        )
 
 
 def _start_chat_generation(
@@ -1168,71 +1342,80 @@ def _start_chat_generation(
             _require_matching_claim(existing, chat.id, cleaned_prompt, payload.client_request_id)
             _recover_generation(request, store, existing)
             return existing
-    generation_id = str(uuid.uuid4())
-    if user_message_id is None:
-        user_message = store.add_chat_message(
-            chat.id,
-            "user",
-            cleaned_prompt,
-            metadata={
-                "generation_id": generation_id,
-                "client_request_id": payload.client_request_id,
-                # What this turn showed Neo. Recorded on the message, not only on
-                # the generation: the generation is execution state that the
-                # transcript never reads, so without this the picture reached the
-                # model and then vanished from the conversation it was part of.
-                **({"image_ids": payload.image_ids} if payload.image_ids else {}),
-            },
+    # Everything from here is one decision: this chat is free, so claim it.
+    # Held across the commit so a second submission cannot read "free" from
+    # between this check and the insert that answers it.
+    with _ADMISSION_LOCK:
+        _refuse_if_busy(store, chat.id)
+        generation_id = str(uuid.uuid4())
+        if user_message_id is None:
+            user_message = store.add_chat_message(
+                chat.id,
+                "user",
+                cleaned_prompt,
+                metadata={
+                    "generation_id": generation_id,
+                    "client_request_id": payload.client_request_id,
+                    # What this turn showed Neo. Recorded on the message, not only on
+                    # the generation: the generation is execution state that the
+                    # transcript never reads, so without this the picture reached the
+                    # model and then vanished from the conversation it was part of.
+                    **({"image_ids": payload.image_ids} if payload.image_ids else {}),
+                },
+            )
+            store.rename_chat_from_prompt(chat.id, cleaned_prompt)
+            user_message_id = user_message.id
+        else:
+            user_message = store.db.get(ChatMessage, user_message_id)
+            if (
+                user_message is None
+                or user_message.chat_id != chat.id
+                or user_message.role != "user"
+            ):
+                raise HTTPException(status_code=404, detail="User message not found")
+        generation = ChatGeneration(
+            id=generation_id,
+            chat_id=chat.id,
+            prompt=cleaned_prompt,
+            llm_id=payload.llm_id,
+            client_request_id=payload.client_request_id,
+            user_message_id=user_message_id,
+            status="queued",
+            status_detail="Queued",
+            timezone=payload.timezone,
+            locale=payload.locale,
+            metadata_json=json.dumps(
+                {
+                    "memory_enabled": payload.memory_enabled,
+                    "memory_incognito": payload.memory_incognito,
+                    "image_ids": payload.image_ids,
+                    "effort": payload.effort or chat.effort,
+                }
+            ),
+            worker_id=None,
+            lease_token=None,
+            heartbeat_at=None,
+            attempt_count=0,
         )
-        store.rename_chat_from_prompt(chat.id, cleaned_prompt)
-        user_message_id = user_message.id
-    else:
-        user_message = store.db.get(ChatMessage, user_message_id)
-        if user_message is None or user_message.chat_id != chat.id or user_message.role != "user":
-            raise HTTPException(status_code=404, detail="User message not found")
-    generation = ChatGeneration(
-        id=generation_id,
-        chat_id=chat.id,
-        prompt=cleaned_prompt,
-        llm_id=payload.llm_id,
-        client_request_id=payload.client_request_id,
-        user_message_id=user_message_id,
-        status="queued",
-        status_detail="Queued",
-        timezone=payload.timezone,
-        locale=payload.locale,
-        metadata_json=json.dumps(
-            {
-                "memory_enabled": payload.memory_enabled,
-                "memory_incognito": payload.memory_incognito,
-                "image_ids": payload.image_ids,
-                "effort": payload.effort or chat.effort,
-            }
-        ),
-        worker_id=None,
-        lease_token=None,
-        heartbeat_at=None,
-        attempt_count=0,
-    )
-    store.db.add(generation)
-    try:
-        store.db.commit()
-    except IntegrityError:
-        store.db.rollback()
-        if payload.client_request_id:
-            # Match the unique index, which spans the profile database rather than one
-            # chat. A chat-scoped lookup here missed the blocking row and re-raised.
-            existing = _generation_for_client_request(store, payload.client_request_id)
-            if existing is not None:
-                _require_matching_claim(
-                    existing, chat.id, cleaned_prompt, payload.client_request_id
-                )
-                _recover_generation(request, store, existing)
-                return existing
-        raise
-    store.db.refresh(generation)
-    _spawn_generation(profile, generation.id)
-    return generation
+        store.db.add(generation)
+        try:
+            store.db.commit()
+        except IntegrityError:
+            store.db.rollback()
+            if payload.client_request_id:
+                # Match the unique index, which spans the profile database rather than one
+                # chat. A chat-scoped lookup here missed the blocking row and re-raised.
+                existing = _generation_for_client_request(store, payload.client_request_id)
+                if existing is not None:
+                    _require_matching_claim(
+                        existing, chat.id, cleaned_prompt, payload.client_request_id
+                    )
+                    _recover_generation(request, store, existing)
+                    return existing
+            raise
+        store.db.refresh(generation)
+        _admit_or_queue(profile, generation.id, chat.id)
+        return generation
 
 
 def _supersede_generations_for_messages(
@@ -1262,8 +1445,20 @@ def _supersede_generations_for_messages(
 
 
 @router.get("/sidebar", response_model=SidebarRead)
-def get_sidebar(store: StoreDependency) -> SidebarRead:
+def get_sidebar(request: Request, store: StoreDependency) -> SidebarRead:
+    # The backstop for a client that never opens a tail -- the CLI, a script, or
+    # a browser whose stream dropped. Cheap when the queue is empty.
+    profile = session_for(request)
+    if profile is not None:
+        try:
+            _pump_turn_queue(profile)
+        except Exception:
+            _GENERATION_LOG.exception("Draining the turn queue failed from the sidebar")
     running = _active_agent_status_by_chat()
+    # Read once for the whole sidebar. Resolving these per row is a database
+    # query per chat, which is the shape of thing that only shows up once a
+    # profile has a hundred of them.
+    turn_statuses = _turn_status_by_chat(running)
     projects = []
     for project in store.list_projects(ProjectStatus.ACTIVE):
         chats = store.list_chats(project_id=project.id, with_messages_only=True, limit=12)
@@ -1271,24 +1466,34 @@ def get_sidebar(store: StoreDependency) -> SidebarRead:
         projects.append(
             ProjectWithChatsRead(
                 **project_data,
-                chats=[_sidebar_chat_read(chat, running) for chat in chats],
+                chats=[_sidebar_chat_read(chat, running, turn_statuses) for chat in chats],
             )
         )
     chats = store.list_chats(unprojected_only=True, with_messages_only=True, limit=20)
     return SidebarRead(
         projects=projects,
-        chats=[_sidebar_chat_read(chat, running) for chat in chats],
+        chats=[_sidebar_chat_read(chat, running, turn_statuses) for chat in chats],
     )
 
 
-def _sidebar_chat_read(chat: Chat, running: dict[int, str]) -> ChatRead:
+def _sidebar_chat_read(
+    chat: Chat, running: dict[int, str], turns: dict[int, str] | None = None
+) -> ChatRead:
     return ChatRead.model_validate(chat).model_copy(
-        update={"agent_status": running.get(chat.id)}
+        update={
+            "agent_status": running.get(chat.id),
+            "turn_status": (turns or {}).get(chat.id),
+        }
     )
+
+
+#: Which unfinished state wins when a chat somehow holds more than one. Louder
+#: first: a run waiting on a person is the one the user has to act on.
+_STATUS_PRECEDENCE = ("waiting_approval", "running", "queued")
 
 
 def _active_agent_status_by_chat() -> dict[int, str]:
-    """Which chats have a run still going, for the sidebar badge.
+    """Which chats have an agent run still going, for the sidebar badge.
 
     The agent store is a separate SQLite layer from the chat ORM, so a failure to
     read it must not take the whole sidebar down with it -- the chats are still
@@ -1301,6 +1506,36 @@ def _active_agent_status_by_chat() -> dict[int, str]:
         return agent_store.active_status_by_chat()
     except Exception:
         return {}
+
+
+def _turn_status_by_chat(agent_statuses: dict[int, str] | None = None) -> dict[int, str]:
+    """Which chats are working at all -- agent run or plain reply.
+
+    The sidebar badged only agent runs, which was fine while one chat answered at
+    a time and the composer's own spinner said the rest. With several chats
+    working at once the sidebar is the only place their state is visible, so a
+    plain reply has to badge too.
+    """
+
+    statuses: dict[int, str] = {}
+    try:
+        statuses.update(chat_events.active_turns())
+    except Exception:
+        pass
+    if agent_statuses is None:
+        agent_statuses = _active_agent_status_by_chat()
+    for chat_id, agent_status in agent_statuses.items():
+        current = statuses.get(chat_id)
+        if current is None or _rank(agent_status) < _rank(current):
+            statuses[chat_id] = agent_status
+    return statuses
+
+
+def _rank(status: str) -> int:
+    try:
+        return _STATUS_PRECEDENCE.index(status)
+    except ValueError:
+        return len(_STATUS_PRECEDENCE)
 
 
 @router.post("/chats", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
@@ -1668,6 +1903,11 @@ def _start_agent_turn(
                 anchor_message_id=existing.get("anchor_message_id"),
             )
 
+    # Before anything is written, for the same reason the retry check above is:
+    # a refused turn that had already added the user row and the anchor would
+    # leave the transcript holding half a turn that never runs.
+    _refuse_if_busy(store, chat.id)
+
     _apply_agent_settings(store, chat, payload)
     store.add_chat_message(
         chat.id,
@@ -1680,18 +1920,34 @@ def _start_agent_turn(
     store.db.commit()
 
     try:
-        session = AgentCoreService().create(
-            SessionCreate(
-                objective=cleaned_prompt,
-                mode=chat.agent_mode or "normal",
-                repo_id=chat.repo_id,
-                agent_definition_id=chat.agent_definition_id,
-                disabled_tools=chat.disabled_tools or [],
-                chat_id=chat.id,
-                anchor_message_id=anchor.id,
-                client_request_id=payload.client_request_id,
+        # An agent turn is the heaviest kind there is, so a cap that ignored it
+        # would not be a cap. Decided under the lock for the same reason a plain
+        # turn is: the slot has to still be free when it is taken.
+        with _ADMISSION_LOCK:
+            admitted = _free_slots() > 0
+            session = AgentCoreService().create(
+                SessionCreate(
+                    objective=cleaned_prompt,
+                    mode=chat.agent_mode or "normal",
+                    repo_id=chat.repo_id,
+                    agent_definition_id=chat.agent_definition_id,
+                    disabled_tools=chat.disabled_tools or [],
+                    chat_id=chat.id,
+                    anchor_message_id=anchor.id,
+                    client_request_id=payload.client_request_id,
+                ),
+                start=admitted,
             )
-        )
+        if not admitted:
+            # Through the agent store rather than chat_events directly, so the
+            # record lands in both logs and carries the anchor -- which is what
+            # lets the placeholder in the transcript say "Queued" instead of
+            # sitting blank until a slot opens.
+            agent_store.append_event(
+                session.id,
+                agent_events.QUEUED,
+                {"reason": "concurrency_cap", "limit": chat_prefs.max_concurrent_turns()},
+            )
     except AgentCoreValidationError as exc:
         # The turn never started, so the placeholder would sit empty forever.
         # Saying why in the row itself keeps the refusal in the conversation
@@ -1732,6 +1988,13 @@ def stream_chat_events(
     Streaming and resumption are the same mechanism, as they already were for a
     run: the log is append-only with a monotonic sequence, so a reload asks for
     everything after the last sequence it saw and misses nothing.
+
+    The browser no longer uses this: it holds one ``/chat-events`` tail over
+    every conversation, because a tail per chat would need a connection and a
+    threadpool slot per chat.  This remains the single-chat variant, for a
+    client that wants exactly one -- and it is the one that rewinds into a run
+    parked on an approval, because asking for that chat is a request for that
+    run.
     """
 
     _get_required_chat(store, chat_id)
@@ -1757,6 +2020,72 @@ def stream_chat_events(
             if time.monotonic() - idle_since > CHAT_STREAM_IDLE_TIMEOUT:
                 yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
                 return
+            time.sleep(CHAT_STREAM_POLL_INTERVAL)
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+#: How often a held-open tail drains the waiting queue. This is the path that
+#: covers what the finishing worker cannot: an agent turn ending (its worker
+#: cannot call into the routes layer without an import cycle), a restart that
+#: left rows queued, and the cap being raised in Settings while turns wait.
+QUEUE_PUMP_INTERVAL = 2.0
+
+
+@router.get("/chat-events")
+def stream_all_chat_events(request: Request, after: int | None = None) -> StreamingResponse:
+    """Tail every chat in the profile as newline-delimited JSON.
+
+    One connection carries all of them, and that is the point.  ``seq`` is the
+    log's ``INTEGER PRIMARY KEY``, so it is monotonic across the whole profile
+    and a single cursor orders every conversation; the reader routes each record
+    by its ``chat_id``.  A tail per running chat would instead cost a connection
+    and one of the server's forty threadpool slots each, and browsers only allow
+    about six connections to an origin -- four background chats would have
+    starved the sidebar and every other request in the app.
+
+    Deliberately **not** named ``/chats/events``: ``/chats/{chat_id}`` matches
+    first and would reject it as a malformed id.
+
+    Also deliberately without a store dependency.  The per-chat tail takes one
+    only to check that its chat exists; this has no chat to check, and not
+    taking it means a ninety-second connection no longer pins a request-scoped
+    database session open for its whole life.
+    """
+
+    profile = session_for(request)
+
+    def generate():
+        # ``after`` omitted means "you decide", and the answer comes back on the
+        # stream rather than in a prior request: computing the start and
+        # subscribing are then one act, with no window between them for an event
+        # to slip through unseen.
+        cursor = chat_events.live_stream_start() if after is None else max(0, after)
+        if after is None:
+            yield json.dumps({"type": "cursor", "seq": cursor}) + "\n"
+        idle_since = time.monotonic()
+        last_pump = 0.0
+        while True:
+            batch = chat_events.list_all_events(after=cursor)
+            for event in batch:
+                cursor = event["seq"]
+                yield json.dumps(event, default=str) + "\n"
+            if batch:
+                idle_since = time.monotonic()
+                continue
+            # Unlike the per-chat tail, this one closes on neither a terminal
+            # event nor an idle profile.  A terminal event belongs to one chat
+            # and the others are still going.  And closing the moment nothing is
+            # active would spin: the client reconnects 400ms later, so an idle
+            # profile would reopen this connection twice a second forever.  The
+            # idle timeout alone ends it, which is one reconnect every 90s.
+            if time.monotonic() - idle_since > CHAT_STREAM_IDLE_TIMEOUT:
+                yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
+                return
+            now = time.monotonic()
+            if profile is not None and now - last_pump > QUEUE_PUMP_INTERVAL:
+                last_pump = now
+                _pump_turn_queue(profile)
             time.sleep(CHAT_STREAM_POLL_INTERVAL)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
@@ -1804,6 +2133,7 @@ def get_chat_generation(
 def cancel_chat_generation(
     chat_id: int,
     generation_id: str,
+    request: Request,
     store: StoreDependency,
 ) -> ChatGenerationRead:
     """Stop an in-flight response.
@@ -1832,6 +2162,16 @@ def cancel_chat_generation(
             {"reply": generation.partial_response or ""},
             generation_id=generation.id,
         )
+        # Stopping a turn frees its slot, so whatever was waiting behind it should
+        # start now rather than when something else happens to pump. A cancelled
+        # *queued* turn never had a worker, so its own `finally` will never run --
+        # this is the only prompt drain it gets.
+        profile = session_for(request)
+        if profile is not None:
+            try:
+                _pump_turn_queue(profile)
+            except Exception:
+                _GENERATION_LOG.exception("Draining the turn queue failed after a cancel")
     return _generation_read(generation)
 
 
@@ -2356,6 +2696,34 @@ def _delete_chat_project(project_id: int, store: StoreDependency) -> Response:
     store.delete_project(project_id)
     store.db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class ChatConfig(BaseModel):
+    """How this profile runs background chats."""
+
+    max_concurrent_turns: int = Field(
+        ge=chat_prefs.MIN_CONCURRENT_TURNS, le=chat_prefs.MAX_CONCURRENT_TURNS
+    )
+
+
+@router.get("/chat-config", response_model=ChatConfig)
+def read_chat_config() -> ChatConfig:
+    return ChatConfig(max_concurrent_turns=chat_prefs.max_concurrent_turns())
+
+
+@router.post("/chat-config", response_model=ChatConfig)
+def update_chat_config(request: ChatConfig) -> ChatConfig:
+    """Set how many chats may generate at once.
+
+    Raising it releases turns that are already waiting: the next pump sees the
+    larger number and starts them.  Lowering it never stops anything already
+    running -- the excess simply drains and nothing new is admitted until the
+    count falls below the new limit.
+    """
+
+    return ChatConfig(
+        max_concurrent_turns=chat_prefs.set_max_concurrent_turns(request.max_concurrent_turns)
+    )
 
 
 @router.get("/chat-projects", response_model=list[ProjectRead])

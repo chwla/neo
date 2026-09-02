@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.services.agent_core import events as event_types
@@ -21,6 +22,7 @@ from app.services.agent_core.service import (
 from app.services.agent_core.workspace import WorkspaceError
 
 router = APIRouter(prefix="/agent-sessions", tags=["agent-sessions"])
+_LOG = logging.getLogger(__name__)
 
 #: How long a stream waits for new events before closing. The client reconnects
 #: with its last sequence number, so a close is cheap and keeps a stalled
@@ -120,11 +122,25 @@ def decide_approval(session_id: str, approval_id: str, payload: ApprovalDecision
 
 
 @router.post("/{session_id}/cancel")
-def cancel_session(session_id: str):
+def cancel_session(session_id: str, request: Request):
     try:
-        return {"session": _service().cancel(session_id).model_dump()}
+        cancelled = _service().cancel(session_id)
     except Exception as exc:
         _raise(exc)
+    # An agent turn holds a concurrency slot like any other, so stopping one has
+    # to release it here. Imported inside the call because the chat router owns
+    # admission and importing it at module scope would tie these two together for
+    # one function.
+    from app.api.routes.accounts import session_for
+    from app.api.routes.chat import _pump_turn_queue
+
+    profile = session_for(request)
+    if profile is not None:
+        try:
+            _pump_turn_queue(profile)
+        except Exception:
+            _LOG.exception("Draining the turn queue failed after cancelling %s", session_id)
+    return {"session": cancelled.model_dump()}
 
 
 @router.patch("/{session_id}")

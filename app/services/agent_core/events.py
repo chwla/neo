@@ -9,6 +9,15 @@ and the agentic kinds it never had are added alongside.
 
 from __future__ import annotations
 
+#: Accepted, but waiting for a slot.  Neo runs a bounded number of turns at
+#: once so that several background chats cannot collectively stall a single
+#: local model server; a turn past that bound sits in this state, visible, until
+#: one ahead of it finishes.  It is not terminal -- the turn has not failed and
+#: has not been refused.
+#:
+#: Named for the turn rather than the run because both kinds emit it, and a
+#: queued turn has no run yet -- that is the whole point of the state.
+QUEUED = "turn.queued"
 RUN_STARTED = "run.started"
 CHUNK = "chunk"
 #: The whole answer so far, replacing what came before rather than extending it.

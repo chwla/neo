@@ -6,7 +6,12 @@ import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
 import { ContextWindowIndicator } from "./ContextWindowIndicator.jsx";
 import AgentTurn, { TERMINAL } from "./AgentTurn.jsx";
-import { useChatStream } from "./chatStream.js";
+import { IDLE, useChatStreams } from "./chatStream.js";
+import BackgroundTurnToast, {
+  NOTIFY_STORAGE_KEY,
+  notificationsEnabled,
+  shouldNotify,
+} from "./BackgroundTurnToast.jsx";
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
@@ -51,6 +56,10 @@ import {
   splitGeneratedText,
   sumTotalTokens,
 } from "./chatPresentation.js";
+
+// The guard key for a send that is creating its chat as it goes: there is no id
+// to key by yet, and two such sends are the double-click the guard exists for.
+const NEW_CHAT_GUARD_KEY = "new-chat";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 
@@ -353,7 +362,24 @@ function RowActionsMenu({ label, className = "", children }) {
   );
 }
 
-function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteChat, onRenameChat, onPinChat }) {
+const TURN_STATUS_LABELS = {
+  queued: "Waiting for a free slot",
+  running: "Working on a reply",
+  waiting_approval: "Waiting for your approval",
+  done: "Finished while you were away",
+};
+
+function SidebarChatRow({
+  chat,
+  href,
+  isActive,
+  classes,
+  status,
+  onOpenChat,
+  onDeleteChat,
+  onRenameChat,
+  onPinChat,
+}) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(chat.title);
 
@@ -411,6 +437,13 @@ function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteCha
       >
         {chat.pinned ? <span className="chat-item-pin" aria-label="Pinned" title="Pinned">{"\u25c6"}</span> : null}
         {chat.title}
+        {status ? (
+          <span
+            className={`chat-item-badge is-${status}`}
+            aria-label={TURN_STATUS_LABELS[status] || status}
+            title={TURN_STATUS_LABELS[status] || status}
+          />
+        ) : null}
       </a>
       <RowActionsMenu label={`Actions for ${chat.title}`} className={classes.menu}>
         <button type="button" onClick={startRename}>
@@ -430,6 +463,7 @@ function SidebarChatRow({ chat, href, isActive, classes, onOpenChat, onDeleteCha
 export function Sidebar({
   sidebar,
   activeChatId,
+  statusFor,
   selectedProjectId,
   showNewProjectForm,
   onToggleProjectForm,
@@ -661,6 +695,7 @@ export function Sidebar({
                   link: "project-chat-link",
                   menu: "project-chat-menu",
                 }}
+                status={statusFor?.(chat)}
                 onOpenChat={onOpenChat}
                 onDeleteChat={onDeleteChat}
                 onRenameChat={onRenameChat}
@@ -695,6 +730,7 @@ export function Sidebar({
             href={chatPermalink(chat.id)}
             isActive={chat.id === activeChatId}
             classes={{ item: "chat-item", link: "chat-item-title", menu: "chat-item-menu" }}
+            status={statusFor?.(chat)}
             onOpenChat={onOpenChat}
             onDeleteChat={onDeleteChat}
             onRenameChat={onRenameChat}
@@ -2002,6 +2038,142 @@ function LLMSettingsDialog({ onClose, onChanged }) {
  * On, each upload is its own image with its own id, which is what you want when
  * the same file is genuinely a separate occasion.
  */
+function BackgroundChatsDialog({ onClose }) {
+  const [limit, setLimit] = useState(3);
+  const [notify, setNotify] = useState(() => notificationsEnabled());
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .chatConfig()
+      .then((config) => {
+        if (!cancelled) setLimit(Number(config.max_concurrent_turns) || 3);
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(errorMessage(requestError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function changeLimit(next) {
+    setSaving(true);
+    setError("");
+    const previous = limit;
+    setLimit(next);
+    try {
+      const config = await api.updateChatConfig({ max_concurrent_turns: next });
+      setLimit(Number(config.max_concurrent_turns) || next);
+    } catch (requestError) {
+      setLimit(previous);
+      setError(errorMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleNotify(next) {
+    setError("");
+    if (!next) {
+      try {
+        window.localStorage.setItem(NOTIFY_STORAGE_KEY, "0");
+      } catch {
+        // A browser refusing storage still gets the in-app toast.
+      }
+      setNotify(false);
+      return;
+    }
+    if (typeof Notification === "undefined") {
+      setError("This browser cannot show desktop notifications.");
+      return;
+    }
+    // Asked here, from a real click, and nowhere else. Browsers ignore a
+    // permission request that does not follow a user gesture, and once a user
+    // has denied it the prompt can never be shown again -- so a request fired
+    // from a background poll spends the one chance there is and silently fails.
+    const permission =
+      Notification.permission === "granted"
+        ? "granted"
+        : await Notification.requestPermission().catch(() => "denied");
+    if (permission !== "granted") {
+      setError(
+        "Your browser is blocking notifications for Neo. Turn them back on in its site " +
+          "settings -- Neo cannot ask again once they have been denied.",
+      );
+      return;
+    }
+    try {
+      window.localStorage.setItem(NOTIFY_STORAGE_KEY, "1");
+    } catch {
+      // Preference is per device; without storage it simply will not persist.
+    }
+    setNotify(true);
+  }
+
+  return (
+    <Modal title="Background chats" onClose={onClose}>
+      <p className="dialog-caption">
+        Chats keep working when you switch away from them. These decide how many run at once,
+        and how you hear about one that finishes while you are elsewhere.
+      </p>
+      <div className="chat-tools-row">
+        <div className="chat-tools-row-info">
+          <div className="chat-tools-row-title">
+            <strong>Replies at the same time</strong>
+          </div>
+          <p>
+            Anything past this waits its turn and says so in the sidebar. Neo usually talks to one
+            model server, so a higher number does not make replies arrive sooner -- it makes more
+            of them arrive slowly together.
+          </p>
+        </div>
+        <label className="chat-tools-toggle">
+          <select
+            value={limit}
+            disabled={loading || saving}
+            onChange={(event) => changeLimit(Number(event.target.value))}
+            aria-label="How many chats may reply at once"
+          >
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((value) => (
+              <option value={value} key={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="chat-tools-row">
+        <div className="chat-tools-row-info">
+          <div className="chat-tools-row-title">
+            <strong>Desktop notifications</strong>
+          </div>
+          <p>
+            Tells you when a chat you are not watching has finished, even if Neo is in another
+            tab. Neo always shows a message in the app either way.
+          </p>
+        </div>
+        <label className="chat-tools-toggle">
+          <input
+            type="checkbox"
+            checked={notify}
+            onChange={(event) => toggleNotify(event.target.checked)}
+            aria-label="Desktop notifications when a background chat finishes"
+          />
+        </label>
+      </div>
+      {error && <div className="neo-error">{error}</div>}
+    </Modal>
+  );
+}
+
+
 function GallerySettingsDialog({ onClose }) {
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -2075,7 +2247,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -2089,6 +2261,7 @@ function SettingsDialog({ onOpenAccount, onOpenLLMs, onOpenProviderRuntime, onOp
         ["Continuity", "Redacted exports, import validation, and resumable state", onOpenContinuity],
         ["Rules & Profiles", "Scoped guidance and resolution priority", onOpenRules],
         ["Agents", "Roles, permissions, tools, and skills", onOpenAgents],
+        ["Background chats", "How many chats reply at once, and how you're told when one finishes", onOpenBackgroundChats],
       ],
     },
     {
@@ -2234,12 +2407,52 @@ function mergeLiveRun(run, live, messageId) {
 function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
-  // Held in a ref, not state, so a second click in the same tick is refused before
-  // React has had a chance to re-render the disabled button.
-  const sendGuardRef = useRef(createSendGuard());
-  // Which reply last triggered an auto-compact, keyed by that message's id (a
-  // global PK) so the same reply never re-fires it while any new one always can.
-  const lastAutoCompactedMessageIdRef = useRef(null);
+  // What each chat is doing, keyed by chat id, because more than one of them can
+  // be working at a time. Everything about a turn that used to be a single piece
+  // of state -- which turn, when it started, whether Stop has been pressed --
+  // lives in one entry here, so a chat you walked away from keeps its own.
+  const [turns, setTurns] = useState(() => new Map());
+  const activeChatId = activeChat?.id ?? null;
+  const currentTurn = activeChatId === null ? null : turns.get(activeChatId) ?? null;
+  // Derived, not stored. "This chat is busy" is exactly "this chat has a turn",
+  // and a separate flag beside the map is the thing that drifts out of sync with
+  // it -- which is how a background chat finishing used to clear the spinner on
+  // the chat you were actually reading.
+  const sending = Boolean(currentTurn);
+  const activeTurn = currentTurn;
+  const stopping = Boolean(currentTurn?.stopping);
+  const generationStartedAt = currentTurn?.startedAt ?? null;
+
+  // Callbacks that run from the stream need to read the current turns without
+  // being rebuilt every time one changes -- a stale closure here would re-attach
+  // to a turn that has already ended.
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
+
+  const setTurnFor = useCallback((chatId, value) => {
+    if (!chatId) return;
+    setTurns((current) => {
+      const next = new Map(current);
+      if (value === null) next.delete(chatId);
+      else next.set(chatId, { ...(current.get(chatId) ?? {}), ...value });
+      return next;
+    });
+  }, []);
+
+  // One guard per chat, not one for the app. Held in refs, not state, so a second
+  // click in the same tick is refused before React can re-render the disabled
+  // button -- but a click in a *different* chat was never the double-click this
+  // is defending against, and a single shared guard refused it outright.
+  const sendGuardsRef = useRef(new Map());
+  const guardFor = useCallback((chatId) => {
+    const guards = sendGuardsRef.current;
+    if (!guards.has(chatId)) guards.set(chatId, createSendGuard());
+    return guards.get(chatId);
+  }, []);
+  // Which reply last triggered an auto-compact, per chat, keyed by that message's
+  // id (a global PK) so the same reply never re-fires it while any new one always
+  // can.
+  const lastAutoCompactedRef = useRef(new Map());
 
   const [messages, setMessages] = useState([]);
   // The whole loaded chat's token spend, for the Context Window popover -- every
@@ -2265,6 +2478,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showContinuity, setShowContinuity] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
   const [showGallerySettings, setShowGallerySettings] = useState(false);
+  const [showBackgroundChats, setShowBackgroundChats] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showBundles, setShowBundles] = useState(false);
@@ -2282,18 +2496,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
-  const [sending, setSending] = useState(false);
-
-  // Releasing here ties the lock to the rendered state, so it is exactly a synchronous
-  // prefix of `sending`: every path that ends a send frees it, and none can leave it
-  // stuck.
-  useEffect(() => {
-    if (!sending) {
-      sendGuardRef.current.release();
-    }
-  }, [sending]);
-  const [stopping, setStopping] = useState(false);
-  const [generationStartedAt, setGenerationStartedAt] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [statusError, setStatusError] = useState("");
   const [llms, setLlms] = useState([]);
@@ -2350,19 +2552,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [chatMode, setChatMode] = useState("chatbot");
   const [agentDefinitions, setAgentDefinitions] = useState([]);
   const [agentRepos, setAgentRepos] = useState([]);
-  // Which turn is in flight, so Stop knows what to stop. Set at send rather than
-  // read off the stream, because the gap between the POST and the first event is
-  // exactly when a user reaches for Stop.
-  const [activeTurn, setActiveTurn] = useState(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentPatch, setAgentPatch] = useState("");
   // Which run's diff is currently open, so "View diff" can toggle closed on a
   // second click instead of only ever opening, and so a patch fetched for one
   // run never renders under a different agent turn's DiffView.
   const [agentPatchSessionId, setAgentPatchSessionId] = useState(null);
-  // Where to tail this chat's log from. The server decides it -- only it knows
-  // whether a turn is still running -- so it arrives with the thread.
-  const [streamAfter, setStreamAfter] = useState(0);
   // A device preference rather than profile state, so it is deliberately not in
   // PROFILE_SCOPED_STORAGE_KEYS and survives a profile switch.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -2407,16 +2602,13 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (chatMode === "agent") loadAgentContext();
   }, [chatMode, loadAgentContext]);
 
-  // A chat's badge would otherwise read RUNNING until something else happened to
-  // refresh the sidebar. Poll only while a run is actually unfinished.
-  const hasUnfinishedRun = (sidebar.chats || []).some((chat) =>
-    ["queued", "running", "waiting_approval"].includes(chat.agent_status),
-  );
-  useEffect(() => {
-    if (!hasUnfinishedRun) return undefined;
-    const timer = window.setInterval(() => refreshSidebar().catch(() => {}), 8000);
-    return () => window.clearInterval(timer);
-  }, [hasUnfinishedRun, refreshSidebar]);
+  // There is deliberately no poll here. The badges once needed an 8-second one
+  // because nothing else told the sidebar a run had ended; the profile-wide tail
+  // now carries every chat's turn.queued, run.started and terminals, the badge
+  // reads live stream state before the stored value, and `handleTurnEnd`
+  // refreshes the sidebar when a turn finishes. A timer beside all of that would
+  // be a second source of truth for the same thing, refetching for the whole
+  // duration of every background turn to learn what the stream already said.
 
   const handleLlmConfigChanged = useCallback((next) => {
     setLlms(next.llms || []);
@@ -2435,27 +2627,39 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     // The transcript already carries any finished agent turn, so the only thing
     // left to establish is where to start watching -- and whether something is
     // still going, which is what a reload has to rejoin rather than orphan.
-    setStreamAfter(thread.stream_after || 0);
     const runningTurn = thread.messages.find(
       (message) => message.agent && ACTIVE_RUN_STATUSES.has(message.agent.session?.status),
     );
+    // Re-attaching is only for a turn this browser is not already watching. The
+    // live stream is the fresher source, and it has been running the whole time
+    // -- overwriting its entry with a REST snapshot would rewind the timer on a
+    // chat that never stopped.
+    const known = turnsRef.current.get(thread.chat.id);
     if (runningTurn) {
-      setActiveTurn({ kind: "agent", sessionId: runningTurn.agent.session.id });
-      setSending(true);
-      setGenerationStartedAt(parseNeoTimestamp(runningTurn.agent.session.started_at) || Date.now());
+      if (!known) {
+        setTurnFor(thread.chat.id, {
+          kind: "agent",
+          sessionId: runningTurn.agent.session.id,
+          startedAt: parseNeoTimestamp(runningTurn.agent.session.started_at) || Date.now(),
+        });
+      }
       return thread;
     }
     const generation = await api.activeChatGeneration(thread.chat.id).catch(() => null);
     if (generation) {
-      setActiveTurn({ kind: "chat", generationId: generation.id });
-      setSending(true);
-      setGenerationStartedAt(parseNeoTimestamp(generation.started_at || generation.created_at) || Date.now());
-    } else {
-      setActiveTurn(null);
-      setSending(false);
+      if (!known) {
+        setTurnFor(thread.chat.id, {
+          kind: "chat",
+          generationId: generation.id,
+          startedAt:
+            parseNeoTimestamp(generation.started_at || generation.created_at) || Date.now(),
+        });
+      }
+    } else if (known) {
+      setTurnFor(thread.chat.id, null);
     }
     return thread;
-  }, []);
+  }, [setTurnFor]);
 
   // A proposal's resolution is server state now, so the transcript only needs
   // the stamped metadata swapped in. Patching the one message keeps the scroll
@@ -2508,54 +2712,168 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     [refreshSidebar],
   );
 
-  /**
-   * One live connection for the whole thread.
-   *
-   * A turn ends by writing a message row, so the transcript is reloaded and the
-   * live state stands down rather than lingering as a second copy of what is now
-   * on the page. This is the same handling for both kinds, because by the time a
-   * turn is over the difference between them is only what the row says.
-   */
-  const handleTurnEnd = useCallback(
-    async (event) => {
-      const chatId = streamChatIdRef.current;
-      if (!chatId) return;
-      if (event?.type === "run.failed" && event.error) setStatusError(event.error);
-      try {
-        const thread = await loadChat(chatId, { history: "none" });
-        // Same math ContextWindowIndicator uses, so "100%" here matches what the
-        // ring shows -- checked once the turn has actually finished, never mid-stream.
-        const latest = [...thread.messages].reverse().find((message) => Number.isFinite(message.total_tokens));
-        if (latest && lastAutoCompactedMessageIdRef.current !== latest.id) {
-          const used = sumTotalTokens(thread.messages);
-          const windowSize = resolveContextWindow(latest, contextWindowIndex);
-          const pct = windowSize ? (used / windowSize) * 100 : null;
-          if (pct !== null && pct >= 100) {
-            lastAutoCompactedMessageIdRef.current = latest.id;
-            try {
-              const result = await api.compactChat(chatId);
-              if (result.compacted_message_count > 0) {
-                await loadChat(chatId, { history: "none" });
-              }
-            } catch {
-              // Silent: a background convenience, not a user-initiated action --
-              // the percentage simply stays elevated and the manual button remains.
-            }
-          }
-        }
-      } catch (error) {
-        setStatusError(`Could not reload the chat: ${errorMessage(error)}`);
-      }
-      setActiveTurn(null);
-      setSending(false);
-      setStopping(false);
-      setGenerationStartedAt(null);
-      refreshSidebar().catch(() => {});
-    },
-    [loadChat, refreshSidebar, contextWindowIndex],
+  // Finished background turns waiting to be acknowledged. Keyed by the event's
+  // sequence number, which is unique across the whole profile.
+  const [turnNotices, setTurnNotices] = useState([]);
+  const pushTurnNotice = useCallback((chatId, event) => {
+    setTurnNotices((current) => {
+      if (current.some((notice) => notice.id === event?.seq)) return current;
+      return [
+        ...current,
+        {
+          id: event?.seq ?? `${chatId}-${Date.now()}`,
+          chatId,
+          outcome: event?.type ?? "run.completed",
+        },
+      ];
+    });
+  }, []);
+  const dismissTurnNotice = useCallback(
+    (id) => setTurnNotices((current) => current.filter((notice) => notice.id !== id)),
+    [],
   );
 
-  const { live } = useChatStream(activeChat?.id ?? null, streamAfter, { onTurnEnd: handleTurnEnd });
+  // The stream is opened before the handler exists, and reaches it through a ref.
+  // The two genuinely are circular -- the handler clears stream state, the stream
+  // calls the handler -- and naming `clearStream` in the handler's dependency
+  // array before this line has run is a crash on the first render, not a warning.
+  const turnEndRef = useRef(null);
+  const { streams, clear: clearStream } = useChatStreams({
+    onTurnEnd: (chatId, event) => turnEndRef.current?.(chatId, event),
+  });
+  const live = (activeChatId && streams.get(activeChatId)) || IDLE;
+
+  /**
+   * Fold a finished turn into the transcript, whichever chat it belonged to.
+   *
+   * A turn ends by writing a message row, so the thread is reloaded and the live
+   * state stands down rather than lingering as a second copy of what is now on
+   * the page. The chat comes from the event rather than from what is on screen,
+   * because the whole point is that the turn may have finished somewhere the
+   * user is not looking -- reading the visible chat here would have cleared the
+   * spinner on whatever they had switched to instead.
+   */
+  const maybeAutoCompact = useCallback(
+    async (chatId, chatMessages) => {
+      // Same math ContextWindowIndicator uses, so "100%" here matches what the
+      // ring shows -- checked once the turn has actually finished, never mid-stream.
+      const latest = [...chatMessages]
+        .reverse()
+        .find((message) => Number.isFinite(message.total_tokens));
+      if (!latest || lastAutoCompactedRef.current.get(chatId) === latest.id) return;
+      const used = sumTotalTokens(chatMessages);
+      const windowSize = resolveContextWindow(latest, contextWindowIndex);
+      const pct = windowSize ? (used / windowSize) * 100 : null;
+      if (pct === null || pct < 100) return;
+      lastAutoCompactedRef.current.set(chatId, latest.id);
+      try {
+        const result = await api.compactChat(chatId);
+        if (result.compacted_message_count > 0 && streamChatIdRef.current === chatId) {
+          await loadChat(chatId, { history: "none" });
+        }
+      } catch {
+        // Silent: a background convenience, not a user-initiated action --
+        // the percentage simply stays elevated and the manual button remains.
+      }
+    },
+    [contextWindowIndex, loadChat],
+  );
+
+  const handleTurnEnd = useCallback(
+    async (chatId, event) => {
+      if (!chatId) return;
+      const visible = chatId === streamChatIdRef.current;
+      if (event?.type === "run.failed" && event.error && visible) setStatusError(event.error);
+      try {
+        // `loadChat` switches what is on screen, so it is only right for the chat
+        // already there. A background chat is fetched instead -- which costs one
+        // request per finished background turn, and buys a chat that crosses its
+        // context limit while you are elsewhere still being compacted rather than
+        // waiting until you next open it.
+        const thread = visible
+          ? await loadChat(chatId, { history: "none" })
+          : await api.getChat(chatId);
+        await maybeAutoCompact(chatId, thread.messages || []);
+      } catch (error) {
+        if (visible) setStatusError(`Could not reload the chat: ${errorMessage(error)}`);
+      }
+      setTurnFor(chatId, null);
+      guardFor(chatId).release();
+      // Dropped only now: until the transcript above has been reloaded, this
+      // buffer is the only copy of what the turn said, and clearing it earlier
+      // would blank the pane for the moment in between.
+      clearStream(chatId);
+      if (
+        shouldNotify({
+          chatId,
+          visibleChatId: visibleChatIdRef.current,
+          hidden: document.hidden,
+        })
+      ) {
+        pushTurnNotice(chatId, event);
+      }
+      refreshSidebar().catch(() => {});
+    },
+    [
+      loadChat,
+      refreshSidebar,
+      maybeAutoCompact,
+      setTurnFor,
+      guardFor,
+      clearStream,
+      pushTurnNotice,
+    ],
+  );
+  turnEndRef.current = handleTurnEnd;
+
+  // Chats that finished while the user was elsewhere, so the badge can say so
+  // until they look. Cleared when the chat is opened -- "done" is news, and news
+  // that has been read stops being a badge.
+  const [finishedChatIds, setFinishedChatIds] = useState(() => new Set());
+  useEffect(() => {
+    if (!turnNotices.length) return;
+    setFinishedChatIds((current) => {
+      const next = new Set(current);
+      for (const notice of turnNotices) {
+        if (notice.outcome !== "run.cancelled") next.add(notice.chatId);
+      }
+      return next;
+    });
+  }, [turnNotices]);
+  useEffect(() => {
+    if (activeChatId === null) return;
+    setFinishedChatIds((current) => {
+      if (!current.has(activeChatId)) return current;
+      const next = new Set(current);
+      next.delete(activeChatId);
+      return next;
+    });
+  }, [activeChatId]);
+
+  // The badge reads from the live stream first and the sidebar payload second.
+  // The stream is up to eight seconds fresher than a refetch, which is the
+  // difference between a badge that tracks the work and one that lags it.
+  const chatTitlesById = useMemo(() => {
+    const titles = new Map();
+    for (const chat of sidebar.chats || []) titles.set(chat.id, chat.title);
+    for (const project of sidebar.projects || []) {
+      for (const chat of project.chats || []) titles.set(chat.id, chat.title);
+    }
+    return titles;
+  }, [sidebar]);
+
+  const statusFor = useCallback(
+    (chat) => {
+      const liveState = streams.get(chat.id);
+      if (liveState?.sessionStatus) return liveState.sessionStatus;
+      if (liveState?.kind) return "running";
+      if (turns.has(chat.id)) return "running";
+      const stored = chat.turn_status || chat.agent_status;
+      if (stored) return stored;
+      return finishedChatIds.has(chat.id) ? "done" : null;
+    },
+    [streams, turns, finishedChatIds],
+  );
 
   useEffect(() => {
     if (bootstrapped.current) {
@@ -2916,9 +3234,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       });
       setEditingMessageId(null);
       setEditingValue("");
-      setSending(true);
-      setActiveTurn({ kind: "chat", generationId: result.generation.id });
-      setGenerationStartedAt(parseNeoTimestamp(result.generation.created_at) || Date.now());
+      setTurnFor(activeChat.id, {
+        kind: "chat",
+        generationId: result.generation.id,
+        startedAt: parseNeoTimestamp(result.generation.created_at) || Date.now(),
+        stopping: false,
+      });
       setElapsedMs(0);
     } catch (error) {
       setStatusError(errorMessage(error));
@@ -2939,15 +3260,18 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     if (!prompt || sending) {
       return;
     }
-    const requestId = sendGuardRef.current.begin();
+    // A chat that does not exist yet cannot have a guard of its own, and two
+    // clicks in that state must still collapse into one chat -- which is what
+    // `createActiveChat`'s in-flight promise already guarantees. For an existing
+    // chat the guard is per chat, so a send here never refuses a send elsewhere.
+    const guard = guardFor(activeChat?.id ?? NEW_CHAT_GUARD_KEY);
+    const requestId = guard.begin();
     if (requestId === null) {
       return;
     }
 
-    setSending(true);
     setStatusError("");
     setChatAgentMessage("");
-    setGenerationStartedAt(Date.now());
     setElapsedMs(0);
     const pendingId = `pending-${Date.now()}`;
     const optimisticMessage = {
@@ -2960,8 +3284,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     };
     setMessages((current) => [...current, optimisticMessage]);
 
+    let chatId = activeChat?.id ?? null;
     try {
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
+      chatId = chat.id;
+      // The turn is recorded against the chat before the request is even sent, so
+      // Stop has something to stop during the gap between the POST and the first
+      // event -- which is exactly when a user reaches for it.
+      setTurnFor(chatId, { kind: "chat", startedAt: Date.now(), stopping: false });
       const result = await api.startChatGeneration(
         chat.id,
         prompt,
@@ -2980,27 +3310,35 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         },
       );
       if (result.agent_session_id) {
-        setActiveTurn({ kind: "agent", sessionId: result.agent_session_id });
+        setTurnFor(chatId, { kind: "agent", sessionId: result.agent_session_id });
         // The run wrote a row to hold its place in the transcript, and the trace
         // draws into that row -- so the thread is reloaded rather than waiting
         // for the first event to imply a turn that is already there.
-        await loadChat(chat.id, { history: "none" });
-        setSending(true);
+        if (streamChatIdRef.current === chatId) await loadChat(chatId, { history: "none" });
         refreshSidebar().catch(() => {});
       } else {
-        setActiveTurn({ kind: "chat", generationId: result.generation.id });
+        setTurnFor(chatId, { kind: "chat", generationId: result.generation.id });
       }
     } catch (error) {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === pendingId ? { ...message, failed: true } : message,
-        ),
-      );
-      setComposerValue(prompt);
-      setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
-      setSending(false);
-      setActiveTurn(null);
-      setGenerationStartedAt(null);
+      // The user may have switched chats during the round trip, and marking the
+      // bubble failed reaches into whatever transcript is loaded now -- so the
+      // transcript edits only apply if this is still the chat on screen. The turn
+      // state is keyed by chat and is always safe to clear.
+      if (streamChatIdRef.current === chatId || chatId === null) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === pendingId ? { ...message, failed: true } : message,
+          ),
+        );
+        setComposerValue(prompt);
+        setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
+      }
+      setTurnFor(chatId, null);
+    } finally {
+      // A send that failed has no turn to end, so nothing else will release this.
+      // A send that succeeded is released again by `handleTurnEnd`; releasing a
+      // guard twice is harmless, leaving one held forever is not.
+      guard.release();
     }
   }
 
@@ -3064,13 +3402,13 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   /** Stop whatever is running, whichever kind it is. */
   async function handleStopGeneration() {
     if (!activeTurn || !activeChat?.id || stopping) return;
-    setStopping(true);
+    setTurnFor(activeChat.id, { stopping: true });
     try {
       if (activeTurn.kind === "agent") await api.cancelAgentSession(activeTurn.sessionId);
       else await api.cancelChatGeneration(activeChat.id, activeTurn.generationId);
       // The tail sees the cancellation and tears the live state down.
     } catch (error) {
-      setStopping(false);
+      setTurnFor(activeChat.id, { stopping: false });
       setStatusError(`Could not stop the response: ${errorMessage(error)}`);
     }
   }
@@ -3331,6 +3669,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       <Sidebar
         sidebar={sidebar}
         activeChatId={activeChat?.id ?? null}
+        statusFor={statusFor}
         selectedProjectId={selectedProjectId}
         showNewProjectForm={showNewProjectForm}
         onToggleProjectForm={() => setShowNewProjectForm((visible) => !visible)}
@@ -3572,6 +3911,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       {showSettings && (
         <SettingsDialog
           onOpenAccount={() => { setShowSettings(false); setShowAccount(true); }}
+          onOpenBackgroundChats={() => { setShowSettings(false); setShowBackgroundChats(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
@@ -3682,6 +4022,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         <GallerySettingsDialog onClose={() => setShowGallerySettings(false)} />
       )}
 
+      {showBackgroundChats && (
+        <BackgroundChatsDialog onClose={() => setShowBackgroundChats(false)} />
+      )}
+
       {showMemory && (
         <MemoryDialog
           memoryEnabled={memoryEnabled}
@@ -3698,6 +4042,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         pendingDelete={pendingDelete}
         onCancel={() => setPendingDelete(null)}
         onConfirm={confirmDeletion}
+      />
+      <BackgroundTurnToast
+        notices={turnNotices}
+        chatTitles={chatTitlesById}
+        onOpen={handleOpenChat}
+        onDismiss={dismissTurnNotice}
       />
       <ReminderToast />
     </div>

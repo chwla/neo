@@ -53,6 +53,7 @@ from app.services.agent_core.store import (
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.bundles import initialize_bundle_tables
 from app.services.calendar import initialize_calendar_tables, start_reminder_sweep
+from app.services.chat_prefs import initialize_chat_preference_tables
 from app.services.command_sandbox import initialize_command_sandbox_tables
 from app.services.context_memory import initialize_context_memory_tables
 from app.services.continuity import initialize_continuity_tables
@@ -194,6 +195,7 @@ def create_app() -> FastAPI:
     initialize_research_mode_tables()
     initialize_workspace_file_tables()
     initialize_gallery_tables()
+    initialize_chat_preference_tables()
     initialize_test_runner_tables()
     initialize_git_tables()
     initialize_github_tables()

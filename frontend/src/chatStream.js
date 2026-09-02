@@ -65,6 +65,15 @@ function reduce(state, event) {
   const moved = { ...base, approval: null };
 
   switch (type) {
+    case "turn.queued":
+      // Accepted, but waiting for a free slot. Reusing `statusText` means the
+      // existing pending bubble renders this with no new plumbing, and the
+      // `run.started` that follows overwrites both fields.
+      return {
+        ...moved,
+        sessionStatus: "queued",
+        statusText: "Queued - waiting for a free slot",
+      };
     case "run.started":
       return { ...moved, sessionStatus: "running" };
     case "chunk":
@@ -100,63 +109,83 @@ function reduce(state, event) {
 }
 
 /**
- * Watch one chat, whatever it is doing.
+ * Fold one record of the profile-wide tail into per-chat state.
  *
- * Streaming and resumption are the same mechanism: the log is append-only with a
- * monotonic sequence, so a reload asks for everything after the last sequence it
- * saw. The server decides where a fresh reader starts -- the end of a settled
- * thread, or the beginning of a turn still in flight -- because only it knows
- * whether anything is running.
- *
- * The tail closes on a terminal event or when nothing is generating, and the
- * loop reconnects until the caller says the turn is over. That is what makes a
- * dropped connection resume rather than restart, and what lets a browser that
- * was closed mid-run come back to a finished one.
+ * Pure, and separated from the hook so the demultiplexing can be tested without
+ * a renderer. Returns the same Map when nothing applies, so React can skip the
+ * render.
  */
-export function useChatStream(chatId, startAfter, { onTurnEnd } = {}) {
-  const [live, setLive] = useState(IDLE);
-  const cursorRef = useRef(0);
+export function applyEvent(streams, event) {
+  const chatId = event?.chat_id;
+  // `cursor` and `idle` are about the connection, not about any conversation.
+  if (!chatId || event.type === "cursor" || event.type === "idle") return streams;
+  const next = new Map(streams);
+  next.set(chatId, reduce(streams.get(chatId) ?? IDLE, event));
+  return next;
+}
+
+/**
+ * Watch every chat in the profile over one connection.
+ *
+ * The effect deliberately has no `chatId` in its dependencies, so changing which
+ * conversation is on screen does not tear the connection down. That is what lets
+ * a chat keep answering after you have walked away from it -- the per-chat tail
+ * this replaced re-subscribed on every switch, abandoning the turn you left.
+ *
+ * One connection rather than one per chat because a tail costs a socket and a
+ * server thread for as long as it is held, and browsers allow about six sockets
+ * to an origin -- so a handful of background chats would have starved every
+ * other request in the app. The log's sequence is profile-wide, so a single
+ * cursor orders all of them and each record says which chat it belongs to.
+ */
+export function useChatStreams({ onTurnEnd } = {}) {
+  const [streams, setStreams] = useState(() => new Map());
+  // null means "server, you decide" -- and it answers on the stream itself.
+  const cursorRef = useRef(null);
   const endRef = useRef(onTurnEnd);
   endRef.current = onTurnEnd;
 
-  const reset = useCallback(() => setLive(IDLE), []);
+  const clear = useCallback((chatId) => {
+    setStreams((current) => {
+      if (!current.has(chatId)) return current;
+      const next = new Map(current);
+      next.delete(chatId);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
-    if (!chatId) {
-      setLive(IDLE);
-      return undefined;
-    }
     let cancelled = false;
     const controller = new AbortController();
-    cursorRef.current = startAfter || 0;
-    setLive(IDLE);
 
     function apply(event) {
-      cursorRef.current = Math.max(cursorRef.current, event.seq || 0);
+      if (event.type === "cursor") {
+        cursorRef.current = event.seq ?? 0;
+        return;
+      }
+      cursorRef.current = Math.max(cursorRef.current ?? 0, event.seq || 0);
       if (event.type === "idle") return;
-      setLive((current) => reduce(current, event));
-      if (TERMINAL_EVENTS.has(event.type)) {
-        // The turn is a message row now, so the transcript is reloaded and the
-        // live state stands down rather than lingering as a duplicate bubble.
-        endRef.current?.(event);
-        setLive(IDLE);
+      setStreams((current) => applyEvent(current, event));
+      if (TERMINAL_EVENTS.has(event.type) && event.chat_id) {
+        // The caller decides when to drop the buffer: a background chat's text
+        // has to survive until its transcript has been reloaded, or switching
+        // to it would show an empty pane for a turn that just finished.
+        endRef.current?.(event.chat_id, event);
       }
     }
 
     async function connect() {
       while (!cancelled) {
         try {
-          await api.streamChatEvents(chatId, cursorRef.current, apply, controller.signal);
+          await api.streamAllChatEvents(cursorRef.current, apply, controller.signal);
         } catch (error) {
           if (cancelled || error?.name === "AbortError") return;
-          // A tail that cannot be held open is not a reason to stop watching:
-          // the next turn still has to be seen. Back off and reconnect.
           await new Promise((resolve) => setTimeout(resolve, 1500));
           continue;
         }
         if (cancelled) return;
-        // The server closed the tail because nothing is generating. Reopening it
-        // is how the next turn -- which the user has not started yet -- arrives.
+        // The server closed on its idle timeout. Reopening is how the next turn
+        // arrives -- including one started somewhere else entirely.
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
     }
@@ -166,9 +195,9 @@ export function useChatStream(chatId, startAfter, { onTurnEnd } = {}) {
       cancelled = true;
       controller.abort();
     };
-  }, [chatId, startAfter]);
+  }, []);
 
-  return { live, reset };
+  return { streams, clear };
 }
 
 export { IDLE, reduce };

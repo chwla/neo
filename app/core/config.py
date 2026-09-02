@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     openai_compat_api_key_ref: str = Field(default="OPENAI_API_KEY")
     openai_compat_model: str = Field(default="")
     chat_timeout_seconds: int = Field(default=240)
+    #: How many chats may generate at once before further turns wait their turn.
+    #: Neo is local-first and usually points at one model server, so letting every
+    #: background chat start at once makes all of them slow rather than any of
+    #: them fast. A profile that has set the preference overrides this; this only
+    #: decides what a fresh profile does.
+    max_concurrent_turns: int = Field(default=3, ge=1, le=10)
     # Reasoning models spend part of this budget thinking before they emit any answer:
     # gemma4 uses ~550 tokens on reasoning alone, so a 512 budget hit the cap before
     # writing a word and every retry repeated it.

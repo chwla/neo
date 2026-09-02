@@ -102,6 +102,18 @@ def is_active(session_id: str) -> bool:
         return session_id in _ACTIVE
 
 
+def active_ids() -> set[str]:
+    """Sessions this process is running right now.
+
+    Read by the concurrency cap, which has to count a run that has been handed a
+    thread but has not yet flipped its row to ``running``.  Counting only the
+    database would let a second turn in through that window.
+    """
+
+    with _LOCK:
+        return set(_ACTIVE)
+
+
 def default_loop_factory() -> AgentLoop:
     from app.services.llm import get_llm_client
 

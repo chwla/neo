@@ -70,7 +70,15 @@ def _session(row: dict) -> AgentSession:
 
 
 class AgentCoreService:
-    def create(self, payload: SessionCreate) -> AgentSession:
+    def create(self, payload: SessionCreate, *, start: bool = True) -> AgentSession:
+        """Create a run, and by default hand it a worker.
+
+        ``start=False`` writes the session and leaves it ``queued`` for the
+        concurrency cap to release.  The row is identical either way, so nothing
+        downstream has to know which happened -- the turn is simply waiting, and
+        the same pump that starts a waiting plain turn starts this one.
+        """
+
         objective = payload.objective.strip()
         if not objective:
             raise AgentCoreValidationError("An objective is required.")
@@ -138,7 +146,8 @@ class AgentCoreService:
                 "updated_at": now,
             }
         )
-        worker.start(row["id"])
+        if start:
+            worker.start(row["id"])
         return _session(row)
 
     def get(self, session_id: str) -> AgentSession:

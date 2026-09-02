@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -2125,8 +2126,17 @@ class NeoChatService:
                 # turn itself produced.
                 self._build_memory_indexes()
 
+        # A thread starts with a *fresh* context, not a copy of its parent's, and
+        # Neo selects the profile database through a ContextVar.  Without this
+        # copy every ``get_settings()`` inside ``run`` resolves the base database
+        # instead of this profile's -- so extraction, and the ``_build_memory_indexes``
+        # in its ``finally``, would write one person's memories into another's
+        # file.  The agent worker copies its context for exactly this reason
+        # (``agent_core/worker.py``); this path was simply missed, and it fires
+        # once per turn, so the exposure grows with every concurrent chat.
+        context = contextvars.copy_context()
         Thread(
-            target=run,
+            target=lambda: context.run(run),
             name=f"memory-extraction-{chat_id}-{message_id}",
             daemon=True,
         ).start()

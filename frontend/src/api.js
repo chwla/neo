@@ -430,6 +430,9 @@ export const api = {
     if (params.offset) search.set("offset", String(params.offset));
     return request(`/gallery/items?${search.toString()}`);
   },
+  chatConfig: () => request("/chat-config"),
+  updateChatConfig: (payload) =>
+    request("/chat-config", { method: "POST", body: JSON.stringify(payload) }),
   galleryConfig: () => request("/gallery/config"),
   updateGalleryConfig: (payload) =>
     request("/gallery/config", { method: "POST", body: JSON.stringify(payload) }),
@@ -562,6 +565,15 @@ export const api = {
    */
   streamChatEvents: (chatId, after, onEvent, signal) =>
     streamGet(`/chats/${chatId}/events?after=${after || 0}`, onEvent, signal),
+  // One tail over every chat in the profile. Omitting `after` asks the server
+  // where to start; it answers with a `cursor` record on the stream itself, so
+  // there is no gap between deciding and subscribing.
+  streamAllChatEvents: (after, onEvent, signal) =>
+    streamGet(
+      `/chat-events${after === null || after === undefined ? "" : `?after=${after}`}`,
+      onEvent,
+      signal,
+    ),
   activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
   cancelChatGeneration: (chatId, generationId) =>
     request(`/chats/${chatId}/generations/${generationId}/cancel`, { method: "POST" }),

@@ -232,6 +232,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .row-actions-menu .row-actions-danger:hover { background: rgba(255, 59, 48, .12); color: var(--neo-danger); }
 /* A pinned row says so even when the menu is closed. */
 .chat-item-pin { margin-right: 6px; color: var(--neo-green); font-size: 8px; vertical-align: middle; }
+/* What a chat is doing, for the chats that are not on screen. A dot rather than
+   a word: the sidebar is a list of titles, and several of these are visible at
+   once. Marked up with title/aria-label only -- a live region announcing every
+   state change across every chat is what makes a screen reader unusable. */
+.chat-item-badge { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; vertical-align: middle; flex: none; }
+.chat-item-badge.is-running { background: var(--neo-green); animation: chat-badge-pulse 1.6s ease-in-out infinite; }
+.chat-item-badge.is-queued { border: 1px solid #666; background: transparent; }
+.chat-item-badge.is-waiting_approval { background: #d79b28; }
+.chat-item-badge.is-done { background: #3a6ea5; }
+@keyframes chat-badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .chat-item-badge.is-running { animation: none; } }
 .chat-rename-form { min-width: 0; flex: 1; display: flex; }
 .chat-rename-input { min-width: 0; flex: 1; border: 1px solid var(--neo-green); border-radius: 2px; background: var(--neo-bg); padding: 2px 6px; color: #ededed; font: 12px "JetBrains Mono", monospace; }
 .chat-rename-input:focus { outline: none; }
@@ -1000,6 +1011,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .reminder-toast-body { display: grid; gap: 2px; flex: 1; min-width: 0; }
 .reminder-toast-body strong { overflow: hidden; color: var(--neo-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .reminder-toast-body span { color: #666; font: 10px "JetBrains Mono", monospace; }
+.reminder-toast.is-failed { border-left-color: #c0392b; }
+.reminder-toast-open { border: 0; background: transparent; padding: 0; text-align: left; cursor: pointer; }
 .reminder-toast-dismiss { border: 0; background: transparent; padding: 0; color: #555; font-size: 16px; line-height: 1; }
 .reminder-toast-dismiss:hover { color: var(--neo-green); }
 
