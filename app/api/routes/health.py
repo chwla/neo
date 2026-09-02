@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.services.provider_runtime.service import ProviderRuntimeService
 from app.services.search.providers import ProviderRegistry, normalize_searxng_instance
+from app.services.search.searxng_embedded import source_available
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -27,7 +28,13 @@ def _ollama_available(url: str) -> bool:
 def _search_available(provider: str, searxng_url: str) -> bool:
     if provider == "disabled":
         return False
-    if provider not in {"external_searxng", "searxng"}:
+    if provider == "searxng":
+        # The built-in instance runs inside this process, so there is nothing to
+        # probe over the network -- only whether its source tree is in place.
+        # Booting it here would make a liveness-adjacent check pay a five-second
+        # import, so this deliberately stays a file check.
+        return source_available()
+    if provider != "external_searxng":
         return True
     try:
         url = normalize_searxng_instance(searxng_url)

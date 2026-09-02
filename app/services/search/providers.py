@@ -12,8 +12,11 @@ from app.core.config import get_settings
 from app.services.search.types import SearchResult, WebSearchResponse
 
 PROVIDER_INFO = {
+    # "searxng" is Neo's own instance, imported into this process by
+    # app/services/search/searxng_embedded.py -- no container, no port.
+    # "external_searxng" is the one you point at a URL you run yourself.
+    "searxng": ("SearXNG (built in)", False, True),
     "external_searxng": ("External SearXNG", False, True),
-    "searxng": ("SearXNG (legacy alias)", False, True),
     "tavily": ("Tavily", True, False),
     "brave": ("Brave Search", True, False),
     "duckduckgo": ("DuckDuckGo", False, False),
@@ -189,7 +192,11 @@ def provider_available(provider: str) -> bool:
     info = PROVIDER_INFO.get(provider)
     if not info:
         return False
-    if provider in {"external_searxng", "searxng"}:
+    if provider == "searxng":
+        from app.services.search.searxng_embedded import source_available
+
+        return source_available()
+    if provider == "external_searxng":
         try:
             normalize_searxng_instance(get_settings().searxng_instance)
         except ValueError:
@@ -514,7 +521,11 @@ class ProviderRegistry:
         if normalized == "external_searxng":
             return SearXNGSearchProvider(provider_name="external_searxng")
         if normalized == "searxng":
-            return SearXNGSearchProvider()
+            # Imported here rather than at module scope: searxng_embedded imports
+            # WebSearchProvider and _results_response from this module.
+            from app.services.search.searxng_embedded import EmbeddedSearXNGProvider
+
+            return EmbeddedSearXNGProvider()
         if normalized == "tavily":
             return TavilySearchProvider()
         if normalized == "brave":

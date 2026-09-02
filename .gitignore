@@ -22,6 +22,7 @@ build/
 # Runtime data
 data/workspace_files/
 data/workspace_repos/
+data/searxng/
 neo_llms.json
 neo_llms.json.tmp
 neo_memory.db
@@ -70,4 +71,5 @@ Thumbs.db
 !/scripts/manual_memory_v2_phase5.py
 !/scripts/manual_memory_v2_phase6.py
 !/scripts/memory_v2_index_worker.py
+!/scripts/setup_searxng.py
 profiles/.neo-connector-master-key

@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -126,6 +127,25 @@ class ProfileSessionMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
 
+def _warm_embedded_searxng() -> None:
+    """Boot the in-process SearXNG off the startup path.
+
+    Importing searx.webapp costs a few seconds. Doing it here on a daemon thread
+    means the first user search -- or the first /api/health/ready probe, which
+    runs a real query -- does not wait for it. Skipped unless SearXNG is actually
+    the selected provider, so nobody on DuckDuckGo pays for an import they will
+    never use.
+    """
+
+    settings = get_settings()
+    if settings.web_search_provider.lower().strip() != "searxng":
+        return
+
+    from app.services.search.searxng_embedded import warm_up
+
+    threading.Thread(target=warm_up, name="searxng-warmup", daemon=True).start()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Neo Memory", version="0.1.0")
     app.add_middleware(
@@ -217,6 +237,7 @@ def create_app() -> FastAPI:
     # opened from, so they are dropped once rather than kept as orphans.
     delete_chatless_sessions()
     start_reminder_sweep()
+    _warm_embedded_searxng()
 
     @app.on_event("shutdown")
     def remove_temporary_guest_profiles() -> None:

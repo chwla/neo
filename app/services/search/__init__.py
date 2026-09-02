@@ -33,6 +33,7 @@ from app.services.search.providers import (
     TavilySearchProvider,
     WebSearchProvider,
 )
+from app.services.search.searxng_embedded import EmbeddedSearXNGProvider
 from app.services.search.types import (
     ComprehensiveSearchResult,
     EvidenceChunk,
@@ -55,6 +56,7 @@ __all__ = [
     "CurrencyQuote",
     "DisabledSearchProvider",
     "DuckDuckGoSearchProvider",
+    "EmbeddedSearXNGProvider",
     "EXTRACTION_FAILURE_MESSAGE",
     "EvidenceChunk",
     "FetchedPage",

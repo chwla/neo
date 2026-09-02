@@ -1,18 +1,33 @@
-# SearXNG configuration for Neo's local search backend.
+# SearXNG configuration for Neo's built-in search backend.
 #
-# Two settings here are load-bearing and easy to lose in an upgrade:
+# Neo does not run SearXNG as a container. app/services/search/searxng_embedded.py
+# imports searx.webapp and calls it as a WSGI app inside Neo's own process, and
+# points SEARXNG_SETTINGS_PATH at this file. Nothing binds a port, so the server
+# section below configures a request handler rather than a server.
+#
+# Three settings here are load-bearing and easy to lose in an upgrade:
 #
 #   search.formats must include "json". Stock SearXNG serves HTML only and
 #   answers format=json with 403, which is exactly the request Neo's
-#   SearXNGSearchProvider makes (app/services/search/providers.py).
+#   EmbeddedSearXNGProvider makes.
 #
-#   server.limiter must stay false. The bot limiter treats Neo's server-side
-#   requests as automated traffic -- because they are -- and blocks them.
+#   server.limiter must stay false. The bot limiter treats Neo's requests as
+#   automated traffic -- because they are -- and blocks them.
 #
-# This instance is reachable only on Neo's private compose network; it is not
-# published to the host. secret_key signs the web UI's preference cookies and
-# plays no part in the JSON API that Neo uses.
-use_default_settings: true
+#   server.secret_key must not be the literal "ultrasecretkey". searx.webapp's
+#   init() calls sys.exit(1) if it is, which would take Neo's process down with
+#   it. It signs preference cookies for a web UI nobody reaches here, and seeds
+#   the password for SearXNG's local caches; it is not a deployment secret.
+#
+# Leave server.public_instance unset. Turning it on force-enables the limiter and
+# the image proxy regardless of what limiter says above.
+use_default_settings:
+  engines:
+    # Tor-only engines. They need a Tor proxy Neo does not run, so they cannot
+    # load at all -- listed here only to keep two ERROR lines out of every boot.
+    remove:
+      - ahmia
+      - torch
 
 general:
   instance_name: "Neo Search"
@@ -30,6 +45,9 @@ search:
     - html
     - json
 
+# Named engines are enabled explicitly; the rest of SearXNG's defaults stay on.
+# That breadth is the point of using SearXNG at all -- individual engines
+# rate-limit and serve CAPTCHAs constantly, and aggregation is what absorbs it.
 engines:
   - name: google
     disabled: false

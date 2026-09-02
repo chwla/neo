@@ -57,8 +57,71 @@ Browser (React + Vite)              Neo CLI
 
 Every non-guest account has a registry record plus its own storage directory and SQLite
 database. Guest profiles are temporary and removed when their session or the application
-ends. The original repository registered by a user is not edited directly: code operations
-work against a managed copy.
+ends.
+
+A folder can be attached in either of two ways. **Live** is the default and is what Agent
+Mode is built around: Neo indexes the folder in place and the agent reads and edits those
+files directly, the way a coding CLI does, with no copy and no delivery step. Every file a
+run touches is journalled first, so the whole run can be undone. **Managed** is the
+opt-in alternative, and keeps the older guarantee that the user's own files are never
+written: Neo copies the supported text files, the agent edits the copy, and the user
+applies the result themselves.
+
+### Reaching your folder
+
+Neo runs on macOS, Linux and Windows from one code path. What differs is only how the
+server process comes to see your files.
+
+Run directly on the host and it already does: any absolute path works, and
+`NEO_WORKSPACE_LIVE_ROOTS` can stay unset.
+
+In a container it can only reach what is mounted. `docker-compose.yml` bind-mounts one
+host directory at `/workspace` and sets `NEO_WORKSPACE_LIVE_ROOTS=/workspace`; folders are
+then attached by their path **inside** the container (`/workspace/code/my-app`), not the
+host path it came from. **Your home directory is the default**, so projects open where
+they already live. Copy `.env.example` to `.env` only if you want to narrow it:
+
+| Host | `NEO_WORKSPACE_HOST_ROOT` | Also needed |
+|---|---|---|
+| macOS | `/Users/you` | - |
+| Linux | `/home/you` | `NEO_UID=$(id -u)`: see below |
+| Windows (Docker Desktop) | `C:\Users\you` | - |
+| WSL2 | `/home/you` | - |
+
+Open a folder is a browser, not a text field: it lists what is under the root and you
+navigate to the project you want. Everything on disk is listed, hidden folders included,
+because `.dotfiles`, `.vscode`, `.config` and a repository's `.git` are ordinary folders
+to a coding agent.
+
+The security boundary is the workspace **you select**, not the picker. Once a folder is
+open, every operation runs through the permission resolver in
+`app/services/agent_core/permissions.py`, which is what governs reads, writes and commands,
+including anything that tries to reach outside the workspace. The picker's own rules
+(`app/services/repos/safety.py`) are only about what makes a sane *project root*:
+
+- `/workspace` itself is **browse-only**: a root holds projects, it is not one.
+- `Desktop`, `Documents`, `Downloads`, `Pictures`, `Music`, `Movies`, `Videos`, `Public`,
+  `OneDrive`, `Library`, `AppData` and `Applications` are refused as destinations, because
+  opening one would index everything you own. You still browse *through* them, which is
+  how `~/Desktop/my-app` is reached, and anything nested inside them opens normally.
+- Symlinks and Windows junctions are refused, `..` cannot escape the root, and the system
+  trees (`/etc`, `/usr`, `/System`, …), the account containers (`/Users`, `/home`) and
+  `$HOME` itself stay refused as they always were.
+
+**Linux uid.** A bind mount keeps the host's ownership, so a container running as another
+user can read every file and write none of them. Set `NEO_UID` to your own `id -u`; the
+image keeps `/app/data` group-owned by 0 and group-writable so that any uid still works.
+macOS and Windows need nothing: Docker Desktop maps ownership for you. A write that fails
+this way is reported with this cause named, not as a bare "Permission denied".
+
+**Windows.** Attach folders by their container path. Keep projects on the Linux side of
+WSL2 where you can: a `C:\` or `\\wsl$` mount crosses a filesystem bridge and is
+markedly slower. Native Windows paths, drive letters, UNC shares and junctions are all
+handled; separate multiple roots with `;` when configuring a native Windows Neo, and with
+`:` inside the Linux container.
+
+Line endings are preserved: editing one line of a CRLF file leaves the rest of the file
+untouched, on every platform.
 
 ## Quick start
 
@@ -74,8 +137,14 @@ Requirements:
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python scripts/setup_searxng.py          # optional; see below
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+`scripts/setup_searxng.py` fetches the pinned SearXNG source and installs its
+dependencies, which is what the built-in search provider imports. It is optional:
+without it that provider reports itself unavailable and search falls back to the
+keyless DuckDuckGo and Bing providers, which need no setup at all.
 
 In another terminal:
 
@@ -109,8 +178,16 @@ docker run --name neo \
 ```
 
 Open `http://127.0.0.1:8000`. The default container expects Ollama at
-`http://host.docker.internal:11434`, uses `qwen3-coder:30b`, and configures
-DuckDuckGo with a Bing HTML fallback. Override any `NEO_*` setting with `-e`.
+`http://host.docker.internal:11434`, uses `qwen3-coder:30b`, and searches with
+the built-in SearXNG backed by DuckDuckGo and Bing HTML fallbacks. Override any
+`NEO_*` setting with `-e`.
+
+SearXNG runs inside Neo's own process rather than as a second container:
+`searx.webapp` is a Flask WSGI app, so the image bakes in its source tree at a
+pinned commit and `app/services/search/searxng_embedded.py` imports and calls it
+directly. Nothing binds an extra port, so `docker run` above and
+`docker compose up` are equivalent. To use a SearXNG you run yourself, set
+`NEO_SEARCH_PROVIDER=external_searxng` and `NEO_SEARXNG_URL` to its address.
 On Docker Desktop, `host.docker.internal` is normally available without the explicit
 `--add-host` option.
 
@@ -181,6 +258,8 @@ frontend/            React/Vite application and browser API client
 docs/backend.md      Backend architecture, database, API, operations, and validation
 docs/frontend.md     Frontend architecture, every screen, behavior, and manual testing
 tests/               Backend and contract regression tests
+scripts/             Maintenance and setup scripts, incl. the SearXNG fetch
+docker/searxng/      Settings for the SearXNG that runs inside Neo's process
 Dockerfile           Production frontend/backend image
 pyproject.toml       Python package and tooling configuration
 ```

@@ -184,6 +184,24 @@ class Settings(BaseSettings):
             "NEO_SEARXNG_INSTANCE",
         ),
     )
+    # The embedded SearXNG provider imports searx.webapp from this tree rather
+    # than talking to a container. Absent by default: scripts/setup_searxng.py
+    # fetches it, and without it the provider reports itself unavailable and the
+    # fallback chain takes over.
+    searxng_source_dir: str = Field(
+        default="data/searxng",
+        validation_alias=AliasChoices(
+            "NEO_SEARXNG_SOURCE_DIR",
+            "SEARXNG_SOURCE_DIR",
+        ),
+    )
+    searxng_settings_path: str = Field(
+        default="docker/searxng/settings.yml",
+        validation_alias=AliasChoices(
+            "NEO_SEARXNG_SETTINGS_PATH",
+            "SEARXNG_SETTINGS_PATH",
+        ),
+    )
     web_search_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "NEO_WEB_SEARCH_API_KEY"),

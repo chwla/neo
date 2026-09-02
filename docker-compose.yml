@@ -1,53 +1,30 @@
-# Neo plus its local SearXNG search backend.
+# Neo, and nothing else.
 #
 #   docker compose up -d --build
 #
-# SearXNG is deliberately not published to the host: only Neo needs it, and it
-# reaches it by service name over the private network below. That is also why
-# NEO_SEARXNG_URL is http://searxng:8080 rather than 127.0.0.1 -- inside a
-# container 127.0.0.1 is the container itself, not the host.
+# SearXNG used to be a second service here. It now runs inside Neo's own process
+# -- searx.webapp is a Flask WSGI app, so the image bakes in its source tree and
+# app/services/search/searxng_embedded.py imports it. That removes this file's
+# private network, the SearXNG healthcheck, the depends_on gate that made Neo
+# wait on it, and the settings bind-mount, and makes `docker run` and
+# `docker compose up` equivalent again.
+#
+# To use a SearXNG you run yourself instead, set NEO_SEARCH_PROVIDER to
+# external_searxng and NEO_SEARXNG_URL to its address.
 
 services:
-  searxng:
-    image: searxng/searxng:latest
-    container_name: neo-searxng
-    restart: unless-stopped
-    volumes:
-      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      SEARXNG_BASE_URL: http://searxng:8080/
-    # Bound to loopback so a host-run `uvicorn app.main:app` can use the same
-    # instance at http://localhost:8080; not exposed beyond this machine.
-    ports:
-      - "127.0.0.1:8080:8080"
-    networks:
-      - neo-net
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/search?q=ping&format=json',timeout=5)"
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
-      retries: 3
-
   neo:
     build: .
     image: neo:latest
     container_name: neo
     restart: unless-stopped
-    depends_on:
-      searxng:
-        condition: service_healthy
     ports:
       - "8000:8000"
     environment:
       NEO_SEARCH_PROVIDER: searxng
-      NEO_SEARXNG_URL: http://searxng:8080
-      # SearXNG aggregates upstream engines that rate-limit, so keep keyless
-      # direct providers behind it rather than failing the turn.
+      # SearXNG aggregates upstream engines that rate-limit and serve CAPTCHAs,
+      # so keep keyless direct providers behind it rather than failing the turn.
+      # The chain also covers a boot failure of the built-in instance itself.
       NEO_WEB_SEARCH_FALLBACK_PROVIDERS: duckduckgo,bing_html
       # Folders may be opened for direct editing only from here down. Attach them
       # by their path *inside* the container -- /workspace/my-project, not the
@@ -90,12 +67,6 @@ services:
       # the agent may then *do* is governed per-operation by
       # app/services/agent_core/permissions.py, not by the folder picker.
       - ${NEO_WORKSPACE_HOST_ROOT:-${HOME:-${USERPROFILE}}}:/workspace
-    networks:
-      - neo-net
-
-networks:
-  neo-net:
-    driver: bridge
 
 volumes:
   # The anonymous volume the standalone `docker run` container was using, kept
