@@ -22,7 +22,6 @@ Ordering matters in two places and is worth stating:
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +30,7 @@ from app.services import chat_prefs
 from app.services.agent_core import events, store
 from app.services.agent_core.types import AgentSession, Budgets
 from app.services.agent_core.workspace import repo_root
-from app.services.external_agents import context, detect, runner, snapshot
+from app.services.external_agents import context, detect, models, runner, snapshot
 from app.services.external_agents import env as env_module
 from app.services.external_agents.adapters import claude_code as claude_adapter
 from app.services.external_agents.adapters import codex as codex_adapter
@@ -206,13 +205,23 @@ def run_step(
     if change_summary == "No files were changed.":
         change_summary = None
 
+    # The agent definition chosen in this chat is a role, and until now it was
+    # a role only Neo's own loop ever heard: the session carried the snapshot
+    # and this function never read it, so picking an agent changed nothing about
+    # an external turn. It does now. A handoff step's own instructions are a
+    # *second*, narrower role ("plan only", "review this"), so both apply and
+    # the chat-level one goes first -- the same order Neo's own system prompt
+    # uses, and the order in which the narrower instruction wins by being last.
+    role = ((session.agent_definition_snapshot or {}).get("system_prompt") or "").strip()
+    combined = "\n\n".join(part for part in (role, (instructions or "").strip()) if part)
+
     prompt = context.build_prompt(
         objective,
         history=history,
         previous_answer=previous_answer,
         previous_executor_name=previous_executor_name,
         change_summary=change_summary,
-        instructions=instructions,
+        instructions=combined,
         resuming=bool(resume_id),
     )
 
@@ -236,11 +245,18 @@ def run_step(
             resume_id=resume_id,
             new_session_id=store.new_id(),
             disabled_tools=disabled,
-            # Unset so each CLI uses the model in the user's own configuration.
-            # The override exists for the end-to-end harness, which has to tell
-            # "the integration is broken" from "this machine's config pins a
-            # model the account cannot use".
-            model=os.environ.get("NEO_CODEX_MODEL") or None,
+            # None means "leave it alone", and each CLI then uses the model its
+            # own configuration names. A value here is the chat's Model chip,
+            # which is per engine because the ids are not interchangeable. The
+            # environment override is last and exists for the end-to-end
+            # harness, which has no chat to set a chip on and has to tell "the
+            # integration is broken" from "this machine's config pins a model
+            # the account cannot use".
+            model=(
+                models.chosen(session.external_models, executor)
+                or models.env_override(executor)
+            ),
+            effort=models.chosen(session.external_efforts, executor),
             unsafe=unsafe,
         )
     )

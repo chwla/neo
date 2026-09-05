@@ -40,6 +40,13 @@ class SessionCreate(BaseModel):
     agent_definition_id: str | None = None
     disabled_tools: list[str] = Field(default_factory=list)
     executor: Executor = "neo"
+    #: Which model to ask the external engine for, ``{executor: model}``. Copied
+    #: onto the session rather than read from the chat at run time, for the same
+    #: reason ``agent_definition_snapshot`` is: a run is a record of what was
+    #: asked for, and changing the chip afterwards must not rewrite it.
+    external_models: dict[str, str] = Field(default_factory=dict)
+    #: And which reasoning effort, same shape and same reason.
+    external_efforts: dict[str, str] = Field(default_factory=dict)
     #: An ordered chain of executor steps to run as this one session. Empty for
     #: an ordinary single-executor turn.
     handoff: dict[str, Any] | None = None
@@ -170,6 +177,8 @@ class AgentCoreService:
                 "agent_definition_snapshot": snapshot,
                 "disabled_tools": payload.disabled_tools,
                 "executor": payload.executor,
+                "external_models": payload.external_models,
+                "external_efforts": payload.external_efforts,
                 "handoff": payload.handoff,
                 "budgets": _budgets_for(payload.executor, payload.handoff).model_dump(),
                 "client_request_id": payload.client_request_id,
@@ -429,6 +438,8 @@ class AgentCoreService:
                 "agent_definition_snapshot": original.agent_definition_snapshot,
                 "disabled_tools": original.disabled_tools,
                 "executor": original.executor,
+                "external_models": original.external_models,
+                "external_efforts": original.external_efforts,
                 "external_session_id": original.external_session_id,
                 "external_meta": original.external_meta,
                 "handoff": original.handoff,

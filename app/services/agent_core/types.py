@@ -156,6 +156,12 @@ class AgentSession(BaseModel):
     #: Which engine runs this session. Sessions written before external
     #: executors existed have no column value and read as ``neo``.
     executor: Executor = "neo"
+    #: Which model each external engine was asked for, ``{executor: model}``,
+    #: snapshotted from the chat at creation. An engine absent from the map runs
+    #: on whatever its own CLI configuration names.
+    external_models: dict[str, str] = Field(default_factory=dict)
+    #: And which reasoning effort, snapshotted the same way.
+    external_efforts: dict[str, str] = Field(default_factory=dict)
     #: The external CLI's conversation id for the executor that ran most
     #: recently -- what a follow-up turn resumes.
     external_session_id: str | None = None

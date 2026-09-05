@@ -104,6 +104,12 @@ def initialize_agent_core_tables() -> None:
                 -- Per-executor ids and usage, keyed by executor name, so an
                 -- A -> B -> A sequence can resume each side independently.
                 external_meta_json TEXT,
+                -- Which model, and which reasoning effort, each engine was
+                -- asked for -- keyed the same way. Snapshotted from the chat at
+                -- creation: a run records what was asked for, and moving a chip
+                -- afterwards must not rewrite it.
+                external_models_json TEXT,
+                external_efforts_json TEXT,
                 -- The chain plan and which step is current, for a handoff.
                 handoff_json TEXT,
                 todo_json TEXT,
@@ -247,7 +253,13 @@ def initialize_agent_core_tables() -> None:
                 "ALTER TABLE workspace_agent_sessions"
                 " ADD COLUMN executor TEXT NOT NULL DEFAULT 'neo'"
             )
-        for name in ("external_session_id", "external_meta_json", "handoff_json"):
+        for name in (
+            "external_session_id",
+            "external_meta_json",
+            "external_models_json",
+            "external_efforts_json",
+            "handoff_json",
+        ):
             if name not in existing:
                 conn.execute(f"ALTER TABLE workspace_agent_sessions ADD COLUMN {name} TEXT")
         conn.execute(
@@ -313,6 +325,8 @@ def _row_to_session(row: sqlite3.Row) -> dict:
     data["evidence"] = _loads(data.pop("evidence_json", None), [])
     data["budgets"] = _loads(data.pop("budgets_json", None), {}) or {}
     data["external_meta"] = _loads(data.pop("external_meta_json", None), {}) or {}
+    data["external_models"] = _loads(data.pop("external_models_json", None), {}) or {}
+    data["external_efforts"] = _loads(data.pop("external_efforts_json", None), {}) or {}
     data["handoff"] = _loads(data.pop("handoff_json", None), None)
     data.setdefault("executor", "neo")
     return data
@@ -333,9 +347,10 @@ def insert_session(item: dict) -> dict:
                 id, objective, title, status, mode, project_id, repo_id, task_id,
                 agent_definition_id, agent_definition_snapshot_json, disabled_tools_json,
                 chat_id, anchor_message_id, executor, external_session_id,
-                external_meta_json, handoff_json, todo_json, evidence_json, budgets_json,
+                external_meta_json, external_models_json, external_efforts_json,
+                handoff_json, todo_json, evidence_json, budgets_json,
                 client_request_id, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 item["id"],
@@ -356,6 +371,8 @@ def insert_session(item: dict) -> dict:
                 item.get("executor") or "neo",
                 item.get("external_session_id"),
                 json.dumps(item.get("external_meta") or {}),
+                json.dumps(item.get("external_models") or {}),
+                json.dumps(item.get("external_efforts") or {}),
                 json.dumps(item.get("handoff")) if item.get("handoff") else None,
                 json.dumps(item.get("todo") or []),
                 json.dumps(item.get("evidence") or []),
@@ -437,6 +454,8 @@ _SESSION_COLUMNS = {
     "executor",
     "external_session_id",
     "external_meta",
+    "external_models",
+    "external_efforts",
     "handoff",
 }
 _JSON_COLUMNS = {
@@ -445,6 +464,8 @@ _JSON_COLUMNS = {
     "budgets": "budgets_json",
     "agent_definition_snapshot": "agent_definition_snapshot_json",
     "external_meta": "external_meta_json",
+    "external_models": "external_models_json",
+    "external_efforts": "external_efforts_json",
     "handoff": "handoff_json",
 }
 
@@ -748,6 +769,40 @@ def last_external_session_id(
         if row["external_session_id"]:
             return str(row["external_session_id"])
     return None
+
+
+def models_seen(executor: str, *, limit: int = 200) -> list[str]:
+    """Every model id this executor has actually reported, most recent first.
+
+    The honest half of "which models do I have?". Neither CLI will enumerate an
+    account's models -- there is no subcommand for it, and an unknown one comes
+    back rejected without a list of the known ones -- so the only models Neo can
+    name with certainty are the ones it has watched a run use. A model in here
+    ran on this machine, on this account, at least once.
+    """
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT external_meta_json FROM workspace_agent_sessions"
+            " WHERE executor = ? AND external_meta_json IS NOT NULL"
+            " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (executor, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+    seen: list[str] = []
+    for row in rows:
+        meta = _loads(row["external_meta_json"], {}) or {}
+        model = (meta.get(executor) or {}).get("model")
+        # Ordered-unique rather than a set: the list is shown to a person, and
+        # "the one I used last" belongs at the top of it.
+        if isinstance(model, str) and model.strip() and model not in seen:
+            seen.append(model.strip())
+    return seen
 
 
 def chat_history_before(chat_id: int, message_id: int, limit: int = 40) -> list[dict]:

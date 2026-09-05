@@ -22,6 +22,8 @@ REUSABLE_CHAT_FIELDS = (
     "agent_definition_id",
     "disabled_tools",
     "executor",
+    "external_models",
+    "external_efforts",
 )
 
 

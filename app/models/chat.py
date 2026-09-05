@@ -72,6 +72,33 @@ class Chat(TimestampMixin, Base):
     executor: Mapped[str] = mapped_column(
         String(24), nullable=False, default="neo", server_default="neo"
     )
+    #: Which model each external engine should be asked for in this chat, as
+    #: ``{executor: model}``. Keyed by engine rather than a single string
+    #: because the ids are not interchangeable -- ``opus`` means nothing to
+    #: Codex and ``gpt-5.1-codex`` means nothing to Claude Code -- so switching
+    #: engines has to keep each engine's own choice rather than carry one over
+    #: to where it would be rejected. An engine absent from the map uses the
+    #: model its own CLI configuration names, which is the default and the only
+    #: answer that is always right.
+    #:
+    #: ``server_default`` because agent_core inserts chat rows through a raw
+    #: sqlite3 statement that never names this column, and *unquoted* for the
+    #: reason ``executor`` records: SQLAlchemy quotes a server default itself,
+    #: so quoting it again here stores the quote characters as part of the
+    #: value, which then fails to parse as JSON on the way back out.
+    external_models: Mapped[dict[str, str]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    #: Reasoning effort per external engine, ``{executor: level}``, with the
+    #: same rules as ``external_models`` above and for the same reasons. Both
+    #: CLIs have a real one -- ``claude --effort`` and Codex's
+    #: ``model_reasoning_effort`` -- but they do not accept identical level sets,
+    #: so this is keyed by engine rather than shared with ``effort``, which
+    #: governs Neo's own replies and means something different.
+    external_efforts: Mapped[dict[str, str]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+
     #: Tool names withheld from every agent turn in this chat. Applies to both
     #: built-in tools and bridged connector tools -- see agent_core.tools.registry.
     #: ``server_default`` matters here, not just ``default``: agent_core writes

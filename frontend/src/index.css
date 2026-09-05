@@ -4189,23 +4189,10 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 }
 
 /* --- External executors ------------------------------------------------- */
-/* Which engine ran a turn, and what it cost where the CLI actually said. */
-.agent-executor-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  align-self: flex-start;
-  margin-bottom: 6px;
-  padding: 2px 9px;
-  border: 1px solid var(--border, #d8d8d8);
-  border-radius: 999px;
-  background: var(--surface-2, #f6f6f6);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--text-muted, #666);
-}
-.agent-executor-facts { font-weight: 400; opacity: 0.8; }
+/* Which engine ran a turn is said by the turn's own sender line, styled like
+   every other one, and what it cost joins the ordinary message footer. Neither
+   needs a rule here: a pale pill above the bubble was a second, louder author
+   line in a palette this interface does not otherwise use. */
 
 /* The seam between two engines inside one turn. */
 .agent-step-divider {

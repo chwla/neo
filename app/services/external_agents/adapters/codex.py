@@ -46,6 +46,7 @@ def build_argv(
     cwd: str,
     resume_thread_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     unsafe: bool = False,
 ) -> list[str]:
     # See the note in the Claude adapter: a restrictive mode wins over an
@@ -63,6 +64,12 @@ def build_argv(
 
     if model:
         argv += ["-m", model]
+    # Codex has no effort *flag* -- `codex exec --help` lists none -- so it goes
+    # in the way the CLI documents for any config key, as a `-c` override of the
+    # same `model_reasoning_effort` the user's own config.toml sets. Quoted as
+    # TOML because that is how `-c` parses its value.
+    if effort:
+        argv += ["-c", f'model_reasoning_effort="{effort}"']
     if unsafe:
         argv.append("--dangerously-bypass-approvals-and-sandbox")
     argv.append(prompt)
@@ -258,9 +265,11 @@ def invocation(context: InvocationContext) -> Invocation:
         mode=context.mode,
         cwd=context.cwd,
         resume_thread_id=context.resume_id,
-        # Left unset so Codex uses the model in the user's own config -- Neo
-        # drives their CLI, it does not second-guess how they configured it.
+        # None means "send no -m", and then Codex uses the model in the user's
+        # own config -- Neo drives their CLI, it does not second-guess how they
+        # configured it unless this chat's Model chip says otherwise.
         model=context.model,
+        effort=context.effort,
         unsafe=context.unsafe,
     )
     return Invocation(argv=argv, translate=Translator().feed, session_id=None)

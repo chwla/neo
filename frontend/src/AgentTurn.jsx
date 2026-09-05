@@ -47,6 +47,19 @@ function groupEntries(entries) {
 
 const EXECUTOR_NAMES = { claude_code: "Claude Code", codex: "Codex", neo: "Neo" };
 
+/**
+ * Who to name as the author of an assistant turn.
+ *
+ * A turn that ran on Claude Code is signed "Claude Code", in the same slot
+ * every other reply signs "Neo". It used to be signed "Neo" with a pill above
+ * the bubble correcting that -- which is two names for one turn, the wrong one
+ * of them in the place a reader actually looks for the author.
+ */
+export function senderName(executor) {
+  if (!executor || executor === "neo") return "Neo";
+  return EXECUTOR_NAMES[executor] || executor;
+}
+
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -99,7 +112,7 @@ function traceEntries(run, liveEntries) {
   return (run?.tool_calls || []).map(entryFromToolCall);
 }
 
-function AgentBubble({ role, text, html, entry, onCopy, extraActions }) {
+function AgentBubble({ role, text, html, entry, onCopy, extraActions, sender = "Neo" }) {
   const isUser = role === "user";
   const sentAt = formatMessageTime(entry?.created_at);
   const metadataItems = isUser
@@ -111,7 +124,7 @@ function AgentBubble({ role, text, html, entry, onCopy, extraActions }) {
   return (
     <article className={`neo-chat-message ${isUser ? "user" : "assistant"}`}>
       <div className="message-stack">
-        <span className="message-sender">{isUser ? "You" : "Neo"}</span>
+        <span className="message-sender">{isUser ? "You" : sender}</span>
         <div className="message-bubble">
           {html ? (
             /* Escaped by renderMessageHtml before any tag is emitted. */
@@ -140,14 +153,14 @@ function AgentBubble({ role, text, html, entry, onCopy, extraActions }) {
 }
 
 /** The same waiting bubble chat shows, so a working agent reads the same way. */
-function AgentWorkingBubble() {
+function AgentWorkingBubble({ sender = "Neo" }) {
   return (
     <article className="neo-chat-message assistant thinking">
       <div className="message-stack">
-        <span className="message-sender">Neo</span>
+        <span className="message-sender">{sender}</span>
         <div className="message-bubble pending-message-bubble">
           <div className="pending-message-header">
-            <span>Neo is working</span>
+            <span>{sender} is working</span>
           </div>
         </div>
       </div>
@@ -308,27 +321,26 @@ function formatCost(value) {
   return value < 0.01 ? "<$0.01" : `$${value.toFixed(2)}`;
 }
 
-function formatExecutorTokens(meta) {
-  const total = (meta?.prompt_tokens || 0) + (meta?.completion_tokens || 0);
-  if (total > 0) return `${total.toLocaleString()} tokens`;
-  const usage = meta?.usage || {};
-  const fallback = (usage.input_tokens || 0) + (usage.output_tokens || 0);
-  return fallback > 0 ? `${fallback.toLocaleString()} tokens` : null;
-}
-
-function ExecutorBadge({ executor, meta }) {
-  if (!executor || executor === "neo") return null;
-  const name = EXECUTOR_NAMES[executor] || executor;
-  // Each fact is shown only where the engine genuinely reports it, so a badge
-  // never implies a measurement that was not taken.
-  const facts = [formatCost(meta?.total_cost_usd), formatExecutorTokens(meta)].filter(Boolean);
+/**
+ * What an external run reported that the turn row does not already store.
+ *
+ * These join the ordinary message footer -- beside the model, the duration and
+ * the tokens every reply carries -- rather than standing in a badge of their
+ * own. Tokens and duration are deliberately absent here: the turn row stores
+ * both and the footer already prints them, and a second, slightly different
+ * token count beside the first is worse than none.
+ *
+ * Each fact still appears only where the engine genuinely reported it, so this
+ * never implies a measurement that was not taken: Codex reports no cost, and
+ * nothing here invents one.
+ */
+export function executorFacts(executor, meta) {
+  if (!executor || executor === "neo") return [];
+  const facts = [];
+  const cost = formatCost(meta?.total_cost_usd);
+  if (cost) facts.push(cost);
   if (meta?.num_turns) facts.push(`${meta.num_turns} turns`);
-  return (
-    <span className="agent-executor-badge" title={`This turn ran on ${name}`}>
-      {name}
-      {facts.length ? <span className="agent-executor-facts"> · {facts.join(" · ")}</span> : null}
-    </span>
-  );
+  return facts;
 }
 
 /** "handed to Codex", drawn between two stretches of work in one turn. */
@@ -383,12 +395,13 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
   const traceSteps = answer ? steps.filter((entry) => entry !== answer) : steps;
   const showSteps = active || traceOpen;
 
-  const executor = session.executor || "neo";
-  const executorMeta = (session.external_meta || {})[executor] || {};
+  // Every assistant voice inside this turn is the engine running it, named as
+  // such. The turn's own answer is signed the same way by the message row that
+  // holds it, so the whole turn reads in one name.
+  const engine = senderName(session.executor);
 
   return (
     <div className={`agent-turn${active ? " is-active" : ""}`}>
-      <ExecutorBadge executor={executor} meta={executorMeta} />
       {showSteps ? (
         <div className={`agent-steps${working ? " is-working" : ""}`}>
           <span className="agent-steps-rail" aria-hidden="true">
@@ -400,6 +413,7 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
             return (
               <AgentBubble
                 key={entry.id}
+                sender={engine}
                 role={entry.kind === "user" ? "user" : "assistant"}
                 html={entry.kind === "user" ? undefined : renderMessageHtml(entry.content)}
                 text={entry.kind === "user" ? entry.content : undefined}
@@ -408,7 +422,7 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
               />
             );
           })}
-          {working && !approval ? <AgentWorkingBubble /> : null}
+          {working && !approval ? <AgentWorkingBubble sender={engine} /> : null}
         </div>
       ) : null}
 
@@ -422,7 +436,6 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
 export {
   AgentBubble,
   ApprovalCard,
-  ExecutorBadge,
   formatCost,
   StepDivider,
   DiffView,

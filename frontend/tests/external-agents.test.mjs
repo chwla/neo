@@ -18,9 +18,21 @@ import { describe, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ChatComposer, engineOptions } from "../src/App.jsx";
+import {
+  ChatComposer,
+  ChatMessage,
+  engineOptions,
+  withEngineSetting,
+} from "../src/App.jsx";
 import ExternalAgents, { engineState } from "../src/ExternalAgents.jsx";
-import { ExecutorBadge, StepDivider, entryFromEvent, formatCost } from "../src/AgentTurn.jsx";
+import {
+  AgentBubble,
+  StepDivider,
+  entryFromEvent,
+  executorFacts,
+  formatCost,
+  senderName,
+} from "../src/AgentTurn.jsx";
 import { applyEvent } from "../src/chatStream.js";
 
 const CAPS = (overrides = {}) => ({
@@ -161,6 +173,149 @@ describe("the engine chip", () => {
   });
 });
 
+describe("the model chip", () => {
+  const CATALOGUE = {
+    default: "opus[1m]",
+    options: [{ id: "sonnet", source: "documented" }, { id: "fable", source: "documented" }],
+    effort_default: "xhigh",
+    efforts: ["low", "medium", "high", "max"],
+  };
+
+  test("there is no model chip while Neo is the engine", () => {
+    // Neo's own turns are chosen by the LLM picker, which is a different
+    // control with a different list; two of them would be one too many.
+    assert.ok(!composer({ executor: "neo" }).includes("Select engine model"));
+  });
+
+  test("an external engine gets one", () => {
+    const html = composer({ executor: "claude_code", engineModels: CATALOGUE });
+    assert.ok(html.includes('<span class="agent-chip-label">Model</span>'));
+    assert.ok(html.includes('aria-label="Select engine model"'));
+  });
+
+  test("the CLI's own setting leads, named as the model it is", () => {
+    // Not "Default · opus[1m]": the word said nothing the model name did not,
+    // and the useful thing to read is what the turn will actually run on.
+    const html = composer({ executor: "claude_code", engineModels: CATALOGUE });
+    assert.ok(html.includes(">opus[1m]</option>"));
+    assert.ok(!html.includes("Default"), "the word is gone from the chip");
+    assert.ok(html.includes(">sonnet</option>"));
+  });
+
+  test("the account's own models are offered, not just documented aliases", () => {
+    // Codex caches the account's list; that is a stronger answer than a
+    // vocabulary parsed out of help text, and it is what makes the chip useful.
+    const html = composer({
+      executor: "codex",
+      engineModels: {
+        default: "gpt-5.6-sol",
+        options: [{ id: "gpt-5.5", source: "account" }, { id: "gpt-5.4-mini", source: "account" }],
+        effort_default: "high",
+        efforts: [],
+      },
+    });
+    assert.ok(html.includes(">gpt-5.5</option>"));
+    assert.ok(html.includes(">gpt-5.4-mini</option>"));
+  });
+
+  test("an empty value means the default, and is the first option", () => {
+    const html = composer({ executor: "claude_code", engineModels: CATALOGUE });
+    const chip = html.slice(html.indexOf('aria-label="Select engine model"'));
+    assert.ok(chip.indexOf('value=""') < chip.indexOf('value="sonnet"'));
+  });
+
+  test("nothing discovered still renders a usable chip", () => {
+    // Nothing on the machine named a model, so there is no name to show. The
+    // empty value still means "send no flag", which is what "Automatic" says.
+    const html = composer({ executor: "codex", engineModels: { default: null, options: [] } });
+    assert.ok(html.includes('<span class="agent-chip-label">Model</span>'));
+    assert.ok(html.includes(">Automatic</option>"));
+  });
+
+  test("and so does a catalogue that never arrived", () => {
+    const html = composer({ executor: "codex", engineModels: null });
+    assert.ok(html.includes(">Automatic</option>"));
+  });
+});
+
+describe("the effort chip", () => {
+  const CATALOGUE = {
+    default: "opus[1m]",
+    options: [],
+    effort_default: "xhigh",
+    efforts: ["low", "medium", "high", "max"],
+  };
+
+  test("an external engine gets one, because both CLIs have a real one", () => {
+    // `claude --effort <level>` and Codex's `model_reasoning_effort`. Neo's own
+    // agent turns still have none: `effort` there only governs replies.
+    const html = composer({ executor: "claude_code", engineModels: CATALOGUE });
+    assert.ok(html.includes('aria-label="Select engine effort"'));
+    assert.ok(html.includes(">max</option>"));
+  });
+
+  test("the CLI's own level leads, named as the level it is", () => {
+    const html = composer({ executor: "claude_code", engineModels: CATALOGUE });
+    const chip = html.slice(html.indexOf('aria-label="Select engine effort"'));
+    assert.ok(chip.startsWith('aria-label="Select engine effort"'));
+    assert.ok(chip.includes(">xhigh</option>"));
+  });
+
+  test("Neo's own engine gets none", () => {
+    assert.ok(!composer({ executor: "neo" }).includes("Select engine effort"));
+  });
+
+  test("an engine that names no levels still offers its configured one", () => {
+    const html = composer({
+      executor: "codex",
+      engineModels: { default: null, options: [], effort_default: "high", efforts: [] },
+    });
+    assert.ok(html.includes(">high</option>"));
+  });
+});
+
+describe("clearing a per-engine setting", () => {
+  test("a choice is stored under its engine", () => {
+    assert.deepEqual(withEngineSetting({}, "codex", "gpt-5.5"), { codex: "gpt-5.5" });
+  });
+
+  test("clearing removes the key rather than storing an empty one", () => {
+    // So "leave the CLI alone" has one representation, and can never reach an
+    // adapter as `--model ""`.
+    assert.deepEqual(withEngineSetting({ codex: "gpt-5.5" }, "codex", ""), {});
+  });
+
+  test("the other engine's choice is untouched either way", () => {
+    const both = { codex: "gpt-5.5", claude_code: "opus" };
+    assert.deepEqual(withEngineSetting(both, "codex", ""), { claude_code: "opus" });
+    assert.deepEqual(withEngineSetting(both, "codex", "gpt-5.4-mini"), {
+      codex: "gpt-5.4-mini",
+      claude_code: "opus",
+    });
+  });
+
+  test("a missing map is not a crash", () => {
+    assert.deepEqual(withEngineSetting(undefined, "codex", "gpt-5.5"), { codex: "gpt-5.5" });
+  });
+});
+
+describe("whose model answers the turn", () => {
+  test("Neo's LLM picker is gone once an external engine runs agent turns", () => {
+    // It would be a control the turn ignores, sitting where the answer's
+    // author is named. Claude Code and Codex answer on their own model.
+    assert.ok(!composer({ mode: "agent", executor: "claude_code" }).includes("Choose LLM"));
+  });
+
+  test("it stays for Neo's own agent turns", () => {
+    assert.ok(composer({ mode: "agent", executor: "neo" }).includes("Choose LLM"));
+  });
+
+  test("and it stays in chat mode whatever the chat's engine is", () => {
+    // The engine governs agent turns only; a plain reply is always Neo's.
+    assert.ok(composer({ mode: "chat", executor: "claude_code" }).includes("Choose LLM"));
+  });
+});
+
 describe("Settings > Engines is where an engine is connected", () => {
   // The four states a row can be in, in the order they have to be fixed:
   // nothing is signed in that is not installed, and nothing runs while the
@@ -193,30 +348,116 @@ describe("Settings > Engines is where an engine is connected", () => {
   });
 });
 
-describe("the executor badge", () => {
-  const badge = (executor, meta) =>
-    renderToStaticMarkup(createElement(ExecutorBadge, { executor, meta }));
-
-  test("names the engine that produced the turn", () => {
-    assert.ok(badge("claude_code", {}).includes("Claude Code"));
-    assert.ok(badge("codex", {}).includes("Codex"));
+describe("the engine signs the turn it produced", () => {
+  // It used to be signed "Neo", with a pale pill above the bubble correcting
+  // that -- two names for one turn, the wrong one in the slot a reader actually
+  // reads the author from. Now there is one name, in that slot.
+  test("an external turn is signed by the engine that ran it", () => {
+    assert.equal(senderName("claude_code"), "Claude Code");
+    assert.equal(senderName("codex"), "Codex");
   });
 
-  test("Neo's own runs are not badged", () => {
-    assert.equal(badge("neo", {}), "");
-    assert.equal(badge(undefined, {}), "");
+  test("Neo's own turns are still signed Neo", () => {
+    assert.equal(senderName("neo"), "Neo");
+    assert.equal(senderName(undefined), "Neo");
+    assert.equal(senderName(""), "Neo");
   });
 
-  test("cost is shown when the CLI reported one", () => {
-    const html = badge("claude_code", { total_cost_usd: 0.42, num_turns: 3 });
-    assert.ok(html.includes("$0.42"));
-    assert.ok(html.includes("3 turns"));
+  test("an engine Neo has no name for is signed with its id, not with Neo's name", () => {
+    assert.equal(senderName("something_else"), "something_else");
+  });
+
+  test("the bubbles inside the turn carry the same signature", () => {
+    const html = renderToStaticMarkup(
+      createElement(AgentBubble, { role: "assistant", text: "done", sender: "Codex" }),
+    );
+    assert.ok(html.includes('<span class="message-sender">Codex</span>'));
+    assert.ok(!html.includes(">Neo<"));
+  });
+
+  test("and a bubble with no engine named falls back to Neo", () => {
+    const html = renderToStaticMarkup(createElement(AgentBubble, { role: "assistant", text: "x" }));
+    assert.ok(html.includes('<span class="message-sender">Neo</span>'));
+  });
+});
+
+describe("the turn in the transcript", () => {
+  // The whole thing end to end: one finished agent turn, as the chat draws it.
+  const turn = (executor, meta) =>
+    renderToStaticMarkup(
+      createElement(ChatMessage, {
+        message: {
+          id: 7,
+          role: "assistant",
+          content: "Done.",
+          response_kind: "agent_run",
+          created_at: "2026-09-05T13:00:00",
+          duration_ms: 2300,
+          model_name: "claude-opus-5[1m]",
+          provider_name: executor,
+        },
+        messages: [],
+        agentRun: {
+          session: { id: "s1", status: "succeeded", executor, external_meta: { [executor]: meta } },
+        },
+        agentEntries: [],
+      }),
+    );
+
+  test("is signed by the engine, where every other reply signs Neo", () => {
+    const html = turn("claude_code", { total_cost_usd: 0.07, num_turns: 1 });
+    assert.ok(html.includes('<span class="message-sender">Claude Code</span>'));
+    assert.ok(!html.includes('<span class="message-sender">Neo</span>'));
+  });
+
+  test("carries the cost in the footer it already had, not in a badge", () => {
+    const html = turn("claude_code", { total_cost_usd: 0.07, num_turns: 1 });
+    assert.ok(html.includes("$0.07"), "the cost survived the badge");
+    assert.ok(html.includes("1 turns"));
+    assert.ok(!html.includes("agent-executor-badge"), "and the badge is gone");
+  });
+
+  test("a Codex turn is signed Codex and priced at nothing", () => {
+    const html = turn("codex", { prompt_tokens: 63106 });
+    assert.ok(html.includes('<span class="message-sender">Codex</span>'));
+    assert.ok(!html.includes("$"));
+  });
+
+  test("a plain reply is untouched", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChatMessage, {
+        message: { id: 8, role: "assistant", content: "Hi.", created_at: "2026-09-05T13:00:00" },
+        messages: [],
+      }),
+    );
+    assert.ok(html.includes('<span class="message-sender">Neo</span>'));
+  });
+});
+
+describe("what the badge carried that the message footer does not", () => {
+  // Tokens and duration are stored on the turn row and printed by every reply's
+  // footer already; cost and the CLI's own turn count are not, and losing them
+  // with the badge would lose the only record of what a run cost.
+  test("cost and turn count are handed to the footer", () => {
+    assert.deepEqual(executorFacts("claude_code", { total_cost_usd: 0.42, num_turns: 3 }), [
+      "$0.42",
+      "3 turns",
+    ]);
+  });
+
+  test("tokens are not, because the footer already prints its own count", () => {
+    const facts = executorFacts("claude_code", { prompt_tokens: 900, completion_tokens: 100 });
+    assert.ok(!facts.some((fact) => fact.includes("tokens")));
   });
 
   test("no cost is invented when the CLI reported none", () => {
     // Codex reports tokens only. A fabricated price would be worse than silence.
-    const html = badge("codex", { usage: { input_tokens: 100 } });
-    assert.ok(!html.includes("$"));
+    assert.deepEqual(executorFacts("codex", { usage: { input_tokens: 100 } }), []);
+  });
+
+  test("Neo's own runs contribute nothing", () => {
+    assert.deepEqual(executorFacts("neo", { total_cost_usd: 1 }), []);
+    assert.deepEqual(executorFacts(undefined, { total_cost_usd: 1 }), []);
   });
 });
 
@@ -332,27 +573,23 @@ describe("cost is never fabricated", () => {
     assert.equal(formatCost(0), "$0.00");
   });
 
-  test("Codex shows tokens and no price", () => {
-    const html = renderToStaticMarkup(
-      createElement(ExecutorBadge, {
-        executor: "codex",
-        meta: { prompt_tokens: 63106, completion_tokens: 639 },
-      }),
+  test("Codex contributes no price to the footer", () => {
+    assert.deepEqual(
+      executorFacts("codex", { prompt_tokens: 63106, completion_tokens: 639 }),
+      [],
+      "Codex reports no cost; none may be displayed",
     );
-    assert.ok(html.includes("Codex"));
-    assert.ok(html.includes("tokens"), "token usage is reported and should be shown");
-    assert.ok(!html.includes("$"), "Codex reports no cost; none may be displayed");
   });
 
-  test("Claude shows both", () => {
-    const html = renderToStaticMarkup(
-      createElement(ExecutorBadge, {
-        executor: "claude_code",
-        meta: { total_cost_usd: 0.134957, prompt_tokens: 10, completion_tokens: 20, num_turns: 3 },
+  test("Claude contributes the price it reported", () => {
+    assert.deepEqual(
+      executorFacts("claude_code", {
+        total_cost_usd: 0.134957,
+        prompt_tokens: 10,
+        completion_tokens: 20,
+        num_turns: 3,
       }),
+      ["$0.13", "3 turns"],
     );
-    assert.ok(html.includes("$0.13"));
-    assert.ok(html.includes("30 tokens"));
-    assert.ok(html.includes("3 turns"));
   });
 });

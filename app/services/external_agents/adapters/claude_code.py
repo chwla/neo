@@ -43,6 +43,7 @@ def build_argv(
     resume: bool,
     disabled_tools: list[str] | None = None,
     model: str | None = None,
+    effort: str | None = None,
     unsafe: bool = False,
 ) -> list[str]:
     """The command line for one turn.
@@ -72,6 +73,10 @@ def build_argv(
         argv += ["--disallowedTools", *disabled_tools]
     if model:
         argv += ["--model", model]
+    # `--effort <level>`, its own flag with its own documented levels. Absent
+    # unless asked for, so `effortLevel` in the user's settings still applies.
+    if effort:
+        argv += ["--effort", effort]
     if unsafe:
         argv.append("--dangerously-skip-permissions")
     return argv
@@ -283,6 +288,12 @@ def invocation(context: InvocationContext) -> Invocation:
         session_id=conversation,
         resume=bool(context.resume_id),
         disabled_tools=context.disabled_tools,
+        # None means "send no --model", and then whatever this CLI's own
+        # configuration names still applies. Forwarded rather than dropped: the
+        # field went unread here for as long as its only source was a
+        # Codex-shaped environment variable, so the omission was invisible.
+        model=context.model,
+        effort=context.effort,
         unsafe=context.unsafe,
     )
     return Invocation(argv=argv, translate=translate, session_id=conversation)

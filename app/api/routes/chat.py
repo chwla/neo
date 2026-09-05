@@ -189,6 +189,10 @@ class ChatRead(BaseModel):
     disabled_tools: list[str] = Field(default_factory=list)
     effort: str = "low"
     executor: str = "neo"
+    #: ``{executor: model}`` and ``{executor: effort}``. An engine absent from
+    #: either map runs on whatever its own CLI configuration names.
+    external_models: dict[str, str] = Field(default_factory=dict)
+    external_efforts: dict[str, str] = Field(default_factory=dict)
     #: Set only while a run in this chat is unfinished, so the sidebar can badge
     #: the row without a second request. A chat whose agent turns are all done
     #: is an ordinary chat again.
@@ -359,6 +363,33 @@ class ChatUpdateRequest(BaseModel):
     disabled_tools: list[str] | None = None
     effort: Literal["low", "high"] | None = None
     executor: Executor | None = None
+    #: The whole map, replaced wholesale. The composer patches one engine's
+    #: entry by sending the map it already has with that key changed, which
+    #: keeps this endpoint free of merge semantics that only one caller needs.
+    external_models: dict[str, str] | None = None
+    external_efforts: dict[str, str] | None = None
+
+    @field_validator("external_models", "external_efforts")
+    @classmethod
+    def only_known_engines(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        """Reject an engine Neo cannot run, and an empty choice.
+
+        An unknown key would sit in the map forever doing nothing; a blank value
+        is spelled by *omitting* the key, so that "use the CLI's own default"
+        has one representation rather than two.
+        """
+
+        if value is None:
+            return None
+        from app.services.external_agents import detect
+
+        cleaned: dict[str, str] = {}
+        for executor, model in value.items():
+            if executor not in detect.SPECS:
+                raise ValueError(f"unknown_engine:{executor}")
+            if isinstance(model, str) and model.strip():
+                cleaned[executor] = model.strip()[:120]
+        return cleaned
 
     @field_validator("title")
     @classmethod
@@ -2044,6 +2075,8 @@ def _start_agent_turn(
                     agent_definition_id=chat.agent_definition_id,
                     disabled_tools=chat.disabled_tools or [],
                     executor=executor,
+                    external_models=chat.external_models or {},
+                    external_efforts=chat.external_efforts or {},
                     handoff=handoff,
                     chat_id=chat.id,
                     anchor_message_id=anchor.id,
@@ -2724,6 +2757,10 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat.effort = request.effort
     if request.executor is not None:
         chat.executor = request.executor
+    if request.external_models is not None:
+        chat.external_models = request.external_models
+    if request.external_efforts is not None:
+        chat.external_efforts = request.external_efforts
     store.db.commit()
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)

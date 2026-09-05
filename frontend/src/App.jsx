@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
 import { ContextWindowIndicator } from "./ContextWindowIndicator.jsx";
-import AgentTurn, { TERMINAL } from "./AgentTurn.jsx";
+import AgentTurn, { TERMINAL, executorFacts, senderName } from "./AgentTurn.jsx";
 import { IDLE, useChatStreams } from "./chatStream.js";
 import BackgroundTurnToast, {
   NOTIFY_STORAGE_KEY,
@@ -814,16 +814,28 @@ export function ChatMessage({
   const hasThinking = Boolean(message.thinking?.trim());
   const isEditing = isUser && editingMessageId === message.id;
   const previousUser = isUser ? null : previousUserMessage(messages, message);
-  const metadataItems = isUser
-    ? []
-    : [formatResponseKind(message), formatDuration(message.duration_ms), formatOutputTokens(message)]
-      .filter(Boolean);
 
-  const sentAt = formatMessageTime(message.created_at);
   // An agent turn is an assistant turn that did some work first. The work is
   // drawn above the bubble; the bubble itself holds the answer, exactly as it
   // does for a reply, which is what makes the two read as one conversation.
   const isAgentTurn = message.response_kind === "agent_run";
+  const run = isAgentTurn ? agentRun : null;
+  // Which engine produced this turn. It signs the message, in the same slot
+  // every other reply signs "Neo", rather than sitting in a badge above the
+  // bubble correcting a signature that was already wrong.
+  const runExecutor = run?.session?.executor || "neo";
+  const metadataItems = isUser
+    ? []
+    : [
+      formatResponseKind(message),
+      formatDuration(message.duration_ms),
+      formatOutputTokens(message),
+      // What the CLI reported and the turn row does not store: cost, and the
+      // engine's own count of the turns it took inside this one.
+      ...executorFacts(runExecutor, (run?.session?.external_meta || {})[runExecutor]),
+    ].filter(Boolean);
+
+  const sentAt = formatMessageTime(message.created_at);
   const isCompactionSummary = message.response_kind === "compaction_summary";
   const calendarProposal =
     message.response_kind === "calendar_proposal" ? message.metadata?.calendar_proposal : null;
@@ -831,7 +843,6 @@ export function ChatMessage({
   // composer state, so a reloaded thread still shows the picture instead of a
   // message that reads as though nothing was sent with it.
   const messageImageIds = message.metadata?.image_ids ?? [];
-  const run = isAgentTurn ? agentRun : null;
   const delivery = run?.delivery;
   const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
   const canUndo = hasChanges && delivery?.mode === "live" && Boolean(delivery?.undoable);
@@ -843,7 +854,7 @@ export function ChatMessage({
   return (
     <article className={`neo-chat-message ${isUser ? "user" : "assistant"}${isAgentTurn ? " agent-turn-message" : ""}${isCompactionSummary ? " compaction-summary-message" : ""}`}>
       <div className="message-stack">
-        <span className="message-sender">{isUser ? "You" : "Neo"}</span>
+        <span className="message-sender">{isUser ? "You" : senderName(runExecutor)}</span>
         {isAgentTurn ? (
           <AgentTurn
             run={run}
@@ -1169,6 +1180,22 @@ export function engineOptions(executor = "neo", externalAgents = []) {
 }
 
 /**
+ * One engine's entry in a per-engine settings map, set or cleared.
+ *
+ * Both the Model and the Effort chip patch their whole map with one key
+ * changed, which keeps the endpoint free of merge semantics only this caller
+ * needs. Clearing *removes* the key rather than storing "", so "leave the CLI
+ * alone" has exactly one representation and cannot reach an adapter as an empty
+ * flag value.
+ */
+export function withEngineSetting(current, executor, value) {
+  const next = { ...(current || {}) };
+  if (value) next[executor] = value;
+  else delete next[executor];
+  return next;
+}
+
+/**
  * The composer is one rounded terminal-green card: the objective/message on the
  * first line with the model picker opposite it, and a control row underneath --
  * tools on the left, mode switch and send on the right.
@@ -1195,6 +1222,11 @@ export function ChatComposer({
   onExecutorChange,
   externalAgents = [],
   onOpenEngineSettings,
+  engineModels = null,
+  externalModel = "",
+  onExternalModelChange,
+  externalEffort = "",
+  onExternalEffortChange,
   effort = "low",
   onEffortChange = () => {},
   onOpenFolder,
@@ -1229,6 +1261,11 @@ export function ChatComposer({
   // refused, not after.
   const activeChoice = engineChoices.find((choice) => choice.id === executor);
   const engineBroken = Boolean(activeChoice) && !activeChoice.available;
+  // An external engine answers on its own model, so Neo's LLM picker is not
+  // choosing anything on an agent turn -- it would be a control whose value the
+  // turn ignores, sitting where the answer's author is named. It comes back the
+  // moment the turn would be Neo's again, which is either mode.
+  const externalEngine = mode === "agent" && executor !== "neo";
   // Whether anything beyond Neo is genuinely connected, which decides whether
   // the line below the picker is an invitation or a way back to the panel.
   const hasConnectedEngine = externalAgents.some((agent) => agent.available);
@@ -1457,6 +1494,46 @@ export function ChatComposer({
                           ? "Manage engines in Settings"
                           : "Connect Claude Code or Codex…"}
                     </button>
+                    {externalEngine ? (
+                      <>
+                        {/* Both chips work the same way: the empty value sends
+                            no flag, so whatever the CLI is already configured
+                            to use applies. That row is *named after the setting
+                            it resolves to* rather than labelled "Default" --
+                            the model the turn will run on is the useful thing
+                            to read, and the word added nothing to it. */}
+                        <label className="agent-chip">
+                          <span className="agent-chip-label">Model</span>
+                          <select
+                            value={externalModel}
+                            onChange={(event) => onExternalModelChange?.(event.target.value)}
+                            disabled={disabled}
+                            aria-label="Select engine model"
+                            title="Which model this engine runs on. The first entry is the one its own CLI configuration is set to."
+                          >
+                            <option value="">{engineModels?.default || "Automatic"}</option>
+                            {(engineModels?.options || []).map((option) => (
+                              <option key={option.id} value={option.id}>{option.id}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="agent-chip">
+                          <span className="agent-chip-label">Effort</span>
+                          <select
+                            value={externalEffort}
+                            onChange={(event) => onExternalEffortChange?.(event.target.value)}
+                            disabled={disabled}
+                            aria-label="Select engine effort"
+                            title="How hard this engine reasons before answering. The first entry is the level its own CLI configuration is set to."
+                          >
+                            <option value="">{engineModels?.effort_default || "Automatic"}</option>
+                            {(engineModels?.efforts || []).map((level) => (
+                              <option key={level} value={level}>{level}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </>
+                    ) : null}
                     <label className="agent-chip">
                       <span className="agent-chip-label">Agent</span>
                       <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
@@ -1605,6 +1682,7 @@ export function ChatComposer({
                 onAttachFiles?.(pasted);
               }}
             />
+            {externalEngine ? null : (
             <div className="chat-llm-picker">
               <select
                 value={llmId || ""}
@@ -1621,6 +1699,7 @@ export function ChatComposer({
                 <path d="m6 15 6-6 6 6" />
               </svg>
             </div>
+            )}
           </div>
           <div className="composer-foot">
             {/* What the next turn will be, kept away from the button that sends
@@ -2671,6 +2750,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [chatMode, setChatMode] = useState("chatbot");
   const [agentDefinitions, setAgentDefinitions] = useState([]);
   const [externalAgents, setExternalAgents] = useState([]);
+  // The model catalogue for the engine this chat runs on, keyed by engine so
+  // switching back and forth does not re-probe. Null while unknown, which the
+  // chip renders as "Default" -- correct even before the answer arrives.
+  const [engineModels, setEngineModels] = useState({});
   const [agentRepos, setAgentRepos] = useState([]);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentPatch, setAgentPatch] = useState("");
@@ -2725,6 +2808,33 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   useEffect(() => {
     if (chatMode === "agent") loadAgentContext();
   }, [chatMode, loadAgentContext]);
+
+  const chatExecutor = activeChat?.executor || "neo";
+
+  // Fetched per engine, once, and only for the engine actually in use: the
+  // probe reads the CLI's config and its help text, which is work worth doing
+  // for the engine answering the next turn and not for the other one.
+  useEffect(() => {
+    if (chatMode !== "agent" || chatExecutor === "neo") return undefined;
+    let cancelled = false;
+    setEngineModels((current) => {
+      if (current[chatExecutor] !== undefined) return current;
+      api
+        .externalAgentModels(chatExecutor)
+        .then((catalogue) => {
+          if (!cancelled) setEngineModels((next) => ({ ...next, [chatExecutor]: catalogue }));
+        })
+        .catch(() => {
+          // A catalogue Neo could not read is not a broken chat: the chip falls
+          // back to "Default", which sends no --model and always works.
+          if (!cancelled) setEngineModels((next) => ({ ...next, [chatExecutor]: null }));
+        });
+      return current;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatMode, chatExecutor]);
 
   /**
    * Switch this chat to an engine, and say which one is running turns now.
@@ -4029,6 +4139,26 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onExecutorChange={handleEngineSelected}
           externalAgents={externalAgents}
           onOpenEngineSettings={() => setShowEngines(true)}
+          engineModels={engineModels[chatExecutor] || null}
+          externalModel={(activeChat?.external_models || {})[chatExecutor] || ""}
+          externalEffort={(activeChat?.external_efforts || {})[chatExecutor] || ""}
+          /* The whole map is sent, with this engine's entry set or removed --
+             an empty choice is spelled by *absence*, so "use whatever the CLI
+             is already set to" has one representation rather than two. */
+          onExternalModelChange={(model) =>
+            updateChatAgentSettings({
+              external_models: withEngineSetting(activeChat?.external_models, chatExecutor, model),
+            })
+          }
+          onExternalEffortChange={(level) =>
+            updateChatAgentSettings({
+              external_efforts: withEngineSetting(
+                activeChat?.external_efforts,
+                chatExecutor,
+                level,
+              ),
+            })
+          }
           effort={activeChat?.effort || "low"}
           onEffortChange={(next) => updateChatAgentSettings({ effort: next })}
           onOpenFolder={handleOpenFolder}

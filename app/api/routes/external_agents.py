@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from app.services import chat_prefs
 from app.services.external_agents import chain as external_chain
 from app.services.external_agents import detect, login
+from app.services.external_agents import models as external_models
 from app.services.external_agents.types import ExternalAgentError
 
 router = APIRouter(tags=["external-agents"])
@@ -173,6 +174,27 @@ def external_agent_setup(
     }
 
 
+@router.get("/external-agents/{executor}/models")
+def executor_models(
+    executor: str,
+    refresh: bool = Query(default=False, description="Re-probe instead of using the cache."),
+) -> dict[str, Any]:
+    """Which models this engine can be asked for, and where each answer came from.
+
+    Deliberately short, and sometimes empty. Neither CLI enumerates the models
+    an account holds -- there is no subcommand for it, and an unknown model is
+    rejected without naming the known ones -- so this reports only measured
+    facts: the model the CLI's own config names, the shorthand its own ``--help``
+    documents, and every model id Neo has watched a run report. Padding that out
+    with a plausible-looking catalogue would be Neo asserting an account has
+    models it may not, and going stale the first time a vendor ships one.
+    """
+
+    if executor not in detect.SPECS:
+        raise HTTPException(status_code=404, detail=f"Unknown engine '{executor}'.")
+    return external_models.catalogue(executor, refresh=refresh)
+
+
 class EnableRequest(BaseModel):
     enabled: bool = Field(description="Whether this profile may run external engines.")
 
@@ -192,6 +214,7 @@ def set_external_agents_enabled(request: EnableRequest) -> dict[str, Any]:
 
     enabled = chat_prefs.set_external_agents_enabled(request.enabled)
     detect.clear_cache()
+    external_models.clear_cache()
     if not enabled:
         # Nothing half-started should outlive the switch being turned off.
         login.reset()

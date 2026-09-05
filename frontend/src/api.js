@@ -195,6 +195,10 @@ export const api = {
   // signed in, just not switched on" rather than a flat "unavailable".
   externalAgentSetup: (refresh = false) =>
     request(`/external-agents/setup?refresh=${refresh ? "true" : "false"}`),
+  // What this engine can be asked for. Short by design: neither CLI enumerates
+  // an account's models, so this reports only what the machine actually said.
+  externalAgentModels: (executor, refresh = false) =>
+    request(`/external-agents/${executor}/models?refresh=${refresh ? "true" : "false"}`),
   setExternalAgentsEnabled: (enabled) =>
     request("/external-agents/enable", { method: "POST", body: JSON.stringify({ enabled }) }),
   // One call for "make this engine usable": opts the profile in, re-probes, and

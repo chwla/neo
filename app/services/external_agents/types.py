@@ -119,6 +119,9 @@ class InvocationContext(BaseModel):
     new_session_id: str = ""
     disabled_tools: list[str] = Field(default_factory=list)
     model: str | None = None
+    #: Reasoning effort, in that CLI's own vocabulary. None sends no flag, and
+    #: the CLI's own configured level applies.
+    effort: str | None = None
     unsafe: bool = False
 
 
