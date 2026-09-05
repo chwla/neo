@@ -17,12 +17,26 @@ from app.core.config import get_settings
 MAX_CONCURRENT_TURNS_KEY = "max_concurrent_turns"
 MAX_CONCURRENT_EXTERNAL_TURNS_KEY = "max_concurrent_external_turns"
 EXTERNAL_AGENTS_ENABLED_KEY = "external_agents_enabled"
+SIDEBAR_CHAT_LIMIT_KEY = "sidebar_chat_limit"
 
 #: The bounds the API and the stored value are both clamped to. One, because a
 #: cap of zero would accept turns that never run; ten, because the cap exists to
 #: stop a local model server being asked for more than it can do at once.
 MIN_CONCURRENT_TURNS = 1
 MAX_CONCURRENT_TURNS = 10
+
+#: How many loose chats stay in the sidebar before the oldest are archived.
+#: Ten because a sidebar is a list you scan, not one you page through, and past
+#: about that many the newest chat stops being the one your eye lands on.
+#:
+#: The bounds are wide on purpose. Someone who wants their whole history in the
+#: sidebar should be able to say so, and someone who wants three should too --
+#: the default is an opinion, not a limit. A hundred is where the sidebar stops
+#: being a list at all, so it is the ceiling rather than a number anyone is
+#: expected to reach.
+DEFAULT_SIDEBAR_CHATS = 10
+MIN_SIDEBAR_CHATS = 1
+MAX_SIDEBAR_CHATS = 100
 
 
 def _db_path() -> str:
@@ -174,12 +188,51 @@ def set_max_concurrent_turns(value: int) -> int:
     return clamped
 
 
+def _clamp_sidebar(value: int) -> int:
+    return max(MIN_SIDEBAR_CHATS, min(MAX_SIDEBAR_CHATS, value))
+
+
+def sidebar_chat_limit() -> int:
+    """How many loose chats this profile keeps in the sidebar.
+
+    Read on every sidebar load, and the number a chat is archived for exceeding,
+    so like the concurrency caps above it must never raise: an unreadable
+    preference falls back to the default rather than taking the sidebar down.
+    """
+
+    stored = get_preference(SIDEBAR_CHAT_LIMIT_KEY)
+    if stored is not None:
+        try:
+            return _clamp_sidebar(int(stored))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_SIDEBAR_CHATS
+
+
+def set_sidebar_chat_limit(value: int) -> int:
+    """Record the profile's choice, and return what it now is.
+
+    Raising it does not un-archive anything: a chat that was archived to make
+    room stays archived, because archiving is also something the user does by
+    hand and Neo cannot tell the two apart after the fact. Lowering it takes
+    effect on the next sidebar load, which archives the new overflow.
+    """
+
+    clamped = _clamp_sidebar(int(value))
+    set_preference(SIDEBAR_CHAT_LIMIT_KEY, str(clamped))
+    return clamped
+
+
 __all__ = [
+    "DEFAULT_SIDEBAR_CHATS",
     "EXTERNAL_AGENTS_ENABLED_KEY",
     "MAX_CONCURRENT_EXTERNAL_TURNS_KEY",
     "MAX_CONCURRENT_TURNS",
     "MAX_CONCURRENT_TURNS_KEY",
+    "MAX_SIDEBAR_CHATS",
     "MIN_CONCURRENT_TURNS",
+    "MIN_SIDEBAR_CHATS",
+    "SIDEBAR_CHAT_LIMIT_KEY",
     "external_agents_enabled",
     "get_preference",
     "initialize_chat_preference_tables",
@@ -187,4 +240,6 @@ __all__ = [
     "set_external_agents_enabled",
     "set_max_concurrent_turns",
     "set_preference",
+    "set_sidebar_chat_limit",
+    "sidebar_chat_limit",
 ]

@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -249,6 +249,12 @@ class SidebarRead(BaseModel):
 
     projects: list[ProjectWithChatsRead]
     chats: list[ChatRead]
+    #: How many chats sit in the archive, so the sidebar can label the section
+    #: without a second request for a list it has not been asked to show yet.
+    archived_count: int = 0
+    #: The cap ``chats`` was trimmed to, echoed back so the sidebar can explain
+    #: why a thread left it without going and reading the setting itself.
+    chat_limit: int = chat_prefs.DEFAULT_SIDEBAR_CHATS
 
 
 class ChatThreadRead(BaseModel):
@@ -357,6 +363,9 @@ class ChatUpdateRequest(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=120)
     pinned: bool | None = None
+    #: Out of the sidebar, or back into it. Unarchiving is what makes room:
+    #: the chat returns to the top of the list and whatever was last falls off.
+    archived: bool | None = None
     repo_id: str | None = Field(default=None, max_length=64)
     agent_mode: Literal["plan", "normal", "auto"] | None = None
     agent_definition_id: str | None = Field(default=None, max_length=64)
@@ -505,8 +514,18 @@ def _clean_optional_text(value: str | None) -> str | None:
 
 
 def _get_required_chat(store: AppStore, chat_id: int):
+    """The chat, archived or not.
+
+    Archived used to mean gone here, which was harmless while nothing ever set
+    the flag. It is now the ordinary resting place of every chat past the
+    sidebar's cap, so an archived thread is one you can still open, read,
+    rename, reply to and delete -- it is simply not in the list. Reporting it
+    missing would make Unarchive unreachable through the very endpoint that
+    performs it.
+    """
+
     chat = store.get_chat(chat_id)
-    if chat is None or chat.archived:
+    if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
 
@@ -980,7 +999,10 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 return
             llm_id = generation.llm_id
             chat = db.get(Chat, generation.chat_id)
-            if chat is None or chat.archived:
+            # Deleted, not archived. Archiving is a sidebar decision now and can
+            # happen to a thread whose reply is still being written; failing the
+            # turn for it would lose an answer the user is waiting on.
+            if chat is None:
                 _update_leased_generation(
                     db,
                     generation_id,
@@ -1546,6 +1568,12 @@ def get_sidebar(request: Request, store: StoreDependency) -> SidebarRead:
     # query per chat, which is the shape of thing that only shows up once a
     # profile has a hundred of them.
     turn_statuses = _turn_status_by_chat(running)
+    limit = chat_prefs.sidebar_chat_limit()
+    # Settled here rather than only where chats are created, because every way
+    # the list can outgrow its cap ends at this endpoint: a new chat, an
+    # unarchived one, a lowered setting, or a profile that predates the cap
+    # entirely. Costs nothing when there is no overflow, which is almost always.
+    _enforce_sidebar_limit(store, limit, turn_statuses)
     projects = []
     for project in store.list_projects(ProjectStatus.ACTIVE):
         chats = store.list_chats(project_id=project.id, with_messages_only=True, limit=12)
@@ -1556,11 +1584,75 @@ def get_sidebar(request: Request, store: StoreDependency) -> SidebarRead:
                 chats=[_sidebar_chat_read(chat, running, turn_statuses) for chat in chats],
             )
         )
-    chats = store.list_chats(unprojected_only=True, with_messages_only=True, limit=20)
+    chats = store.list_chats(
+        unprojected_only=True,
+        with_messages_only=True,
+        limit=limit,
+        always_include_ids=set(turn_statuses),
+    )
     return SidebarRead(
         projects=projects,
         chats=[_sidebar_chat_read(chat, running, turn_statuses) for chat in chats],
+        archived_count=store.count_archived_chats(),
+        chat_limit=limit,
     )
+
+
+def _enforce_sidebar_limit(
+    store: AppStore, limit: int, turn_statuses: dict[int, str] | None = None
+) -> list[int]:
+    """Archive whatever the loose chat list is holding past ``limit``.
+
+    Chats mid-turn are held back rather than archived: the sidebar badge is the
+    only place a background reply's progress shows, so taking the row away while
+    it works would hide the very thing the user is waiting for. The next load
+    archives it once the turn is done, if it is still past the cut.
+
+    Never allowed to fail a read. Nothing here is load-bearing for showing the
+    sidebar -- an overflow that survives one load is a list one row too long,
+    and it will be trimmed on the next.
+    """
+
+    try:
+        protected = set(turn_statuses or {})
+        archived = store.archive_sidebar_overflow(limit, protected_ids=protected)
+        if archived:
+            store.db.commit()
+        return archived
+    except Exception:
+        _CHAT_LOG.exception("sidebar_archive_overflow_failed")
+        store.db.rollback()
+        return []
+
+
+def _restore_if_archived(store: AppStore, chat: Chat) -> None:
+    """Bring a chat back into the sidebar because it was just spoken to.
+
+    Sending into an archived thread makes it the most recent conversation there
+    is, so leaving it out of the list would mean a reply arriving somewhere the
+    user cannot see it. Restoring it here also keeps the cap honest: the thread
+    takes its place at the top and the oldest one falls off, exactly as if the
+    message had arrived while it was still in the list.
+    """
+
+    if not chat.archived:
+        return
+    store.set_chat_archived(chat.id, False)
+    store.db.commit()
+    _enforce_sidebar_limit(store, chat_prefs.sidebar_chat_limit(), _turn_status_by_chat())
+
+
+@router.get("/chats/archived", response_model=list[ChatRead])
+def list_archived_chats(
+    store: StoreDependency, limit: int = Query(default=200, ge=1, le=500)
+) -> list[ChatRead]:
+    """Everything the sidebar is not showing.
+
+    Registered above ``/chats/{chat_id}`` so "archived" is read as this route
+    rather than as a chat id that fails to parse.
+    """
+
+    return [ChatRead.model_validate(chat) for chat in store.list_archived_chats(limit=limit)]
 
 
 def _sidebar_chat_read(
@@ -1855,6 +1947,7 @@ def send_chat_message(
     store: StoreDependency,
 ) -> ChatSendResponse:
     chat = _get_required_chat(store, chat_id)
+    _restore_if_archived(store, chat)
     cleaned_prompt = request.prompt.strip()
 
     # A client_request_id makes the send idempotent. The claim is taken and committed
@@ -1936,6 +2029,7 @@ def start_chat_generation(
     if not payload.prompt.strip():
         raise HTTPException(status_code=422, detail="Message content is required")
     chat = _get_required_chat(store, chat_id)
+    _restore_if_archived(store, chat)
     # A message with no stated kind is a reply, never a run -- it must not start
     # something that edits files because an earlier turn in this chat did. The
     # composer always states its kind; this is the answer for everything that
@@ -2743,6 +2837,8 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat = store.rename_chat(chat_id, request.title)
     if request.pinned is not None:
         chat = store.set_chat_pinned(chat_id, request.pinned)
+    if request.archived is not None:
+        chat = store.set_chat_archived(chat_id, request.archived)
     # An empty string clears the workspace, which is a real choice ("stop
     # pointing this conversation at a folder") and distinct from not saying.
     if request.repo_id is not None:
@@ -2762,6 +2858,12 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
     if request.external_efforts is not None:
         chat.external_efforts = request.external_efforts
     store.db.commit()
+    # A chat coming back into the list is what pushes the last one out of it.
+    # Done here rather than left to the next sidebar load so the two changes
+    # land in the same response the browser is already waiting for, and the
+    # list never briefly shows one row too many.
+    if request.archived is False:
+        _enforce_sidebar_limit(store, chat_prefs.sidebar_chat_limit(), _turn_status_by_chat())
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)
 
@@ -2858,31 +2960,68 @@ def _delete_chat_project(project_id: int, store: StoreDependency) -> Response:
 
 
 class ChatConfig(BaseModel):
-    """How this profile runs background chats."""
+    """How this profile runs and lists its chats."""
 
     max_concurrent_turns: int = Field(
         ge=chat_prefs.MIN_CONCURRENT_TURNS, le=chat_prefs.MAX_CONCURRENT_TURNS
+    )
+    sidebar_chat_limit: int = Field(
+        default=chat_prefs.DEFAULT_SIDEBAR_CHATS,
+        ge=chat_prefs.MIN_SIDEBAR_CHATS,
+        le=chat_prefs.MAX_SIDEBAR_CHATS,
+    )
+
+
+class ChatConfigUpdate(BaseModel):
+    """One setting at a time, or both.
+
+    Optional rather than required so a dialog that owns one of these does not
+    have to restate the other -- and so an older client sending only
+    ``max_concurrent_turns`` keeps working unchanged.
+    """
+
+    max_concurrent_turns: int | None = Field(
+        default=None, ge=chat_prefs.MIN_CONCURRENT_TURNS, le=chat_prefs.MAX_CONCURRENT_TURNS
+    )
+    sidebar_chat_limit: int | None = Field(
+        default=None, ge=chat_prefs.MIN_SIDEBAR_CHATS, le=chat_prefs.MAX_SIDEBAR_CHATS
+    )
+
+
+def _chat_config() -> ChatConfig:
+    return ChatConfig(
+        max_concurrent_turns=chat_prefs.max_concurrent_turns(),
+        sidebar_chat_limit=chat_prefs.sidebar_chat_limit(),
     )
 
 
 @router.get("/chat-config", response_model=ChatConfig)
 def read_chat_config() -> ChatConfig:
-    return ChatConfig(max_concurrent_turns=chat_prefs.max_concurrent_turns())
+    return _chat_config()
 
 
 @router.post("/chat-config", response_model=ChatConfig)
-def update_chat_config(request: ChatConfig) -> ChatConfig:
-    """Set how many chats may generate at once.
+def update_chat_config(request: ChatConfigUpdate, store: StoreDependency) -> ChatConfig:
+    """Set how many chats may generate at once, and how many stay in the sidebar.
 
-    Raising it releases turns that are already waiting: the next pump sees the
-    larger number and starts them.  Lowering it never stops anything already
-    running -- the excess simply drains and nothing new is admitted until the
-    count falls below the new limit.
+    Raising the concurrency releases turns that are already waiting: the next
+    pump sees the larger number and starts them.  Lowering it never stops
+    anything already running -- the excess simply drains and nothing new is
+    admitted until the count falls below the new limit.
+
+    Lowering the sidebar limit archives the overflow here rather than on the next
+    load, so the list the user is looking at while they change the number is the
+    list they end up with. Raising it never un-archives anything: Neo cannot tell
+    a chat it tidied away from one the user archived on purpose, and guessing
+    wrong would drag back threads that were put away deliberately.
     """
 
-    return ChatConfig(
-        max_concurrent_turns=chat_prefs.set_max_concurrent_turns(request.max_concurrent_turns)
-    )
+    if request.max_concurrent_turns is not None:
+        chat_prefs.set_max_concurrent_turns(request.max_concurrent_turns)
+    if request.sidebar_chat_limit is not None:
+        limit = chat_prefs.set_sidebar_chat_limit(request.sidebar_chat_limit)
+        _enforce_sidebar_limit(store, limit, _turn_status_by_chat())
+    return _chat_config()
 
 
 @router.get("/chat-projects", response_model=list[ProjectRead])

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,8 +12,9 @@ from app.models.enums import ProjectStatus
 from app.models.project import Project
 
 #: Everything ``ChatUpdateRequest`` can change on a chat that has no messages
-#: yet, minus ``pinned`` -- a pinned chat is never offered for reuse, so its pin
-#: must survive rather than be reset out from under the user.
+#: yet, minus ``pinned`` and ``archived`` -- a chat carrying either is never
+#: offered for reuse, so both must survive rather than be reset out from under
+#: the user.
 REUSABLE_CHAT_FIELDS = (
     "title",
     "repo_id",
@@ -130,22 +131,47 @@ class AppStore:
         unprojected_only: bool = False,
         with_messages_only: bool = False,
         limit: int = 50,
+        always_include_ids: set[int] | None = None,
     ) -> list[Chat]:
-        statement = (
-            select(Chat)
-            .where(Chat.archived.is_(False))
-            # Pinned first, then most recent: a pin is a promise the thread stays
-            # at the top no matter how long since it was last touched.
-            .order_by(Chat.pinned.desc(), Chat.updated_at.desc(), Chat.id.desc())
-            .limit(limit)
+        """The newest ``limit`` chats in this scope, plus any that must not vanish.
+
+        ``always_include_ids`` is for threads that are still working. A reply
+        running in the background is only visible as a badge on its row, so a
+        chat that drifted past the cut while its turn ran would take the one
+        piece of progress the user has with it. Those come back on the end, in
+        the position the ordering gives them, rather than jumping the queue --
+        being busy is a reason to stay in the list, not a reason to lead it.
+        """
+
+        def scoped(statement):
+            if unprojected_only:
+                statement = statement.where(Chat.project_id.is_(None))
+            elif project_id is not None:
+                statement = statement.where(Chat.project_id == project_id)
+            if with_messages_only:
+                statement = statement.where(exists().where(ChatMessage.chat_id == Chat.id))
+            return statement
+
+        # Pinned first, then most recent: a pin is a promise the thread stays
+        # at the top no matter how long since it was last touched.
+        ordering = (Chat.pinned.desc(), Chat.updated_at.desc(), Chat.id.desc())
+        chats = list(
+            self.db.scalars(
+                scoped(select(Chat).where(Chat.archived.is_(False)))
+                .order_by(*ordering)
+                .limit(limit)
+            )
         )
-        if unprojected_only:
-            statement = statement.where(Chat.project_id.is_(None))
-        elif project_id is not None:
-            statement = statement.where(Chat.project_id == project_id)
-        if with_messages_only:
-            statement = statement.where(exists().where(ChatMessage.chat_id == Chat.id))
-        return list(self.db.scalars(statement))
+        missing = (always_include_ids or set()) - {chat.id for chat in chats}
+        if missing:
+            chats.extend(
+                self.db.scalars(
+                    scoped(
+                        select(Chat).where(Chat.archived.is_(False), Chat.id.in_(missing))
+                    ).order_by(*ordering)
+                )
+            )
+        return chats
 
     def search_chats(self, query: str, limit: int = 30) -> list[dict]:
         """Find chats by title or by the text of any message they contain.
@@ -329,6 +355,115 @@ class AppStore:
             return
         title = " ".join(prompt.strip().split())
         chat.title = title[:54] + "..." if len(title) > 57 else title or "New chat"
+
+    def list_archived_chats(self, limit: int = 200) -> list[Chat]:
+        """The archive, newest activity first.
+
+        Ordered by ``updated_at`` rather than by when each chat was archived,
+        because that is the order the sidebar used while they were still in it
+        -- an archive that reshuffles the moment a chat enters it is one you
+        have to re-learn every time you open it.
+        """
+
+        return list(
+            self.db.scalars(
+                select(Chat)
+                .where(Chat.archived.is_(True))
+                .order_by(Chat.updated_at.desc(), Chat.id.desc())
+                .limit(limit)
+            )
+        )
+
+    def count_archived_chats(self) -> int:
+        return (
+            self.db.scalar(select(func.count()).select_from(Chat).where(Chat.archived.is_(True)))
+            or 0
+        )
+
+    def set_chat_archived(self, chat_id: int, archived: bool) -> Chat | None:
+        """Move a chat out of the sidebar, or bring it back.
+
+        Unarchiving touches ``updated_at``, and has to. The sidebar shows the
+        newest ``N`` chats, so restoring one without moving it would drop it back
+        in below the cut and the next load would archive it straight back out --
+        an Unarchive button that visibly does nothing. Bringing it back *is*
+        touching the thread, so it goes to the top and the chat it displaces
+        falls off the bottom, which is what the user asked for by unarchiving it.
+
+        Archiving leaves the timestamp alone, which takes explicit work: the
+        column carries ``onupdate=now()``, so any ordinary write to the row would
+        restamp it. That would make every archived chat look freshly used and
+        sort the archive by when Neo tidied it away rather than by when the
+        conversation actually happened.
+        """
+
+        chat = self.get_chat(chat_id)
+        if chat is None:
+            return None
+        if bool(chat.archived) == bool(archived):
+            return chat
+        if archived:
+            self._set_archived_preserving_timestamps([chat_id], True)
+            self.db.refresh(chat)
+        else:
+            chat.archived = False
+            chat.updated_at = datetime.now(UTC)
+            self.db.flush()
+        return chat
+
+    def archive_sidebar_overflow(
+        self, limit: int, protected_ids: set[int] | None = None
+    ) -> list[int]:
+        """Archive loose chats past the newest ``limit``, and say which.
+
+        The order is the sidebar's own -- pinned first, then most recently
+        updated -- so "past the cut" means exactly what the eye means by it.
+        What is skipped is skipped for a reason:
+
+        * pinned chats, because a pin is a promise the thread stays put, and a
+          cap that overrode it would make pinning a chat the way to lose it;
+        * chats with a turn still going, because archiving takes a thread out of
+          the only place its progress is visible, and a long agent run on an
+          otherwise idle chat is exactly the one that drifts past the cut;
+        * chats with no messages, because they are not in the sidebar to begin
+          with -- ``list_chats`` hides them and ``find_empty_chat`` recycles them.
+
+        Chats inside a project are untouched. A project is a container the user
+        built on purpose and its list is already bounded by the folder it lives
+        in; the cap is about the loose pile that grows without anyone deciding.
+        """
+
+        protected = protected_ids or set()
+        ranked = self.db.scalars(
+            select(Chat)
+            .where(
+                Chat.archived.is_(False),
+                Chat.project_id.is_(None),
+                exists().where(ChatMessage.chat_id == Chat.id),
+            )
+            .order_by(Chat.pinned.desc(), Chat.updated_at.desc(), Chat.id.desc())
+            .offset(max(int(limit), 0))
+        )
+        overflow = [chat.id for chat in ranked if not chat.pinned and chat.id not in protected]
+        if overflow:
+            self._set_archived_preserving_timestamps(overflow, True)
+        return overflow
+
+    def _set_archived_preserving_timestamps(self, chat_ids: list[int], archived: bool) -> None:
+        """Flip ``archived`` without letting ``onupdate`` restamp ``updated_at``.
+
+        Naming the column in the SET clause is what suppresses the default --
+        assigning it to itself is a no-op the database is happy to run, and the
+        only way to say "this write is bookkeeping, not activity".
+        """
+
+        self.db.execute(
+            update(Chat)
+            .where(Chat.id.in_(chat_ids))
+            .values(archived=archived, updated_at=Chat.updated_at)
+            .execution_options(synchronize_session="fetch")
+        )
+        self.db.flush()
 
     def set_chat_pinned(self, chat_id: int, pinned: bool) -> Chat | None:
         """Pin or unpin a chat.
