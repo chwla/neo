@@ -64,6 +64,13 @@ const NEW_CHAT_GUARD_KEY = "new-chat";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 
+//: The server's bounds for the sidebar's chat limit, mirrored so the field can
+//: correct an out-of-range number in place instead of round-tripping to find out.
+//: See ``app/services/chat_prefs.py``, which is where they are enforced.
+const DEFAULT_SIDEBAR_CHATS = 10;
+const MIN_SIDEBAR_CHATS = 1;
+const MAX_SIDEBAR_CHATS = 100;
+
 function errorMessage(error) {
   if (!error) {
     return "";
@@ -380,6 +387,7 @@ function SidebarChatRow({
   onDeleteChat,
   onRenameChat,
   onPinChat,
+  onArchiveChat,
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(chat.title);
@@ -450,9 +458,18 @@ function SidebarChatRow({
         <button type="button" onClick={startRename}>
           Rename
         </button>
-        <button type="button" onClick={() => onPinChat?.(chat, !chat.pinned)}>
-          {chat.pinned ? "Unpin chat" : "Pin chat"}
-        </button>
+        {/* A pinned chat is already exempt from the sidebar's cap, so offering
+            to archive it would be offering to undo the pin by another name. */}
+        {chat.archived ? null : (
+          <button type="button" onClick={() => onPinChat?.(chat, !chat.pinned)}>
+            {chat.pinned ? "Unpin chat" : "Pin chat"}
+          </button>
+        )}
+        {onArchiveChat && !chat.pinned ? (
+          <button type="button" onClick={() => onArchiveChat(chat, !chat.archived)}>
+            {chat.archived ? "Unarchive" : "Archive"}
+          </button>
+        ) : null}
         <button type="button" className="row-actions-danger" onClick={() => onDeleteChat(chat)}>
           Delete
         </button>
@@ -474,6 +491,7 @@ export function Sidebar({
   onDeleteChat,
   onRenameChat,
   onPinChat,
+  onArchiveChat,
   onDeleteProject,
   onOpenSettings,
   onOpenChatHome,
@@ -493,6 +511,40 @@ export function Sidebar({
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [chatsCollapsed, setChatsCollapsed] = useState(false);
   const [search, setSearch] = useState("");
+  // The archive is closed until asked for, and only then fetched. The count in
+  // the section heading rides along on the sidebar payload, so the heading is
+  // honest about how much is in there without loading any of it.
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archived, setArchived] = useState([]);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveError, setArchiveError] = useState("");
+  const archivedCount = sidebar.archived_count ?? 0;
+
+  const loadArchived = useCallback(async () => {
+    setArchiveLoading(true);
+    setArchiveError("");
+    try {
+      setArchived(await api.archivedChats());
+    } catch (error) {
+      setArchiveError(errorMessage(error));
+    } finally {
+      setArchiveLoading(false);
+    }
+  }, []);
+
+  // Re-read on every sidebar change while the section is open. Keyed on the
+  // whole payload rather than on the count, because the count is exactly what
+  // stays still in the case that matters: unarchiving one chat evicts another,
+  // so four archived chats become four different archived chats and a list
+  // keyed on "4" would go on showing the one that just left. There is no timer
+  // behind the sidebar -- it is re-read after real changes -- so this costs a
+  // request per change, not a poll.
+  useEffect(() => {
+    if (!archiveOpen) {
+      return;
+    }
+    loadArchived();
+  }, [archiveOpen, sidebar, loadArchived]);
 
   function submitProject(event) {
     event.preventDefault();
@@ -512,6 +564,7 @@ export function Sidebar({
     }))
     .filter((project) => !query || project.name.toLowerCase().includes(query) || project.chats.length);
   const filteredChats = sidebar.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
+  const filteredArchived = archived.filter((chat) => !query || chat.title.toLowerCase().includes(query));
   const systemItems = [
     ["memory", "Memory", onOpenMemory],
     ["research", "Research", onOpenResearch],
@@ -701,6 +754,7 @@ export function Sidebar({
                 onDeleteChat={onDeleteChat}
                 onRenameChat={onRenameChat}
                 onPinChat={onPinChat}
+                onArchiveChat={onArchiveChat}
               />
             ))}
           </details>
@@ -736,8 +790,55 @@ export function Sidebar({
             onDeleteChat={onDeleteChat}
             onRenameChat={onRenameChat}
             onPinChat={onPinChat}
+            onArchiveChat={onArchiveChat}
           />
         ))
+      )}
+
+      {/* Where chats go when the list outgrows its cap, and where you get them
+          back from. Hidden entirely until there is something in it: an empty
+          Archived heading is a permanent reminder of a feature nobody used. */}
+      {archivedCount > 0 && (
+        <>
+          <div className="sidebar-section sidebar-section-row">
+            <button
+              className="sidebar-section-collapse"
+              type="button"
+              aria-expanded={archiveOpen}
+              title={archiveOpen ? "Hide archived chats" : "Show archived chats"}
+              onClick={() => setArchiveOpen((open) => !open)}
+            >
+              <span className="sidebar-section-caret" aria-hidden="true">
+                {archiveOpen ? "\u25BE" : "\u25B8"}
+              </span>
+              ARCHIVED
+              <span className="sidebar-section-count">{archivedCount}</span>
+            </button>
+          </div>
+          {archiveOpen ? (
+            archiveLoading && archived.length === 0 ? (
+              <p className="sidebar-caption">Loading...</p>
+            ) : archiveError ? (
+              <p className="sidebar-caption">{archiveError}</p>
+            ) : filteredArchived.length === 0 ? (
+              <p className="sidebar-caption">{query ? "No archived chats match." : "Nothing archived."}</p>
+            ) : (
+              filteredArchived.map((chat) => (
+                <SidebarChatRow
+                  key={chat.id}
+                  chat={chat}
+                  href={chatPermalink(chat.id)}
+                  isActive={chat.id === activeChatId}
+                  classes={{ item: "chat-item is-archived", link: "chat-item-title", menu: "chat-item-menu" }}
+                  onOpenChat={onOpenChat}
+                  onDeleteChat={onDeleteChat}
+                  onRenameChat={onRenameChat}
+                  onArchiveChat={onArchiveChat}
+                />
+              ))
+            )
+          ) : null}
+        </>
       )}
 
       <div className="sidebar-spacer" />
@@ -2367,6 +2468,110 @@ function BackgroundChatsDialog({ onClose }) {
 }
 
 
+/**
+ * How long the sidebar's chat list is allowed to get.
+ *
+ * The number is the whole setting: everything past it is archived, oldest
+ * first, and stays reachable under Archived. Ten is the default because a
+ * sidebar is for the conversation you are returning to, not for all of them.
+ */
+function SidebarChatsDialog({ onClose, onChanged }) {
+  const [limit, setLimit] = useState(DEFAULT_SIDEBAR_CHATS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .chatConfig()
+      .then((config) => {
+        if (!cancelled) setLimit(Number(config.sidebar_chat_limit) || DEFAULT_SIDEBAR_CHATS);
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(errorMessage(requestError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function changeLimit(next) {
+    // Clamped here as well as on the server, so a typed-in 900 is corrected in
+    // the field the user is looking at rather than silently on the way back.
+    const wanted = Math.max(MIN_SIDEBAR_CHATS, Math.min(MAX_SIDEBAR_CHATS, Math.round(next)));
+    if (!Number.isFinite(wanted)) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    const previous = limit;
+    setLimit(wanted);
+    try {
+      const config = await api.updateChatConfig({ sidebar_chat_limit: wanted });
+      setLimit(Number(config.sidebar_chat_limit) || wanted);
+      // Lowering the number archives the overflow server-side, so the list on
+      // screen is stale the moment this returns.
+      await onChanged?.();
+    } catch (requestError) {
+      setLimit(previous);
+      setError(errorMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title="Sidebar" onClose={onClose}>
+      <p className="dialog-caption">
+        The sidebar keeps your most recent chats. Older ones are archived rather than deleted --
+        they stay under Archived, keep their messages, and come back the moment you unarchive one
+        or send another message in it.
+      </p>
+      <div className="chat-tools-row">
+        <div className="chat-tools-row-info">
+          <div className="chat-tools-row-title">
+            <strong>Chats in the sidebar</strong>
+          </div>
+          <p>
+            Once there are more than this, the least recently used is archived. Pinned chats and
+            chats still working on a reply are never archived, and chats inside a project are not
+            counted here.
+          </p>
+        </div>
+        <label className="chat-tools-toggle">
+          <input
+            type="number"
+            className="sidebar-limit-input"
+            min={MIN_SIDEBAR_CHATS}
+            max={MAX_SIDEBAR_CHATS}
+            step={1}
+            value={limit}
+            disabled={loading || saving}
+            // Committed on blur or Enter rather than per keystroke: typing "25"
+            // passes through "2", and saving that would archive the list down to
+            // two chats on the way to the number the user meant.
+            onChange={(event) => setLimit(event.target.value)}
+            onBlur={(event) => changeLimit(Number(event.target.value))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
+            aria-label="How many chats stay in the sidebar"
+          />
+        </label>
+      </div>
+      {error && <div className="neo-error">{error}</div>}
+    </Modal>
+  );
+}
+
+
 function GallerySettingsDialog({ onClose }) {
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -2440,7 +2645,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenEngines, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -2495,6 +2700,7 @@ function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenEngines, o
       icon: "folder",
       description: "Projects, work tracking, and portability.",
       items: [
+        ["Sidebar", "How many chats stay in the list before older ones are archived", onOpenSidebarChats],
         ["Projects", "Organize related chats and work", onOpenProjects],
         ["Files", "Uploaded and generated workspace files", onOpenFiles],
         ["Repositories", "Registered code repositories", onOpenRepos],
@@ -2566,6 +2772,56 @@ function ConfirmDeleteDialog({ pendingDelete, onCancel, onConfirm }) {
       <div className="dialog-actions confirm-actions">
         <NeoButton className="danger" onClick={onConfirm}>
           Confirm
+        </NeoButton>
+        <NeoButton onClick={onCancel}>Cancel</NeoButton>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Asked before signing out, because for a guest the answer is irreversible.
+ *
+ * Ending a guest session does not just forget who you are -- the server deletes
+ * the guest profile's whole directory, so every chat, note and memory in it goes
+ * with it. That was one unconfirmed click away from the avatar in the footer,
+ * which is not a button anyone aims at deliberately.
+ *
+ * A saved profile only loses its session, so it gets the mild wording. Both are
+ * told about work still in flight: turns keep running on the server, but the
+ * chat they land in is one you have to sign back in to read.
+ */
+export function ConfirmSignOutDialog({ profile, workingCount, onCancel, onConfirm }) {
+  const isGuest = Boolean(profile?.is_guest);
+
+  return (
+    <Modal title={isGuest ? "End guest session" : "Log out"} onClose={onCancel}>
+      <p className="delete-copy">
+        <strong>
+          {isGuest
+            ? "End this guest session and delete its data?"
+            : `Log out of ${profile?.username ?? "this profile"}?`}
+        </strong>
+      </p>
+      <p className="dialog-caption">
+        {isGuest
+          ? "Guest profiles are not kept. Signing out permanently deletes this one along with its " +
+            "chats, notes, and memory. Save what you need first, or create a profile to keep it."
+          : "You will be returned to the profile picker. Nothing is deleted -- your chats and " +
+            "memory are here when you sign back in."}
+      </p>
+      {workingCount > 0 && (
+        <p className="dialog-caption">
+          {workingCount === 1 ? "One chat is" : `${workingCount} chats are`} still working on a
+          reply.{" "}
+          {isGuest
+            ? "Their answers will be deleted with the profile."
+            : "They keep going, but you will not see the answers until you sign back in."}
+        </p>
+      )}
+      <div className="dialog-actions confirm-actions">
+        <NeoButton className={isGuest ? "danger" : ""} onClick={onConfirm}>
+          {isGuest ? "Delete and sign out" : "Log out"}
         </NeoButton>
         <NeoButton onClick={onCancel}>Cancel</NeoButton>
       </div>
@@ -2677,6 +2933,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showEngines, setShowEngines] = useState(false);
   const [showGallerySettings, setShowGallerySettings] = useState(false);
   const [showBackgroundChats, setShowBackgroundChats] = useState(false);
+  const [showSidebarChats, setShowSidebarChats] = useState(false);
+  // The footer avatar asks before it acts. It sits next to Settings and is the
+  // easiest control in the sidebar to hit by accident, and for a guest what it
+  // does cannot be undone.
+  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showBundles, setShowBundles] = useState(false);
@@ -3131,6 +3392,18 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     [streams, turns, finishedChatIds],
   );
 
+  // How many threads are mid-turn, for the sign-out confirmation. Counted off
+  // the same `statusFor` the sidebar badges with, so the dialog and the dots
+  // beside the chat titles can never disagree about what is still working.
+  const workingChatCount = useMemo(() => {
+    const everyChat = [...sidebar.chats, ...sidebar.projects.flatMap((project) => project.chats)];
+    const working = new Set();
+    for (const chat of everyChat) {
+      if (ACTIVE_RUN_STATUSES.has(statusFor(chat))) working.add(chat.id);
+    }
+    return working.size;
+  }, [sidebar, statusFor]);
+
   useEffect(() => {
     if (bootstrapped.current) {
       return;
@@ -3352,6 +3625,19 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     try {
       const updated = await api.pinChat(chat.id, pinned);
       setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
+      await refreshSidebar();
+    } catch (error) {
+      setStatusError(errorMessage(error));
+    }
+  }
+
+  async function handleArchiveChat(chat, archived) {
+    setStatusError("");
+    try {
+      const updated = await api.archiveChat(chat.id, archived);
+      setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
+      // The server may have archived a second chat to make room for this one, so
+      // the whole sidebar is re-read rather than the one row being patched.
       await refreshSidebar();
     } catch (error) {
       setStatusError(errorMessage(error));
@@ -3936,6 +4222,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onDeleteChat={handleDeleteChat}
         onRenameChat={handleRenameChat}
         onPinChat={handlePinChat}
+        onArchiveChat={handleArchiveChat}
         onDeleteProject={handleDeleteProject}
         onOpenSettings={() => setShowSettings(true)}
         onOpenChatHome={closeWorkspaces}
@@ -3949,7 +4236,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onOpenGallery={() => { closeWorkspaces(); setInitialGalleryItemId(null); setShowGallery(true); }}
         activeView={activeView}
         profile={profile}
-        onSwitchProfile={onSwitchProfile}
+        onSwitchProfile={() => setConfirmingSignOut(true)}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={toggleSidebar}
       />
@@ -4216,6 +4503,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           }}
           onOpenReliableWebSearch={() => { setShowSettings(false); setShowReliableWebSearch(true); }}
           onOpenGallerySettings={() => { setShowSettings(false); setShowGallerySettings(true); }}
+          onOpenSidebarChats={() => { setShowSettings(false); setShowSidebarChats(true); }}
           onOpenMemory={() => {
             setShowSettings(false);
             setShowMemory(true);
@@ -4319,6 +4607,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         <BackgroundChatsDialog onClose={() => setShowBackgroundChats(false)} />
       )}
 
+      {showSidebarChats && (
+        <SidebarChatsDialog
+          onClose={() => setShowSidebarChats(false)}
+          /* Lowering the number archives chats behind this dialog, so the list
+             it is sitting on top of has to be re-read before it is uncovered. */
+          onChanged={() => refreshSidebar().catch(() => {})}
+        />
+      )}
+
       {showMemory && (
         <MemoryDialog
           memoryEnabled={memoryEnabled}
@@ -4336,6 +4633,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onCancel={() => setPendingDelete(null)}
         onConfirm={confirmDeletion}
       />
+      {confirmingSignOut && (
+        <ConfirmSignOutDialog
+          profile={profile}
+          workingCount={workingChatCount}
+          onCancel={() => setConfirmingSignOut(false)}
+          onConfirm={onSwitchProfile}
+        />
+      )}
       <BackgroundTurnToast
         notices={turnNotices}
         chatTitles={chatTitlesById}

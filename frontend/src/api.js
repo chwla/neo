@@ -683,6 +683,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ title }),
     }),
+  // Everything the sidebar is not showing. Fetched only when the Archived
+  // section is opened -- the sidebar itself carries the count, so the list is
+  // never loaded to render a heading.
+  archivedChats: (limit = 200) => request(`/chats/archived?limit=${limit}`),
+  archiveChat: (chatId, archived) =>
+    request(`/chats/${chatId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    }),
   pinChat: (chatId, pinned) =>
     request(`/chats/${chatId}`, {
       method: "PATCH",

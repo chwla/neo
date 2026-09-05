@@ -166,6 +166,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .sidebar-section-collapse { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 0; color: inherit; font: inherit; letter-spacing: inherit; }
 .sidebar-section-collapse:hover { color: var(--neo-green); }
 .sidebar-section-caret { display: inline-block; width: 8px; font-size: 9px; line-height: 1; }
+/* How many chats are in the archive, next to the label rather than after it, so
+   the heading reads as one thing whether the section is open or shut. */
+.sidebar-section-count { margin-left: 6px; color: #333; font-weight: 400; letter-spacing: normal; }
+.sidebar-section-collapse:hover .sidebar-section-count { color: var(--neo-green); }
 
 .sidebar-caption { margin: 5px 20px; color: #444; font-size: 11px; }
 .sidebar-spacer { flex: 1; min-height: 22px; }
@@ -255,6 +259,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .project-chat-link, .chat-item-title { min-width: 0; flex: 1; overflow: hidden; color: #777; font-size: 12px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .chat-item-title { font-size: 13px; }
 .project-chat-item.active a, .chat-item.active a { color: var(--neo-green); font-weight: 500; }
+/* Dimmer than a live row, so the eye can tell at a glance which list it is
+   reading when the archive is expanded directly under the chat list. */
+.chat-item.is-archived .chat-item-title { color: #4d4d4d; }
+.chat-item.is-archived:hover .chat-item-title { color: #777; }
 
 .system-nav { display: grid; gap: 1px; }
 .system-nav button, .sidebar-settings { display: flex; align-items: center; gap: 8px; min-height: 30px; margin: 0 8px; border: 0; border-left: 2px solid transparent; border-radius: 0 2px 2px 0; background: transparent; padding: 0 12px; color: #555; font-size: 13px; text-align: left; }
@@ -3119,6 +3127,21 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .chat-tools-toggle { flex: 0 0 auto; padding-top: 2px; }
 .chat-tools-toggle input { width: 16px; height: 16px; accent-color: var(--neo-green); cursor: pointer; }
 .chat-tools-toggle input:disabled { cursor: default; opacity: .5; }
+/* A number field, not a checkbox: it has to escape the 16px box the rule above
+   sizes every other input in this row to. */
+.chat-tools-toggle input.sidebar-limit-input {
+  width: 64px;
+  height: 30px;
+  border: 1px solid #2a2a2a;
+  border-radius: 2px;
+  background: var(--neo-bg);
+  padding: 0 4px 0 8px;
+  color: #ededed;
+  font: 13px "JetBrains Mono", ui-monospace, monospace;
+  text-align: right;
+  cursor: text;
+}
+.chat-tools-toggle input.sidebar-limit-input:focus { border-color: var(--neo-green); outline: none; }
 
 /* Images inside a turn, so the transcript reads the way the conversation
    actually happened rather than as a filename. */
