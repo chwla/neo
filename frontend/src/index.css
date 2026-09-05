@@ -4187,3 +4187,204 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   .lbx-step.right { right: 8px; }
   .lbx-close { top: 12px; right: 12px; }
 }
+
+/* --- External executors ------------------------------------------------- */
+/* Which engine ran a turn, and what it cost where the CLI actually said. */
+.agent-executor-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  margin-bottom: 6px;
+  padding: 2px 9px;
+  border: 1px solid var(--border, #d8d8d8);
+  border-radius: 999px;
+  background: var(--surface-2, #f6f6f6);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text-muted, #666);
+}
+.agent-executor-facts { font-weight: 400; opacity: 0.8; }
+
+/* The seam between two engines inside one turn. */
+.agent-step-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted, #666);
+}
+.agent-step-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border, #e2e2e2);
+}
+.agent-step-arrow { opacity: 0.7; }
+.agent-step-role {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--neo-panel-raised);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+/* The picker only lists engines that would actually run the next turn, so every
+   option reads as an equal one. The exception is an engine this chat is already
+   on that has since stopped working, which says so in its own label. */
+.agent-chip select option { color: var(--neo-body); }
+
+/* Where the engines that are not signed in used to be: not the engines, but the
+   one place they are signed in to. Quiet, because most of the time there is
+   nothing to do here. */
+.agent-engine-link {
+  justify-self: start;
+  margin: -2px 2px 2px;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--neo-faint);
+  font: 10.5px "JetBrains Mono", monospace;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-engine-link:hover { color: var(--neo-green); }
+/* The same line, when the engine this chat is on has stopped working. It is the
+   only warning there is, so it stops being faint. */
+.agent-engine-link.is-broken { color: var(--neo-danger); }
+.agent-engine-link.is-broken:hover { color: var(--neo-danger); text-decoration: underline; }
+
+/* What Neo does and does not control for an external engine. Stated in the
+   composer, next to the choice it qualifies, rather than buried in docs. */
+.agent-executor-note {
+  margin: 0 2px 2px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--neo-faint);
+}
+.agent-executor-note > summary {
+  cursor: pointer;
+  padding: 3px 0;
+  color: var(--neo-faint);
+  list-style: none;
+}
+.agent-executor-note > summary::-webkit-details-marker { display: none; }
+.agent-executor-note > summary::before { content: "\203a "; display: inline-block; width: 10px; }
+.agent-executor-note[open] > summary::before { transform: rotate(90deg); }
+.agent-executor-note > summary:hover { color: var(--neo-muted); }
+.agent-executor-note[open] { color: var(--neo-muted); }
+.agent-executor-note-list { display: block; margin: 3px 0 4px 10px; }
+.agent-executor-note-list span { display: block; }
+.agent-executor-note-list span::before { content: "· "; opacity: 0.6; }
+
+/* ===========================================================================
+   Choosing an engine that is not connected yet. One dialog, one action at most,
+   and usually none -- so this is deliberately small. Scoped end to end rather
+   than borrowing the settings cascade.
+   =========================================================================== */
+.engine-connect .engine-connect-body { display: grid; gap: 12px; min-width: 0; }
+.engine-connect-line { margin: 0; color: var(--neo-body); font-size: 12.5px; line-height: 1.55; }
+.engine-connect-muted { margin: 0; color: var(--neo-muted); font-size: 11.5px; }
+.engine-connect-error { margin: 0; color: var(--neo-danger); font-size: 12px; line-height: 1.5; }
+.engine-connect-url {
+  margin: 0;
+  color: var(--neo-faint);
+  font: 10px "JetBrains Mono", monospace;
+  overflow-wrap: anywhere;
+}
+.engine-connect-cta {
+  justify-self: start;
+  border: 1px solid rgba(57, 255, 20, .45);
+  border-radius: 2px;
+  background: rgba(57, 255, 20, .08);
+  padding: 9px 14px;
+  color: var(--neo-green);
+  font: 12px "JetBrains Mono", monospace;
+  text-decoration: none;
+}
+.engine-connect-cta:hover { background: rgba(57, 255, 20, .16); }
+.engine-connect-code { display: grid; gap: 5px; }
+.engine-connect-code label { color: var(--neo-muted); font-size: 11.5px; }
+.engine-connect-code-row { display: flex; gap: 6px; min-width: 0; }
+.engine-connect-code-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.engine-connect-note {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  border-top: 1px solid var(--neo-line);
+  padding-top: 9px;
+  color: var(--neo-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.engine-connect-note span::before { content: "\00b7 "; opacity: .6; }
+
+.engine-button {
+  justify-self: start;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: var(--neo-panel-raised);
+  padding: 7px 12px;
+  color: var(--neo-body);
+  font: 11px "JetBrains Mono", monospace;
+  cursor: pointer;
+}
+.engine-button:hover:not(:disabled) { border-color: var(--neo-green); color: var(--neo-green); }
+.engine-button:disabled { opacity: .45; cursor: default; }
+.engine-button.primary { border-color: rgba(57, 255, 20, .4); color: var(--neo-green); }
+.engine-button.quiet { border-style: dashed; color: var(--neo-muted); }
+
+/* ===========================================================================
+   Settings > Engines. One card per CLI, each saying which of installed, signed
+   in and switched on it has got to, and carrying the single button for whatever
+   is missing.
+   =========================================================================== */
+.engines-dialog .engine-rows { display: grid; gap: 10px; margin-top: 12px; }
+.engine-row {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--neo-line);
+  border-radius: 3px;
+  background: var(--neo-panel-raised);
+  padding: 12px 14px;
+}
+.engine-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.engine-row-head strong { color: var(--neo-text); font-size: 13px; }
+.engine-row-version {
+  margin: 0;
+  color: var(--neo-faint);
+  font: 10px "JetBrains Mono", monospace;
+  overflow-wrap: anywhere;
+}
+.engine-state {
+  flex: 0 0 auto;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--neo-muted);
+  font: 10px "JetBrains Mono", monospace;
+  white-space: nowrap;
+}
+.engine-state-connected { border-color: rgba(57, 255, 20, .45); color: var(--neo-green); }
+.engine-state-off { border-color: rgba(255, 196, 0, .4); color: #d8a92b; }
+.engine-state-not_installed { opacity: .75; }
+.engine-row code {
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .05);
+  padding: 0 3px;
+  font: 10.5px "JetBrains Mono", monospace;
+}
+.engine-rows-footer {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}

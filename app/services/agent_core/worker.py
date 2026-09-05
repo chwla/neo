@@ -17,6 +17,7 @@ import uuid
 
 from app.services.agent_core import events, store
 from app.services.agent_core.loop import AgentLoop, resume_after_approval
+from app.services.agent_core.types import EXTERNAL_EXECUTORS
 
 _LOG = logging.getLogger(__name__)
 
@@ -46,11 +47,25 @@ def _run_guarded(session_id: str, approval_id: str | None, loop_factory) -> None
     heart = threading.Thread(target=beat, name=f"neo-agent-hb-{session_id[:8]}", daemon=True)
     heart.start()
     try:
-        loop = loop_factory()
-        if approval_id:
-            resume_after_approval(loop, session_id, approval_id)
+        # The one place that knows there is more than one kind of engine.
+        # Everything around it -- the lease above, the heartbeat, the failure
+        # handling below, the cancel-by-row-flip contract -- is identical for
+        # both, which is the point of branching here rather than anywhere else.
+        executor = str((store.get_session(session_id) or {}).get("executor") or "neo")
+        if executor in EXTERNAL_EXECUTORS:
+            from app.services import external_agents
+
+            # An external run has no approval mechanism to resume into: neither
+            # CLI exposes a per-call approval channel in non-interactive mode
+            # (see docs/external-agents/cli-surface.md), so a session of this
+            # kind never reaches waiting_approval in the first place.
+            external_agents.run(session_id)
         else:
-            loop.run(session_id)
+            loop = loop_factory()
+            if approval_id:
+                resume_after_approval(loop, session_id, approval_id)
+            else:
+                loop.run(session_id)
     except Exception as exc:
         _LOG.warning("agent_session_failed session=%s", session_id, exc_info=exc)
         session = store.get_session(session_id)

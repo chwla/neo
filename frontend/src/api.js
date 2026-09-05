@@ -189,6 +189,25 @@ export const api = {
   contextEvents: (scopeType, scopeId) => request(`/context-memory/scopes/${scopeType}/${scopeId}/events`),
   createContextEvent: (scopeType, scopeId, payload) => request(`/context-memory/scopes/${scopeType}/${scopeId}/events`, { method: "POST", body: JSON.stringify(payload) }),
   ruleProfiles: () => request("/rules/profiles"),
+  externalAgents: (refresh = false) => request(`/external-agents?refresh=${refresh ? "true" : "false"}`),
+  // The setup panel's view, which deliberately differs from the one above: it
+  // probes even while the feature is off, so Settings can say "installed and
+  // signed in, just not switched on" rather than a flat "unavailable".
+  externalAgentSetup: (refresh = false) =>
+    request(`/external-agents/setup?refresh=${refresh ? "true" : "false"}`),
+  setExternalAgentsEnabled: (enabled) =>
+    request("/external-agents/enable", { method: "POST", body: JSON.stringify({ enabled }) }),
+  // One call for "make this engine usable": opts the profile in, re-probes, and
+  // starts the CLI's own sign-in if one is needed.
+  connectExternalAgent: (executor) =>
+    request(`/external-agents/${executor}/connect`, { method: "POST" }),
+  externalAgentLogin: (executor) => request(`/external-agents/${executor}/login`),
+  submitExternalAgentLoginCode: (executor, code) =>
+    request(`/external-agents/${executor}/login/code`, {
+      method: "POST", body: JSON.stringify({ code }),
+    }),
+  cancelExternalAgentLogin: (executor) =>
+    request(`/external-agents/${executor}/login`, { method: "DELETE" }),
   agentDefinitions: (includeDisabled = true) =>
     request(`/agents/definitions?include_disabled=${includeDisabled ? "true" : "false"}`),
   createAgentDefinition: (payload) => request("/agents/definitions", {
@@ -553,6 +572,8 @@ export const api = {
         repo_id: context.repoId ?? null,
         agent_mode: context.agentMode ?? null,
         agent_definition_id: context.agentDefinitionId ?? null,
+        executor: context.executor ?? null,
+        handoff: context.handoff ?? null,
         effort: context.effort ?? null,
         image_ids: context.imageIds ?? [],
       }),

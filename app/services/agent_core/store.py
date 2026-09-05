@@ -92,6 +92,20 @@ def initialize_agent_core_tables() -> None:
                 -- holds its place in that chat's transcript.
                 chat_id INTEGER,
                 anchor_message_id INTEGER,
+                -- Which engine runs this session: Neo's own loop, or an external
+                -- coding CLI driven as a subprocess.  Defaulted rather than
+                -- nullable so every row predating external agents reads as 'neo'
+                -- without a backfill pass.
+                executor TEXT NOT NULL DEFAULT 'neo',
+                -- The external CLI's own conversation id for the executor that
+                -- ran most recently.  Claude Code takes one we assign; Codex
+                -- mints its own and we record what it reports.
+                external_session_id TEXT,
+                -- Per-executor ids and usage, keyed by executor name, so an
+                -- A -> B -> A sequence can resume each side independently.
+                external_meta_json TEXT,
+                -- The chain plan and which step is current, for a handoff.
+                handoff_json TEXT,
                 todo_json TEXT,
                 evidence_json TEXT,
                 budgets_json TEXT,
@@ -225,6 +239,17 @@ def initialize_agent_core_tables() -> None:
             conn.execute(
                 "ALTER TABLE workspace_agent_sessions ADD COLUMN disabled_tools_json TEXT"
             )
+        # The external-executor columns, added the same way and for the same
+        # reason.  `executor` carries its default so existing rows -- every one
+        # of which was Neo's own loop -- read correctly without an UPDATE.
+        if "executor" not in existing:
+            conn.execute(
+                "ALTER TABLE workspace_agent_sessions"
+                " ADD COLUMN executor TEXT NOT NULL DEFAULT 'neo'"
+            )
+        for name in ("external_session_id", "external_meta_json", "handoff_json"):
+            if name not in existing:
+                conn.execute(f"ALTER TABLE workspace_agent_sessions ADD COLUMN {name} TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_agent_sessions_chat"
             " ON workspace_agent_sessions(chat_id, created_at)"
@@ -287,6 +312,9 @@ def _row_to_session(row: sqlite3.Row) -> dict:
     data["todo"] = _loads(data.pop("todo_json", None), [])
     data["evidence"] = _loads(data.pop("evidence_json", None), [])
     data["budgets"] = _loads(data.pop("budgets_json", None), {}) or {}
+    data["external_meta"] = _loads(data.pop("external_meta_json", None), {}) or {}
+    data["handoff"] = _loads(data.pop("handoff_json", None), None)
+    data.setdefault("executor", "neo")
     return data
 
 
@@ -304,9 +332,10 @@ def insert_session(item: dict) -> dict:
             INSERT INTO workspace_agent_sessions (
                 id, objective, title, status, mode, project_id, repo_id, task_id,
                 agent_definition_id, agent_definition_snapshot_json, disabled_tools_json,
-                chat_id, anchor_message_id, todo_json, evidence_json, budgets_json,
+                chat_id, anchor_message_id, executor, external_session_id,
+                external_meta_json, handoff_json, todo_json, evidence_json, budgets_json,
                 client_request_id, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 item["id"],
@@ -324,6 +353,10 @@ def insert_session(item: dict) -> dict:
                 json.dumps(item.get("disabled_tools") or []),
                 item.get("chat_id"),
                 item.get("anchor_message_id"),
+                item.get("executor") or "neo",
+                item.get("external_session_id"),
+                json.dumps(item.get("external_meta") or {}),
+                json.dumps(item.get("handoff")) if item.get("handoff") else None,
                 json.dumps(item.get("todo") or []),
                 json.dumps(item.get("evidence") or []),
                 json.dumps(item.get("budgets") or {}),
@@ -401,12 +434,18 @@ _SESSION_COLUMNS = {
     "agent_definition_snapshot",
     "chat_id",
     "anchor_message_id",
+    "executor",
+    "external_session_id",
+    "external_meta",
+    "handoff",
 }
 _JSON_COLUMNS = {
     "todo": "todo_json",
     "evidence": "evidence_json",
     "budgets": "budgets_json",
     "agent_definition_snapshot": "agent_definition_snapshot_json",
+    "external_meta": "external_meta_json",
+    "handoff": "handoff_json",
 }
 
 
@@ -630,6 +669,85 @@ def set_anchor_session(message_id: int, session_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def executors_for(session_ids) -> dict[str, str]:
+    """Which engine each of these sessions runs on.
+
+    Used by the concurrency cap, which has to tell an external turn from a local
+    one to apply the external sub-cap. Reads in one query rather than per id
+    because it is called on the admission path, under a lock.
+    """
+
+    ids = [str(identifier) for identifier in session_ids if identifier]
+    if not ids:
+        return {}
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT id, executor FROM workspace_agent_sessions WHERE id IN ({placeholders})",  # noqa: S608
+            ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        conn.close()
+    return {row["id"]: (row["executor"] or "neo") for row in rows}
+
+
+#: Keys an external CLI's conversation handle may be recorded under. Engine
+#: names deliberately absent: this module stays ignorant of which CLI is which.
+_EXTERNAL_ID_KEYS = ("session_id", "thread_id")
+
+
+def last_external_session_id(
+    chat_id: int, executor: str, *, exclude: str | None = None
+) -> str | None:
+    """The conversation id this executor last used in this chat.
+
+    Continuity across turns: two consecutive Claude Code turns should continue
+    one Claude conversation, not open a second. Scoped per executor and read from
+    the most recent session that actually recorded one, so an intervening turn by
+    a *different* executor -- or a failed run that never got an id -- does not
+    break the chain.
+    """
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, external_meta_json, external_session_id"
+            " FROM workspace_agent_sessions"
+            " WHERE chat_id = ? AND executor = ? AND external_session_id IS NOT NULL"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 20",
+            (chat_id, executor),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+    for row in rows:
+        if exclude and row["id"] == exclude:
+            continue
+        meta = _loads(row["external_meta_json"], {}) or {}
+        # CLIs name their conversation handle differently -- one calls it a
+        # session, another a thread. The shared store has no business knowing
+        # which is which, so it accepts either and lets the external layer own
+        # the naming (``ExecutorSpec.session_id_key``).
+        recorded = next(
+            (
+                (meta.get(executor) or {}).get(key)
+                for key in _EXTERNAL_ID_KEYS
+                if (meta.get(executor) or {}).get(key)
+            ),
+            None,
+        )
+        if recorded:
+            return str(recorded)
+        if row["external_session_id"]:
+            return str(row["external_session_id"])
+    return None
 
 
 def chat_history_before(chat_id: int, message_id: int, limit: int = 40) -> list[dict]:

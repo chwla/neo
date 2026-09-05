@@ -14,6 +14,14 @@ from pydantic import BaseModel, Field
 
 PermissionMode = Literal["plan", "normal", "auto"]
 
+# Which engine runs a session. ``neo`` is the built-in loop in ``loop.py``; the
+# others hand the reasoning and tool execution to an external coding CLI driven
+# as a subprocess, while Neo keeps the session, the event log and the workspace.
+Executor = Literal["neo", "claude_code", "codex"]
+
+#: Executors that are an external process rather than Neo's own loop.
+EXTERNAL_EXECUTORS: frozenset[str] = frozenset({"claude_code", "codex"})
+
 # A run ends for exactly one of these reasons. ``verified_complete`` and
 # ``unverified_complete`` are deliberately distinct: a model that stops emitting
 # tool calls has stopped talking, which is not the same as having finished the
@@ -145,6 +153,18 @@ class AgentSession(BaseModel):
     anchor_message_id: int | None = None
     agent_definition_id: str | None = None
     agent_definition_snapshot: dict[str, Any] | None = None
+    #: Which engine runs this session. Sessions written before external
+    #: executors existed have no column value and read as ``neo``.
+    executor: Executor = "neo"
+    #: The external CLI's conversation id for the executor that ran most
+    #: recently -- what a follow-up turn resumes.
+    external_session_id: str | None = None
+    #: Per-executor ids and usage, keyed by executor name. Kept separate from
+    #: ``external_session_id`` because a chain, or a Claude -> Codex -> Claude
+    #: sequence, has to resume each side independently.
+    external_meta: dict[str, Any] = Field(default_factory=dict)
+    #: The handoff chain this session is running, if any.
+    handoff: dict[str, Any] | None = None
     #: Tool names withheld from this run, snapshotted from the chat at session
     #: creation -- like ``agent_definition_snapshot``, not re-read mid-run.
     disabled_tools: list[str] = Field(default_factory=list)

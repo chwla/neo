@@ -19,6 +19,7 @@ from app.api.routes.command_sandbox import router as command_sandbox_router
 from app.api.routes.context_memory import router as context_memory_router
 from app.api.routes.continuity import router as continuity_router
 from app.api.routes.evaluation import router as evaluation_router
+from app.api.routes.external_agents import router as external_agents_router
 from app.api.routes.files import router as files_router
 from app.api.routes.gallery import router as gallery_router
 from app.api.routes.git import router as git_router
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(provider_runtime_router, prefix="/api")
     app.include_router(evaluation_router, prefix="/api")
+    app.include_router(external_agents_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     app.include_router(memory_health_router, prefix="/api")
     app.include_router(memory_router, prefix="/api")

@@ -45,6 +45,8 @@ function groupEntries(entries) {
   return grouped;
 }
 
+const EXECUTOR_NAMES = { claude_code: "Claude Code", codex: "Codex", neo: "Neo" };
+
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -282,7 +284,64 @@ function TodoPanel({ items }) {
 function entryFromEvent(event) {
   if (event.type === "chunk" && event.content) return { ...event, kind: "text", id: event.seq };
   if (event.type === "tool.call") return { ...event, kind: "tool", id: event.call_id };
+  // A chain hands work from one engine to the next inside a single turn. The
+  // divider is the only thing that makes that visible, and it rides the same
+  // event stream as everything else rather than needing a second channel.
+  if (event.type === "step.started") {
+    return { ...event, kind: "step", id: `step-${event.index ?? event.seq}` };
+  }
   return null;
+}
+
+/** Names the engine that produced a turn, so a long session stays legible. */
+/**
+ * A cost the CLI actually reported, never one inferred.
+ *
+ * `undefined`/`null` means the engine does not report cost (Codex), and must
+ * render nothing at all -- a "$0.00" there would read as "this was free" rather
+ * than "unknown". A genuine sub-cent charge gets "<$0.01" for the same reason:
+ * rounding a real cost down to zero tells the same lie.
+ */
+function formatCost(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) return null;
+  if (value === 0) return "$0.00";
+  return value < 0.01 ? "<$0.01" : `$${value.toFixed(2)}`;
+}
+
+function formatExecutorTokens(meta) {
+  const total = (meta?.prompt_tokens || 0) + (meta?.completion_tokens || 0);
+  if (total > 0) return `${total.toLocaleString()} tokens`;
+  const usage = meta?.usage || {};
+  const fallback = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+  return fallback > 0 ? `${fallback.toLocaleString()} tokens` : null;
+}
+
+function ExecutorBadge({ executor, meta }) {
+  if (!executor || executor === "neo") return null;
+  const name = EXECUTOR_NAMES[executor] || executor;
+  // Each fact is shown only where the engine genuinely reports it, so a badge
+  // never implies a measurement that was not taken.
+  const facts = [formatCost(meta?.total_cost_usd), formatExecutorTokens(meta)].filter(Boolean);
+  if (meta?.num_turns) facts.push(`${meta.num_turns} turns`);
+  return (
+    <span className="agent-executor-badge" title={`This turn ran on ${name}`}>
+      {name}
+      {facts.length ? <span className="agent-executor-facts"> · {facts.join(" · ")}</span> : null}
+    </span>
+  );
+}
+
+/** "handed to Codex", drawn between two stretches of work in one turn. */
+function StepDivider({ event }) {
+  const name = event.name || EXECUTOR_NAMES[event.executor] || event.executor;
+  const label = event.index > 0 ? `handed to ${name}` : name;
+  return (
+    <div className="agent-step-divider" role="separator">
+      <span className="agent-step-arrow" aria-hidden="true">→</span>
+      <span className="agent-step-name">{label}</span>
+      {event.role ? <span className="agent-step-role">{event.role}</span> : null}
+    </div>
+  );
 }
 
 function DiffView({ patch, onClose }) {
@@ -324,14 +383,19 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
   const traceSteps = answer ? steps.filter((entry) => entry !== answer) : steps;
   const showSteps = active || traceOpen;
 
+  const executor = session.executor || "neo";
+  const executorMeta = (session.external_meta || {})[executor] || {};
+
   return (
     <div className={`agent-turn${active ? " is-active" : ""}`}>
+      <ExecutorBadge executor={executor} meta={executorMeta} />
       {showSteps ? (
         <div className={`agent-steps${working ? " is-working" : ""}`}>
           <span className="agent-steps-rail" aria-hidden="true">
             <span className="agent-steps-dot" />
           </span>
           {traceSteps.map((entry) => {
+            if (entry.kind === "step") return <StepDivider key={entry.id} event={entry} />;
             if (entry.kind === "tool") return <ToolCard key={entry.id} event={entry} />;
             return (
               <AgentBubble
@@ -358,6 +422,9 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
 export {
   AgentBubble,
   ApprovalCard,
+  ExecutorBadge,
+  formatCost,
+  StepDivider,
   DiffView,
   ToolCard,
   TodoPanel,

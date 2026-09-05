@@ -96,6 +96,10 @@ function reduce(state, event) {
         sessionStatus: "running",
         entries: [...moved.entries, entryFromEvent(event)].filter(Boolean),
       };
+    case "step.started":
+      // A handoff chain is one turn with several engines. The divider goes in
+      // the same entry list as the work, so the trace reads in order.
+      return { ...moved, entries: [...moved.entries, entryFromEvent(event)].filter(Boolean) };
     case "tool.result":
       return {
         ...moved,

@@ -96,9 +96,10 @@ def ensure_chat_columns(target_engine=engine) -> None:
         "pinned": "BOOLEAN NOT NULL DEFAULT 0",
         "repo_id": "VARCHAR(64)",
         "agent_mode": "VARCHAR(16) NOT NULL DEFAULT 'normal'",
-        "effort": "VARCHAR(16) NOT NULL DEFAULT 'high'",
+        "effort": "VARCHAR(16) NOT NULL DEFAULT 'low'",
         "agent_definition_id": "VARCHAR(64)",
         "disabled_tools": "JSON NOT NULL DEFAULT '[]'",
+        "executor": "VARCHAR(24) NOT NULL DEFAULT 'neo'",
     }
     with target_engine.begin() as connection:
         for name, column_type in columns.items():

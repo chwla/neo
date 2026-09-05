@@ -62,6 +62,24 @@ def validate_message(value: str) -> str:
     return cleaned
 
 
+def _is_show_object(spec: str) -> bool:
+    """Whether ``spec`` is a safe ``<ref>:<path>`` for ``git show``.
+
+    Split on the first colon only: a path may not contain one in any tree we
+    accept, and refusing the rest keeps option-looking values out.
+    """
+
+    ref, separator, raw_path = spec.partition(":")
+    if not separator or not raw_path or spec.startswith("-"):
+        return False
+    if ref != "HEAD" and not SHA_PATTERN.fullmatch(ref.lower()):
+        return False
+    candidate = PurePosixPath(raw_path.replace("\\", "/"))
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return False
+    return all(part not in {"", "."} for part in candidate.parts)
+
+
 def validate_git_args(args: list[str]) -> list[str]:
     if not args or args[0] in FORBIDDEN_OPERATIONS:
         raise ValueError("Forbidden Git operation.")
@@ -86,6 +104,14 @@ def validate_git_args(args: list[str]) -> list[str]:
             ["--stat", "--summary"],
             ["--name-only", "--format="],
         )
+        # `git show <ref>:<path>` reads one file as of one commit. Added for the
+        # external-agent journal, which has to reconstruct what a file looked
+        # like before a run that Neo did not perform the writes for. Strictly
+        # read-only, and narrower than the forms above: the ref may only be HEAD
+        # or a full SHA, and the path is checked by the same rules that guard
+        # every other path in this module. It relaxes nothing that existed.
+        if not valid and len(args) == 2:
+            valid = _is_show_object(args[1])
     elif operation == "rev-parse":
         valid = args == ["rev-parse", "HEAD"]
     elif operation == "branch":

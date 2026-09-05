@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from app.core.config import get_settings
 
 MAX_CONCURRENT_TURNS_KEY = "max_concurrent_turns"
+MAX_CONCURRENT_EXTERNAL_TURNS_KEY = "max_concurrent_external_turns"
+EXTERNAL_AGENTS_ENABLED_KEY = "external_agents_enabled"
 
 #: The bounds the API and the stored value are both clamped to. One, because a
 #: cap of zero would accept turns that never run; ten, because the cap exists to
@@ -109,6 +111,63 @@ def max_concurrent_turns() -> int:
         return 3
 
 
+def max_concurrent_external_turns() -> int:
+    """How many external-executor turns may run at once in this profile.
+
+    Same contract as ``max_concurrent_turns``: read under the admission lock, so
+    cheap and never-raising. Clamped to at least one -- a zero here would not
+    throttle external runs, it would make them unreachable, which is what
+    disabling the feature is for.
+    """
+
+    stored = get_preference(MAX_CONCURRENT_EXTERNAL_TURNS_KEY)
+    if stored is not None:
+        try:
+            return max(1, int(stored))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return max(1, int(get_settings().max_concurrent_external_turns))
+    except (TypeError, ValueError, AttributeError):
+        return 1
+
+
+def external_agents_enabled() -> bool:
+    """Whether this profile may run external executors at all.
+
+    The setting is still the default, so a deployment can ship the feature off
+    (or force it on) without a database. What changed is that "off" is no longer
+    a dead end: turning it on is a decision the profile can make for itself and
+    Neo can record, rather than an environment variable the person looking at a
+    greyed-out menu entry has no way to discover.
+
+    The choice is stored per profile because the privilege is per profile -- one
+    account opting into credentialed CLI runs must not opt in every other
+    account sharing the installation.
+    """
+
+    stored = get_preference(EXTERNAL_AGENTS_ENABLED_KEY)
+    if stored is not None:
+        return stored.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        return bool(get_settings().external_agents_enabled)
+    except AttributeError:
+        return False
+
+
+def set_external_agents_enabled(value: bool) -> bool:
+    """Record the profile's choice, and return what it now is."""
+
+    set_preference(EXTERNAL_AGENTS_ENABLED_KEY, "1" if value else "0")
+    return bool(value)
+
+
+def set_max_concurrent_external_turns(value: int) -> int:
+    clamped = max(1, min(5, int(value)))
+    set_preference(MAX_CONCURRENT_EXTERNAL_TURNS_KEY, str(clamped))
+    return clamped
+
+
 def set_max_concurrent_turns(value: int) -> int:
     clamped = _clamp(int(value))
     set_preference(MAX_CONCURRENT_TURNS_KEY, str(clamped))
@@ -116,12 +175,16 @@ def set_max_concurrent_turns(value: int) -> int:
 
 
 __all__ = [
+    "EXTERNAL_AGENTS_ENABLED_KEY",
+    "MAX_CONCURRENT_EXTERNAL_TURNS_KEY",
     "MAX_CONCURRENT_TURNS",
     "MAX_CONCURRENT_TURNS_KEY",
     "MIN_CONCURRENT_TURNS",
+    "external_agents_enabled",
     "get_preference",
     "initialize_chat_preference_tables",
     "max_concurrent_turns",
+    "set_external_agents_enabled",
     "set_max_concurrent_turns",
     "set_preference",
 ]

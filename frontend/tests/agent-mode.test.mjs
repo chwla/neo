@@ -52,11 +52,11 @@ function render(overrides = {}) {
 const count = (haystack, needle) => haystack.split(needle).length - 1;
 
 describe("agent mode composer", () => {
-  test("offers repo, mode and agent as labelled chips", () => {
+  test("offers engine, repo, mode and agent as labelled chips", () => {
     const html = render();
 
-    assert.equal(count(html, 'class="agent-chip"'), 3);
-    for (const label of ["Repo", "Mode", "Agent"]) {
+    assert.equal(count(html, 'class="agent-chip"'), 4);
+    for (const label of ["Engine", "Repo", "Mode", "Agent"]) {
       assert.ok(
         html.includes(`<span class="agent-chip-label">${label}</span>`),
         `missing ${label} chip`,
@@ -254,7 +254,11 @@ describe("agent mode composer", () => {
   test("every control is disabled while a submission is in flight", () => {
     const html = render({ value: "go", disabled: true });
 
-    assert.equal(count(html, 'disabled=""'), 10, "3 chips + folder + tools + attach + compact + model + textarea + Start");
+    assert.equal(
+      count(html, 'disabled=""'),
+      11,
+      "4 chips (engine, repo, mode, agent) + folder + tools + attach + compact + model + textarea + Start",
+    );
   });
 });
 

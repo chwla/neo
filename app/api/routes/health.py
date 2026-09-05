@@ -58,7 +58,44 @@ def health() -> dict[str, object]:
             settings.web_search_provider, settings.searxng_instance
         ),
         "ollama_available": _ollama_available(settings.ollama_url),
+        "external_agents_enabled": _external_agents_enabled(),
+        "external_agents": _external_agents(),
     }
+
+
+def _external_agents_enabled() -> bool:
+    """The profile's choice, falling back to the deployment setting.
+
+    Health must never fail on a preference read, so a profile database that is
+    not there yet answers with the setting rather than raising.
+    """
+
+    try:
+        from app.services import chat_prefs
+
+        return chat_prefs.external_agents_enabled()
+    except Exception:  # pragma: no cover - health must never fail on a read
+        return bool(get_settings().external_agents_enabled)
+
+
+def _external_agents() -> list[dict[str, object]]:
+    """Which external executors are usable, if the feature is on at all.
+
+    Cached inside ``detect``, so this stays cheap enough for a health endpoint;
+    when the feature is disabled it does not probe anything.
+    """
+
+    if not _external_agents_enabled():
+        return []
+    try:
+        from app.services.external_agents import detect
+
+        return [
+            {"id": row["id"], "available": row["available"], "reason": row.get("reason")}
+            for row in detect.statuses()
+        ]
+    except Exception:  # pragma: no cover - health must never fail on a probe
+        return []
 
 
 @router.get("/live")

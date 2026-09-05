@@ -21,6 +21,7 @@ REUSABLE_CHAT_FIELDS = (
     "effort",
     "agent_definition_id",
     "disabled_tools",
+    "executor",
 )
 
 

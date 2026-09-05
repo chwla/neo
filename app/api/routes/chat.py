@@ -27,7 +27,9 @@ from app.repositories.app_store import AppStore
 from app.schemas.chat import ProjectRead
 from app.services import chat_events, chat_prefs
 from app.services.agent_core import events as agent_events
+from app.services.agent_core import store as agent_store
 from app.services.agent_core import worker as agent_worker
+from app.services.agent_core.types import EXTERNAL_EXECUTORS, Executor
 from app.services.chat import NeoChatService
 from app.services.llm import (
     LLMClient,
@@ -185,7 +187,8 @@ class ChatRead(BaseModel):
     agent_mode: str = "normal"
     agent_definition_id: str | None = None
     disabled_tools: list[str] = Field(default_factory=list)
-    effort: str = "high"
+    effort: str = "low"
+    executor: str = "neo"
     #: Set only while a run in this chat is unfinished, so the sidebar can badge
     #: the row without a second request. A chat whose agent turns are all done
     #: is an ordinary chat again.
@@ -297,6 +300,13 @@ class ChatSendRequest(BaseModel):
     repo_id: str | None = Field(default=None, max_length=64)
     agent_mode: Literal["plan", "normal", "auto"] | None = None
     agent_definition_id: str | None = Field(default=None, max_length=64)
+    #: Which engine runs this agent turn. A Literal rather than a free string so
+    #: an unknown name is a 422 at the edge instead of a session that reaches the
+    #: worker and finds no runner. Absent means "whatever the chat is set to".
+    executor: Executor | None = None
+    #: A named handoff chain to run as this one turn, e.g. "plan_build". Absent
+    #: runs the single executor above.
+    handoff: str | None = Field(default=None, max_length=40)
     #: How much work this turn may spend. Absent means "whatever the chat is set
     #: to", so the thread carries the choice and one message can still override
     #: it without changing where the user is.
@@ -348,6 +358,7 @@ class ChatUpdateRequest(BaseModel):
     agent_definition_id: str | None = Field(default=None, max_length=64)
     disabled_tools: list[str] | None = None
     effort: Literal["low", "high"] | None = None
+    executor: Executor | None = None
 
     @field_validator("title")
     @classmethod
@@ -1189,6 +1200,40 @@ def _free_slots() -> int:
     return chat_prefs.max_concurrent_turns() - _occupied_slots()
 
 
+def _running_session_ids() -> set[str]:
+    """Agent sessions holding a slot right now, by the same union as above."""
+
+    _generations, running_sessions = chat_events.running_turn_ids()
+    sessions = {
+        identifier
+        for identifier, heartbeat in running_sessions.items()
+        if not _heartbeat_is_stale(heartbeat)
+    }
+    return sessions | agent_worker.active_ids()
+
+
+def _external_free_slots() -> int:
+    """Room under the external sub-cap, which sits on top of the global one.
+
+    An external run is a whole coding agent -- it reads, edits, runs tests and
+    iterates for minutes -- so several at once mostly makes all of them slower
+    while saturating the machine. The global cap alone would happily admit three.
+
+    This is a second *limit*, not a second queue: over the cap a turn stays in
+    the same queued state, emits the same ``turn.queued`` event, and is released
+    by the same pump.
+    """
+
+    running = _running_session_ids()
+    if not running:
+        return chat_prefs.max_concurrent_external_turns()
+    executors = agent_store.executors_for(running)
+    external = sum(
+        1 for identifier in running if executors.get(identifier, "neo") in EXTERNAL_EXECUTORS
+    )
+    return chat_prefs.max_concurrent_external_turns() - external
+
+
 def _admit_or_queue(
     profile: dict, generation_id: str, chat_id: int, *, announce: bool = True
 ) -> bool:
@@ -1244,7 +1289,18 @@ def _pump_turn_queue(profile: dict) -> None:
             free -= 1
         if free <= 0:
             return
-        for session_id, _chat_id in chat_events.queued_agent_sessions(free):
+        queued = chat_events.queued_agent_sessions(free)
+        executors = agent_store.executors_for([session_id for session_id, _ in queued])
+        external_free = _external_free_slots()
+        for session_id, _chat_id in queued:
+            if free <= 0:
+                break
+            if executors.get(session_id, "neo") in EXTERNAL_EXECUTORS:
+                # Skipped, not stopped: a local turn behind an external one in
+                # the queue should not wait for a cap that does not apply to it.
+                if external_free <= 0:
+                    continue
+                external_free -= 1
             agent_worker.start(session_id)
             free -= 1
 
@@ -1868,7 +1924,38 @@ def _apply_agent_settings(store: AppStore, chat: Chat, payload: ChatSendRequest)
         chat.agent_mode = payload.agent_mode
     if payload.agent_definition_id is not None:
         chat.agent_definition_id = payload.agent_definition_id or None
+    if payload.executor is not None:
+        chat.executor = payload.executor
     store.db.commit()
+
+
+def _refuse_unusable_executor(chat: Chat, payload: ChatSendRequest) -> None:
+    """Refuse an external turn at submit time, while it still costs nothing.
+
+    Delegates to the shared preflight so this and the agent-session route cannot
+    drift apart about what "runnable" means. Translated into a 400 here because
+    the caller is a browser and the reason is actionable.
+    """
+
+    from app.services.external_agents.preflight import preflight
+    from app.services.external_agents.types import ExternalAgentError
+
+    # The *effective* settings, not the persisted ones: this runs before
+    # `_apply_agent_settings` (deliberately -- nothing may be written until the
+    # turn is known to be runnable), so a repository or engine chosen in the same
+    # gesture as the message is still only on the payload.
+    try:
+        preflight(
+            payload.executor or chat.executor or "neo",
+            handoff=payload.handoff,
+            repo_id=payload.repo_id if payload.repo_id is not None else chat.repo_id,
+        )
+    except ExternalAgentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _start_agent_turn(
@@ -1907,6 +1994,7 @@ def _start_agent_turn(
     # a refused turn that had already added the user row and the anchor would
     # leave the transcript holding half a turn that never runs.
     _refuse_if_busy(store, chat.id)
+    _refuse_unusable_executor(chat, payload)
 
     _apply_agent_settings(store, chat, payload)
     store.add_chat_message(
@@ -1919,12 +2007,35 @@ def _start_agent_turn(
     anchor = store.add_chat_message(chat.id, "assistant", "", response_kind="agent_run")
     store.db.commit()
 
+    executor = payload.executor or chat.executor or "neo"
+    handoff = {"preset": payload.handoff} if payload.handoff else None
+    if handoff:
+        # A chain names its own executors per step, so the chat's single-executor
+        # setting does not decide anything here. Recorded as the first step's
+        # engine purely so the session row is never a lie about who ran.
+        from app.services.external_agents.chain import preset_steps
+
+        try:
+            executor = preset_steps(payload.handoff)[0].executor
+        except Exception as exc:
+            anchor.content = str(exc)
+            anchor.response_kind = "agent_error"
+            store.db.commit()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         # An agent turn is the heaviest kind there is, so a cap that ignored it
         # would not be a cap. Decided under the lock for the same reason a plain
         # turn is: the slot has to still be free when it is taken.
         with _ADMISSION_LOCK:
             admitted = _free_slots() > 0
+            queue_reason = "concurrency_cap"
+            if admitted and (executor in EXTERNAL_EXECUTORS or handoff):
+                # The external sub-cap, applied only to the turns it governs so a
+                # local turn is never delayed by an external backlog.
+                if _external_free_slots() <= 0:
+                    admitted = False
+                    queue_reason = "external_cap"
             session = AgentCoreService().create(
                 SessionCreate(
                     objective=cleaned_prompt,
@@ -1932,6 +2043,8 @@ def _start_agent_turn(
                     repo_id=chat.repo_id,
                     agent_definition_id=chat.agent_definition_id,
                     disabled_tools=chat.disabled_tools or [],
+                    executor=executor,
+                    handoff=handoff,
                     chat_id=chat.id,
                     anchor_message_id=anchor.id,
                     client_request_id=payload.client_request_id,
@@ -1946,7 +2059,14 @@ def _start_agent_turn(
             agent_store.append_event(
                 session.id,
                 agent_events.QUEUED,
-                {"reason": "concurrency_cap", "limit": chat_prefs.max_concurrent_turns()},
+                {
+                    "reason": queue_reason,
+                    "limit": (
+                        chat_prefs.max_concurrent_external_turns()
+                        if queue_reason == "external_cap"
+                        else chat_prefs.max_concurrent_turns()
+                    ),
+                },
             )
     except AgentCoreValidationError as exc:
         # The turn never started, so the placeholder would sit empty forever.
@@ -2602,6 +2722,8 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat.disabled_tools = request.disabled_tools
     if request.effort is not None:
         chat.effort = request.effort
+    if request.executor is not None:
+        chat.executor = request.executor
     store.db.commit()
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)

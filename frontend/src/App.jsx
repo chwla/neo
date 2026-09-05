@@ -16,6 +16,7 @@ import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
 import ChatToolsPanel from "./ChatToolsPanel.jsx";
+import ExternalAgents from "./ExternalAgents.jsx";
 import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
 import Projects from "./Projects.jsx";
@@ -1129,6 +1130,45 @@ function SubmitArrowIcon() {
 }
 
 /**
+ * Which engines the picker may offer, and what each is called there.
+ *
+ * Only the ones that are actually usable -- installed, signed in, switched on.
+ * An engine you have not signed in to is not a choice you are declining to
+ * make, it is a task, and this control cannot do tasks: every other row in the
+ * menu takes effect the moment it is picked, and one that instead opened a
+ * browser and waited on a sign-in was the odd one out. Signing in lives in
+ * Settings > Engines now, and this offers what that produced.
+ *
+ * The one engine offered regardless is the one this chat is *already* running
+ * on. A stored executor whose CLI has since signed out or been switched off
+ * would otherwise leave the select with no matching option, and a select with
+ * no match silently shows its first -- telling someone their chat is on Neo
+ * when the next turn will be refused. So it is offered, carrying `available:
+ * false`; the composer states that in a line of its own underneath rather than
+ * in the label, because the chip truncates at 160px and "Claude Code - not
+ * con..." is not a thing anyone should have to finish in their head.
+ *
+ * Exported as a plain function because the rule is the whole point of the
+ * control, and the frontend suite renders to static markup with no way to fire
+ * a change event at it.
+ */
+export function engineOptions(executor = "neo", externalAgents = []) {
+  const options = [{ id: "neo", name: "Neo", available: true }];
+  for (const agent of externalAgents) {
+    if (agent.available || agent.id === executor) {
+      options.push({ id: agent.id, name: agent.name, available: Boolean(agent.available) });
+    }
+  }
+  // A chat can carry an executor Neo no longer detects at all -- the CLI was
+  // removed, or the profile was moved to another machine. Naming it is still
+  // more honest than showing "Neo".
+  if (executor !== "neo" && !options.some((option) => option.id === executor)) {
+    options.push({ id: executor, name: executor, available: false });
+  }
+  return options;
+}
+
+/**
  * The composer is one rounded terminal-green card: the objective/message on the
  * first line with the model picker opposite it, and a control row underneath --
  * tools on the left, mode switch and send on the right.
@@ -1151,7 +1191,11 @@ export function ChatComposer({
   onRepoChange,
   agentMode = "normal",
   onAgentModeChange,
-  effort = "high",
+  executor = "neo",
+  onExecutorChange,
+  externalAgents = [],
+  onOpenEngineSettings,
+  effort = "low",
   onEffortChange = () => {},
   onOpenFolder,
   folderAttaching = false,
@@ -1174,6 +1218,20 @@ export function ChatComposer({
   const attachInputRef = useRef(null);
   // Everything the run needs but the objective itself lives behind the "+":
   // repo, permission mode, agent, and whatever the clip attaches.
+  // Both read off the capability contract the API returns, so the interface
+  // never asserts an enforcement the CLI does not provide.
+  const activeExecutor = externalAgents.find((agent) => agent.id === executor) || null;
+  const toolTogglesApply = !activeExecutor || activeExecutor.capabilities?.tool_denylist !== false;
+  const engineChoices = engineOptions(executor, externalAgents);
+  // The engine this chat would actually run on, and whether it still can. A
+  // chat outlives the engine it was pointed at -- the CLI signs out, or the
+  // profile switch goes off -- and that has to be said before the next turn is
+  // refused, not after.
+  const activeChoice = engineChoices.find((choice) => choice.id === executor);
+  const engineBroken = Boolean(activeChoice) && !activeChoice.available;
+  // Whether anything beyond Neo is genuinely connected, which decides whether
+  // the line below the picker is an invitation or a way back to the panel.
+  const hasConnectedEngine = externalAgents.some((agent) => agent.available);
   const [menuOpen, setMenuOpen] = useState(false);
   // Which attached image is open full-screen, or -1 for none.
   const [zoomedImage, setZoomedImage] = useState(-1);
@@ -1367,6 +1425,39 @@ export function ChatComposer({
                       </select>
                     </label>
                     <label className="agent-chip">
+                      <span className="agent-chip-label">Engine</span>
+                      <select value={executor} onChange={(event) => onExecutorChange(event.target.value)}
+                        disabled={disabled} aria-label="Select agent engine"
+                        title="Which engine runs agent turns in this chat. Claude Code and Codex appear here once you have signed in to them in Settings, and run on your own CLI subscription in the attached folder.">
+                        {/* Only engines that would actually run the next turn.
+                            Picking one here is a switch and nothing else -- no
+                            sign-in, no browser, no waiting. */}
+                        {engineChoices.map((choice) => (
+                          <option key={choice.id} value={choice.id}>{choice.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className={engineBroken ? "agent-engine-link is-broken" : "agent-engine-link"}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenEngineSettings?.();
+                      }}
+                      /* Three jobs, one line. The picker no longer advertises
+                         engines you cannot use, so this says they exist; it
+                         points at the one place they are set up; and when the
+                         engine this chat is on has stopped working, it says so
+                         instead -- which is the only warning there would be. */
+                      title="Sign in to Claude Code or Codex so they can run agent turns in this chat."
+                    >
+                      {engineBroken
+                        ? `${activeChoice.name} is not connected — set it up in Settings`
+                        : hasConnectedEngine
+                          ? "Manage engines in Settings"
+                          : "Connect Claude Code or Codex…"}
+                    </button>
+                    <label className="agent-chip">
                       <span className="agent-chip-label">Agent</span>
                       <select value={selectedAgentDefinitionId} onChange={(event) => onAgentDefinitionChange(event.target.value)}
                         disabled={disabled} aria-label="Select agent definition">
@@ -1374,6 +1465,20 @@ export function ChatComposer({
                         {agentDefinitions.filter((agent) => agent.name !== "general").map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name || agent.name}</option>)}
                       </select>
                     </label>
+                    {activeExecutor?.notes?.length ? (
+                      /* Collapsed. The caveats are real and stay available in
+                         full, but rendered open they were the largest thing in
+                         the menu and the only thing that changed on success --
+                         which made a working engine look like a broken one. */
+                      <details className="agent-executor-note">
+                        <summary>Runs under {activeExecutor.name}&apos;s own permissions</summary>
+                        <span className="agent-executor-note-list">
+                          {activeExecutor.notes.map((note) => (
+                            <span key={note}>{note}</span>
+                          ))}
+                        </span>
+                      </details>
+                    ) : null}
                     <button
                       type="button"
                       className="composer-menu-action agent-folder-button"
@@ -1403,12 +1508,20 @@ export function ChatComposer({
                         setMenuOpen(false);
                         onOpenToolsPanel?.();
                       }}
+                      /* Not disabled when it does not apply: the toggles still
+                         govern Neo's own turns in this chat, and a dead control
+                         would misrepresent that. What changes is the label, so
+                         the limit is stated rather than discovered. */
                       disabled={disabled}
-                      title="Choose which tools the agent can use in this chat, or add a new one."
+                      title={
+                        toolTogglesApply
+                          ? "Choose which tools the agent can use in this chat, or add a new one."
+                          : `${activeExecutor?.name || "This engine"} manages its own tools, so these toggles apply to Neo's turns only.`
+                      }
                       aria-label="Tools"
                     >
                       <WrenchIcon />
-                      <span>Tools</span>
+                      <span>{toolTogglesApply ? "Tools" : "Tools (Neo turns only)"}</span>
                     </button>
                     <CompactConversationAction
                       compacting={compacting}
@@ -1431,8 +1544,9 @@ export function ChatComposer({
                       <select value={effort} onChange={(event) => onEffortChange(event.target.value)}
                         disabled={disabled} aria-label="Select effort"
                         title="High lets a model choose the route and reason before replying. Low keeps the deterministic parts only -- it answers far faster, and it will not decide on its own that a question needs the web.">
-                        <option value="high">High · more thorough</option>
+                        {/* Default first, as the other chips do. */}
                         <option value="low">Low · faster replies</option>
+                        <option value="high">High · more thorough</option>
                       </select>
                     </label>
                     <AttachFilesAction
@@ -2247,7 +2361,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
+function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenEngines, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -2269,6 +2383,7 @@ function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenLLMs, onOp
       icon: "terminal",
       description: "Connected tools and runtime services.",
       items: [
+        ["Engines", "Sign in to Claude Code and Codex so they can run agent turns", onOpenEngines],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
         ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch],
         ["Language Server", "Workspace language intelligence", onOpenLsp],
@@ -2477,6 +2592,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showWorkspaceOrchestration, setShowWorkspaceOrchestration] = useState(false);
   const [showContinuity, setShowContinuity] = useState(false);
   const [showWebSearchSettings, setShowWebSearchSettings] = useState(false);
+  // Settings > Engines: the one place an external CLI is signed in to. Reachable
+  // from Settings and from the composer's engine picker, which no longer offers
+  // an engine it cannot actually run.
+  const [showEngines, setShowEngines] = useState(false);
   const [showGallerySettings, setShowGallerySettings] = useState(false);
   const [showBackgroundChats, setShowBackgroundChats] = useState(false);
   const [showRulesSettings, setShowRulesSettings] = useState(false);
@@ -2551,6 +2670,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   // stays where it is either way.
   const [chatMode, setChatMode] = useState("chatbot");
   const [agentDefinitions, setAgentDefinitions] = useState([]);
+  const [externalAgents, setExternalAgents] = useState([]);
   const [agentRepos, setAgentRepos] = useState([]);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentPatch, setAgentPatch] = useState("");
@@ -2587,12 +2707,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
   const loadAgentContext = useCallback(async () => {
     try {
-      const [agentData, repoData] = await Promise.all([
+      const [agentData, repoData, externalData] = await Promise.all([
         api.agentDefinitions(false),
         api.reposList({ limit: 100 }).catch(() => ({ repos: [] })),
+        // External executors are optional and off by default, so a failure here
+        // must leave Agent mode fully usable rather than taking it down.
+        api.externalAgents().catch(() => ({ executors: [] })),
       ]);
       setAgentDefinitions(agentData.definitions || []);
       setAgentRepos(repoData.repos || []);
+      setExternalAgents(externalData.executors || []);
     } catch (error) {
       setStatusError(`Could not load Agent mode context: ${errorMessage(error)}`);
     }
@@ -2601,6 +2725,28 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   useEffect(() => {
     if (chatMode === "agent") loadAgentContext();
   }, [chatMode, loadAgentContext]);
+
+  /**
+   * Switch this chat to an engine, and say which one is running turns now.
+   *
+   * A straight write, because the picker only offers engines that are already
+   * usable -- signing in happens in Settings > Engines, before an engine ever
+   * reaches this menu. The confirmation stays: the only other visible change is
+   * a collapsed box of caveats, and on its own that reads like a failure.
+   */
+  const handleEngineSelected = useCallback(
+    (id) => {
+      updateChatAgentSettings({ executor: id });
+      if (id === "neo") {
+        setChatAgentMessage("");
+        return;
+      }
+      const name = externalAgents.find((agent) => agent.id === id)?.name || "That engine";
+      setChatAgentMessage(`Agent turns in this chat run on ${name}.`);
+      window.setTimeout(() => setChatAgentMessage(""), 6000);
+    },
+    [externalAgents, updateChatAgentSettings],
+  );
 
   // There is deliberately no poll here. The badges once needed an 8-second one
   // because nothing else told the sidebar a run had ended; the profile-wide tail
@@ -3305,6 +3451,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           repoId: chat.repo_id ?? null,
           agentMode: chat.agent_mode ?? null,
           agentDefinitionId: chat.agent_definition_id ?? null,
+          executor: chat.executor ?? null,
           effort: chat.effort ?? null,
           imageIds,
         },
@@ -3878,7 +4025,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onAgentDefinitionChange={(id) => updateChatAgentSettings({ agent_definition_id: id })}
           agentMode={activeChat?.agent_mode || "normal"}
           onAgentModeChange={(nextMode) => updateChatAgentSettings({ agent_mode: nextMode })}
-          effort={activeChat?.effort || "high"}
+          executor={activeChat?.executor || "neo"}
+          onExecutorChange={handleEngineSelected}
+          externalAgents={externalAgents}
+          onOpenEngineSettings={() => setShowEngines(true)}
+          effort={activeChat?.effort || "low"}
           onEffortChange={(next) => updateChatAgentSettings({ effort: next })}
           onOpenFolder={handleOpenFolder}
           folderAttaching={false}
@@ -3912,6 +4063,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         <SettingsDialog
           onOpenAccount={() => { setShowSettings(false); setShowAccount(true); }}
           onOpenBackgroundChats={() => { setShowSettings(false); setShowBackgroundChats(true); }}
+          onOpenEngines={() => { setShowSettings(false); setShowEngines(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
@@ -4020,6 +4172,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
       {showGallerySettings && (
         <GallerySettingsDialog onClose={() => setShowGallerySettings(false)} />
+      )}
+
+      {showEngines && (
+        <ExternalAgents
+          onClose={() => setShowEngines(false)}
+          /* Signing in here has to reach the composer's picker without a
+             reload: its list was fetched when Agent mode was entered, and an
+             engine that appears only on the next visit reads as one that did
+             not connect. */
+          onChanged={loadAgentContext}
+        />
       )}
 
       {showBackgroundChats && (

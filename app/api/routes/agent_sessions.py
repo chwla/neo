@@ -40,11 +40,28 @@ def _raise(exc: Exception):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(exc, AgentCoreValidationError | WorkspaceError | ValueError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # "This external executor cannot run, and here is what to fix" is the
+    # caller's problem to act on, not a server fault.
+    from app.services.external_agents.types import ExternalAgentError
+
+    if isinstance(exc, ExternalAgentError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
 
 
 @router.post("", status_code=201)
 def create_session(payload: SessionCreate):
+    # An external run is checked before the row is written, the same way the
+    # chat composer's turns are and through the same preflight. Without this a
+    # session created here would be admitted, handed a worker, and only then
+    # discover that the CLI is signed out -- a failure the caller could have
+    # been told about synchronously.
+    from app.services.external_agents.preflight import preflight
+
+    try:
+        preflight(payload.executor, handoff=None, repo_id=payload.repo_id)
+    except Exception as exc:
+        _raise(exc)
     try:
         return {"session": _service().create(payload).model_dump()}
     except Exception as exc:

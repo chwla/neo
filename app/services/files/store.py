@@ -92,6 +92,7 @@ def initialize_workspace_file_tables() -> None:
                 total_bytes INTEGER NOT NULL DEFAULT 0, metadata_json TEXT,
                 deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL, indexed_at TEXT,
+                external_unsafe_opt_in INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (project_id) REFERENCES workspace_projects(id)
             );
             CREATE TABLE IF NOT EXISTS workspace_repo_files (
@@ -249,6 +250,13 @@ def initialize_workspace_file_tables() -> None:
         # that predates live workspaces keeps the copy-and-deliver behaviour it
         # was created with rather than silently gaining direct write access.
         _ensure_column(conn, "workspace_repos", "access", "TEXT NOT NULL DEFAULT 'managed'")
+        # The second of the two gates on unsafe external-agent execution. It is
+        # per-repository on purpose: "I accept an unsandboxed agent in this
+        # scratch checkout" must not silently mean "in every folder I attach".
+        # Defaults to 0, so upgrading grants nothing.
+        _ensure_column(
+            conn, "workspace_repos", "external_unsafe_opt_in", "INTEGER NOT NULL DEFAULT 0"
+        )
         conn.commit()
     finally:
         conn.close()

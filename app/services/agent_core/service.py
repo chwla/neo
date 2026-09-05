@@ -15,6 +15,7 @@ from app.services.agent_core.permissions import grant_matches
 from app.services.agent_core.types import (
     AgentSession,
     Budgets,
+    Executor,
     Grant,
     PermissionMode,
     ToolCall,
@@ -38,6 +39,10 @@ class SessionCreate(BaseModel):
     anchor_message_id: int | None = None
     agent_definition_id: str | None = None
     disabled_tools: list[str] = Field(default_factory=list)
+    executor: Executor = "neo"
+    #: An ordered chain of executor steps to run as this one session. Empty for
+    #: an ordinary single-executor turn.
+    handoff: dict[str, Any] | None = None
     client_request_id: str | None = Field(default=None, max_length=200)
 
 
@@ -58,6 +63,30 @@ class MessageCreate(BaseModel):
 class DeliverRequest(BaseModel):
     mode: str = Field(default="patch", pattern="^(patch|working_tree)$")
     files: list[str] | None = None
+
+
+def _budgets_for(executor: str, handoff: dict | None) -> Budgets:
+    """Ceilings sized for who is actually doing the work.
+
+    The 1200-second default is tuned for Neo's own loop against a local model.
+    An external CLI is a whole coding agent of its own and routinely runs
+    longer, so a session budget left at the default would kill a healthy run
+    partway through -- and a chain, being several such runs in series, needs
+    room for all of them. The per-process timeout is separate and lives in
+    ``external_agents.runner``; this is only the session-level ceiling.
+    """
+
+    from app.core.config import get_settings
+    from app.services.agent_core.types import EXTERNAL_EXECUTORS
+
+    if executor not in EXTERNAL_EXECUTORS and not handoff:
+        return Budgets()
+    per_step = int(get_settings().external_agent_timeout_seconds)
+    steps = max(1, len((handoff or {}).get("steps") or []))
+    # Slack for the orchestration around each step (snapshotting, context
+    # building) so the ceiling is never the thing that ends a healthy chain.
+    total = min(86_400, int(per_step * steps * 1.2) + 300)
+    return Budgets(max_seconds=total)
 
 
 def _title(objective: str) -> str:
@@ -140,7 +169,9 @@ class AgentCoreService:
                 "agent_definition_id": payload.agent_definition_id,
                 "agent_definition_snapshot": snapshot,
                 "disabled_tools": payload.disabled_tools,
-                "budgets": Budgets().model_dump(),
+                "executor": payload.executor,
+                "handoff": payload.handoff,
+                "budgets": _budgets_for(payload.executor, payload.handoff).model_dump(),
                 "client_request_id": payload.client_request_id,
                 "created_at": now,
                 "updated_at": now,
@@ -397,6 +428,10 @@ class AgentCoreService:
                 "agent_definition_id": original.agent_definition_id,
                 "agent_definition_snapshot": original.agent_definition_snapshot,
                 "disabled_tools": original.disabled_tools,
+                "executor": original.executor,
+                "external_session_id": original.external_session_id,
+                "external_meta": original.external_meta,
+                "handoff": original.handoff,
                 "chat_id": chat_id,
                 "anchor_message_id": anchor_message_id,
                 "todo": [item.model_dump() for item in original.todo],

@@ -43,6 +43,48 @@ class Settings(BaseSettings):
     #: them fast. A profile that has set the preference overrides this; this only
     #: decides what a fresh profile does.
     max_concurrent_turns: int = Field(default=3, ge=1, le=10)
+
+    # --- External agent executors (Claude Code, Codex) -----------------------
+    #: Off by default, and deliberately so. An external executor is a
+    #: credentialed, network-enabled process that runs its own agent loop and
+    #: edits files -- strictly more privileged than anything Neo's command
+    #: sandbox permits. Nobody should acquire that by upgrading.
+    #:
+    #: This is the *default* rather than the last word: a profile that opts in
+    #: from the engine picker has its choice recorded in ``chat_preferences``,
+    #: which is what ``chat_prefs.external_agents_enabled()`` reads. Opting in is
+    #: still a deliberate act, it is simply one a person can perform from the
+    #: interface that told them the engine was unavailable, instead of having to
+    #: discover an environment variable.
+    external_agents_enabled: bool = Field(default=False)
+    #: Explicit paths to the CLIs. Empty means "look on PATH", which is what a
+    #: normal npm -g install gives. Set these when Neo runs somewhere the login
+    #: shell's PATH is not inherited.
+    claude_code_bin: str = Field(default="")
+    codex_bin: str = Field(default="")
+    #: Where each CLI keeps its own configuration and credentials, when it is
+    #: *not* the CLI's own default. Empty means "say nothing and let the CLI
+    #: find its own credentials", which is the only correct default: setting
+    #: CLAUDE_CONFIG_DIR at all makes Claude Code use file-based credentials in
+    #: that directory instead of the macOS Keychain, so passing even the
+    #: documented default path turns a signed-in user into a signed-out one.
+    #: Set these only to point Neo at a genuinely different profile.
+    claude_config_dir: str = Field(default="")
+    codex_home: str = Field(default="")
+    #: Per-process wall clock for one external step. Generous because a real
+    #: coding task is not a chat completion: the CLI reads, edits, runs tests and
+    #: iterates. This bounds a single step; the session-level ceiling for a whole
+    #: chain is derived from it in ``agent_core.service``.
+    external_agent_timeout_seconds: int = Field(default=3600, ge=60, le=86_400)
+    #: How many external runs may be in flight at once, on top of the global
+    #: turn cap. One by default: each is a full coding agent that will happily
+    #: saturate the machine, and two at once mostly makes both slower.
+    max_concurrent_external_turns: int = Field(default=1, ge=1, le=5)
+    #: The first of the two gates on unsafe CLI flags
+    #: (``--dangerously-skip-permissions``,
+    #: ``--dangerously-bypass-approvals-and-sandbox``). The second is a per-repo
+    #: opt-in. Both must be true; either one alone does nothing.
+    external_agent_allow_unsafe: bool = Field(default=False)
     # Reasoning models spend part of this budget thinking before they emit any answer:
     # gemma4 uses ~550 tokens on reasoning alone, so a 512 budget hit the cap before
     # writing a word and every retry repeated it.

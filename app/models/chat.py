@@ -39,16 +39,39 @@ class Chat(TimestampMixin, Base):
     #: parts of that, which is roughly half the model calls. It belongs to the
     #: thread, like the agent settings beside it, and is chosen per message so a
     #: single question can be answered carefully without changing the thread.
+    #: How much work a *reply* may spend. Agent runs are unaffected -- they always
+    #: get the model's full reasoning, because tool choice and knowing when to
+    #: stop depend on it -- so this governs chat mode alone.
+    #:
+    #: Low by default. A chat reply is the interactive case: the deterministic
+    #: half of the pipeline answers far faster, and a thread that needs routing
+    #: and reasoning can be raised to high per chat. Defaulting the other way
+    #: made the common case pay for the uncommon one.
+    #:
     #: ``server_default`` is load-bearing here in a way it is not for the columns
     #: around it: the raw-sqlite3 INSERT in ``create_chat_for_session`` names
     #: every one of those but not this, so a NOT NULL with only a Python-side
     #: default rejects the row outright. Note the value is unquoted -- SQLAlchemy
-    #: quotes it, and writing ``"'high'"`` here renders a default with the quotes,
+    #: quotes it, and writing ``"'low'"`` here renders a default with the quotes,
     #: which stores the quote characters as part of the value.
     effort: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="high", server_default="high"
+        String(16), nullable=False, default="low", server_default="low"
     )
     agent_definition_id: Mapped[str | None] = mapped_column(String(64))
+
+    #: Which engine runs agent turns in this thread: Neo's own loop, or an
+    #: external coding CLI (Claude Code, Codex) driven as a subprocess. It sits
+    #: on the chat, beside the repository and the permission mode, because a
+    #: conversation carries on across a change of engine -- the point of the
+    #: feature is switching mid-thread and having the transcript stay one
+    #: conversation. ``server_default`` for the same reason ``effort`` needs one:
+    #: ``create_chat_for_session`` inserts through raw sqlite3 without naming
+    #: this column, so a NOT NULL whose only default is Python-side rejects the
+    #: row. Unquoted, so SQLAlchemy renders ``DEFAULT 'neo'`` rather than storing
+    #: the quote characters.
+    executor: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="neo", server_default="neo"
+    )
     #: Tool names withheld from every agent turn in this chat. Applies to both
     #: built-in tools and bridged connector tools -- see agent_core.tools.registry.
     #: ``server_default`` matters here, not just ``default``: agent_core writes
