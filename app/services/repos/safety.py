@@ -9,7 +9,6 @@ from app.core.paths import (
     in_container,
     is_reparse_point,
     is_within,
-    path_key,
     same_path,
     split_roots,
     system_roots,

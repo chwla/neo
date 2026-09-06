@@ -28,6 +28,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.integration import router as integration_router
 from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
+from app.api.routes.local_models import router as local_models_router
 from app.api.routes.lsp import router as lsp_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.memory_health import router as memory_health_router
@@ -170,6 +171,7 @@ def create_app() -> FastAPI:
     app.include_router(llms_router, prefix="/api")
     app.include_router(lsp_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
+    app.include_router(local_models_router, prefix="/api")
     app.include_router(provider_runtime_router, prefix="/api")
     app.include_router(evaluation_router, prefix="/api")
     app.include_router(external_agents_router, prefix="/api")

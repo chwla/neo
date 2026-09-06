@@ -58,15 +58,17 @@ async function request(path, options = {}) {
   return body;
 }
 
-async function streamRequest(path, payload, onEvent) {
+async function streamRequest(path, payload, onEvent, signal) {
   let response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
     });
   } catch (error) {
+    if (error?.name === "AbortError") return;
     throw new Error(
       `Backend API is not reachable. Start FastAPI on http://127.0.0.1:8000. Details: ${
         error.message || error
@@ -86,7 +88,14 @@ async function streamRequest(path, payload, onEvent) {
   const decoder = new TextDecoder();
   let buffered = "";
   while (true) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      throw error;
+    }
+    const { done, value } = chunk;
     buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
     const lines = buffered.split("\n");
     buffered = lines.pop() ?? "";
@@ -602,6 +611,32 @@ export const api = {
   activeChatGeneration: (chatId) => request(`/chats/${chatId}/generations/active`),
   cancelChatGeneration: (chatId, generationId) =>
     request(`/chats/${chatId}/generations/${generationId}/cancel`, { method: "POST" }),
+  localModelGoals: () => request("/local-models/goals"),
+  localModelScan: (fresh = false) =>
+    request(`/local-models/scan${fresh ? "?fresh=true" : ""}`),
+  localModelRecommendations: ({
+    goal = "chat",
+    limit = 40,
+    includeUnfit = true,
+    fresh = false,
+  } = {}) =>
+    request(
+      `/local-models/recommendations?goal=${encodeURIComponent(goal)}&limit=${limit}` +
+        `&include_unfit=${includeUnfit}${fresh ? "&fresh=true" : ""}`,
+    ),
+  localModel: (id, goal = "chat") =>
+    request(
+      `/local-models/models/${id.split("/").map(encodeURIComponent).join("/")}` +
+        `?goal=${encodeURIComponent(goal)}`,
+    ),
+  localModelsInstalled: () => request("/local-models/installed"),
+  installLocalModel: (modelId, onEvent, signal) =>
+    streamRequest("/local-models/install", { model_id: modelId }, onEvent, signal),
+  cancelLocalModelInstall: (modelId) =>
+    request("/local-models/install/cancel", {
+      method: "POST",
+      body: JSON.stringify({ model_id: modelId }),
+    }),
   llms: () => request("/llms"),
   selectLlm: (id) =>
     request("/llms/active/select", { method: "PUT", body: JSON.stringify({ id }) }),
