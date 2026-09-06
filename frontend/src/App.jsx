@@ -17,6 +17,7 @@ import { registerModal } from "./modalStack.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
 import ChatToolsPanel from "./ChatToolsPanel.jsx";
 import ExternalAgents from "./ExternalAgents.jsx";
+import CompareModels from "./CompareModels.jsx";
 import LocalModels from "./LocalModels.jsx";
 import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
@@ -503,6 +504,7 @@ export function Sidebar({
   onOpenCalendar,
   onOpenGallery,
   onOpenLocalModels,
+  onOpenCompareModels,
   activeView,
   profile,
   onSwitchProfile,
@@ -574,6 +576,7 @@ export function Sidebar({
     ["calendar", "Calendar", onOpenCalendar],
     ["gallery", "Gallery", onOpenGallery],
     ["localModels", "Local Models", onOpenLocalModels],
+    ["compareModels", "Compare Models", onOpenCompareModels],
   ];
 
   // Minimised, the sidebar keeps only what you would reopen it for: the way
@@ -2982,6 +2985,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   }, [llmRegistryProviders, llmRegistryModels]);
   const [showResearch, setShowResearch] = useState(false);
   const [showLocalModels, setShowLocalModels] = useState(false);
+  const [showCompareModels, setShowCompareModels] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
@@ -3004,6 +3008,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     setShowRepos(false);
     setShowGallery(false);
     setShowLocalModels(false);
+    setShowCompareModels(false);
   }, []);
   const [initialFileId, setInitialFileId] = useState(null);
   const [initialProjectId, setInitialProjectId] = useState(null);
@@ -4212,7 +4217,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
                   : showGallery ? "gallery"
                     : showRepos ? "repos"
                       : showLocalModels ? "localModels"
-                        : "chat";
+                        : showCompareModels ? "compareModels"
+                          : "chat";
   return (
     <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
@@ -4241,6 +4247,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onOpenCalendar={() => { closeWorkspaces(); setInitialCalendarEventId(null); setShowCalendar(true); }}
         onOpenGallery={() => { closeWorkspaces(); setInitialGalleryItemId(null); setShowGallery(true); }}
         onOpenLocalModels={() => { closeWorkspaces(); setShowLocalModels(true); }}
+        onOpenCompareModels={() => { closeWorkspaces(); setShowCompareModels(true); }}
         activeView={activeView}
         profile={profile}
         onSwitchProfile={() => setConfirmingSignOut(true)}
@@ -4286,6 +4293,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         />
       ) : showLocalModels ? (
         <LocalModels onBack={() => setShowLocalModels(false)} />
+      ) : showCompareModels ? (
+        <CompareModels onBack={() => setShowCompareModels(false)} />
       ) : showCalendar ? (
         <Calendar
           initialEventId={initialCalendarEventId}

@@ -33,6 +33,7 @@ from app.api.routes.lsp import router as lsp_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.memory_health import router as memory_health_router
 from app.api.routes.memory_retrieval import router as memory_retrieval_router
+from app.api.routes.model_compare import router as model_compare_router
 from app.api.routes.notes import router as notes_router
 from app.api.routes.patches import router as patches_router
 from app.api.routes.projects import router as projects_router
@@ -172,6 +173,7 @@ def create_app() -> FastAPI:
     app.include_router(lsp_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(local_models_router, prefix="/api")
+    app.include_router(model_compare_router, prefix="/api")
     app.include_router(provider_runtime_router, prefix="/api")
     app.include_router(evaluation_router, prefix="/api")
     app.include_router(external_agents_router, prefix="/api")

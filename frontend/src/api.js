@@ -637,6 +637,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ model_id: modelId }),
     }),
+  compareUseCases: () => request("/model-compare/use-cases"),
+  compareCandidates: () => request("/model-compare/candidates"),
+  comparePlan: (payload) =>
+    request("/model-compare/plan", { method: "POST", body: JSON.stringify(payload) }),
+  runComparison: (payload, onEvent, signal) =>
+    streamRequest("/model-compare/run", payload, onEvent, signal),
+  cancelComparison: (runId) =>
+    request("/model-compare/cancel", {
+      method: "POST",
+      body: JSON.stringify({ run_id: runId }),
+    }),
   llms: () => request("/llms"),
   selectLlm: (id) =>
     request("/llms/active/select", { method: "PUT", body: JSON.stringify({ id }) }),
