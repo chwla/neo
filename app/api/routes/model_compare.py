@@ -31,7 +31,7 @@ from app.services.model_compare.service import (
     MIN_OUTPUT_TOKENS,
     ModelCompareService,
 )
-from app.services.model_compare.tasks import MAX_CUSTOM_PROMPTS
+from app.services.model_compare.tasks import MAX_CUSTOM_PROMPTS, MAX_DEPTH
 
 #: How often to ask whether anyone is still reading. A second is far below the length
 #: of any task, so nothing generates for long after the reader has gone, and the poll
@@ -57,7 +57,7 @@ class ComparisonRequest(BaseModel):
 
     model_ids: list[str] = Field(min_length=MIN_CONTENDERS, max_length=MAX_CONTENDERS)
     use_case: str = "coding"
-    depth: int = Field(default=DEFAULT_DEPTH, ge=1, le=12)
+    depth: int = Field(default=DEFAULT_DEPTH, ge=1, le=MAX_DEPTH)
     #: Only read when use_case is "custom". One task per question, in order.
     prompts: list[str] = Field(default_factory=list, max_length=MAX_CUSTOM_PROMPTS)
     #: The model asked to rate the answers, or nothing for rule-based grading only.
@@ -76,6 +76,9 @@ class ComparisonRequest(BaseModel):
     allow_thinking: bool = False
     #: Supplied by the caller so it can cancel a run it has not had a reply from yet.
     run_id: str | None = Field(default=None, max_length=64)
+    #: Which draw from the question pool to use. Omitted, a fresh one is chosen and
+    #: recorded on the result; passing back a previous run's seed asks the same questions.
+    seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
 
     def as_kwargs(self) -> dict:
         return {
@@ -89,6 +92,7 @@ class ComparisonRequest(BaseModel):
             "temperature": self.temperature,
             "max_output_tokens": self.max_output_tokens,
             "allow_thinking": self.allow_thinking,
+            "seed": self.seed,
         }
 
 

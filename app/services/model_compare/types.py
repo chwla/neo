@@ -157,6 +157,11 @@ class Task:
     #: What a correct answer looks like, in a sentence. Shown when the user opens a cell,
     #: so the score can be argued with rather than taken on faith.
     rubric: str = ""
+    #: An answer that must score full marks. Never sent anywhere and never serialised --
+    #: it exists so the suite can assert, for every question in every pack, that a
+    #: correct answer actually passes. With hundreds of generated questions that is the
+    #: only way to know a grader has not quietly become impossible to satisfy.
+    canonical: str = ""
 
     @property
     def gradeable(self) -> bool:
@@ -367,6 +372,11 @@ class RunConfig:
     grader_version: str = ""
     parallel: int = 1
     estimate_seconds: int = 0
+    #: Which draw from the question pool this run got. Recorded because the questions are
+    #: sampled at random: without it a result could not say what it actually asked, and
+    #: two runs could never be set against each other on equal terms. Passing it back
+    #: reproduces the exact set.
+    seed: int | None = None
     started_at: str = field(default_factory=now)
     schema_version: int = SCHEMA_VERSION
 
@@ -382,6 +392,7 @@ class RunConfig:
             "grader_version": self.grader_version,
             "parallel": self.parallel,
             "estimate_seconds": self.estimate_seconds,
+            "seed": self.seed,
             "started_at": self.started_at,
             "schema_version": self.schema_version,
         }

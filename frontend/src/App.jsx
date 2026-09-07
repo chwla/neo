@@ -4589,7 +4589,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       ) : showLocalModels ? (
         <LocalModels onBack={() => setShowLocalModels(false)} />
       ) : showCompareModels ? (
-        <CompareModels onBack={() => setShowCompareModels(false)} />
+        <CompareModels />
       ) : showCalendar ? (
         <Calendar
           initialEventId={initialCalendarEventId}

@@ -32,6 +32,11 @@ representative of their use case rather than the easiest.
 
 from __future__ import annotations
 
+import random
+from dataclasses import replace
+
+from app.services.model_compare import generators
+from app.services.model_compare.generators import POOL_SIZE
 from app.services.model_compare.grading import (
     AtMostWords,
     Contains,
@@ -795,12 +800,97 @@ CHAT: tuple[Task, ...] = (
 )
 
 
-PACKS: dict[str, tuple[Task, ...]] = {
+#: The canonical answer for each hand-written question, applied below. Kept here rather
+#: than inline so the questions above stay readable, and so the suite can assert that
+#: every question in every pack accepts its own answer.
+_CANONICAL: dict[str, str] = {
+    "reasoning.bat_and_ball": "5",
+    "reasoning.letter_count": "3",
+    "reasoning.sequence": "42",
+    "reasoning.percentage": "50",
+    "reasoning.days": "Friday",
+    "reasoning.speed": "80",
+    "reasoning.ordering": "Bob",
+    "reasoning.syllogism": "Yes",
+    "coding.function": "def reverse_words(text):\n    return ' '.join(text.split()[::-1])",
+    "coding.edge_case": (
+        "def safe_divide(a, b):\n    if b == 0:\n        return None\n    return a / b"
+    ),
+    "coding.sql": (
+        "SELECT c.name FROM customers c JOIN orders o ON o.customer_id = c.id "
+        "GROUP BY c.name ORDER BY SUM(o.total) DESC LIMIT 3"
+    ),
+    "coding.regex": r"\d{4}-\d{2}-\d{2}",
+    "coding.complexity": "O(log n)",
+    "coding.git": "git reset --soft HEAD~1",
+    "coding.bug": "It returns 0 when every number in the list is negative.",
+    "coding.docstring": "2",
+    "structured.json_extract": '{"name": "Priya Raman", "city": "Chennai", "age": 34}',
+    "structured.exact_word": "BANANA",
+    "structured.csv": "item,price\npen,2\nbook,15\nlamp,40",
+    "structured.list": "1. Reset a SIM tray\n2. Hold papers together\n3. Hang a picture",
+    "structured.json_nested": '{"order": {"id": 7, "items": ["pen", "book"]}}',
+    "structured.no_markdown": "1,2,3,4,5",
+    "writing.summarise": "The council voted to extend the tram line by four stops by 2029.",
+    "writing.tone": "Could you please take another look at the report before we send it?",
+    "writing.subject": "Release moved from Friday to Monday",
+    "writing.shorten": "Heavy rain forced us to postpone the event.",
+    "writing.plain": "We will work together to build something excellent.",
+    "writing.headline": "Dog rides bus to park alone",
+    "chat.capital": "Canberra",
+    "chat.conversion": "37.8",
+    "chat.explain": (
+        "It is like the contents page of a book: it lets the computer find the rows you "
+        "asked for without reading every page."
+    ),
+    "chat.year": "1989",
+    "chat.unanswerable": "I don't know.",
+    "chat.followup": "Apple",
+}
+
+#: The hand-written questions, which lead every pack. They are the most carefully tuned
+#: -- each was chosen because it separates models rather than because it was easy to
+#: grade -- so they come first and the generated pool fills in behind them.
+_CORE: dict[str, tuple[Task, ...]] = {
     "chat": CHAT,
     "writing": WRITING,
     "coding": CODING,
     "reasoning": REASONING,
     "structured": STRUCTURED,
+}
+
+
+def _assemble(use_case: str) -> tuple[Task, ...]:
+    """One pack of exactly ``POOL_SIZE`` questions, in a fixed order.
+
+    Fixed because a question's id is how a stored result says what was asked; if the
+    catalogue shuffled between restarts, an id would stop meaning anything. The variety
+    comes from a *run* sampling this pool, not from the pool moving underneath it.
+    """
+
+    # Deduplicated on the prompt as well as the id. Several hand-written questions are
+    # also the first entry of their generated family -- the same question under two ids --
+    # and a run that sampled both would ask it twice while reporting a hundred distinct
+    # questions. The hand-written one comes first and wins.
+    seen: set[str] = set()
+    asked: set[str] = set()
+    pool: list[Task] = []
+    for task in (*_CORE.get(use_case, ()), *generators.build(use_case)):
+        if task.id in seen or task.prompt in asked:
+            continue
+        seen.add(task.id)
+        asked.add(task.prompt)
+        pool.append(
+            task if task.canonical else replace(task, canonical=_CANONICAL.get(task.id, ""))
+        )
+        if len(pool) == POOL_SIZE:
+            break
+    return tuple(pool)
+
+
+PACKS: dict[str, tuple[Task, ...]] = {
+    name: _assemble(name)
+    for name in ("chat", "writing", "coding", "reasoning", "structured")
 }
 
 # How each choice is worded on screen, in the register the local-models wizard uses:
@@ -840,12 +930,12 @@ USE_CASE_CHOICES: list[dict[str, str]] = [
     },
 ]
 
-#: How many questions a custom comparison may carry. More than this and the wait stops
-#: being a wait and becomes a plan.
-MAX_CUSTOM_PROMPTS = 10
+#: How many questions of your own a comparison may carry. The same ceiling the built-in
+#: packs are held to, so neither mode is arbitrarily the more limited one.
+MAX_CUSTOM_PROMPTS = POOL_SIZE
 
-#: Roomier than the built-ins: a custom prompt has no known answer length, and cutting it
-#: off mid-sentence would make every model look equally bad.
+#: Roomier than the built-ins: a question of your own has no known answer length, and
+#: cutting it off mid-sentence would make every model look equally bad.
 CUSTOM_MAX_TOKENS = 600
 
 
@@ -855,15 +945,41 @@ def pack(use_case: str) -> tuple[Task, ...]:
     return tuple(sorted(PACKS.get(use_case, ()), key=lambda task: task.rank))
 
 
-def select(use_case: str, depth: int) -> list[Task]:
-    """The first ``depth`` tasks of a pack.
+#: The most questions one run will ask, which is also how many each pack holds. There is
+#: no need for a separate ceiling: a run can ask for the whole pack and no more.
+MAX_DEPTH = POOL_SIZE
 
-    Taking a prefix rather than a sample keeps a run repeatable: comparing the same
-    models twice has to give the same tasks, or the two answers cannot be set against
-    each other.
+
+def select(use_case: str, depth: int, seed: int | None = None) -> list[Task]:
+    """``depth`` questions drawn at random from the pack of a hundred.
+
+    Random rather than the first few, because a fixed prefix means every run of a use
+    case asks the same handful: a model that happens to be good at those looks better
+    than it is, and running the comparison again tells you nothing new. Sampling covers
+    different ground each time.
+
+    Random sampling would ordinarily cost reproducibility, which a measurement tool
+    cannot afford -- two runs whose questions differ are not comparable, and a surprising
+    result has to be something the user can go back and check. So the draw is seeded, the
+    seed is recorded on the run, and passing it back reproduces the exact set. Without
+    one, a fresh seed is chosen and written down.
+
+    The sample is returned in pool order rather than draw order, so the grid reads the
+    same way whichever questions came up.
     """
 
-    return list(pack(use_case))[: max(1, depth)]
+    pool = list(pack(use_case))
+    if not pool:
+        return []
+    wanted = max(1, min(depth, len(pool)))
+    picked = random.Random(seed).sample(range(len(pool)), wanted)
+    return [pool[index] for index in sorted(picked)]
+
+
+def new_seed() -> int:
+    """A seed for a run that did not bring one. Recorded so the draw can be repeated."""
+
+    return random.randrange(2**32)
 
 
 def custom_tasks(prompts: list[str] | str) -> list[Task]:
@@ -895,4 +1011,6 @@ def custom_tasks(prompts: list[str] | str) -> list[Task]:
 
 
 def total_tasks(use_case: str) -> int:
+    """How many different questions a pack holds. A run samples from these."""
+
     return len(pack(use_case))

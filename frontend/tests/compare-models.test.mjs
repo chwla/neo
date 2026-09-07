@@ -18,6 +18,9 @@ import CompareModels, {
   CELL_STATE,
   CHECK_MARK,
   buildGrid,
+  ADD_PREFIX,
+  describeDepth,
+  describeLoadFailure,
   describeTradeoff,
   evaluationNote,
   progressLabel,
@@ -270,6 +273,33 @@ describe("deciding whether a comparison can be run", () => {
     );
   });
 
+  test("an empty slot is named as the thing to fix", () => {
+    /* A slot can be added before a model is chosen for it. */
+    assert.match(
+      whatIsMissing({ selected: ["a", "b", ""], useCase: "coding" }),
+      /Choose a model for every slot/,
+    );
+  });
+
+  test("the same model in two slots is refused with the reason", () => {
+    assert.match(
+      whatIsMissing({ selected: ["a", "a"], useCase: "coding" }),
+      /cannot be compared with itself/,
+    );
+  });
+
+  test("three and four models are both allowed", () => {
+    /* The limit is two to four; three is a comparison, not a mistake. */
+    assert.equal(whatIsMissing({ selected: ["a", "b", "c"], useCase: "coding" }), "");
+    assert.equal(whatIsMissing({ selected: ["a", "b", "c", "d"], useCase: "coding" }), "");
+  });
+
+  test("a dropdown option that sets a model up is marked apart from one that picks it", () => {
+    /* Both live in the same list, so the prefix is what keeps them from being confused. */
+    assert.ok(`${ADD_PREFIX}gemma4:latest`.startsWith(ADD_PREFIX));
+    assert.ok(!"ollama-gemma4".startsWith(ADD_PREFIX));
+  });
+
   test("the reason is a sentence, so the button is never mysteriously disabled", () => {
     assert.ok(whatIsMissing({ selected: [], useCase: "coding" }).endsWith("."));
   });
@@ -357,6 +387,56 @@ describe("assembling the grid", () => {
   });
 });
 
+describe("saying what a number of questions actually gets you", () => {
+  test("it says how many of the pool are being asked", () => {
+    assert.match(describeDepth(3, 100), /3 of 100 questions/);
+  });
+
+  test("it says the questions are drawn at random", () => {
+    /* A fixed prefix would ask the same handful every run; the sampling is the point. */
+    assert.match(describeDepth(3, 100), /picked at random/);
+  });
+
+  test("it promises the draw is recorded, so a result can be checked", () => {
+    assert.match(describeDepth(3, 100), /records which/);
+  });
+
+  test("asking for the whole set is described as the whole set, not a sample", () => {
+    const said = describeDepth(100, 100);
+
+    assert.match(said, /All 100 questions/);
+    assert.ok(!said.includes("at random"));
+  });
+
+  test("a set of unknown size still says something", () => {
+    assert.match(describeDepth(4, 0), /4 questions/);
+  });
+});
+
+describe("no em dashes in anything the user reads", () => {
+  test("the screen carries none", () => {
+    const markup = renderToStaticMarkup(createElement(CompareModels, {}));
+    assert.ok(!markup.includes("\u2014"));
+  });
+
+  test("nor do the sentences built for it", () => {
+    const sentences = [
+      describeDepth(20, 8),
+      describeDepth(3, 8),
+      describeLoadFailure("Not Found"),
+      whatIsMissing({ selected: ["a"], useCase: "coding" }),
+      whatIsMissing({ selected: ["a", "a"], useCase: "coding" }),
+      describeTradeoff([
+        summary("A", { score: 1, median_duration_ms: 12000 }),
+        summary("B", { score: 0.96, median_duration_ms: 4000 }),
+      ]),
+    ];
+    for (const said of sentences) {
+      assert.ok(!said.includes("\u2014"), `em dash in: ${said}`);
+    }
+  });
+});
+
 describe("saying where the run has got to", () => {
   test("progress is counted in responses, not percentages", () => {
     assert.equal(progressLabel(7, 12), "7 / 12 responses complete");
@@ -385,6 +465,24 @@ describe("saying where the run has got to", () => {
 });
 
 describe("the screen on arrival", () => {
+  test("it no longer carries a back link, since the sidebar is always there", () => {
+    const markup = renderToStaticMarkup(createElement(CompareModels, {}));
+    assert.ok(!markup.includes("ws-back"));
+  });
+
+  test("a stale backend is explained as a restart, not as a bare Not Found", () => {
+    /* The API answers 404 when this screen is newer than the server behind it. */
+    assert.match(
+      describeLoadFailure("Not Found"),
+      /Restart the Neo server/,
+    );
+  });
+
+  test("any other failure is passed through as it came", () => {
+    assert.equal(describeLoadFailure("Backend API is not reachable."),
+      "Backend API is not reachable.");
+  });
+
   test("it explains itself before anything has loaded", () => {
     const markup = renderToStaticMarkup(createElement(CompareModels, { onBack() {} }));
 

@@ -23,7 +23,11 @@ from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.types import ModelCreate, ProviderCreate
 from app.services.model_compare import judge, runner, tasks
 from app.services.model_compare.grading import GRADER_VERSION
-from app.services.model_compare.tasks import MAX_CUSTOM_PROMPTS, USE_CASE_CHOICES
+from app.services.model_compare.tasks import (
+    MAX_CUSTOM_PROMPTS,
+    MAX_DEPTH,
+    USE_CASE_CHOICES,
+)
 from app.services.model_compare.types import (
     USE_CASES,
     Contender,
@@ -93,6 +97,9 @@ class ModelCompareService:
             "min_models": MIN_CONTENDERS,
             "max_models": MAX_CONTENDERS,
             "max_custom_prompts": MAX_CUSTOM_PROMPTS,
+            # How far the questions control may be turned up. Past a pack's own
+            # task_count the questions repeat, which the interface says out loud.
+            "max_depth": MAX_DEPTH,
             "grader_version": GRADER_VERSION,
             "defaults": GenerationSettings().as_dict(),
             "limits": {
@@ -226,6 +233,7 @@ class ModelCompareService:
         max_output_tokens: int | None = None,
         allow_thinking: bool = False,
         run_id: str | None = None,
+        seed: int | None = None,
     ) -> tuple[list[tuple[LLMConfig, Contender]], RunConfig, frozenset[str]]:
         """Validate everything and assemble the record of what is about to happen.
 
@@ -236,7 +244,10 @@ class ModelCompareService:
 
         versions = _versions_for(self._registry, model_ids, judge_id)
         pairs = self._pairs(model_ids, versions)
-        selected = self._tasks(use_case, depth, prompts or [])
+        # Settled before the questions are drawn, so the seed on the record is the seed
+        # that actually chose them.
+        draw = tasks.new_seed() if seed is None else int(seed)
+        selected = self._tasks(use_case, depth, prompts or [], draw)
         generation = self._generation(temperature, max_output_tokens, allow_thinking)
         judge_settings = self._judge(judge_id, judge_rubric, versions)
 
@@ -262,6 +273,7 @@ class ModelCompareService:
             deterministic=deterministic,
             grader_version=GRADER_VERSION,
             parallel=runner.workers(contenders),
+            seed=draw,
             estimate_seconds=runner.estimate_seconds(
                 contenders,
                 selected,
@@ -320,7 +332,9 @@ class ModelCompareService:
             )
         return pairs
 
-    def _tasks(self, use_case: str, depth: int, prompts: list[str]) -> list[Task]:
+    def _tasks(
+        self, use_case: str, depth: int, prompts: list[str], seed: int | None = None
+    ) -> list[Task]:
         if use_case not in USE_CASES:
             raise ValueError(
                 f"Unknown use case '{use_case}'. Expected one of: {', '.join(USE_CASES)}."
@@ -334,7 +348,7 @@ class ModelCompareService:
                     f"A custom comparison takes up to {MAX_CUSTOM_PROMPTS} questions."
                 )
             return tasks.custom_tasks(written)
-        selected = tasks.select(use_case, depth)
+        selected = tasks.select(use_case, depth, seed)
         if not selected:
             raise ValueError(f"There are no tasks for '{use_case}'.")
         return selected

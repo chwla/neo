@@ -648,6 +648,11 @@ export const api = {
     }),
   compareUseCases: () => request("/model-compare/use-cases"),
   compareCandidates: () => request("/model-compare/candidates"),
+  addComparisonModel: (model, baseUrl = "") =>
+    request("/model-compare/models", {
+      method: "POST",
+      body: JSON.stringify({ model, base_url: baseUrl }),
+    }),
   comparePlan: (payload) =>
     request("/model-compare/plan", { method: "POST", body: JSON.stringify(payload) }),
   runComparison: (payload, onEvent, signal) =>

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
-import WorkspaceIcon from "./WorkspaceIcon.jsx";
 
 /**
  * Comparing models side by side on a workload.
@@ -21,6 +20,9 @@ import WorkspaceIcon from "./WorkspaceIcon.jsx";
  */
 
 const REMEMBERED = "neo.compareModels.setup";
+
+/** Marks a dropdown option that sets a model up before selecting it. */
+export const ADD_PREFIX = "add:";
 
 /** How a check result is shown in a cell. Never a number. */
 export const CHECK_MARK = { passed: "✓", failed: "✗", skipped: "–" };
@@ -74,6 +76,12 @@ export function whatIsMissing({
   }
   if (selected.length > max) {
     return `Neo compares up to ${max} models at a time.`;
+  }
+  if (selected.some((id) => !id)) {
+    return "Choose a model for every slot, or remove the empty one.";
+  }
+  if (new Set(selected).size !== selected.length) {
+    return "Two slots have the same model. A model cannot be compared with itself.";
   }
   if (useCase === "custom" && !prompts.some((item) => item.trim())) {
     return "Write at least one question you want them compared on.";
@@ -198,39 +206,126 @@ export function evaluationNote(outcome, { deterministic = true, judgeOn = false 
     : "Rule-based checks are switched off for this run.";
 }
 
-function ModelPicker({ candidates, selected, onToggle, max }) {
+/**
+ * Why the model list could not be loaded, in terms of what to do about it.
+ *
+ * A 404 here means this screen is newer than the server behind it, which is a restart
+ * rather than anything the user did -- and "Not Found" on its own is a dead end.
+ */
+export function describeLoadFailure(message = "") {
+  if (/not found/i.test(message)) {
+    return "Neo's backend does not know about model comparison yet. "
+      + "Restart the Neo server and reload this page.";
+  }
+  return message || "Could not load the models.";
+}
+
+/**
+ * Which models are being compared, as one dropdown per slot.
+ *
+ * Slots rather than a grid of toggles, because the count is the thing the user has to
+ * be sure of: a comparison takes two to four, and a grid leaves that implicit until the
+ * run button explains it. A slot says "this is model two of three" without a word.
+ *
+ * Each dropdown also offers models the machine has but Neo is not set up for. Picking
+ * one sets it up and drops it straight into the slot -- adding and choosing are the same
+ * gesture, because nobody adds a model here for any reason other than comparing it.
+ */
+/**
+ * What asking for this many questions actually gets you.
+ *
+ * The pool holds a hundred per use case and a run draws from it at random, so this says
+ * how many of the hundred are being asked. The randomness is the point: a fixed prefix
+ * would mean every run asked the same handful, and a model that happened to suit those
+ * would look better than it is.
+ */
+export function describeDepth(depth, packSize) {
+  if (!packSize) {
+    return `${depth} questions.`;
+  }
+  if (depth >= packSize) {
+    return `All ${packSize} questions in this set. The steadiest reading, and the longest wait.`;
+  }
+  return `${depth} of ${packSize} questions, picked at random. `
+    + "Each run draws a different set, and the result records which.";
+}
+
+function ModelSlots({
+  candidates, discoverable, selected, onPick, onAddSlot, onRemoveSlot, adding, min, max,
+}) {
+  const byId = new Map(candidates.map((item) => [item.id, item]));
+  const spare = candidates.filter((item) => !selected.includes(item.id));
+  const canAdd = selected.length < max && (spare.length > 0 || discoverable.length > 0);
+
   return (
     <section className="cmp-block">
       <h2 className="cmp-h2">Models</h2>
-      <div className="cmp-picker" role="group" aria-label="Models to compare">
-        {candidates.map((item) => {
-          const chosen = selected.includes(item.id);
-          const full = !chosen && selected.length >= max;
+      <ol className="cmp-slots">
+        {selected.map((id, index) => {
+          const chosen = byId.get(id);
           return (
-            <button
-              key={item.id}
-              type="button"
-              className={`cmp-candidate${chosen ? " selected" : ""}`}
-              aria-pressed={chosen}
-              disabled={full}
-              onClick={() => onToggle(item.id)}
-            >
-              <span className="cmp-candidate-name">{item.display_name}</span>
-              {item.version ? (
-                <span className="cmp-candidate-version">{item.version}</span>
+            // eslint-disable-next-line react/no-array-index-key -- position is the slot
+            <li key={index} className="cmp-slot">
+              <span className="cmp-slot-number">{index + 1}</span>
+              <select
+                className="cmp-slot-select"
+                value={id}
+                aria-label={`Model ${index + 1}`}
+                disabled={Boolean(adding)}
+                onChange={(event) => onPick(index, event.target.value)}
+              >
+                {!chosen ? <option value="">Choose a model…</option> : null}
+                {candidates.map((item) => (
+                  <option
+                    key={item.id}
+                    value={item.id}
+                    // Already in another slot. Comparing a model with itself is not a
+                    // comparison, so it is refused here rather than at the run button.
+                    disabled={item.id !== id && selected.includes(item.id)}
+                  >
+                    {item.display_name}
+                    {item.version ? ` (${item.version})` : ""}
+                  </option>
+                ))}
+                {discoverable.length ? (
+                  <optgroup label="On this computer, not set up yet">
+                    {discoverable.map((item) => (
+                      <option key={item.model} value={`add:${item.model}`}>
+                        + {item.display_name}
+                        {item.version ? ` (${item.version})` : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+              </select>
+              {selected.length > min ? (
+                <button
+                  type="button"
+                  className="cmp-slot-remove"
+                  aria-label={`Remove model ${index + 1}`}
+                  onClick={() => onRemoveSlot(index)}
+                >
+                  ×
+                </button>
               ) : null}
-              <span className="cmp-candidate-where">
-                {item.local ? "On this computer" : "Over the internet"}
-              </span>
-              {item.note ? <span className="cmp-candidate-note">{item.note}</span> : null}
-            </button>
+            </li>
           );
         })}
+      </ol>
+
+      <div className="cmp-slot-actions">
+        {canAdd ? (
+          <button type="button" className="neo-button secondary cmp-add" onClick={onAddSlot}>
+            + Add model
+          </button>
+        ) : null}
+        {adding ? <span className="cmp-field-note">Setting up {adding}…</span> : null}
       </div>
-      {candidates.length < 2 ? (
+
+      {candidates.length < min && !discoverable.length ? (
         <p className="cmp-quiet">
-          Only one model is set up. Add another in Settings, or download one from Local
-          Models, and they can be compared here.
+          Only {candidates.length === 1 ? "one model is" : "no models are"} set up.
+          Download another from Local Models and it will appear here.
         </p>
       ) : null}
     </section>
@@ -274,7 +369,7 @@ function QuestionList({ prompts, onChange, onAdd, onRemove, max }) {
       ) : null}
       <p className="cmp-quiet">
         Every model is asked all of these. There is no right answer to check against, so
-        the replies are shown side by side for you to judge — or a model can rate them.
+        the replies are shown side by side for you to judge, or a model can rate them.
       </p>
     </section>
   );
@@ -549,8 +644,10 @@ function Scoreboard({ summaries, judgeOn }) {
   );
 }
 
-export default function CompareModels({ onBack }) {
+export default function CompareModels() {
   const [candidates, setCandidates] = useState([]);
+  const [discoverable, setDiscoverable] = useState([]);
+  const [adding, setAdding] = useState("");
   const [useCases, setUseCases] = useState([]);
   const [meta, setMeta] = useState({ min_models: 2, max_models: 4, max_custom_prompts: 10 });
   const [selected, setSelected] = useState([]);
@@ -577,18 +674,24 @@ export default function CompareModels({ onBack }) {
   const [openKey, setOpenKey] = useState("");
   const runRef = useRef(null);
 
+  const absorb = useCallback((payload) => {
+    setCandidates(payload.candidates || []);
+    setDiscoverable(payload.discoverable || []);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const payload = await api.compareCandidates();
         if (cancelled) return;
-        setCandidates(payload.candidates || []);
+        absorb(payload);
         setUseCases(payload.use_cases || []);
         setMeta({
           min_models: payload.min_models,
           max_models: payload.max_models,
           max_custom_prompts: payload.max_custom_prompts,
+          max_depth: payload.max_depth,
           limits: payload.limits || {},
         });
         setRubric(payload.default_rubric || "");
@@ -606,7 +709,7 @@ export default function CompareModels({ onBack }) {
         if (saved?.useCase) setUseCase(saved.useCase);
         if (saved?.depth) setDepth(saved.depth);
       } catch (caught) {
-        if (!cancelled) setError(caught.message || "Could not load the models.");
+        if (!cancelled) setError(describeLoadFailure(caught.message));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -618,7 +721,10 @@ export default function CompareModels({ onBack }) {
 
   const useCaseRow = useCases.find((item) => item.id === useCase);
   const isCustom = useCase === "custom";
-  const maxDepth = useCaseRow?.task_count || 1;
+  // How far the control turns, and how many *different* questions exist behind it.
+  // They are not the same number, and the difference is what the note below explains.
+  const maxDepth = meta.max_depth || 100;
+  const packSize = useCaseRow?.task_count || 0;
   const effectiveDepth = isCustom ? prompts.filter((p) => p.trim()).length : Math.min(depth, maxDepth || 1);
   const judgeOn = Boolean(judgeId);
   const deterministicAvailable = useCaseRow ? useCaseRow.deterministic_available : true;
@@ -650,10 +756,45 @@ export default function CompareModels({ onBack }) {
     ? tasks.find((task) => openKey.endsWith(`::${task.id}`)) || null
     : null;
 
-  function toggle(id) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
+  function pickModel(index, value) {
+    if (value.startsWith(ADD_PREFIX)) {
+      addModelInto(index, value.slice(ADD_PREFIX.length));
+      return;
+    }
+    setSelected((current) => current.map((item, i) => (i === index ? value : item)));
+  }
+
+  function addSlot() {
+    const spare = candidates.find((item) => !selected.includes(item.id));
+    // A slot with nothing in it is a run that cannot start, so a new one arrives
+    // already holding whichever model is not yet spoken for.
+    setSelected((current) => [...current, spare ? spare.id : ""]);
+  }
+
+  function removeSlot(index) {
+    setSelected((current) => current.filter((_, i) => i !== index));
+  }
+
+  async function addModelInto(index, model) {
+    if (adding) return;
+    const found = discoverable.find((item) => item.model === model);
+    setAdding(model);
+    setError("");
+    try {
+      const payload = await api.addComparisonModel(model, found?.base_url || "");
+      absorb(payload);
+      // Straight into the slot it was chosen from: setting a model up here is only ever
+      // a step towards comparing it, so making the user then go and find it is a wasted
+      // one.
+      const added = (payload.candidates || []).find((row) => row.model === model);
+      if (added) {
+        setSelected((current) => current.map((item, i) => (i === index ? added.id : item)));
+      }
+    } catch (caught) {
+      setError(caught.message || `Could not set up ${model}.`);
+    } finally {
+      setAdding("");
+    }
   }
 
   // Priced whenever the configuration changes, so the wait shown is this run's wait
@@ -809,14 +950,11 @@ export default function CompareModels({ onBack }) {
   return (
     <div className="ws-panel cmp">
       <header className="cmp-head">
-        <button type="button" className="ws-back" onClick={onBack}>
-          <WorkspaceIcon name="back" /> Chat
-        </button>
         <h1 className="cmp-title">Compare models</h1>
         <p className="cmp-sub">
           Compare models on tasks you actually care about. Neo asks each of them the same
-          questions and shows you what came back, how it was scored and how long it took —
-          then you decide which one suits your work. For models running on this computer,
+          questions and shows you what came back, how it was scored and how long it took.
+          Then you decide which one suits your work. For models running on this computer,
           nothing you type leaves it.
         </p>
       </header>
@@ -827,29 +965,35 @@ export default function CompareModels({ onBack }) {
         <p className="cmp-quiet">Looking at which models are set up…</p>
       ) : (
         <>
-          <ModelPicker
+          <ModelSlots
             candidates={candidates}
+            discoverable={discoverable}
             selected={selected}
-            onToggle={toggle}
+            onPick={pickModel}
+            onAddSlot={addSlot}
+            onRemoveSlot={removeSlot}
+            adding={adding}
+            min={meta.min_models || 2}
             max={meta.max_models || 4}
           />
 
           <section className="cmp-block">
             <h2 className="cmp-h2">What do you want to compare?</h2>
-            <div className="cmp-goal-row" role="group" aria-label="What to compare them on">
+            <select
+              className="cmp-slot-select cmp-usecase-select"
+              value={useCase}
+              aria-label="What to compare them on"
+              onChange={(event) => setUseCase(event.target.value)}
+            >
               {useCases.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`cmp-goal${useCase === item.id ? " selected" : ""}`}
-                  aria-pressed={useCase === item.id}
-                  onClick={() => setUseCase(item.id)}
-                >
-                  <span className="cmp-goal-label">{item.label}</span>
-                  <span className="cmp-goal-detail">{item.detail}</span>
-                </button>
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
               ))}
-            </div>
+            </select>
+            {useCaseRow?.detail ? (
+              <p className="cmp-field-note cmp-usecase-detail">{useCaseRow.detail}</p>
+            ) : null}
           </section>
 
           {isCustom ? (
@@ -865,22 +1009,31 @@ export default function CompareModels({ onBack }) {
               }
             />
           ) : (
-            <section className="cmp-block cmp-depth">
+            <section className="cmp-block">
               <label className="cmp-label" htmlFor="cmp-depth">
-                Questions — more is steadier, and takes longer
+                Questions (more is steadier, and takes longer)
               </label>
-              <input
-                id="cmp-depth"
-                className="cmp-range"
-                type="range"
-                min={1}
-                max={Math.max(1, maxDepth)}
-                value={effectiveDepth}
-                onChange={(event) => setDepth(Number(event.target.value))}
-              />
-              <span className="cmp-depth-value">
-                {effectiveDepth} of {maxDepth}
-              </span>
+              <div className="cmp-depth">
+                <input
+                  id="cmp-depth"
+                  className="cmp-range"
+                  type="range"
+                  min={1}
+                  max={Math.max(1, maxDepth)}
+                  value={effectiveDepth}
+                  onChange={(event) => setDepth(Number(event.target.value))}
+                />
+                <input
+                  className="cmp-number cmp-depth-number"
+                  type="number"
+                  min={1}
+                  max={Math.max(1, maxDepth)}
+                  aria-label="Number of questions"
+                  value={effectiveDepth}
+                  onChange={(event) => setDepth(Number(event.target.value) || 1)}
+                />
+              </div>
+              <p className="cmp-field-note">{describeDepth(effectiveDepth, packSize)}</p>
             </section>
           )}
 
@@ -897,7 +1050,7 @@ export default function CompareModels({ onBack }) {
                 Rule-based evaluation when available
                 <span className="cmp-option-detail">
                   {deterministicAvailable
-                    ? "Objective checks with a known right answer — valid JSON, code that parses, the correct value. Instant, and you can read every check."
+                    ? "Objective checks with a known right answer: valid JSON, code that parses, the correct value. Instant, and you can read every check."
                     : "No deterministic evaluation available for your own questions. Enable the LLM judge to evaluate them."}
                 </span>
               </span>
@@ -971,7 +1124,7 @@ export default function CompareModels({ onBack }) {
                   Thinking
                   <span className="cmp-option-detail">
                     Let models reason out loud before answering. Slower, and often
-                    better — measured here, gemma4 got the bat-and-ball puzzle right only
+                    better. Measured here, gemma4 got the bat-and-ball puzzle right only
                     with this on. Off by default because a model given a short budget can
                     spend all of it thinking and never answer. It shows up mostly on your
                     own questions: the built-in ones ask for a terse answer, which most
@@ -1020,49 +1173,48 @@ export default function CompareModels({ onBack }) {
 
           <section className="cmp-block cmp-actions">
             {running ? (
-              <>
-                <button type="button" className="neo-button secondary" onClick={stop}>
-                  Stop
-                </button>
-                <span className="cmp-progress">
-                  {progress.total
-                    ? progressLabel(progress.completed, progress.total)
-                    : "Starting the models up…"}
-                </span>
-              </>
+              <button type="button" className="neo-button secondary cmp-run" onClick={stop}>
+                Stop
+              </button>
             ) : (
-              <>
-                <button
-                  type="button"
-                  className="neo-button primary cmp-run"
-                  onClick={start}
-                  disabled={Boolean(missing)}
-                >
-                  {phase === "done" ? "Run it again" : "Run comparison"}
-                </button>
-                <span className="cmp-progress">
-                  {missing || (estimate ? `Usually under ${estimate} seconds.` : "")}
-                </span>
-              </>
+              <button
+                type="button"
+                className="neo-button primary cmp-run"
+                onClick={start}
+                disabled={Boolean(missing)}
+              >
+                {phase === "done" ? "Run it again" : "Run comparison"}
+              </button>
             )}
+
+            {/* The bar is the honest shape of a wait that can be a hundred answers long:
+                a count alone leaves you doing the arithmetic to see how far in you are. */}
+            {running && progress.total ? (
+              <div
+                className="cmp-bar"
+                role="progressbar"
+                aria-valuenow={progress.completed}
+                aria-valuemin={0}
+                aria-valuemax={progress.total}
+                aria-label="Responses complete"
+              >
+                <div
+                  className="cmp-bar-fill"
+                  style={{ width: `${(progress.completed / progress.total) * 100}%` }}
+                />
+              </div>
+            ) : null}
+
+            <span className="cmp-progress">
+              {running
+                ? (progress.total
+                  ? progressLabel(progress.completed, progress.total)
+                  : "Starting the models up…")
+                : missing || (estimate ? `Usually under ${estimate} seconds.` : "")}
+            </span>
           </section>
 
           {notice ? <p className="cmp-notice">{notice}</p> : null}
-
-          {running && progress.total ? (
-            <div
-              className="cmp-bar"
-              role="progressbar"
-              aria-valuenow={progress.completed}
-              aria-valuemin={0}
-              aria-valuemax={progress.total}
-            >
-              <div
-                className="cmp-bar-fill"
-                style={{ width: `${(progress.completed / progress.total) * 100}%` }}
-              />
-            </div>
-          ) : null}
 
           {summaries.length ? (
             <section className="cmp-card">
