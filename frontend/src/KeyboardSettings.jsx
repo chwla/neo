@@ -3,10 +3,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
 import { Modal } from "./App.jsx";
 import { formatSequence } from "./keys/chord.js";
-import { COMMANDS } from "./keys/commands.js";
+import { COMMANDS, scopesOf } from "./keys/commands.js";
 import { MAX_CAPTURE_CHORDS, createCaptureBuffer } from "./keys/capture.js";
 import { resumeEngine, suspendEngine } from "./keys/engine.js";
-import { buildKeymap, findConflicts, keymapName, primaryBinding } from "./keys/keymap.js";
+import { SLOTS, buildKeymap, findConflicts, wouldCollideWith } from "./keys/keymap.js";
+
+/** What each slot is called where a person has to read it. */
+const SLOT_LABEL = { primary: "Shortcut", alternate: "Quick key" };
+
+/** What each kind of conflict means, in the words the row says it in. */
+const CONFLICT_TEXT = {
+  duplicate: "shares this key with",
+  shadow: "is unreachable because of",
+  reserved: "uses a key the app needs for itself",
+  unpreventable: "uses a key your browser takes first",
+};
+
+const titleOf = (id) => COMMANDS.find((command) => command.id === id)?.title ?? id;
 
 /**
  * The commands to show, grouped under their section headings.
@@ -32,36 +45,20 @@ export function sectionsFor(commands, filter = "") {
   return sections;
 }
 
-/** What each kind of conflict means, in the words the row will say it in. */
-const CONFLICT_TEXT = {
-  duplicate: "shares this key with",
-  shadow: "is unreachable because of",
-  reserved: "uses a key the app needs for itself",
-  unpreventable: "uses a key your browser takes first",
-};
-
-/** How a command's current binding reads, or the fact that it has none. */
-function bindingLabel(binding, platform) {
-  if (!binding || binding.chords.length === 0) {
-    return "";
-  }
-  return formatSequence(binding.chords, platform);
-}
-
 /**
- * One command's row: what it does, what it is bound to, and the two things you
- * can do about it.
+ * One command's row: what it does, and the one or two keys that run it.
  *
- * Exported so the suite can render it with props. The tests cannot press a key,
- * so the parts worth pinning are the ones visible in the markup -- that a
- * rebound command offers a way back and a default one does not, and that a
- * conflict is stated on the row rather than only in the banner.
+ * Both keys are live at once, so they are shown side by side rather than behind a
+ * switch. The chord works wherever you are; the quick key only fires when you are
+ * not typing, which is what makes a bare letter safe to offer at all.
  */
 export function KeyboardRow({
-  command, binding, platform, conflict, recording, disabled = false, onRecord, onReset,
+  command, bindings, platform, conflict, recording, disabled = false, onRecord, onReset, onResolve,
 }) {
-  const label = bindingLabel(binding, platform);
-  const overridden = binding?.source === "override";
+  const label = (slot) => {
+    const chords = bindings?.[slot]?.chords ?? [];
+    return chords.length > 0 ? formatSequence(chords, platform) : "";
+  };
 
   return (
     <div className={`kb-row${conflict ? " has-conflict" : ""}`}>
@@ -69,31 +66,50 @@ export function KeyboardRow({
         <strong>{command.title}</strong>
         <small>{command.section}</small>
       </span>
-      {conflict ? <span className="kb-row-conflict">{conflict}</span> : null}
+
+      {conflict ? (
+        <span className="kb-row-conflict">
+          {conflict.text}
+          {conflict.resolvable && !disabled ? (
+            <button className="kb-resolve" type="button" onClick={() => onResolve?.(conflict)}>
+              Resolve
+            </button>
+          ) : null}
+        </span>
+      ) : null}
+
       {command.fixed ? (
         <span className="kb-row-fixed" title="Built in, and not rebindable">
-          {label ? <kbd className="kb-kbd">{label}</kbd> : <small>Built in</small>}
+          {label("primary") ? <kbd className="kb-kbd">{label("primary")}</kbd> : <small>Built in</small>}
         </span>
       ) : (
         <span className="kb-row-actions">
-          {overridden ? (
-            <button
-              className="kb-reset"
-              type="button"
-              disabled={disabled}
-              onClick={() => onReset?.(command.id)}
-            >
-              Reset
-            </button>
-          ) : null}
-          <button
-            className={`kb-record${recording ? " is-recording" : ""}`}
-            type="button"
-            disabled={disabled}
-            onClick={() => onRecord?.(command.id)}
-          >
-            {recording ? "Press keys…" : label || "Not bound"}
-          </button>
+          {SLOTS.map((slot) => (
+            <span className="kb-slot" key={slot}>
+              {bindings?.[slot]?.source === "override" ? (
+                <button
+                  className="kb-reset"
+                  type="button"
+                  disabled={disabled}
+                  title={`Put ${SLOT_LABEL[slot].toLowerCase()} back to its default`}
+                  onClick={() => onReset?.(command.id, slot)}
+                >
+                  ↺
+                </button>
+              ) : null}
+              <button
+                className={`kb-record${recording === slot ? " is-recording" : ""}`
+                  + (conflict && bindings?.[slot]?.key === conflict.key ? " is-clashing" : "")}
+                type="button"
+                disabled={disabled}
+                aria-label={`${SLOT_LABEL[slot]} for ${command.title}`}
+                title={SLOT_LABEL[slot]}
+                onClick={() => onRecord?.(command.id, slot)}
+              >
+                {recording === slot ? "Press keys…" : label(slot) || "—"}
+              </button>
+            </span>
+          ))}
         </span>
       )}
     </div>
@@ -101,12 +117,54 @@ export function KeyboardRow({
 }
 
 /**
+ * Asks who keeps a key that two commands both want.
+ *
+ * Recording a key that is already taken is the one place where saving what was
+ * asked for would quietly break something else, so it is the one place that stops
+ * and asks. Giving the key away clears it from the command that had it, in the
+ * same breath as setting it here -- otherwise "resolving" a conflict would leave
+ * both commands on the key and the banner still up.
+ */
+export function ConflictDialog({ sequence, platform, claimant, holders, onKeep, onGiveAway, onCancel }) {
+  const key = formatSequence(sequence, platform);
+  return (
+    <Modal title="That key is taken" onClose={onCancel} className="kb-conflict-dialog">
+      <p className="dialog-caption">
+        <kbd className="kb-kbd">{key}</kbd> already runs{" "}
+        {holders.map((holder, index) => (
+          <span key={holder.id}>
+            {index > 0 ? ", " : ""}
+            <strong>{titleOf(holder.id)}</strong>
+          </span>
+        ))}
+        . One command can have it.
+      </p>
+      <div className="kb-conflict-choices">
+        <button className="ws-save" type="button" onClick={onGiveAway}>
+          Give it to {titleOf(claimant)}
+          <small>
+            {holders.map((holder) => titleOf(holder.id)).join(", ")}
+            {holders.length === 1 ? " loses this key" : " lose this key"}
+          </small>
+        </button>
+        <button type="button" onClick={onKeep}>
+          Leave it with {holders.map((holder) => titleOf(holder.id)).join(", ")}
+          <small>{titleOf(claimant)} keeps whatever it had</small>
+        </button>
+      </div>
+      <div className="dialog-actions">
+        <button type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
  * The keyboard's own settings screen.
  *
  * Loads and saves the way every other API-backed panel here does -- a cancelled
- * flag on the effect, an optimistic write, the server's answer taken as truth --
- * because every write returns the whole configuration and re-syncing from it is
- * one assignment.
+ * flag on the effect, the server's answer taken as truth -- because every write
+ * returns the whole configuration and re-syncing from it is one assignment.
  *
  * The engine is suspended while a key is being recorded. It is already inert
  * because this is a dialog and the engine stands down for those, but the capture
@@ -115,20 +173,19 @@ export function KeyboardRow({
  */
 export default function KeyboardSettings({ onClose, onConfigChange, platform = "other" }) {
   const [config, setConfig] = useState(null);
-  const [editing, setEditing] = useState(null);
-  //: { commandId, chords, sequenceMode } while a key is being recorded, else null.
+  //: { commandId, slot, chords, sequenceMode } while recording, else null.
   const [recording, setRecording] = useState(null);
+  //: { sequence, commandId, slot, holders } while asking who keeps a key.
+  const [contest, setContest] = useState(null);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const bufferRef = useRef(null);
   const captureRef = useRef(null);
 
-  // The panel only receives keys while it has focus, and it appears under the
-  // pointer rather than at it, so focus has to be moved deliberately.
   useEffect(() => {
     if (recording) captureRef.current?.focus();
-  }, [recording?.commandId, recording?.sequenceMode]);
+  }, [recording?.commandId, recording?.slot, recording?.sequenceMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,53 +200,54 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
     return () => { cancelled = true; };
   }, []);
 
-  // Which keymap is being edited. Follows the toggle on arrival, then stays where
-  // the user put it -- editing the standard keymap with Command mode on is a
-  // thing people will want to do.
-  const active = editing ?? keymapName(Boolean(config?.command_mode_enabled));
-
-  // Always built with both slots live, whatever the toggle says, because this is
-  // the screen where the other one is edited. Which slot a row shows is then the
-  // segmented control's business, not the keymap's.
   const keymap = useMemo(
-    () => buildKeymap(COMMANDS, config?.overrides ?? [], { platform, commandMode: true }),
+    () => buildKeymap(COMMANDS, config?.overrides ?? [], { platform }),
     [config, platform],
   );
 
   const conflicts = useMemo(() => findConflicts(keymap), [keymap]);
 
   /* Worded from each row's own point of view: the row for A says it clashes with
-     B, and B's row says it clashes with A. Naming the same command on both rows
-     -- which is what taking `ids[1]` for everybody did -- reads as a command
-     conflicting with itself. */
+     B, and B's row says it clashes with A. */
   const conflictFor = useMemo(() => {
     const byId = new Map();
-    const titleOf = (id) => COMMANDS.find((command) => command.id === id)?.title ?? id;
-
     for (const entry of conflicts) {
       for (const id of entry.ids) {
         if (byId.has(id)) continue;
         const other = entry.ids.find((candidate) => candidate !== id);
-        byId.set(id, other && (entry.kind === "duplicate" || entry.kind === "shadow")
-          ? `${CONFLICT_TEXT[entry.kind]} ${titleOf(other)}`
-          : CONFLICT_TEXT[entry.kind]);
+        byId.set(id, {
+          text: other && (entry.kind === "duplicate" || entry.kind === "shadow")
+            ? `${CONFLICT_TEXT[entry.kind]} ${titleOf(other)}`
+            : CONFLICT_TEXT[entry.kind],
+          // Only a shared key is a question of who keeps it. A reserved chord has
+          // no second claimant to hand it to; it just has to be changed.
+          resolvable: entry.kind === "duplicate",
+          key: entry.key,
+          ids: entry.ids,
+          claimant: id,
+        });
       }
     }
     return byId;
   }, [conflicts]);
 
-  /**
-   * Every write answers with the whole configuration, so reconciling is one
-   * assignment -- and the same answer is handed up so the live keymap is rebuilt
-   * from it rather than from a second request.
-   */
-  async function save(next) {
+  /** Every binding a command has, keyed by slot, for the row to render. */
+  const bindingsByCommand = useMemo(() => {
+    const map = new Map();
+    for (const binding of keymap.bindings) {
+      const found = map.get(binding.id) ?? {};
+      found[binding.slot] = binding;
+      map.set(binding.id, found);
+    }
+    return map;
+  }, [keymap]);
+
+  async function save(request) {
     setBusy(true);
     setError("");
     const previous = config;
-    if (next.optimistic) setConfig(next.optimistic);
     try {
-      const saved = await next.request();
+      const saved = await request();
       setConfig(saved);
       onConfigChange?.(saved);
     } catch {
@@ -206,12 +264,10 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
      the common case. A sequence has no natural end (is "g" the whole binding, or
      the start of "g c"?) and no timeout tells them apart, so it is a deliberate
      mode with a Done button rather than a guess. */
-  function startRecording(commandId, sequenceMode = false) {
+  function startRecording(commandId, slot, sequenceMode = false) {
     suspendEngine();
-    bufferRef.current = createCaptureBuffer({
-      maxChords: sequenceMode ? MAX_CAPTURE_CHORDS : 1,
-    });
-    setRecording({ commandId, chords: [], sequenceMode });
+    bufferRef.current = createCaptureBuffer({ maxChords: sequenceMode ? MAX_CAPTURE_CHORDS : 1 });
+    setRecording({ commandId, slot, chords: [], sequenceMode });
   }
 
   function stopRecording() {
@@ -220,10 +276,33 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
     setRecording(null);
   }
 
-  function commit(commandId, sequence) {
+  /**
+   * Writes a key, unless somebody else already has it -- in which case the choice
+   * goes to the user before anything is saved, rather than after.
+   */
+  function claim(commandId, slot, sequence) {
     stopRecording();
     if (sequence.length === 0) return;
-    save({ request: () => api.setKeybinding(active, commandId, sequence) });
+
+    const command = COMMANDS.find((entry) => entry.id === commandId);
+    const holders = wouldCollideWith(keymap, sequence, commandId, scopesOf(command ?? {}));
+    if (holders.length > 0) {
+      setContest({ sequence, commandId, slot, holders });
+      return;
+    }
+    save(() => api.setKeybinding(slot, commandId, sequence));
+  }
+
+  /** Take the key: clear it from whoever had it, then set it here. */
+  async function takeContestedKey() {
+    const { sequence, commandId, slot, holders } = contest;
+    setContest(null);
+    await save(async () => {
+      for (const holder of holders) {
+        await api.setKeybinding(holder.slot, holder.id, "");
+      }
+      return api.setKeybinding(slot, commandId, sequence);
+    });
   }
 
   function onCaptureKeyDown(event) {
@@ -240,12 +319,10 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
       return;
     }
     if (outcome === "ignored") return;
-
     if (outcome === "full") {
-      commit(recording.commandId, buffer.sequence);
+      claim(recording.commandId, recording.slot, buffer.sequence);
       return;
     }
-    // Shown as they land, so a part-typed sequence is visible before it is saved.
     const chords = buffer.chords;
     setRecording((current) => (current ? { ...current, chords } : current));
   }
@@ -255,67 +332,23 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
       stopRecording();
       return;
     }
-    commit(recording.commandId, bufferRef.current.sequence);
+    claim(recording.commandId, recording.slot, bufferRef.current.sequence);
   }
 
-  function resetOne(commandId) {
-    save({ request: () => api.clearKeybinding(active, commandId) });
-  }
-
-  function resetAll() {
-    save({ request: () => api.resetKeybindings() });
-  }
-
-  function toggleCommandMode(enabled) {
-    save({
-      optimistic: config ? { ...config, command_mode_enabled: enabled } : config,
-      request: () => api.updateKeyboardConfig({ command_mode_enabled: enabled }),
-    });
-  }
-
+  const disabled = !config || busy;
   const sections = sectionsFor(COMMANDS, filter);
 
   return (
     <Modal title="Keyboard" onClose={onClose} wide className="keyboard-dialog">
       <p className="dialog-caption">
-        Shortcuts are stored with this profile, so they follow you between browsers.
+        Every command can have a shortcut and a quick key. The shortcut works
+        anywhere; the quick key only when you are not typing. Both are yours to
+        change, and they are stored with this profile.
       </p>
 
       {error ? <div className="ws-error">{error}</div> : null}
 
-      <label className="kb-toggle">
-        <input
-          type="checkbox"
-          checked={Boolean(config?.command_mode_enabled)}
-          disabled={!config || busy}
-          onChange={(event) => toggleCommandMode(event.target.checked)}
-        />
-        <span>
-          <strong>Command mode</strong>
-          <small>
-            Single keys run commands whenever you are not typing. Escape leaves the
-            composer; <kbd className="kb-kbd">i</kbd> goes back to it.
-          </small>
-        </span>
-      </label>
-
       <div className="kb-toolbar">
-        <div className="kb-which" role="group" aria-label="Which shortcuts to edit">
-          <button
-            type="button"
-            className={active === "standard" ? "is-active" : ""}
-            onClick={() => setEditing("standard")}
-          >
-            Always on
-          </button>
-          <button
-            type="button"
-            className={active === "command" ? "is-active" : ""}
-            onClick={() => setEditing("command")}
-          >
-            Command mode
-          </button>
-        </div>
         <input
           className="kb-filter"
           value={filter}
@@ -323,7 +356,12 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
           placeholder="Filter commands…"
           aria-label="Filter commands"
         />
-        <button className="kb-reset-all" type="button" onClick={resetAll} disabled={!config || busy}>
+        <button
+          className="kb-reset-all"
+          type="button"
+          disabled={disabled}
+          onClick={() => save(() => api.resetKeybindings())}
+        >
           Reset all
         </button>
       </div>
@@ -331,8 +369,8 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
       {conflicts.length > 0 ? (
         <div className="ws-error kb-banner">
           {conflicts.length === 1
-            ? "One shortcut conflicts with another."
-            : `${conflicts.length} shortcuts conflict with others.`}
+            ? "One shortcut conflicts with another. Use Resolve to choose which keeps it."
+            : `${conflicts.length} shortcuts conflict. Use Resolve to choose which keeps each key.`}
         </div>
       ) : null}
 
@@ -353,7 +391,10 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
           {recording.sequenceMode ? (
             <button type="button" onClick={commitRecording}>Done</button>
           ) : (
-            <button type="button" onClick={() => startRecording(recording.commandId, true)}>
+            <button
+              type="button"
+              onClick={() => startRecording(recording.commandId, recording.slot, true)}
+            >
               Record a sequence
             </button>
           )}
@@ -370,18 +411,44 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
               <KeyboardRow
                 key={command.id}
                 command={command}
-                binding={primaryBinding(keymap, command.id, command.fixed ? undefined : active)}
+                bindings={bindingsByCommand.get(command.id)}
                 platform={platform}
                 conflict={conflictFor.get(command.id)}
-                recording={recording?.commandId === command.id}
-                disabled={!config || busy}
+                recording={recording?.commandId === command.id ? recording.slot : null}
+                disabled={disabled}
                 onRecord={startRecording}
-                onReset={resetOne}
+                onReset={(id, slot) => save(() => api.clearKeybinding(slot, id))}
+                onResolve={(entry) => setContest({
+                  sequence: entry.key,
+                  commandId: entry.claimant,
+                  slot: bindingsByCommand.get(entry.claimant)?.alternate?.key === entry.key
+                    ? "alternate" : "primary",
+                  holders: entry.ids
+                    .filter((id) => id !== entry.claimant)
+                    .map((id) => ({
+                      id,
+                      slot: bindingsByCommand.get(id)?.alternate?.key === entry.key
+                        ? "alternate" : "primary",
+                      key: entry.key,
+                    })),
+                })}
               />
             ))}
           </section>
         ))
       )}
+
+      {contest ? (
+        <ConflictDialog
+          sequence={contest.sequence}
+          platform={platform}
+          claimant={contest.commandId}
+          holders={contest.holders}
+          onGiveAway={takeContestedKey}
+          onKeep={() => setContest(null)}
+          onCancel={() => setContest(null)}
+        />
+      ) : null}
     </Modal>
   );
 }

@@ -1,14 +1,12 @@
 /**
- * What has focus, and therefore which mode we are in.
+ * What has focus, and therefore whether a bare key may act.
  *
- * The mode is derived, never stored. That is the whole safety argument for this
- * feature: Command mode means "the composer is blurred", so there is no state to
- * get stuck in and no sequence of keystrokes that can leave someone unable to
- * type. Clicking any text field puts you back in Typing whether Command mode is
- * on or off, because the answer is recomputed from focus every time.
- *
- * Turning Command mode on adds transitions and bindings. It does not add a second
- * source of truth.
+ * There is no mode and nothing is stored: the answer is recomputed from focus on
+ * every keystroke. That is the whole safety argument for shipping single-letter
+ * bindings switched on. A letter cannot eat a keystroke meant for the composer,
+ * because the moment the composer has focus the letter is just a letter again --
+ * and no sequence of keypresses can put the app into a state where that stops
+ * being true, since there is no state.
  *
  * This also replaces three different answers to "is the user typing?" that were
  * scattered around the app -- /^(INPUT|TEXTAREA)$/ in Notes,
@@ -70,14 +68,6 @@ export function focusKind(target) {
     return "control";
   }
   return "none";
-}
-
-/**
- * The mode, from focus alone. Identical whether Command mode is on or off -- the
- * toggle changes what the modes do, not how you end up in one.
- */
-export function deriveMode(kind) {
-  return kind === "text" ? "typing" : "command";
 }
 
 /**

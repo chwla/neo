@@ -30,9 +30,8 @@ const CATALOGUE = [
 ];
 
 function dispatcher(options = {}) {
-  const { commandMode = true, catalogue = CATALOGUE, overrides = [] } = options;
-  const keymap = buildKeymap(catalogue, overrides, { platform: "mac", commandMode });
-  return createDispatcher({ keymap, commandMode });
+  const { catalogue = CATALOGUE, overrides = [] } = options;
+  return createDispatcher({ keymap: buildKeymap(catalogue, overrides, { platform: "mac" }) });
 }
 
 describe("single chords", () => {
@@ -140,7 +139,7 @@ describe("a chord that is also the start of a longer one", () => {
   });
 
   test("is reported, so the settings screen can say so while it is being recorded", () => {
-    const keymap = buildKeymap(CATALOGUE, [], { platform: "mac", commandMode: true });
+    const keymap = buildKeymap(CATALOGUE, [], { platform: "mac" });
     const shadow = findConflicts(keymap).find((entry) => entry.kind === "shadow");
     assert.deepEqual(shadow?.ids, ["a.prefixIsAlsoBinding", "a.longer"]);
   });
@@ -183,9 +182,10 @@ describe("counts", () => {
     assert.equal(keys.feed(press("j"), loose).count, 10);
   });
 
-  test("with Command mode off a digit is never a count", () => {
-    const keys = dispatcher({ commandMode: false });
-    assert.equal(keys.feed(press("3"), loose).action, "none");
+  test("a digit while typing is a digit, not a count", () => {
+    // Counts ride on bare keys, which the focus guard already bars in a field.
+    const keys = dispatcher();
+    assert.equal(keys.feed(press("3"), { scopes: new Set(), focusKind: "text" }).action, "none");
     assert.equal(keys.count, "");
   });
 
@@ -216,29 +216,29 @@ describe("scope", () => {
 });
 
 describe("overrides reach the dispatcher intact", () => {
-  test("a Command mode binding is added, and the always-on one still works", () => {
-    // The two keymaps are independent slots. Binding a Command mode key must not
-    // quietly retire the chord somebody's fingers already know.
+  test("a quick key is added, and the shortcut still works", () => {
+    // The two slots are independent. Binding a quick key must not quietly retire
+    // the chord somebody's fingers already know.
     const keys = dispatcher({
-      overrides: [{ command_id: "a.once", keymap: "command", sequence: "w" }],
+      overrides: [{ command_id: "a.once", keymap: "alternate", sequence: "w" }],
     });
     assert.equal(keys.feed(press("w"), loose).commandId, "a.once");
     assert.equal(keys.feed(press("x"), loose).commandId, "a.once");
   });
 
-  test("rebinding the always-on key does replace it", () => {
+  test("rebinding the shortcut does replace it", () => {
     const keys = dispatcher({
-      overrides: [{ command_id: "a.once", keymap: "standard", sequence: "w" }],
+      overrides: [{ command_id: "a.once", keymap: "primary", sequence: "w" }],
     });
     assert.equal(keys.feed(press("w"), loose).commandId, "a.once");
     assert.equal(keys.feed(press("x"), loose).action, "none");
   });
 
-  test("a command unbound in both keymaps answers to nothing", () => {
+  test("a command unbound in both slots answers to nothing", () => {
     const keys = dispatcher({
       overrides: [
-        { command_id: "a.once", keymap: "standard", sequence: "" },
-        { command_id: "a.once", keymap: "command", sequence: "" },
+        { command_id: "a.once", keymap: "primary", sequence: "" },
+        { command_id: "a.once", keymap: "alternate", sequence: "" },
       ],
     });
     assert.equal(keys.feed(press("x"), loose).action, "none");

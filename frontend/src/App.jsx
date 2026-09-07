@@ -15,7 +15,6 @@ import BackgroundTurnToast, {
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import CommandPalette from "./CommandPalette.jsx";
-import KeyboardModeIndicator from "./KeyboardModeIndicator.jsx";
 import KeyboardSettings from "./KeyboardSettings.jsx";
 import { COMMANDS } from "./keys/commands.js";
 import { detectPlatform } from "./keys/engine.js";
@@ -2784,7 +2783,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "folder",
       description: "Projects, work tracking, and portability.",
       items: [
-        ["Keyboard", "Shortcuts, and the Command mode that adds single-key ones", onOpenKeyboard],
+        ["Keyboard", "Every shortcut and quick key, and how to change them", onOpenKeyboard],
         ["Sidebar", "How many chats stay in the list before older ones are archived", onOpenSidebarChats],
         ["Projects", "Organize related chats and work", onOpenProjects],
         ["Files", "Uploaded and generated workspace files", onOpenFiles],
@@ -4326,12 +4325,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       statusDetail: live.statusText,
     }
     : null;
-  /* The keyboard.
-     Built from the shipped defaults only for now: the profile's own bindings and
-     Command mode arrive with the settings screen, and the keymap is rebuilt from
-     them rather than the listener being reattached.
-     Registered here, at the bottom of the component, because the map is evaluated
-     during render and every handler in it has to already exist. */
+  /* The keyboard. Registered here, at the bottom of the component, because the
+     map is evaluated during render and every handler in it has to already exist. */
   /* The transcript's scroll container, and the composer's own small API. Both
      are things the keyboard reaches for and nothing else does -- before this
      there was no ref on the transcript at all, and the composer's textarea was
@@ -4342,9 +4337,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [showKeyboardSettings, setShowKeyboardSettings] = useState(false);
   /* The profile's own bindings, which arrive after the first paint. Until they
      do -- and if the request fails outright -- the engine runs on the shipped
-     defaults with Command mode off, which is a working keyboard rather than a
-     dead one. The keymap is rebuilt when they land; the listener is not
-     reattached, because reattaching mid-keystroke is how you lose one. */
+     defaults, which is a working keyboard rather than a dead one. The keymap is
+     rebuilt when they land; the listener is not reattached, because reattaching
+     mid-keystroke is how you lose one. */
   const [keyboardConfig, setKeyboardConfig] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -4354,10 +4349,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     return () => { cancelled = true; };
   }, []);
   const keyboardKeymap = useMemo(
-    () => buildKeymap(COMMANDS, keyboardConfig?.overrides ?? [], {
-      platform: detectPlatform(),
-      commandMode: Boolean(keyboardConfig?.command_mode_enabled),
-    }),
+    () => buildKeymap(COMMANDS, keyboardConfig?.overrides ?? [], { platform: detectPlatform() }),
     [keyboardConfig],
   );
   /* Held in a ref rather than passed as a prop so the composer registers once,
@@ -4408,16 +4400,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   useCommandHandlers({
     "palette.open": () => setShowCommandPalette(true),
     "app.showKeyboardHelp": () => setShowKeyboardSettings(true),
-    // Ships with no key on purpose -- a key that leaves Command mode is a key
-    // that leaves it by accident -- so the palette is how it is reached.
-    "app.toggleCommandMode": async () => {
-      const enabled = !keyboardConfig?.command_mode_enabled;
-      try {
-        setKeyboardConfig(await api.updateKeyboardConfig({ command_mode_enabled: enabled }));
-      } catch {
-        setStatusError("Could not change Command mode.");
-      }
-    },
     "app.toggleSidebar": toggleSidebar,
     "app.openSettings": openSettings,
     "chat.new": () => handleNewChat(),
@@ -4440,14 +4422,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     "nav.localModels": openLocalModels,
     "nav.compareModels": openCompareModels,
 
-    // Command mode's way in and out of the composer. Each declines when there is
-    // no composer on screen, so the key falls through instead of vanishing.
-    "mode.type": () => focusComposer("caret"),
+    // Declines when there is no composer on screen, so the key falls through to
+    // the browser instead of vanishing.
     "chat.focusComposer": () => focusComposer("caret"),
-    "mode.typeAfter": () => focusComposer("after"),
-    "mode.typeEnd": () => focusComposer("end"),
-    "mode.typeStart": () => focusComposer("start"),
-    "mode.typeNewLine": () => composerRef.current?.newLine() ?? false,
 
     "chat.scrollDown": ({ count = 1 }) => scrollTranscript(SCROLL_STEP * count),
     "chat.scrollUp": ({ count = 1 }) => scrollTranscript(-SCROLL_STEP * count),
@@ -4942,7 +4919,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onClose={() => setShowCommandPalette(false)}
         />
       )}
-      <KeyboardModeIndicator enabled={Boolean(keyboardConfig?.command_mode_enabled)} />
       <BackgroundTurnToast
         notices={turnNotices}
         chatTitles={chatTitlesById}

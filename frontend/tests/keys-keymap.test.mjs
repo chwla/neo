@@ -18,7 +18,7 @@ import { describe, test } from "node:test";
 import { UNPREVENTABLE_CHORDS, normalizeChord } from "../src/keys/chord.js";
 import { COMMANDS, SCOPES, VIEW_SCOPES, scopesOf } from "../src/keys/commands.js";
 import {
-  KEYMAPS,
+  SLOTS,
   bindingsFor,
   buildKeymap,
   findConflicts,
@@ -26,20 +26,14 @@ import {
   resolveMod,
   resolvedUnpreventable,
   scopesOverlap,
+  wouldCollideWith,
 } from "../src/keys/keymap.js";
 
 const PLATFORMS = ["mac", "other"];
-const MODES = [false, true];
 
-/** Every keymap the app can actually be running, so a default is checked in all four. */
+/** Every keymap the app can actually be running, so a default is checked in both. */
 function everyKeymap(overrides = []) {
-  const built = [];
-  for (const platform of PLATFORMS) {
-    for (const commandMode of MODES) {
-      built.push(buildKeymap(COMMANDS, overrides, { platform, commandMode }));
-    }
-  }
-  return built;
+  return PLATFORMS.map((platform) => buildKeymap(COMMANDS, overrides, { platform }));
 }
 
 const command = (id, extra = {}) => ({ id, title: id, section: "Test", keys: "", ...extra });
@@ -83,7 +77,7 @@ describe("the shipped defaults", () => {
       assert.deepEqual(
         findConflicts(keymap),
         [],
-        `${keymap.platform}/${keymap.name} has conflicting defaults`,
+        `${keymap.platform} has conflicting defaults`,
       );
     }
   });
@@ -105,20 +99,26 @@ describe("the shipped defaults", () => {
     }
   });
 
-  test("leave the standard keymap free of bare letters", () => {
-    // Someone who never turned Command mode on should never have a letter act.
-    const standard = buildKeymap(COMMANDS, [], { platform: "mac", commandMode: false });
-    for (const binding of standard.bindings) {
-      for (const chord of binding.chords) {
-        assert.ok(!/^[a-zA-Z]$/.test(chord), `${binding.id} binds bare ${chord} without Command mode`);
+  test("keep every bare letter in the quick-key slot, never the shortcut slot", () => {
+    // The shortcut slot works while you are typing, so a bare letter there would
+    // eat a keystroke meant for the composer. The quick-key slot is guarded by
+    // focus, which is what makes a letter safe to ship on at all.
+    for (const keymap of everyKeymap()) {
+      for (const binding of keymap.bindings) {
+        if (binding.slot !== "primary") continue;
+        for (const chord of binding.chords) {
+          assert.ok(!/^[a-zA-Z0-9]$/.test(chord), `${binding.id} has bare ${chord} as its shortcut`);
+        }
       }
     }
   });
 
-  test("give Command mode strictly more to press, not less", () => {
-    const standard = buildKeymap(COMMANDS, [], { platform: "mac", commandMode: false });
-    const commandMap = buildKeymap(COMMANDS, [], { platform: "mac", commandMode: true });
-    assert.ok(commandMap.exact.size > standard.exact.size);
+  test("give a command both of its keys at once, with no mode to switch", () => {
+    const keymap = buildKeymap(COMMANDS, [], { platform: "mac" });
+    const slots = Object.fromEntries(
+      bindingsFor(keymap, "app.openSettings").map((binding) => [binding.slot, binding.key]),
+    );
+    assert.deepEqual(slots, { primary: "meta+,", alternate: "g s" });
   });
 });
 
@@ -134,8 +134,8 @@ describe("mod, resolved once per platform", () => {
   });
 
   test("one authored table yields two different keymaps", () => {
-    const mac = buildKeymap(COMMANDS, [], { platform: "mac", commandMode: false });
-    const pc = buildKeymap(COMMANDS, [], { platform: "other", commandMode: false });
+    const mac = buildKeymap(COMMANDS, [], { platform: "mac" });
+    const pc = buildKeymap(COMMANDS, [], { platform: "other" });
     assert.deepEqual(bindingsFor(mac, "palette.open")[0].chords, ["meta+k"]);
     assert.deepEqual(bindingsFor(pc, "palette.open")[0].chords, ["ctrl+k"]);
   });
@@ -155,7 +155,7 @@ describe("merging a profile's overrides", () => {
 
   test("an override replaces exactly one command's binding", () => {
     const keymap = buildKeymap(catalogue, [
-      { command_id: "a.one", keymap: "standard", sequence: "mod+z" },
+      { command_id: "a.one", keymap: "primary", sequence: "mod+z" },
     ], { platform: "mac" });
 
     assert.deepEqual(bindingsFor(keymap, "a.one")[0].chords, ["meta+z"]);
@@ -166,7 +166,7 @@ describe("merging a profile's overrides", () => {
 
   test("an empty sequence is a deliberate unbinding, not a missing override", () => {
     const keymap = buildKeymap(catalogue, [
-      { command_id: "a.one", keymap: "standard", sequence: "" },
+      { command_id: "a.one", keymap: "primary", sequence: "" },
     ], { platform: "mac" });
 
     assert.deepEqual(bindingsFor(keymap, "a.one")[0].chords, []);
@@ -175,8 +175,8 @@ describe("merging a profile's overrides", () => {
 
   test("an override for the other keymap is left where it belongs", () => {
     const keymap = buildKeymap(catalogue, [
-      { command_id: "a.one", keymap: "command", sequence: "z" },
-    ], { platform: "mac", commandMode: false });
+      { command_id: "a.one", keymap: "alternate", sequence: "z" },
+    ], { platform: "mac" });
 
     assert.deepEqual(bindingsFor(keymap, "a.one")[0].chords, ["meta+j"]);
   });
@@ -186,7 +186,7 @@ describe("merging a profile's overrides", () => {
     // deliberately does not police the ids it stores.
     assert.doesNotThrow(() => {
       const keymap = buildKeymap(catalogue, [
-        { command_id: "a.removed", keymap: "standard", sequence: "mod+z" },
+        { command_id: "a.removed", keymap: "primary", sequence: "mod+z" },
       ], { platform: "mac" });
       assert.equal(bindingsFor(keymap, "a.removed").length, 0);
     });
@@ -197,35 +197,35 @@ describe("merging a profile's overrides", () => {
     assert.doesNotThrow(() => buildKeymap(catalogue, undefined, {}));
   });
 
-  test("a custom Command mode binding leaves the always-on one alone", () => {
-    // The regression: a Command mode binding used to replace the standard one,
-    // so a user who set "c" for New chat silently lost mod+shift+O. Adding a key
-    // must never take one away.
+  test("a custom quick key leaves the shortcut alone", () => {
+    // The regression: the second key used to replace the first, so a user who set
+    // "c" for New chat silently lost mod+shift+O. Adding a key must never take
+    // one away.
     const keymap = buildKeymap(COMMANDS, [
-      { command_id: "chat.new", keymap: "command", sequence: "z" },
-    ], { platform: "mac", commandMode: true });
+      { command_id: "chat.new", keymap: "alternate", sequence: "z" },
+    ], { platform: "mac" });
 
     const slots = Object.fromEntries(
       bindingsFor(keymap, "chat.new").map((binding) => [binding.slot, binding.key]),
     );
-    assert.equal(slots.standard, "meta+shift+o", "the always-on key survived");
-    assert.equal(slots.command, "z", "and the custom one was added");
+    assert.equal(slots.primary, "meta+shift+o", "the shortcut survived");
+    assert.equal(slots.alternate, "z", "and the custom one was added");
   });
 
   test("unbinding one slot does not unbind the other", () => {
     const keymap = buildKeymap(COMMANDS, [
-      { command_id: "chat.new", keymap: "command", sequence: "" },
-    ], { platform: "mac", commandMode: true });
+      { command_id: "chat.new", keymap: "alternate", sequence: "" },
+    ], { platform: "mac" });
 
     assert.equal(
-      bindingsFor(keymap, "chat.new").find((b) => b.slot === "standard").key,
+      bindingsFor(keymap, "chat.new").find((b) => b.slot === "primary").key,
       "meta+shift+o",
     );
   });
 
   test("a fixed command cannot be overridden", () => {
     const keymap = buildKeymap([command("a.fixed", { keys: "escape", fixed: true })], [
-      { command_id: "a.fixed", keymap: "standard", sequence: "mod+z" },
+      { command_id: "a.fixed", keymap: "primary", sequence: "mod+z" },
     ], { platform: "mac" });
 
     assert.deepEqual(bindingsFor(keymap, "a.fixed")[0].chords, ["escape"]);
@@ -291,16 +291,16 @@ describe("what counts as a conflict", () => {
     // runs that command either way. Reporting it would send somebody off to fix
     // "Settings shares this key with Settings".
     const keymap = buildKeymap(COMMANDS, [
-      { command_id: "app.openSettings", keymap: "command", sequence: "mod+," },
-    ], { platform: "mac", commandMode: true });
+      { command_id: "app.openSettings", keymap: "alternate", sequence: "mod+," },
+    ], { platform: "mac" });
 
     assert.deepEqual(findConflicts(keymap), []);
   });
 
   test("but two different commands on one key still are in conflict", () => {
     const keymap = buildKeymap(COMMANDS, [
-      { command_id: "app.openSettings", keymap: "command", sequence: "c" },
-    ], { platform: "mac", commandMode: true });
+      { command_id: "app.openSettings", keymap: "alternate", sequence: "c" },
+    ], { platform: "mac" });
 
     const clash = findConflicts(keymap).find((entry) => entry.kind === "duplicate");
     assert.deepEqual(clash.ids.sort(), ["app.openSettings", "chat.new"]);
@@ -308,7 +308,7 @@ describe("what counts as a conflict", () => {
 
   test("an override onto a reserved chord is flagged, a default on one is not", () => {
     const overridden = buildKeymap([command("a.one", { keys: "mod+j" })], [
-      { command_id: "a.one", keymap: "standard", sequence: "escape" },
+      { command_id: "a.one", keymap: "primary", sequence: "escape" },
     ], { platform: "mac" });
     assert.equal(findConflicts(overridden)[0]?.kind, "reserved");
 
@@ -318,7 +318,7 @@ describe("what counts as a conflict", () => {
 
   test("an override onto a browser-owned chord is flagged as unpreventable", () => {
     const keymap = buildKeymap([command("a.one", { keys: "mod+j" })], [
-      { command_id: "a.one", keymap: "standard", sequence: "mod+t" },
+      { command_id: "a.one", keymap: "primary", sequence: "mod+t" },
     ], { platform: "mac" });
 
     assert.equal(findConflicts(keymap)[0]?.kind, "unpreventable");
@@ -367,11 +367,43 @@ describe("looking a run of chords up", () => {
   });
 });
 
-describe("the keymap names", () => {
+describe("the slot names", () => {
   test("are the two values the database stores", () => {
-    assert.deepEqual(KEYMAPS, ["standard", "command"]);
-    assert.equal(buildKeymap(COMMANDS, [], { commandMode: false }).name, "standard");
-    assert.equal(buildKeymap(COMMANDS, [], { commandMode: true }).name, "command");
+    assert.deepEqual(SLOTS, ["primary", "alternate"]);
+  });
+
+  test("there is no mode left to pass in", () => {
+    // One keymap. Both keys live. buildKeymap takes a platform and nothing else.
+    const keymap = buildKeymap(COMMANDS, [], { platform: "mac" });
+    assert.equal(keymap.commandMode, undefined);
+    assert.equal(keymap.name, undefined);
+  });
+
+  test("a key already taken is reported before anything is written", () => {
+    // This is what puts the choice to the user instead of silently saving a
+    // keymap where one of the two commands can never be reached.
+    const keymap = buildKeymap(COMMANDS, [], { platform: "mac" });
+
+    const taken = wouldCollideWith(keymap, "c", "app.openSettings", ["global"]);
+    assert.deepEqual(taken.map((entry) => entry.id), ["chat.new"]);
+    assert.equal(taken[0].slot, "alternate");
+  });
+
+  test("a command is never reported as colliding with itself", () => {
+    const keymap = buildKeymap(COMMANDS, [], { platform: "mac" });
+    assert.deepEqual(wouldCollideWith(keymap, "c", "chat.new", ["chat"]), []);
+  });
+
+  test("a free key collides with nothing", () => {
+    const keymap = buildKeymap(COMMANDS, [], { platform: "mac" });
+    assert.deepEqual(wouldCollideWith(keymap, "mod+alt+ctrl+q", "chat.new", ["chat"]), []);
+    assert.deepEqual(wouldCollideWith(keymap, "", "chat.new", ["chat"]), []);
+  });
+
+  test("a key taken only on another screen is not a collision", () => {
+    const keymap = buildKeymap(COMMANDS, [], { platform: "mac" });
+    assert.deepEqual(wouldCollideWith(keymap, "/", "chat.new", ["gallery"]).map((e) => e.id),
+      ["gallery.focusSearch"]);
   });
 
   test("scope overlap is symmetric", () => {

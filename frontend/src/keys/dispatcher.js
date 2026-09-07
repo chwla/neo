@@ -23,7 +23,7 @@ export const MAX_COUNT = 999;
 const NOTHING = { action: "none", commandId: null, count: 1, sequence: "", preventDefault: false };
 
 export function createDispatcher(options = {}) {
-  const { keymap, commandMode = false } = options;
+  const { keymap } = options;
   let pending = [];
   let count = "";
 
@@ -74,9 +74,10 @@ export function createDispatcher(options = {}) {
         return NOTHING;
       }
 
-      // A count only makes sense before a command, and only in Command mode. A
-      // leading zero is not a count -- it is left free to be bound to something.
-      if (commandMode && !hard && pending.length === 0
+      // A count only makes sense before a command, and only for a bare digit --
+      // which, like every bare key, is already barred while somebody is typing. A
+      // leading zero is not a count; it is left free to be bound to something.
+      if (!hard && pending.length === 0
         && /^[0-9]$/.test(chord) && !(chord === "0" && count === "")) {
         count = (count + chord).slice(0, String(MAX_COUNT).length);
         return { action: "pending", commandId: null, count: 1, sequence: "", preventDefault: true };

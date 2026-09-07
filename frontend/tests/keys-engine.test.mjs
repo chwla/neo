@@ -69,7 +69,7 @@ function fire(key, flags = {}) {
 }
 
 function arm(options = {}) {
-  const keymap = buildKeymap(CATALOGUE, [], { platform: "mac", commandMode: true });
+  const keymap = buildKeymap(CATALOGUE, [], { platform: "mac" });
   return armEngine({ getKeymap: () => keymap, getContext: () => ({ scopes: new Set() }), ...options });
 }
 
@@ -255,7 +255,7 @@ describe("while a dialog is open", () => {
 });
 
 describe("escape, when no dialog is open", () => {
-  test("blurs a text field, which is the way back to Command mode", () => {
+  test("blurs a text field, which is how bare keys become live again", () => {
     arm();
     const target = { tagName: "TEXTAREA", blurred: false, blur() { this.blurred = true; } };
 

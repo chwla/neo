@@ -61,8 +61,8 @@ export function onPendingChange(listener) {
  * Attaches the keyboard for the life of the app.
  *
  * `getKeymap` and `getContext` are read per keystroke rather than captured, so a
- * keymap rebuilt when the profile's settings arrive, or when Command mode is
- * switched on, takes effect without the listener being detached and reattached.
+ * keymap rebuilt when the profile's own bindings arrive takes effect without the
+ * listener being detached and reattached.
  */
 export function armEngine(config = {}) {
   const {
@@ -83,7 +83,7 @@ export function armEngine(config = {}) {
     // Rebuilt only when the keymap itself is a different object, which is exactly
     // when React's useMemo hands over a new one.
     if (!built || built.keymap !== keymap) {
-      built = { keymap, dispatcher: createDispatcher({ keymap, commandMode: keymap.commandMode }) };
+      built = { keymap, dispatcher: createDispatcher({ keymap }) };
       announcePending([]);
     }
     return built.dispatcher;

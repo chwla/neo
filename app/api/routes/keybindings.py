@@ -31,17 +31,16 @@ def _raise(exc: Exception) -> None:
 
 
 class KeybindingOverride(BaseModel):
-    """One command, rebound in one keymap.  An empty sequence means unbound."""
+    """One command's key in one slot.  An empty sequence means unbound."""
 
     command_id: str = Field(min_length=1, max_length=keybindings.MAX_COMMAND_ID_LENGTH)
-    keymap: Literal["standard", "command"]
+    keymap: Literal["primary", "alternate"]
     sequence: str = Field(max_length=keybindings.MAX_SEQUENCE_LENGTH)
 
 
 class KeyboardConfig(BaseModel):
-    """Everything the browser needs to build both keymaps."""
+    """Everything the browser needs to build the keymap."""
 
-    command_mode_enabled: bool
     sequence_timeout_ms: int = Field(
         ge=keybindings.MIN_SEQUENCE_TIMEOUT_MS,
         le=keybindings.MAX_SEQUENCE_TIMEOUT_MS,
@@ -51,9 +50,8 @@ class KeyboardConfig(BaseModel):
 
 
 class KeyboardConfigUpdate(BaseModel):
-    """One setting at a time, or both.  Omitted fields are left unchanged."""
+    """Omitted fields are left unchanged."""
 
-    command_mode_enabled: bool | None = None
     sequence_timeout_ms: int | None = Field(
         default=None,
         ge=keybindings.MIN_SEQUENCE_TIMEOUT_MS,
@@ -75,8 +73,6 @@ def read_config() -> KeyboardConfig:
 @router.post("/config", response_model=KeyboardConfig)
 def update_config(request: KeyboardConfigUpdate) -> KeyboardConfig:
     try:
-        if request.command_mode_enabled is not None:
-            keybindings.set_command_mode_enabled(request.command_mode_enabled)
         if request.sequence_timeout_ms is not None:
             keybindings.set_sequence_timeout_ms(request.sequence_timeout_ms)
     except ValueError as exc:
@@ -84,10 +80,10 @@ def update_config(request: KeyboardConfigUpdate) -> KeyboardConfig:
     return KeyboardConfig(**keybindings.config())
 
 
-#: Validated in the path rather than in the service, so an unknown keymap is a 422
+#: Validated in the path rather than in the service, so an unknown slot is a 422
 #: from the schema and shows up in the OpenAPI document. The service checks it too,
 #: because it is also reachable from the CLI.
-Keymap = Literal["standard", "command"]
+Keymap = Literal["primary", "alternate"]
 
 
 @router.put("/overrides/{keymap}/{command_id}", response_model=KeyboardConfig)

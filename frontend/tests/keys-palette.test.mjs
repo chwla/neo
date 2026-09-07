@@ -109,11 +109,11 @@ describe("over the real catalogue", () => {
     assert.equal(rankCommands(COMMANDS, "palette", scopes)[0]?.id, "palette.open");
   });
 
-  test("Command mode is findable from the palette, which is its only way in", () => {
-    // It ships with no key on purpose, so if the palette cannot find it there is
-    // no way to turn it on but the settings screen.
-    assert.ok(rankCommands(COMMANDS, "command mode", new Set())
-      .some((entry) => entry.id === "app.toggleCommandMode"));
+  test("the keyboard settings are findable from the palette", () => {
+    // Where every binding is changed, so it has to be reachable without knowing
+    // a binding.
+    assert.ok(rankCommands(COMMANDS, "shortcuts", new Set())
+      .some((entry) => entry.id === "app.showKeyboardHelp"));
   });
 
   test("no motion leaks into the list from any screen", () => {
@@ -128,7 +128,7 @@ describe("over the real catalogue", () => {
 describe("the palette on screen", () => {
   function render(overrides = {}) {
     return renderToStaticMarkup(createElement(CommandPalette, {
-      keymap: buildKeymap(COMMANDS, [], { platform: "mac", commandMode: false }),
+      keymap: buildKeymap(COMMANDS, [], { platform: "mac" }),
       scopes: new Set(["chat"]),
       platform: "mac",
       isAvailable: () => true,
@@ -153,9 +153,9 @@ describe("the palette on screen", () => {
 
   test("a command with no key gets a row but no kbd", () => {
     const markup = render({ commands: [
-      { id: "app.toggleCommandMode", title: "Toggle Command mode", section: "Global", keys: "" },
+      { id: "a.unbound", title: "Something unbound", section: "Global", keys: "" },
     ] });
-    assert.ok(markup.includes("Toggle Command mode"));
+    assert.ok(markup.includes("Something unbound"));
     assert.ok(!markup.includes("<kbd"));
   });
 

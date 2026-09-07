@@ -13,10 +13,8 @@ import { registerModal } from "./modalStack.js";
  *
  * The palette earns its place independently of the keyboard: the app has twelve
  * screens and twenty-seven settings panels, and no amount of rebinding helps
- * somebody who does not know a panel exists. It is also where the two commands
- * that ship with no key at all live -- turning Command mode on is one of them,
- * deliberately, because a key that switches the mode off is a key that switches
- * it off by accident.
+ * somebody who does not know a panel exists. It is also the only way to reach the
+ * handful of commands that ship with no key at all.
  *
  * Rows nothing has registered a handler for are left out rather than greyed:
  * offering a row that does nothing is worse than a shorter list.

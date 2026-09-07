@@ -2,11 +2,15 @@
  * Turning the catalogue plus a profile's overrides into something a keypress can
  * be looked up in.
  *
- * A keymap is built for one platform and one mode, and both are injected rather
- * than read from the environment, so a single test can build the Mac and the
- * Windows map from the same authored table and compare them. `mod` is resolved
- * here and nowhere else: by the time a binding reaches the dispatcher it says
- * "meta" or "ctrl" and the hot path is a Map lookup with no branching left in it.
+ * A keymap is built for one platform, which is injected rather than read from the
+ * environment so a single test can build the Mac and the Windows map from the same
+ * authored table and compare them. `mod` is resolved here and nowhere else: by the
+ * time a binding reaches the dispatcher it says "meta" or "ctrl" and the hot path
+ * is a Map lookup with no branching left in it.
+ *
+ * A command can hold two keys and both are always live -- there is no mode. The
+ * slots exist so that a chord and a fast single key can be rebound independently,
+ * which is also exactly the shape of the database: one row per command per slot.
  *
  * The awkward part is knowing when two bindings really collide. Notes binds "/"
  * to its search box and Gallery binds "/" to its own, and those are not in
@@ -24,13 +28,12 @@ import {
 } from "./chord.js";
 import { COMMANDS, VIEW_SCOPES, scopesOf } from "./commands.js";
 
-/** The two keymaps a binding can belong to, and the values stored in the database. */
-export const KEYMAPS = ["standard", "command"];
-
-/** Which keymap a mode is reading from. */
-export function keymapName(commandMode) {
-  return commandMode ? "command" : "standard";
-}
+/**
+ * The two slots a command's keys live in, and the values stored in the database.
+ * "primary" is the modifier chord, "alternate" the fast single key or sequence.
+ * Both are always bound; neither is a mode.
+ */
+export const SLOTS = ["primary", "alternate"];
 
 /**
  * Substitutes the platform's real modifier for `mod`. Always a modifier, so it is
@@ -74,19 +77,11 @@ function isStrictPrefix(shorter, longer) {
  * a profile that has been through an upgrade will have both.
  */
 export function buildKeymap(commands = COMMANDS, overrides = [], options = {}) {
-  const { platform = "other", commandMode = false } = options;
-  const name = keymapName(commandMode);
-
-  // Two independent slots, not one that replaces the other. Command mode makes
-  // the second one live *as well*, so turning it on can only ever add keys --
-  // somebody whose fingers know mod+, does not lose it by enabling the mode.
-  // This is also exactly the shape of the database: one row per command per
-  // keymap, so an override in one slot leaves the other alone.
-  const slots = commandMode ? ["standard", "command"] : ["standard"];
+  const { platform = "other" } = options;
 
   const overrideFor = new Map();
   for (const row of overrides ?? []) {
-    if (typeof row?.command_id === "string" && slots.includes(row.keymap)) {
+    if (typeof row?.command_id === "string" && SLOTS.includes(row.keymap)) {
       overrideFor.set(`${row.keymap}:${row.command_id}`, row.sequence ?? "");
     }
   }
@@ -95,8 +90,8 @@ export function buildKeymap(commands = COMMANDS, overrides = [], options = {}) {
   let order = 0;
   for (const command of commands) {
     const scopes = scopesOf(command);
-    for (const slot of slots) {
-      const authored = slot === "command" ? command.commandKeys : command.keys;
+    for (const slot of SLOTS) {
+      const authored = slot === "alternate" ? command.altKeys : command.keys;
       // A command with nothing authored for this slot has no binding in it --
       // rather than a second, identical copy of the other slot's.
       if (typeof authored !== "string" && !overrideFor.has(`${slot}:${command.id}`)) {
@@ -144,7 +139,7 @@ export function buildKeymap(commands = COMMANDS, overrides = [], options = {}) {
     }
   }
 
-  return { name, platform, commandMode, bindings, exact, prefixes };
+  return { platform, bindings, exact, prefixes };
 }
 
 /**
@@ -197,14 +192,29 @@ export function bindingsFor(keymap, id) {
 }
 
 /**
- * The one binding to show when there is only room for one. The Command mode key
- * wins where it exists: it is the shorter of the two, and it is the one somebody
- * who turned the mode on is trying to learn.
+ * The one binding to show where there is only room for one -- a palette row, say.
+ * The fast key wins where it exists, being the shorter of the two.
  */
 export function primaryBinding(keymap, id, slot) {
-  const found = bindingsFor(keymap, id).filter((binding) => binding.chords.length > 0);
-  if (slot) return bindingsFor(keymap, id).find((binding) => binding.slot === slot);
-  return found.find((binding) => binding.slot === "command") ?? found[0];
+  const all = bindingsFor(keymap, id);
+  if (slot) return all.find((binding) => binding.slot === slot);
+  const bound = all.filter((binding) => binding.chords.length > 0);
+  return bound.find((binding) => binding.slot === "alternate") ?? bound[0];
+}
+
+/**
+ * Which commands a sequence would collide with if it were bound here, ignoring
+ * the slot it is going into. Answered before anything is written, so the settings
+ * screen can put the choice to the user rather than saving a broken keymap.
+ */
+export function wouldCollideWith(keymap, sequence, commandId, when = ["global"]) {
+  const chords = parseSequence(resolveMod(sequence, keymap.platform));
+  if (chords.length === 0) return [];
+  const key = formatSequenceKey(chords);
+
+  return (keymap.exact.get(key) ?? [])
+    .filter((binding) => binding.id !== commandId && scopesOverlap(binding.when, when))
+    .map((binding) => ({ id: binding.id, slot: binding.slot, key: binding.key }));
 }
 
 /**

@@ -28,11 +28,11 @@ from datetime import UTC, datetime
 
 from app.core.config import get_settings
 
-#: The two keymaps a binding can belong to.  "standard" is what everybody gets;
-#: "command" is the layer Command mode adds on top.
-KEYMAPS = ("standard", "command")
+#: The two slots a command's keys live in.  "primary" is the modifier chord,
+#: "alternate" the fast single key or sequence.  Both are always bound -- neither
+#: is a mode -- and they are separate rows so either can be rebound on its own.
+KEYMAPS = ("primary", "alternate")
 
-COMMAND_MODE_ENABLED_KEY = "command_mode_enabled"
 SEQUENCE_TIMEOUT_MS_KEY = "sequence_timeout_ms"
 
 #: How long a half-typed sequence waits for its next chord.  Nine hundred
@@ -134,17 +134,6 @@ def set_preference(key: str, value: str) -> None:
         conn.close()
 
 
-def command_mode_enabled() -> bool:
-    """Whether this profile has turned Command mode on.  Off unless it says so."""
-
-    return get_preference(COMMAND_MODE_ENABLED_KEY) in {"1", "true", "yes", "on"}
-
-
-def set_command_mode_enabled(enabled: bool) -> bool:
-    set_preference(COMMAND_MODE_ENABLED_KEY, "1" if enabled else "0")
-    return bool(enabled)
-
-
 def _clamp_timeout(value: int) -> int:
     return max(MIN_SEQUENCE_TIMEOUT_MS, min(MAX_SEQUENCE_TIMEOUT_MS, value))
 
@@ -172,7 +161,7 @@ def _validate(command_id: str, keymap: str, sequence: str) -> tuple[str, str, st
     sequence = (sequence or "").strip()
 
     if keymap not in KEYMAPS:
-        raise ValueError(f"Unknown keymap: {keymap}.")
+        raise ValueError(f"Unknown key slot: {keymap}.")
     if not command_id or len(command_id) > MAX_COMMAND_ID_LENGTH:
         raise ValueError("A command id must be present and at most 100 characters.")
     if len(sequence) > MAX_SEQUENCE_LENGTH:
@@ -253,7 +242,6 @@ def config() -> dict:
     """Everything the browser needs to build its keymaps, in one read."""
 
     return {
-        "command_mode_enabled": command_mode_enabled(),
         "sequence_timeout_ms": sequence_timeout_ms(),
         "overrides": list_overrides(),
     }

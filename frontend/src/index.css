@@ -4758,15 +4758,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .kb-toggle small { color: #555; font-size: 11px; line-height: 1.6; }
 
 .kb-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-.kb-which { display: flex; gap: 2px; border: 1px solid var(--neo-line); }
-.kb-which button {
-  border: 0;
-  background: transparent;
-  padding: 7px 12px;
-  color: #666;
-  font-size: 11.5px;
-}
-.kb-which button.is-active { background: var(--neo-panel-raised); color: var(--neo-green); }
 .kb-filter { flex: 1; min-width: 0; min-height: 32px; padding: 6px 9px; font-size: 12px; }
 .kb-banner { margin-bottom: 12px; }
 
@@ -4803,7 +4794,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .kb-row-text strong { color: #ccc; font-size: 12px; font-weight: 500; }
 .kb-row-text small { color: #444; font-size: 10px; }
 .kb-row-conflict { color: var(--neo-danger); font-size: 10.5px; text-align: right; }
-.kb-row.has-conflict .kb-record { border-color: var(--neo-danger); }
+.kb-record.is-clashing { border-color: var(--neo-danger); color: var(--neo-danger); }
 .kb-row-actions { display: flex; gap: 6px; align-items: center; }
 .kb-row-fixed { opacity: .55; }
 .kb-record {
@@ -4828,35 +4819,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font: 10.5px "JetBrains Mono", monospace;
 }
 
-/* Mode indicator. Bottom-left, out of the composer's way, and only on screen at
-   all when Command mode is switched on. */
-.kb-mode {
-  position: fixed;
-  bottom: 10px;
-  left: 12px;
-  z-index: 30;
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  border: 1px solid var(--neo-line-bright);
-  border-radius: 2px;
-  background: var(--neo-panel);
-  padding: 4px 9px;
-  pointer-events: none;
-}
-.kb-mode strong {
-  color: var(--neo-green);
-  font: 600 9.5px "JetBrains Mono", monospace;
-  letter-spacing: .14em;
-}
-.kb-mode.is-typing strong { color: #666; }
-.kb-mode small { color: #4a4a4a; font-size: 10px; }
-.kb-mode-pending {
-  color: var(--neo-green);
-  font: 10px "JetBrains Mono", monospace;
-  letter-spacing: .08em;
-}
-.sidebar-collapsed .kb-mode { left: 12px; }
 
 /* Models that are installed but not set up yet. Deliberately not styled as a selected
    candidate: it is an action, not a choice, and looking identical would invite a click
@@ -4897,3 +4859,47 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .cmp-depth { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .cmp-range { flex: 1 1 260px; max-width: 380px; accent-color: var(--neo-green); }
 .cmp-depth-number { width: 80px; margin-bottom: 0; }
+
+/* Two keys per row, shown side by side because both are live at once. The
+   quick key is the narrower of the pair -- it is usually one character. */
+.kb-slot { display: inline-flex; align-items: center; gap: 4px; }
+.kb-row-actions { flex: 0 0 auto; }
+.kb-record { min-width: 84px; text-align: center; }
+.kb-reset {
+  border: 0;
+  background: transparent;
+  color: #444;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 3px;
+}
+.kb-reset:hover { color: var(--neo-green); }
+.kb-record:disabled, .kb-reset:disabled, .kb-reset-all:disabled { opacity: .4; }
+.kb-resolve {
+  margin-left: 8px;
+  border: 1px solid var(--neo-danger);
+  border-radius: 3px;
+  background: transparent;
+  padding: 2px 7px;
+  color: var(--neo-danger);
+  font-size: 10px;
+}
+.kb-resolve:hover { background: rgba(255, 59, 48, .12); }
+
+/* Who keeps a contested key. Two full-width choices rather than a yes/no, so
+   neither outcome is the accidental one. */
+.kb-conflict-dialog.neo-dialog { width: min(480px, 92vw); }
+.kb-conflict-choices { display: grid; gap: 8px; margin-top: 4px; }
+.kb-conflict-choices button {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--neo-line-bright);
+  background: var(--neo-panel);
+  padding: 11px 13px;
+  color: #ccc;
+  font-size: 12.5px;
+  text-align: left;
+}
+.kb-conflict-choices button:hover { border-color: var(--neo-green); }
+.kb-conflict-choices button small { color: #555; font-size: 10.5px; }
+.kb-conflict-choices .ws-save { border-color: var(--neo-green); color: var(--neo-green); }

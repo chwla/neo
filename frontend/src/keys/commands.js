@@ -6,11 +6,14 @@
  * the handler is registered by whichever component owns the state, and the backend
  * stores whatever ids it is given without knowing this list.
  *
- * There are two keymaps. The standard one is what everybody gets: modifier chords
- * only, because a bare letter that acts is a surprise to someone who did not ask
- * for one. The command keymap is what Command mode adds on top, and it is where
- * single keys and the `g` namespace live. A command with no `commandKeys` keeps
- * its standard binding in both.
+ * A command may have two keys, and both are always live. `keys` is the modifier
+ * chord, which works wherever you are; `altKeys` is the fast one -- a single
+ * letter or a `g` sequence -- which only fires when you are not typing in a field.
+ * That guard is what makes a bare letter safe to ship on: it can never eat a
+ * keystroke meant for the composer.
+ *
+ * There is no mode. Both keys are simply bound, and either can be rebound or
+ * cleared in the settings screen.
  *
  * `keys: ""` means unbound by default. Several commands ship that way on purpose:
  * they are worth having in the palette and worth being rebindable, but not worth
@@ -60,7 +63,7 @@ export const COMMANDS = [
     title: "Toggle sidebar",
     section: "Global",
     keys: "mod+b",
-    commandKeys: "\\",
+    altKeys: "\\",
     keywords: "hide show collapse",
   },
   {
@@ -68,7 +71,7 @@ export const COMMANDS = [
     title: "Settings",
     section: "Global",
     keys: "mod+,",
-    commandKeys: "g s",
+    altKeys: "g s",
     keywords: "preferences options config",
   },
   {
@@ -76,71 +79,16 @@ export const COMMANDS = [
     title: "Keyboard shortcuts",
     section: "Global",
     keys: "mod+/",
-    commandKeys: "?",
-    keywords: "keys bindings help cheatsheet",
-  },
-  {
-    // Deliberately unbound. A key that switches Command mode off is a key that
-    // switches it off by accident, and the palette is reachable from either mode.
-    id: "app.toggleCommandMode",
-    title: "Toggle Command mode",
-    section: "Global",
-    keys: "",
-    keywords: "keyboard mode keys fast",
+    altKeys: "?",
+    keywords: "keys bindings help cheatsheet customize rebind",
   },
 
   // -- Composer -------------------------------------------------------------
-  // Only meaningful where the composer is, so all of these are scoped to chat.
-  {
-    id: "mode.type",
-    title: "Type in composer",
-    section: "Composer",
-    when: ["chat"],
-    keys: "",
-    commandKeys: "i",
-    hidden: true,
-  },
-  {
-    id: "mode.typeAfter",
-    title: "Type after the cursor",
-    section: "Composer",
-    when: ["chat"],
-    keys: "",
-    commandKeys: "a",
-    hidden: true,
-  },
-  {
-    id: "mode.typeEnd",
-    title: "Type at the end",
-    section: "Composer",
-    when: ["chat"],
-    keys: "",
-    commandKeys: "A",
-    hidden: true,
-  },
-  {
-    id: "mode.typeStart",
-    title: "Type at the start",
-    section: "Composer",
-    when: ["chat"],
-    keys: "",
-    commandKeys: "I",
-    hidden: true,
-  },
-  {
-    id: "mode.typeNewLine",
-    title: "Type on a new line",
-    section: "Composer",
-    when: ["chat"],
-    keys: "",
-    commandKeys: "o",
-    hidden: true,
-  },
   {
     // Implemented by the engine rather than by a keymap lookup, because Escape has
     // to keep working when everything else is suspended. Listed so it appears in
     // the shortcut list; `fixed` keeps it out of the rebinding flow.
-    id: "mode.command",
+    id: "composer.leave",
     title: "Leave the composer",
     section: "Composer",
     when: ["chat"],
@@ -156,7 +104,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+shift+o",
-    commandKeys: "c",
+    altKeys: "c",
     keywords: "start begin conversation",
   },
   {
@@ -173,14 +121,16 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+i",
-    keywords: "message input write",
+    // The caret survives a blur, so this puts you back exactly where you were.
+    altKeys: "i",
+    keywords: "message input write type",
   },
   {
     id: "chat.nextChat",
     title: "Next chat",
     section: "Chat",
     keys: "mod+alt+down",
-    commandKeys: "] c",
+    altKeys: "] c",
     keywords: "switch newer",
   },
   {
@@ -188,7 +138,7 @@ export const COMMANDS = [
     title: "Previous chat",
     section: "Chat",
     keys: "mod+alt+up",
-    commandKeys: "[ c",
+    altKeys: "[ c",
     keywords: "switch older",
   },
   {
@@ -197,7 +147,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+shift+c",
-    commandKeys: "y y",
+    altKeys: "y y",
     keywords: "clipboard yank",
   },
   {
@@ -206,7 +156,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+shift+e",
-    commandKeys: "g e",
+    altKeys: "g e",
     keywords: "change revise",
   },
   {
@@ -217,7 +167,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+alt+r",
-    commandKeys: "r r",
+    altKeys: "r r",
     keywords: "rerun retry again",
   },
   {
@@ -226,7 +176,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "",
-    commandKeys: "g k",
+    altKeys: "g k",
     keywords: "summarize shrink context",
   },
   {
@@ -235,7 +185,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+shift+u",
-    commandKeys: "g u",
+    altKeys: "g u",
     keywords: "upload image document",
   },
   {
@@ -244,7 +194,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "mod+shift+m",
-    commandKeys: "g a",
+    altKeys: "g a",
     keywords: "agent mode",
   },
   {
@@ -254,7 +204,7 @@ export const COMMANDS = [
     section: "Chat",
     when: ["chat"],
     keys: "",
-    commandKeys: "d d",
+    altKeys: "d d",
     keywords: "remove discard",
   },
   {
@@ -275,7 +225,7 @@ export const COMMANDS = [
     section: "Transcript",
     when: ["chat"],
     keys: "home",
-    commandKeys: "g g",
+    altKeys: "g g",
     hidden: true,
   },
   {
@@ -284,7 +234,7 @@ export const COMMANDS = [
     section: "Transcript",
     when: ["chat"],
     keys: "end",
-    commandKeys: "G",
+    altKeys: "G",
     hidden: true,
   },
   {
@@ -293,7 +243,7 @@ export const COMMANDS = [
     section: "Transcript",
     when: ["chat"],
     keys: "down",
-    commandKeys: "j",
+    altKeys: "j",
     repeatable: true,
     hidden: true,
   },
@@ -303,7 +253,7 @@ export const COMMANDS = [
     section: "Transcript",
     when: ["chat"],
     keys: "up",
-    commandKeys: "k",
+    altKeys: "k",
     repeatable: true,
     hidden: true,
   },
@@ -313,7 +263,7 @@ export const COMMANDS = [
     section: "Transcript",
     when: ["chat"],
     keys: "pagedown",
-    commandKeys: "ctrl+d",
+    altKeys: "ctrl+d",
     repeatable: true,
     hidden: true,
   },
@@ -323,27 +273,27 @@ export const COMMANDS = [
     section: "Transcript",
     when: ["chat"],
     keys: "pageup",
-    commandKeys: "ctrl+u",
+    altKeys: "ctrl+u",
     repeatable: true,
     hidden: true,
   },
 
   // -- Navigation -----------------------------------------------------------
-  // The `g` namespace, and the reason Command mode is worth turning on. Nothing
-  // here gets a standard binding: these screens are one sidebar click away, and
-  // spending twelve chords on them would crowd out the ones people actually press.
-  { id: "nav.chat", title: "Go to Chat", section: "Navigation", keys: "", commandKeys: "g c" },
-  { id: "nav.notes", title: "Go to Notes", section: "Navigation", keys: "", commandKeys: "g n" },
-  { id: "nav.tasks", title: "Go to Tasks", section: "Navigation", keys: "", commandKeys: "g t" },
-  { id: "nav.projects", title: "Go to Projects", section: "Navigation", keys: "", commandKeys: "g p" },
-  { id: "nav.research", title: "Go to Research", section: "Navigation", keys: "", commandKeys: "g r" },
-  { id: "nav.gallery", title: "Go to Gallery", section: "Navigation", keys: "", commandKeys: "g i" },
-  { id: "nav.files", title: "Go to Files", section: "Navigation", keys: "", commandKeys: "g f" },
-  { id: "nav.calendar", title: "Go to Calendar", section: "Navigation", keys: "", commandKeys: "g d" },
-  { id: "nav.memory", title: "Go to Memory", section: "Navigation", keys: "", commandKeys: "g m" },
-  { id: "nav.repos", title: "Go to Repositories", section: "Navigation", keys: "", commandKeys: "g v" },
-  { id: "nav.localModels", title: "Go to Local models", section: "Navigation", keys: "", commandKeys: "g l" },
-  { id: "nav.compareModels", title: "Go to Compare models", section: "Navigation", keys: "", commandKeys: "g x" },
+  // The `g` namespace, and where most of the speed lives. Nothing here gets a
+  // modifier chord as well: these screens are one sidebar click away, and spending
+  // twelve chords on them would crowd out the ones people actually press.
+  { id: "nav.chat", title: "Go to Chat", section: "Navigation", keys: "", altKeys: "g c" },
+  { id: "nav.notes", title: "Go to Notes", section: "Navigation", keys: "", altKeys: "g n" },
+  { id: "nav.tasks", title: "Go to Tasks", section: "Navigation", keys: "", altKeys: "g t" },
+  { id: "nav.projects", title: "Go to Projects", section: "Navigation", keys: "", altKeys: "g p" },
+  { id: "nav.research", title: "Go to Research", section: "Navigation", keys: "", altKeys: "g r" },
+  { id: "nav.gallery", title: "Go to Gallery", section: "Navigation", keys: "", altKeys: "g i" },
+  { id: "nav.files", title: "Go to Files", section: "Navigation", keys: "", altKeys: "g f" },
+  { id: "nav.calendar", title: "Go to Calendar", section: "Navigation", keys: "", altKeys: "g d" },
+  { id: "nav.memory", title: "Go to Memory", section: "Navigation", keys: "", altKeys: "g m" },
+  { id: "nav.repos", title: "Go to Repositories", section: "Navigation", keys: "", altKeys: "g v" },
+  { id: "nav.localModels", title: "Go to Local models", section: "Navigation", keys: "", altKeys: "g l" },
+  { id: "nav.compareModels", title: "Go to Compare models", section: "Navigation", keys: "", altKeys: "g x" },
 
   // -- Screens that own their own search or save ----------------------------
   // Each registered by the component that holds the state, so none of this
