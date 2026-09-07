@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { formatCompactTokens, resolveContextWindow } from "./chatPresentation.js";
+import { registerModal } from "./modalStack.js";
 
 //: Same budget as MessageActionsMenu's flip -- this popover sits in the same row.
 const MENU_SPACE = 210;
@@ -74,18 +75,19 @@ export function ContextWindowIndicator({ message, contextWindowIndex, sessionTok
       setOpen(false);
     }
 
-    function onKeyDown(event) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        buttonRef.current?.focus();
-      }
-    }
+    // Escape goes through the dialog stack rather than a listener of this
+    // popover's own. Two reasons: a popover opened over a dialog closes only
+    // itself, and the keyboard engine stands down whenever anything is on that
+    // stack, so one Escape cannot both close this and blur the composer.
+    const releaseEscape = registerModal(() => {
+      setOpen(false);
+      buttonRef.current?.focus();
+    });
 
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
     return () => {
+      releaseEscape();
       document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
 

@@ -102,6 +102,14 @@ class CancelRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=64)
 
 
+class AddModelRequest(BaseModel):
+    """One model the machine already has, to be set up so it can be compared."""
+
+    model: str = Field(min_length=1, max_length=240)
+    #: Which host serves it. Defaults to the Ollama address Neo is configured with.
+    base_url: str = Field(default="", max_length=500)
+
+
 def _handled(exc: Exception) -> HTTPException:
     """A refusal the user can act on, with the status code that fits its cause."""
 
@@ -122,6 +130,21 @@ def candidates() -> dict:
     """Every model Neo could put in a comparison, and whether it looks reachable."""
 
     return _service().candidates()
+
+
+@router.post("/models")
+def add_model(request: AddModelRequest) -> dict:
+    """Set up a model the machine already has, and return the refreshed picker.
+
+    Here rather than only in Settings because this is where its absence is felt: a
+    comparison needs two models, and sending someone to another screen to add the second
+    one is the whole feature failing at the last step.
+    """
+
+    try:
+        return _service().add_model(request.model, request.base_url)
+    except (LookupError, ValueError) as exc:
+        raise _handled(exc) from exc
 
 
 @router.post("/plan")

@@ -4754,3 +4754,171 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   .cmp-detail-facts { gap: 18px; }
   .cmp-candidate, .cmp-goal { min-width: 0; flex: 1 1 100%; max-width: none; }
 }
+
+/* Command palette. Anchored near the top rather than centred: the list grows
+   downwards as you type, and a centred box would jump on every keystroke. */
+.cmdk-backdrop { align-items: flex-start; padding-top: 12vh; }
+.cmdk {
+  width: min(620px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: var(--neo-bg);
+  box-shadow: 0 24px 80px rgba(0,0,0,.7);
+  overflow: hidden;
+}
+.cmdk-input {
+  border: 0;
+  border-bottom: 1px solid var(--neo-line);
+  background: transparent;
+  padding: 14px 16px;
+  color: var(--neo-text);
+  font-size: 14px;
+}
+.cmdk-input:focus { outline: none; }
+.cmdk-list { margin: 0; padding: 6px; overflow-y: auto; list-style: none; }
+.cmdk-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 9px 10px;
+  color: #aaa;
+  text-align: left;
+}
+.cmdk-row-text { display: grid; gap: 2px; min-width: 0; }
+.cmdk-row strong { color: #ccc; font-size: 12.5px; font-weight: 500; }
+.cmdk-row small { color: #444; font-size: 10px; }
+.cmdk-row:hover, .cmdk-row.is-active { background: var(--neo-panel-raised); }
+.cmdk-row.is-active strong { color: var(--neo-green); }
+.cmdk-kbd {
+  flex: 0 0 auto;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: #666;
+  font: 10px "JetBrains Mono", monospace;
+}
+.cmdk-empty { margin: 0; padding: 18px 16px; color: #444; font-size: 12px; }
+
+/* Keyboard settings. Rows echo .set-row so the two settings screens read the
+   same, with the binding itself as the one thing that stands out. */
+.keyboard-dialog .kb-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--neo-line);
+  background: var(--neo-panel);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.kb-toggle > span { display: grid; gap: 3px; }
+.kb-toggle strong { color: var(--neo-text); font-size: 12.5px; font-weight: 500; }
+.kb-toggle small { color: #555; font-size: 11px; line-height: 1.6; }
+
+.kb-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.kb-which { display: flex; gap: 2px; border: 1px solid var(--neo-line); }
+.kb-which button {
+  border: 0;
+  background: transparent;
+  padding: 7px 12px;
+  color: #666;
+  font-size: 11.5px;
+}
+.kb-which button.is-active { background: var(--neo-panel-raised); color: var(--neo-green); }
+.kb-filter { flex: 1; min-width: 0; min-height: 32px; padding: 6px 9px; font-size: 12px; }
+.kb-banner { margin-bottom: 12px; }
+
+.kb-recording {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--neo-green);
+  background: var(--neo-panel-raised);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  color: #aaa;
+  font-size: 12px;
+}
+.kb-recording:focus { outline: none; }
+
+.kb-section { border-top: 1px solid var(--neo-line); padding-top: 10px; margin-bottom: 14px; }
+.kb-section h3 {
+  margin: 0 0 4px;
+  color: #444;
+  font: 600 10px "JetBrains Mono", monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.kb-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #141414;
+  padding: 9px 0;
+}
+.kb-row-text { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.kb-row-text strong { color: #ccc; font-size: 12px; font-weight: 500; }
+.kb-row-text small { color: #444; font-size: 10px; }
+.kb-row-conflict { color: var(--neo-danger); font-size: 10.5px; text-align: right; }
+.kb-row.has-conflict .kb-record { border-color: var(--neo-danger); }
+.kb-row-actions { display: flex; gap: 6px; align-items: center; }
+.kb-row-fixed { opacity: .55; }
+.kb-record {
+  min-width: 92px;
+  border: 1px solid var(--neo-line-bright);
+  background: transparent;
+  padding: 5px 9px;
+  color: #999;
+  font: 11px "JetBrains Mono", monospace;
+}
+.kb-record:hover { border-color: var(--neo-green); color: var(--neo-green); }
+.kb-record.is-recording { border-color: var(--neo-green); color: var(--neo-green); }
+.kb-reset { border: 0; background: transparent; color: #555; font-size: 10.5px; }
+.kb-reset:hover { color: var(--neo-green); }
+.kb-reset-all { border: 1px solid var(--neo-line); background: transparent; padding: 6px 10px;
+  color: #666; font-size: 11.5px; }
+.kb-kbd {
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: #888;
+  font: 10.5px "JetBrains Mono", monospace;
+}
+
+/* Mode indicator. Bottom-left, out of the composer's way, and only on screen at
+   all when Command mode is switched on. */
+.kb-mode {
+  position: fixed;
+  bottom: 10px;
+  left: 12px;
+  z-index: 30;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 2px;
+  background: var(--neo-panel);
+  padding: 4px 9px;
+  pointer-events: none;
+}
+.kb-mode strong {
+  color: var(--neo-green);
+  font: 600 9.5px "JetBrains Mono", monospace;
+  letter-spacing: .14em;
+}
+.kb-mode.is-typing strong { color: #666; }
+.kb-mode small { color: #4a4a4a; font-size: 10px; }
+.kb-mode-pending {
+  color: var(--neo-green);
+  font: 10px "JetBrains Mono", monospace;
+  letter-spacing: .08em;
+}
+.sidebar-collapsed .kb-mode { left: 12px; }

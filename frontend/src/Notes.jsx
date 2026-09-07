@@ -12,6 +12,7 @@ import {
   parseTagInput,
   renderMarkdown,
 } from "./notePresentation.js";
+import { useCommandHandlers } from "./keys/useCommands.js";
 
 const AUTOSAVE_DELAY = 1400;
 
@@ -234,30 +235,24 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
     window.requestAnimationFrame(() => titleRef.current?.focus());
   }, []);
 
-  useEffect(() => {
-    function onKeyDown(event) {
-      const meta = event.metaKey || event.ctrlKey;
-      const typing = /^(INPUT|TEXTAREA)$/.test(event.target?.tagName || "");
-      if (meta && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        if (savable) saveRef.current?.();
-        return;
-      }
-      if (meta && event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        startNewNote();
-        return;
-      }
-      if (event.key === "/" && !typing) {
-        event.preventDefault();
-        searchRef.current?.focus();
-        return;
-      }
-      if (event.key === "Escape" && typing) event.target.blur();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [savable, startNewNote]);
+  /* These used to be a window listener of their own, with its own idea of what
+     counts as typing. Escape-to-blur is the engine's job now and is the same on
+     every screen; the rest are commands, which means they are rebindable and
+     show up in the palette. "New note" was mod+n, which Chrome and Safari take
+     for a new window before the page is told -- so it had never once fired. */
+  useCommandHandlers({
+    "notes.save": () => {
+      if (!savable) return false;
+      saveRef.current?.();
+      return true;
+    },
+    "notes.new": () => { startNewNote(); },
+    "notes.focusSearch": () => {
+      if (!searchRef.current) return false;
+      searchRef.current.focus();
+      return true;
+    },
+  });
 
   async function toggleNoteFlag(action) {
     if (!selectedNote || isNew) return;

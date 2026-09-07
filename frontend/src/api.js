@@ -465,6 +465,15 @@ export const api = {
   chatConfig: () => request("/chat-config"),
   updateChatConfig: (payload) =>
     request("/chat-config", { method: "POST", body: JSON.stringify(payload) }),
+  keyboardConfig: () => request("/keybindings/config"),
+  updateKeyboardConfig: (payload) =>
+    request("/keybindings/config", { method: "POST", body: JSON.stringify(payload) }),
+  setKeybinding: (keymap, commandId, sequence) =>
+    request(`/keybindings/overrides/${keymap}/${encodeURIComponent(commandId)}`,
+      { method: "PUT", body: JSON.stringify({ sequence }) }),
+  clearKeybinding: (keymap, commandId) =>
+    request(`/keybindings/overrides/${keymap}/${encodeURIComponent(commandId)}`, { method: "DELETE" }),
+  resetKeybindings: () => request("/keybindings/overrides", { method: "DELETE" }),
   galleryConfig: () => request("/gallery/config"),
   updateGalleryConfig: (payload) =>
     request("/gallery/config", { method: "POST", body: JSON.stringify(payload) }),

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
 import ImageLightbox from "./ImageLightbox.jsx";
 import Icon from "./WorkspaceIcon.jsx";
+import { useCommandHandlers } from "./keys/useCommands.js";
 
 const STATUS_LABEL = {
   pending: "Describing",
@@ -197,7 +198,12 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
     [index, open, ordered],
   );
 
-  /* Arrow keys walk the grid, Enter opens the image, Escape steps back out. */
+  /* Arrow keys walk the grid, Enter opens the image, Escape steps back out.
+     Deliberately still a listener of its own rather than commands: this is
+     widget navigation that depends on the live column count and on which image
+     is selected, and making it globally rebindable would buy nothing. Searching
+     is a command, though -- see below -- and blurring on Escape is the engine's
+     job now, on every screen alike. */
   useEffect(() => {
     function onKeyDown(event) {
       /* While the lightbox is up it owns the keyboard: it steps with the arrows
@@ -205,14 +211,8 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
          well would move the selection twice per press. */
       if (zoomed) return;
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName || "");
-      if (event.key === "/" && !typing) {
-        event.preventDefault();
-        searchInput.current?.focus();
-        return;
-      }
       if (event.key === "Escape") {
-        if (typing) event.target.blur();
-        else if (selectedId) setSelectedId(null);
+        if (!typing && selectedId) setSelectedId(null);
         return;
       }
       if (typing) return;
@@ -226,6 +226,14 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedId, step, zoomed]);
+
+  useCommandHandlers({
+    "gallery.focusSearch": () => {
+      if (!searchInput.current) return false;
+      searchInput.current.focus();
+      return true;
+    },
+  });
 
   /* Track the real column count so ArrowDown lands a row below, not n items on. */
   useEffect(() => {

@@ -17,7 +17,10 @@ from typing import Any
 
 import requests
 
+from app.core.config import get_settings
 from app.services.llm import LLMConfig, LLMRegistry
+from app.services.llm_registry.service import LLMRegistryService
+from app.services.llm_registry.types import ModelCreate, ProviderCreate
 from app.services.model_compare import judge, runner, tasks
 from app.services.model_compare.grading import GRADER_VERSION
 from app.services.model_compare.tasks import MAX_CUSTOM_PROMPTS, USE_CASE_CHOICES
@@ -54,6 +57,15 @@ MAX_OUTPUT_TOKENS = 4096
 
 MAX_TEMPERATURE = 2.0
 MAX_RUBRIC_LENGTH = 4000
+
+#: Names an Ollama install reports that are embedders rather than chat models. They
+#: cannot hold a conversation -- asked one, they refuse the request -- so they are never
+#: offered as something to compare. Mirrors the list the LLM registry uses.
+EMBEDDING_HINTS = ("embed", "bge", "gte", "minilm")
+
+
+def _is_embedding_model(name: str) -> bool:
+    return any(hint in name.lower() for hint in EMBEDDING_HINTS)
 
 
 class ModelCompareService:
@@ -112,7 +124,91 @@ class ModelCompareService:
                     "note": _availability_note(state, config),
                 }
             )
-        return {"candidates": rows, "active_id": active_id, **self.use_cases()}
+        return {
+            "candidates": rows,
+            "active_id": active_id,
+            # Models the machine already has that Neo is not set up to talk to. Offered
+            # here rather than only in Settings because this is the screen where their
+            # absence is felt: being told to go somewhere else to add a second model is
+            # the one thing standing between the user and a comparison.
+            "discoverable": self._discoverable(enabled, reachable),
+            **self.use_cases(),
+        }
+
+    def _discoverable(
+        self, configs: list[LLMConfig], reachable: dict[tuple[str, str], dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Chat models a provider serves that the picker does not know about yet."""
+
+        registered = {config.model for config in configs}
+        found: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for (provider_type, base_url), state in reachable.items():
+            if provider_type != "ollama" or not state.get("reachable"):
+                continue
+            versions = state.get("versions") or {}
+            for name in sorted(state.get("models") or []):
+                # ":latest" is recorded twice, bare and tagged, so that either spelling
+                # matches an existing entry. Only the written-out form is offered.
+                if not name or ":" not in name or name in registered or name in seen:
+                    continue
+                if _is_embedding_model(name):
+                    continue
+                seen.add(name)
+                found.append(
+                    {
+                        "model": name,
+                        "display_name": name,
+                        "version": versions.get(name, ""),
+                        "base_url": base_url,
+                        "local": runner.is_local(base_url),
+                    }
+                )
+        return found
+
+    def add_model(self, model: str, base_url: str = "") -> dict[str, Any]:
+        """Set up a model the machine already has, so it can be compared.
+
+        Registered through the LLM registry rather than written straight into the picker
+        file: the registry is what mirrors a model into the picker, the routes and
+        Settings, so a model added here is a model Neo can use everywhere rather than one
+        that exists only on this screen.
+        """
+
+        name = (model or "").strip()
+        if not name:
+            raise ValueError("Say which model to add.")
+        if _is_embedding_model(name):
+            raise ValueError(
+                f"'{name}' turns text into numbers for search. It cannot hold a "
+                "conversation, so there is nothing to compare it on."
+            )
+
+        endpoint = (base_url or get_settings().ollama_url).rstrip("/")
+        probe = _probe(
+            LLMConfig(
+                id="probe", name="probe", provider="ollama", model=name, base_url=endpoint
+            )
+        )
+        if not probe.get("reachable"):
+            raise LookupError(f"Neo could not reach a model host at {endpoint}.")
+        if name not in (probe.get("models") or set()):
+            raise LookupError(f"'{name}' is not installed on this computer.")
+
+        registry = LLMRegistryService()
+        provider = _ollama_provider(registry, endpoint)
+        settings = get_settings()
+        registry.create_model(
+            ModelCreate(
+                provider_id=provider["id"],
+                model_name=name,
+                display_name=name,
+                max_output_tokens=settings.chat_num_predict,
+                enabled=True,
+                metadata={"source": "model_compare"},
+            )
+        )
+        return self.candidates()
 
     # -- running one -------------------------------------------------------------
 
@@ -279,6 +375,24 @@ class ModelCompareService:
 
 def _endpoint(config: LLMConfig) -> tuple[str, str]:
     return (config.provider, config.base_url)
+
+
+def _ollama_provider(registry: LLMRegistryService, base_url: str) -> dict[str, Any]:
+    """The registry's Ollama provider for this address, created if there is not one."""
+
+    for provider in registry.list_providers():
+        if provider.get("provider_type") != "ollama":
+            continue
+        if str(provider.get("base_url") or "").rstrip("/") == base_url:
+            return provider
+    return registry.create_provider(
+        ProviderCreate(
+            name="Ollama",
+            provider_type="ollama",
+            base_url=base_url,
+            metadata={"created_by": "model_compare"},
+        )
+    )
 
 
 def _versions_for(

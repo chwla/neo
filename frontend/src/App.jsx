@@ -14,6 +14,13 @@ import BackgroundTurnToast, {
 } from "./BackgroundTurnToast.jsx";
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
+import CommandPalette from "./CommandPalette.jsx";
+import KeyboardModeIndicator from "./KeyboardModeIndicator.jsx";
+import KeyboardSettings from "./KeyboardSettings.jsx";
+import { COMMANDS } from "./keys/commands.js";
+import { detectPlatform } from "./keys/engine.js";
+import { buildKeymap } from "./keys/keymap.js";
+import { useCommandHandlers, useKeyboardEngine, useScopes } from "./keys/useCommands.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
 import ChatToolsPanel from "./ChatToolsPanel.jsx";
 import ExternalAgents from "./ExternalAgents.jsx";
@@ -333,18 +340,19 @@ function RowActionsMenu({ label, className = "", children }) {
       setOpen(false);
     }
 
-    function onKeyDown(event) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        buttonRef.current?.focus();
-      }
-    }
+    // Escape goes through the dialog stack rather than a listener of this
+    // popover's own. Two reasons: a popover opened over a dialog closes only
+    // itself, and the keyboard engine stands down whenever anything is on that
+    // stack, so one Escape cannot both close this and blur the composer.
+    const releaseEscape = registerModal(() => {
+      setOpen(false);
+      buttonRef.current?.focus();
+    });
 
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
     return () => {
+      releaseEscape();
       document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
 
@@ -567,6 +575,20 @@ export function Sidebar({
       chats: project.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query)),
     }))
     .filter((project) => !query || project.name.toLowerCase().includes(query) || project.chats.length);
+  /* The sidebar registers its own search command, which is why `search` above
+     could stay a useState in here rather than being lifted into NeoApp for the
+     keyboard's benefit. Commands are addressed by id, so whichever component
+     owns the state owns the handler. */
+  const searchRef = useRef(null);
+  useCommandHandlers({
+    "sidebar.focusSearch": () => {
+      if (!searchRef.current) return false;
+      searchRef.current.focus();
+      searchRef.current.select();
+      return true;
+    },
+  });
+
   const filteredChats = sidebar.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
   const filteredArchived = archived.filter((chat) => !query || chat.title.toLowerCase().includes(query));
   const systemItems = [
@@ -645,7 +667,7 @@ export function Sidebar({
       </div>
       <label className="sidebar-search">
         <NavIcon name="research" />
-        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search..." aria-label="Search conversations" />
+        <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search..." aria-label="Search conversations" />
       </label>
 
       {showNewProjectForm && (
@@ -1352,8 +1374,13 @@ export function ChatComposer({
   steering = false,
   onCompactConversation,
   compacting = false,
+  onComposerReady,
 }) {
   const textareaRef = useRef(null);
+  //: Where the caret should land once a programmatic edit has been rendered.
+  //: The textarea is controlled, so the new value only exists after React has
+  //: put it there, and setting the selection before that moves it in the old one.
+  const pendingCaretRef = useRef(null);
   const attachInputRef = useRef(null);
   // Everything the run needs but the objective itself lives behind the "+":
   // repo, permission mode, agent, and whatever the clip attaches.
@@ -1377,6 +1404,56 @@ export function ChatComposer({
   // the line below the picker is an invitation or a way back to the panel.
   const hasConnectedEngine = externalAgents.some((agent) => agent.available);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    const at = pendingCaretRef.current;
+    if (at === null) return;
+    pendingCaretRef.current = null;
+    textareaRef.current?.setSelectionRange(at, at);
+  }, [value]);
+
+  /* The keyboard needs to put the caret in here, and the DOM node is nobody
+     else's business. Rather than forwarding a ref through a component that
+     already takes thirty props, the composer hands out the three things anyone
+     outside it actually needs, once, on mount. Every method reports whether it
+     did anything, so a command declines instead of swallowing the key when
+     there is no composer on screen. */
+  useEffect(() => {
+    if (typeof onComposerReady !== "function") return undefined;
+
+    onComposerReady({
+      focus(where = "caret") {
+        const node = textareaRef.current;
+        if (!node) return false;
+        node.focus();
+        const end = node.value.length;
+        if (where === "end") node.setSelectionRange(end, end);
+        else if (where === "start") node.setSelectionRange(0, 0);
+        else if (where === "after") {
+          const at = Math.min((node.selectionStart ?? end) + 1, end);
+          node.setSelectionRange(at, at);
+        }
+        return true;
+      },
+      newLine() {
+        const node = textareaRef.current;
+        if (!node || typeof onChange !== "function") return false;
+        node.focus();
+        pendingCaretRef.current = (value ?? "").length + 1;
+        onChange(`${value ?? ""}\n`);
+        return true;
+      },
+      openAttach() {
+        if (!attachInputRef.current) return false;
+        attachInputRef.current.click();
+        return true;
+      },
+      isEmpty() {
+        return (value ?? "").trim() === "";
+      },
+    });
+    return () => onComposerReady(null);
+  }, [onComposerReady, onChange, value]);
   // Which attached image is open full-screen, or -1 for none.
   const [zoomedImage, setZoomedImage] = useState(-1);
   const menuRef = useRef(null);
@@ -1424,18 +1501,19 @@ export function ChatComposer({
       setMenuOpen(false);
     }
 
-    function onKeyDown(event) {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-        menuButtonRef.current?.focus();
-      }
-    }
+    // Escape goes through the dialog stack rather than a listener of this
+    // popover's own. Two reasons: a popover opened over a dialog closes only
+    // itself, and the keyboard engine stands down whenever anything is on that
+    // stack, so one Escape cannot both close this and blur the composer.
+    const releaseEscape = registerModal(() => {
+      setMenuOpen(false);
+      menuButtonRef.current?.focus();
+    });
 
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
     return () => {
+      releaseEscape();
       document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuOpen]);
 
@@ -2651,7 +2729,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -2706,6 +2784,7 @@ function SettingsDialog({ onOpenAccount, onOpenBackgroundChats, onOpenSidebarCha
       icon: "folder",
       description: "Projects, work tracking, and portability.",
       items: [
+        ["Keyboard", "Shortcuts, and the Command mode that adds single-key ones", onOpenKeyboard],
         ["Sidebar", "How many chats stay in the list before older ones are archived", onOpenSidebarChats],
         ["Projects", "Organize related chats and work", onOpenProjects],
         ["Files", "Uploaded and generated workspace files", onOpenFiles],
@@ -3016,6 +3095,65 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [initialTaskId, setInitialTaskId] = useState(null);
   const [initialTaskProjectId, setInitialTaskProjectId] = useState(null);
   const [initialCalendarEventId, setInitialCalendarEventId] = useState(null);
+  /* Which screen is showing, as one word. Derived up here rather than in the
+     render body because the keyboard scopes its bindings to it: a command that
+     only applies in Notes names "notes", and this is where that token comes
+     from. It depends on nothing but the flags above. */
+  const activeView = showSettings ? "settings"
+    : showMemory ? "memory"
+      : showResearch ? "research"
+        : showNotes ? "notes"
+          : showProjects ? "projects"
+            : showTasks ? "tasks"
+              : showCalendar ? "calendar"
+                : showFiles ? "files"
+                  : showGallery ? "gallery"
+                    : showRepos ? "repos"
+                      : showLocalModels ? "localModels"
+                        : showCompareModels ? "compareModels"
+                          : "chat";
+  /* The sidebar's destinations, named rather than written inline where they are
+     passed. A command is registered by id against a function, and an inline
+     lambda has no identity to register -- it is a different function every
+     render. Each of these is the same two or three setState calls the prop used
+     to hold, and each goes through closeWorkspaces rather than listing the views
+     to shut, which is the mistake that comment further up was written about. */
+  const openChatHome = closeWorkspaces;
+  const openSettings = useCallback(() => setShowSettings(true), []);
+  const openMemory = useCallback(() => setShowMemory(true), []);
+  const openResearch = useCallback(() => {
+    closeWorkspaces(); setShowResearch(true);
+  }, [closeWorkspaces]);
+  const openNotes = useCallback(() => {
+    closeWorkspaces(); setInitialNoteId(null); setShowNotes(true);
+  }, [closeWorkspaces]);
+  const openTasks = useCallback(() => {
+    closeWorkspaces(); setInitialTaskId(null); setInitialTaskProjectId(null); setShowTasks(true);
+  }, [closeWorkspaces]);
+  const openCalendar = useCallback(() => {
+    closeWorkspaces(); setInitialCalendarEventId(null); setShowCalendar(true);
+  }, [closeWorkspaces]);
+  const openGallery = useCallback(() => {
+    closeWorkspaces(); setInitialGalleryItemId(null); setShowGallery(true);
+  }, [closeWorkspaces]);
+  const openLocalModels = useCallback(() => {
+    closeWorkspaces(); setShowLocalModels(true);
+  }, [closeWorkspaces]);
+  const openCompareModels = useCallback(() => {
+    closeWorkspaces(); setShowCompareModels(true);
+  }, [closeWorkspaces]);
+  /* Reachable from the settings list rather than the sidebar, so they have no
+     prop to be hoisted out of -- but the keyboard needs somewhere to point. */
+  const openProjects = useCallback(() => {
+    closeWorkspaces(); setInitialProjectId(null); setShowProjects(true);
+    updatePermalink(projectPermalink(null));
+  }, [closeWorkspaces]);
+  const openFiles = useCallback(() => {
+    closeWorkspaces(); setInitialFileId(null); setShowFiles(true);
+  }, [closeWorkspaces]);
+  const openRepos = useCallback(() => {
+    closeWorkspaces(); setShowRepos(true);
+  }, [closeWorkspaces]);
   // What the next turn will be. A per-message choice, not a view: the thread
   // stays where it is either way.
   const [chatMode, setChatMode] = useState("chatbot");
@@ -4206,19 +4344,178 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       statusDetail: live.statusText,
     }
     : null;
-  const activeView = showSettings ? "settings"
-    : showMemory ? "memory"
-      : showResearch ? "research"
-        : showNotes ? "notes"
-          : showProjects ? "projects"
-            : showTasks ? "tasks"
-              : showCalendar ? "calendar"
-                : showFiles ? "files"
-                  : showGallery ? "gallery"
-                    : showRepos ? "repos"
-                      : showLocalModels ? "localModels"
-                        : showCompareModels ? "compareModels"
-                          : "chat";
+  /* The keyboard.
+     Built from the shipped defaults only for now: the profile's own bindings and
+     Command mode arrive with the settings screen, and the keymap is rebuilt from
+     them rather than the listener being reattached.
+     Registered here, at the bottom of the component, because the map is evaluated
+     during render and every handler in it has to already exist. */
+  /* The transcript's scroll container, and the composer's own small API. Both
+     are things the keyboard reaches for and nothing else does -- before this
+     there was no ref on the transcript at all, and the composer's textarea was
+     private to the component. */
+  const transcriptRef = useRef(null);
+  const composerRef = useRef(null);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showKeyboardSettings, setShowKeyboardSettings] = useState(false);
+  /* The profile's own bindings, which arrive after the first paint. Until they
+     do -- and if the request fails outright -- the engine runs on the shipped
+     defaults with Command mode off, which is a working keyboard rather than a
+     dead one. The keymap is rebuilt when they land; the listener is not
+     reattached, because reattaching mid-keystroke is how you lose one. */
+  const [keyboardConfig, setKeyboardConfig] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.keyboardConfig()
+      .then((data) => { if (!cancelled) setKeyboardConfig(data); })
+      .catch(() => { /* defaults are already live; nothing to fall back to */ });
+    return () => { cancelled = true; };
+  }, []);
+  const keyboardKeymap = useMemo(
+    () => buildKeymap(COMMANDS, keyboardConfig?.overrides ?? [], {
+      platform: detectPlatform(),
+      commandMode: Boolean(keyboardConfig?.command_mode_enabled),
+    }),
+    [keyboardConfig],
+  );
+  /* Held in a ref rather than passed as a prop so the composer registers once,
+     on mount, instead of on every render of a component this size. */
+  const handleComposerReady = useCallback((composer) => {
+    composerRef.current = composer;
+  }, []);
+
+  /* Scrolling declines when there is nothing to scroll, which leaves the
+     browser's own behaviour in place rather than replacing it with a worse one. */
+  const scrollTranscript = useCallback((amount) => {
+    const node = transcriptRef.current;
+    if (!node) return false;
+    node.scrollBy({ top: amount, behavior: "auto" });
+    return true;
+  }, []);
+  const scrollTranscriptTo = useCallback((top) => {
+    const node = transcriptRef.current;
+    if (!node) return false;
+    node.scrollTo({ top, behavior: "auto" });
+    return true;
+  }, []);
+  const focusComposer = useCallback(
+    (where) => composerRef.current?.focus(where) ?? false,
+    [],
+  );
+  //: One notch of j or k. A line-and-a-bit, so a held key reads as scrolling
+  //: rather than as jumping.
+  const SCROLL_STEP = 60;
+
+  /* Next and previous walk the sidebar in the order it is drawn -- loose chats
+     then each project's -- so the keyboard moves through the list the user can
+     see rather than through some other ordering of the same rows. Stops at the
+     ends rather than wrapping: wrapping from the oldest chat to the newest is
+     disorienting when you cannot see the whole list. */
+  const stepThroughChats = useCallback((delta) => {
+    const everyChat = [...sidebar.chats, ...sidebar.projects.flatMap((project) => project.chats)];
+    if (everyChat.length === 0) return false;
+    const at = everyChat.findIndex((chat) => chat.id === activeChat?.id);
+    const next = everyChat[at < 0 ? 0 : at + delta];
+    if (!next || next.id === activeChat?.id) return false;
+    handleOpenChat(next.id);
+    return true;
+  }, [sidebar, activeChat?.id]);
+
+  const keyboardScopes = useScopes(activeView, activeChat?.id ? ["hasChat"] : []);
+  useKeyboardEngine(keyboardKeymap, keyboardScopes);
+  useCommandHandlers({
+    "palette.open": () => setShowCommandPalette(true),
+    "app.showKeyboardHelp": () => setShowKeyboardSettings(true),
+    // Ships with no key on purpose -- a key that leaves Command mode is a key
+    // that leaves it by accident -- so the palette is how it is reached.
+    "app.toggleCommandMode": async () => {
+      const enabled = !keyboardConfig?.command_mode_enabled;
+      try {
+        setKeyboardConfig(await api.updateKeyboardConfig({ command_mode_enabled: enabled }));
+      } catch {
+        setStatusError("Could not change Command mode.");
+      }
+    },
+    "app.toggleSidebar": toggleSidebar,
+    "app.openSettings": openSettings,
+    "chat.new": () => handleNewChat(),
+    // Declines rather than swallowing the key when there is nothing to stop.
+    "chat.stop": () => {
+      if (!activeTurn || !activeChat?.id || stopping) return false;
+      handleStopGeneration();
+      return true;
+    },
+    "nav.chat": openChatHome,
+    "nav.notes": openNotes,
+    "nav.tasks": openTasks,
+    "nav.projects": openProjects,
+    "nav.research": openResearch,
+    "nav.gallery": openGallery,
+    "nav.files": openFiles,
+    "nav.calendar": openCalendar,
+    "nav.memory": openMemory,
+    "nav.repos": openRepos,
+    "nav.localModels": openLocalModels,
+    "nav.compareModels": openCompareModels,
+
+    // Command mode's way in and out of the composer. Each declines when there is
+    // no composer on screen, so the key falls through instead of vanishing.
+    "mode.type": () => focusComposer("caret"),
+    "chat.focusComposer": () => focusComposer("caret"),
+    "mode.typeAfter": () => focusComposer("after"),
+    "mode.typeEnd": () => focusComposer("end"),
+    "mode.typeStart": () => focusComposer("start"),
+    "mode.typeNewLine": () => composerRef.current?.newLine() ?? false,
+
+    "chat.scrollDown": ({ count = 1 }) => scrollTranscript(SCROLL_STEP * count),
+    "chat.scrollUp": ({ count = 1 }) => scrollTranscript(-SCROLL_STEP * count),
+    "chat.pageDown": ({ count = 1 }) =>
+      scrollTranscript((transcriptRef.current?.clientHeight ?? 0) * 0.9 * count),
+    "chat.pageUp": ({ count = 1 }) =>
+      scrollTranscript(-(transcriptRef.current?.clientHeight ?? 0) * 0.9 * count),
+    "chat.scrollTop": () => scrollTranscriptTo(0),
+    "chat.scrollBottom": () => scrollTranscriptTo(transcriptRef.current?.scrollHeight ?? 0),
+
+    // The rest of the chat surface. Every one of these declines rather than
+    // acting on nothing -- there is no last reply to copy in an empty thread,
+    // and no next chat when this is the only one.
+    "chat.nextChat": () => stepThroughChats(1),
+    "chat.prevChat": () => stepThroughChats(-1),
+    "chat.copyLast": () => {
+      const reply = [...messages].reverse().find((message) => message.role === "assistant");
+      if (!reply?.content) return false;
+      copyText(reply.content);
+      return true;
+    },
+    "chat.editLast": () => {
+      const mine = [...messages].reverse().find((message) => message.role === "user");
+      if (!mine) return false;
+      handleEditMessage(mine);
+      return true;
+    },
+    "chat.regenerate": () => {
+      const mine = [...messages].reverse().find((message) => message.role === "user");
+      if (!mine?.content || sending) return false;
+      sendPrompt(mine.content);
+      return true;
+    },
+    "chat.compact": () => {
+      if (!activeChat?.id || compacting) return false;
+      handleCompactConversation();
+      return true;
+    },
+    "chat.attach": () => composerRef.current?.openAttach() ?? false,
+    "chat.toggleAgentMode": () => {
+      setChatMode((mode) => (mode === "agent" ? "chatbot" : "agent"));
+    },
+    "chat.deleteCurrent": () => {
+      if (!activeChat) return false;
+      handleDeleteChat(activeChat);
+      return true;
+    },
+    "chat.openFolder": () => { handleOpenFolder(); },
+  });
+
   return (
     <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
@@ -4236,18 +4533,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         onPinChat={handlePinChat}
         onArchiveChat={handleArchiveChat}
         onDeleteProject={handleDeleteProject}
-        onOpenSettings={() => setShowSettings(true)}
-        onOpenChatHome={closeWorkspaces}
-        onOpenMemory={() => setShowMemory(true)}
-        onOpenResearch={() => { closeWorkspaces(); setShowResearch(true); }}
-        onOpenNotes={() => { closeWorkspaces(); setInitialNoteId(null); setShowNotes(true); }}
-        onOpenTasks={() => {
-          closeWorkspaces(); setInitialTaskId(null); setInitialTaskProjectId(null); setShowTasks(true);
-        }}
-        onOpenCalendar={() => { closeWorkspaces(); setInitialCalendarEventId(null); setShowCalendar(true); }}
-        onOpenGallery={() => { closeWorkspaces(); setInitialGalleryItemId(null); setShowGallery(true); }}
-        onOpenLocalModels={() => { closeWorkspaces(); setShowLocalModels(true); }}
-        onOpenCompareModels={() => { closeWorkspaces(); setShowCompareModels(true); }}
+        onOpenSettings={openSettings}
+        onOpenChatHome={openChatHome}
+        onOpenMemory={openMemory}
+        onOpenResearch={openResearch}
+        onOpenNotes={openNotes}
+        onOpenTasks={openTasks}
+        onOpenCalendar={openCalendar}
+        onOpenGallery={openGallery}
+        onOpenLocalModels={openLocalModels}
+        onOpenCompareModels={openCompareModels}
         activeView={activeView}
         profile={profile}
         onSwitchProfile={() => setConfirmingSignOut(true)}
@@ -4345,7 +4640,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           <span>{activeChat?.title || "New chat"}</span>
           <span className="neo-view-context">{chatMode === "agent" ? "Agent Mode" : "Chat Mode"}</span>
         </header>
-        <section className="neo-shell">
+        <section className="neo-shell" ref={transcriptRef}>
           {showEmptyState && (
             <div className="neo-empty-state">
               <h1 className="neo-title">Neo</h1>
@@ -4409,6 +4704,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         </section>
 
         <ChatComposer
+          onComposerReady={handleComposerReady}
           /* Stop is offered whenever something is running, full stop -- a run
              being steered is still a run someone may want to cancel outright. */
           generating={sending && Boolean(activeTurn)}
@@ -4578,6 +4874,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setShowFiles(false);
             setShowRepos(true);
           }}
+          onOpenKeyboard={() => { setShowSettings(false); setShowKeyboardSettings(true); }}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -4659,6 +4956,22 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onConfirm={onSwitchProfile}
         />
       )}
+      {showKeyboardSettings && (
+        <KeyboardSettings
+          platform={keyboardKeymap.platform}
+          onConfigChange={setKeyboardConfig}
+          onClose={() => setShowKeyboardSettings(false)}
+        />
+      )}
+      {showCommandPalette && (
+        <CommandPalette
+          keymap={keyboardKeymap}
+          scopes={keyboardScopes}
+          platform={keyboardKeymap.platform}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      )}
+      <KeyboardModeIndicator enabled={Boolean(keyboardConfig?.command_mode_enabled)} />
       <BackgroundTurnToast
         notices={turnNotices}
         chatTitles={chatTitlesById}

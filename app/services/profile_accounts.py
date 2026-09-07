@@ -660,6 +660,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
         from app.services.gallery.store import initialize_gallery_tables
         from app.services.git.store import initialize_git_tables
         from app.services.github import initialize_github_tables
+        from app.services.keybindings import initialize_keybinding_tables
         from app.services.llm_registry.service import LLMRegistryService
         from app.services.llm_registry.store import initialize_llm_registry_tables
         from app.services.lsp import initialize_lsp_tables
@@ -691,6 +692,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_workspace_file_tables,
             initialize_gallery_tables,
             initialize_chat_preference_tables,
+            initialize_keybinding_tables,
             initialize_test_runner_tables,
             initialize_git_tables,
             initialize_github_tables,
