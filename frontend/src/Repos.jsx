@@ -12,7 +12,7 @@ function formatBytes(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function Repos({ onBack, onOpenFile, projectId = null, compact = false }) {
+export default function Repos({ onOpenFile, projectId = null, compact = false }) {
   const [repos, setRepos] = useState([]);
   const [selected, setSelected] = useState(null);
   const [files, setFiles] = useState([]);
@@ -244,10 +244,6 @@ export default function Repos({ onBack, onOpenFile, projectId = null, compact = 
       <aside className="ws-rail">
         <header className="ws-rail-head">
           <div className="ws-rail-top">
-            <button className="ws-back" type="button" onClick={onBack}>
-              <Icon name="back" />
-              Chat
-            </button>
             <span className="ws-rail-count">{repos.length} repo{repos.length === 1 ? "" : "s"}</span>
           </div>
           <h1 className="ws-rail-title">Repositories</h1>

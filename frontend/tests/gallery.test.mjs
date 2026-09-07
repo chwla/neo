@@ -54,13 +54,13 @@ describe("images inside a turn", () => {
 
 describe("the gallery view", () => {
   test("an empty gallery explains how images get here", () => {
-    const html = render(Gallery, { onBack() {} });
+    const html = render(Gallery, {});
 
     assert.match(html, /paste into a chat/);
   });
 
   test("the search box asks what was in the image, not for a filename", () => {
-    const html = render(Gallery, { onBack() {} });
+    const html = render(Gallery, {});
 
     assert.match(html, /What was in it/);
   });

@@ -36,7 +36,7 @@ function formatStatus(value) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-export default function Tasks({ initialTaskId = null, initialProjectId = null, onBack, onOpenNote, onOpenFile, onTaskChange , onOpenAgentSession }) {
+export default function Tasks({ initialTaskId = null, initialProjectId = null, onOpenNote, onOpenFile, onTaskChange , onOpenAgentSession }) {
   const [tasks, setTasks] = useState([]);
   const [projects, setProjects] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -240,7 +240,6 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
     <main className="tasks-layout">
       <section className="tasks-list-pane">
         <div className="tasks-pane-header">
-          <button className="neo-button secondary" type="button" onClick={onBack}>Back</button>
           <h2>Tasks</h2>
           <button className="neo-button" type="button" onClick={createTask} disabled={busy}>New Task</button>
         </div>

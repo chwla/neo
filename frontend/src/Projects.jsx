@@ -50,7 +50,7 @@ function projectChanged(draft, project) {
   );
 }
 
-export default function Projects({ initialProjectId = null, onBack, onOpenNote, onOpenTask, onOpenFile, onProjectChange }) {
+export default function Projects({ initialProjectId = null, onOpenNote, onOpenTask, onOpenFile, onProjectChange }) {
   const [projects, setProjects] = useState([]);
   const [projectTags, setProjectTags] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -298,10 +298,6 @@ export default function Projects({ initialProjectId = null, onBack, onOpenNote, 
       <aside className="ws-rail">
         <header className="ws-rail-head">
           <div className="ws-rail-top">
-            <button className="ws-back" type="button" onClick={onBack}>
-              <Icon name="back" />
-              Chat
-            </button>
             <span className="ws-rail-count">
               {loading ? "…" : `${total} project${total === 1 ? "" : "s"}`}
             </span>

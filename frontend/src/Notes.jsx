@@ -55,7 +55,7 @@ function readingTime(words) {
  * three states it is in, because a Save button that is usually disabled teaches
  * nobody whether their words are safe.
  */
-export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = null }) {
+export default function Notes({ onOpenTask, onOpenFile, initialNoteId = null }) {
   const [notes, setNotes] = useState([]);
   const [tagCounts, setTagCounts] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -405,10 +405,6 @@ export default function Notes({ onBack, onOpenTask, onOpenFile, initialNoteId = 
       <aside className="nw-rail">
         <header className="nw-rail-head">
           <div className="nw-rail-top">
-            <button className="nw-back" type="button" onClick={onBack}>
-              <Icon name="back" />
-              Chat
-            </button>
             <span className="nw-rail-count">
               {loading ? "…" : `${total} note${total === 1 ? "" : "s"}`}
             </span>

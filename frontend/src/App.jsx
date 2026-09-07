@@ -3118,7 +3118,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
      render. Each of these is the same two or three setState calls the prop used
      to hold, and each goes through closeWorkspaces rather than listing the views
      to shut, which is the mistake that comment further up was written about. */
-  const openChatHome = closeWorkspaces;
+  const openChatHome = useCallback(() => {
+    closeWorkspaces();
+    // Projects pushes its own permalink on the way in, and there is no back
+    // button left to undo that -- so the way home has to put the address bar
+    // back on the open thread, or a reload would land on /projects again.
+    if (activeChat?.id) {
+      updatePermalink(chatPermalink(activeChat.id, activeChat.project_id));
+    }
+  }, [activeChat?.id, activeChat?.project_id, closeWorkspaces]);
   const openSettings = useCallback(() => setShowSettings(true), []);
   const openMemory = useCallback(() => setShowMemory(true), []);
   const openResearch = useCallback(() => {
@@ -3670,22 +3678,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     async function restorePermalink() {
       const permalink = parsePermalink();
       if (permalink?.type === "chat" || permalink?.type === "projectChat") {
-        setShowProjects(false);
-        setShowTasks(false);
-        setShowNotes(false);
-        setShowResearch(false);
+        closeWorkspaces();
         await loadChat(permalink.id, { history: "none" });
       } else if (permalink?.type === "project" || permalink?.type === "projects") {
+        closeWorkspaces();
         setInitialProjectId(permalink.id);
-        setShowNotes(false);
-        setShowTasks(false);
-        setShowResearch(false);
         setShowProjects(true);
       }
     }
     window.addEventListener("popstate", restorePermalink);
     return () => window.removeEventListener("popstate", restorePermalink);
-  }, [loadChat]);
+  }, [closeWorkspaces, loadChat]);
 
   useEffect(() => {
     if (!generationStartedAt) {
@@ -3718,10 +3721,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
     try {
-      setShowResearch(false);
-      setShowNotes(false);
-      setShowProjects(false);
-      setShowTasks(false);
+      // Every workspace, not the four this used to name. The panels have no back
+      // button any more -- the sidebar is the way out of them -- so a half-closed
+      // set here reads as "New chat does nothing": the chat is made, and Compare
+      // Models or the Gallery is still the thing on screen.
+      closeWorkspaces();
       setInitialProjectId(null);
       const chat = await createActiveChat(projectId);
       visibleChatIdRef.current = chat.id;
@@ -3736,34 +3740,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
     try {
-      setShowResearch(false);
-      setShowNotes(false);
-      setShowProjects(false);
-      setShowTasks(false);
+      closeWorkspaces();
       setInitialProjectId(null);
       await loadChat(chatId);
       visibleChatIdRef.current = chatId;
     } catch (error) {
       visibleChatIdRef.current = previousChatId;
-      setStatusError(errorMessage(error));
-    }
-  }
-
-  async function handleProjectsBack() {
-    setShowProjects(false);
-    setInitialProjectId(null);
-    if (activeChat?.id) {
-      updatePermalink(chatPermalink(activeChat.id, activeChat.project_id));
-      return;
-    }
-    const storedChatId = Number(localStorage.getItem("neo-active-chat-id"));
-    try {
-      if (storedChatId) {
-        await loadChat(storedChatId);
-      } else {
-        await createActiveChat(null);
-      }
-    } catch (error) {
       setStatusError(errorMessage(error));
     }
   }
@@ -4553,7 +4535,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       {showProjects ? (
         <Projects
           initialProjectId={initialProjectId}
-          onBack={handleProjectsBack}
           onProjectChange={(projectId, options = {}) => {
             setInitialProjectId(projectId);
             updatePermalink(projectPermalink(projectId), options);
@@ -4578,7 +4559,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         <Tasks
           initialTaskId={initialTaskId}
           initialProjectId={initialTaskProjectId}
-          onBack={() => { setShowTasks(false); setInitialTaskId(null); setInitialTaskProjectId(null); }}
           onTaskChange={setInitialTaskId}
           onOpenAgentSession={handleOpenAgentSession}
           onOpenNote={(noteId) => {
@@ -4587,18 +4567,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onOpenFile={openWorkspaceFile}
         />
       ) : showLocalModels ? (
-        <LocalModels onBack={() => setShowLocalModels(false)} />
+        <LocalModels />
       ) : showCompareModels ? (
         <CompareModels />
       ) : showCalendar ? (
-        <Calendar
-          initialEventId={initialCalendarEventId}
-          onBack={() => { setShowCalendar(false); setInitialCalendarEventId(null); }}
-        />
+        <Calendar initialEventId={initialCalendarEventId} />
       ) : showGallery ? (
         <Gallery
           initialItemId={initialGalleryItemId}
-          onBack={() => { setShowGallery(false); setInitialGalleryItemId(null); }}
           onOpenChat={(chatId) => {
             setShowGallery(false);
             setInitialGalleryItemId(null);
@@ -4608,24 +4584,19 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
       ) : showNotes ? (
         <Notes
           initialNoteId={initialNoteId}
-          onBack={() => {
-            setShowNotes(false);
-            setInitialNoteId(null);
-          }}
           onOpenTask={(taskId) => {
             closeWorkspaces(); setInitialTaskId(taskId); setInitialTaskProjectId(null); setShowTasks(true);
           }}
           onOpenFile={openWorkspaceFile}
         />
       ) : showFiles ? (
-        <Files initialFileId={initialFileId} onBack={() => { setShowFiles(false); setInitialFileId(null); }} />
+        <Files initialFileId={initialFileId} />
       ) : showRepos ? (
-        <Repos onBack={() => setShowRepos(false)} onOpenFile={(fileId) => { setInitialFileId(fileId); setShowRepos(false); setShowFiles(true); }} />
+        <Repos onOpenFile={(fileId) => { setInitialFileId(fileId); setShowRepos(false); setShowFiles(true); }} />
       ) : showResearch ? (
         <Research
           memoryEnabled={memoryEnabled}
           memoryIncognito={memoryIncognito}
-          onBack={() => setShowResearch(false)}
           onOpenNote={(noteId) => {
             closeWorkspaces(); setInitialNoteId(noteId); setShowNotes(true);
           }}

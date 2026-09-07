@@ -69,7 +69,7 @@ function dimensions(item) {
  * conversation it appeared in. So "last week" and "approval button" in one line
  * do what the user means, and the window it resolved is shown back to them.
  */
-export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
+export default function Gallery({ onOpenChat, initialItemId = null }) {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   /* A request is only ever in flight where effects run, so a static render
@@ -342,10 +342,6 @@ export default function Gallery({ onBack, onOpenChat, initialItemId = null }) {
       >
         <header className="gal-head">
           <div className="gal-head-row">
-            <button className="gal-back" type="button" onClick={onBack}>
-              <Icon name="back" />
-              Chat
-            </button>
             <div className="gal-title-block">
               <h1 className="gal-title">Gallery</h1>
               <p className="gal-subtitle">

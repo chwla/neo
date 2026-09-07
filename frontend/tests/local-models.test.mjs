@@ -132,7 +132,7 @@ describe("the first visit asks before it scans", () => {
   test("the question renders before any hardware result exists", () => {
     // No scan has returned, and nothing has been fetched. The question must still be
     // the thing on screen.
-    const markup = renderToStaticMarkup(createElement(LocalModels, { onBack() {} }));
+    const markup = renderToStaticMarkup(createElement(LocalModels, {}));
 
     assert.ok(
       markup.includes("What do you want to use it for?"),
@@ -145,14 +145,14 @@ describe("the first visit asks before it scans", () => {
   });
 
   test("the first screen never blocks on a spinner", () => {
-    const markup = renderToStaticMarkup(createElement(LocalModels, { onBack() {} }));
+    const markup = renderToStaticMarkup(createElement(LocalModels, {}));
 
     assert.ok(!markup.includes("Working out what runs best"));
   });
 
-  test("the first screen offers a way back", () => {
-    const markup = renderToStaticMarkup(createElement(LocalModels, { onBack() {} }));
+  test("it no longer carries a back link, since the sidebar is always there", () => {
+    const markup = renderToStaticMarkup(createElement(LocalModels, {}));
 
-    assert.ok(markup.includes("ws-back"));
+    assert.ok(!markup.includes("ws-back"));
   });
 });

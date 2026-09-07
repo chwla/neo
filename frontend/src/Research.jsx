@@ -66,7 +66,7 @@ function relativeTime(iso) {
  * grouped under the sub-question it answers, and sources with the domain,
  * date and relevance the ranker already computed and the old screen dropped.
  */
-export default function Research({ onBack, onOpenNote, memoryEnabled, memoryIncognito }) {
+export default function Research({ onOpenNote, memoryEnabled, memoryIncognito }) {
   const [question, setQuestion] = useState("");
   const [mode, setMode] = useState("technical");
   const [depth, setDepth] = useState("standard");
@@ -270,10 +270,6 @@ export default function Research({ onBack, onOpenNote, memoryEnabled, memoryInco
     <div className="rs">
       <section className="rs-main">
         <header className="rs-bar">
-          <button className="rs-back" type="button" onClick={onBack}>
-            <Icon name="back" />
-            Chat
-          </button>
           <span className="rs-bar-title">Research</span>
           {run && !composing && (
             <span className={`rs-status ${statusTone(run.status)}`}>

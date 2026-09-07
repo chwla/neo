@@ -17,7 +17,7 @@ function shortTime(iso) {
   return value.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export default function Files({ onBack, initialFileId = null }) {
+export default function Files({ initialFileId = null }) {
   const [files, setFiles] = useState([]);
   const [selected, setSelected] = useState(null);
   const [links, setLinks] = useState([]);
@@ -104,10 +104,6 @@ export default function Files({ onBack, initialFileId = null }) {
       <aside className="ws-rail">
         <header className="ws-rail-head">
           <div className="ws-rail-top">
-            <button className="ws-back" type="button" onClick={onBack}>
-              <Icon name="back" />
-              Chat
-            </button>
             <span className="ws-rail-count">{files.length} file{files.length === 1 ? "" : "s"}</span>
           </div>
           <h1 className="ws-rail-title">Files</h1>

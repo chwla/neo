@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
-import WorkspaceIcon from "./WorkspaceIcon.jsx";
 
 // How each verdict is worded on screen. The backend decides which tier a model is in;
 // this only names it. Never a number, and never a unit.
@@ -178,7 +177,7 @@ function ModelRow({ item, expanded, onToggle, installState, onInstall, onCancelI
   );
 }
 
-export default function LocalModels({ onBack }) {
+export default function LocalModels() {
   const [goals, setGoals] = useState([]);
   const [goal, setGoal] = useState(() => readRememberedGoal());
   const [asking, setAsking] = useState(() => shouldAskFirst(readRememberedGoal()));
@@ -329,9 +328,6 @@ export default function LocalModels({ onBack }) {
     return (
       <div className="ws-panel lm">
         <header className="lm-head">
-          <button type="button" className="ws-back" onClick={onBack}>
-            <WorkspaceIcon name="back" /> Chat
-          </button>
           <h1 className="lm-title">Run AI on this computer</h1>
           <p className="lm-sub">
             Neo can run AI models on your own machine. Nothing you type leaves it.
@@ -355,9 +351,6 @@ export default function LocalModels({ onBack }) {
   return (
     <div className="ws-panel lm">
       <header className="lm-head">
-        <button type="button" className="ws-back" onClick={onBack}>
-          <WorkspaceIcon name="back" /> Chat
-        </button>
         <h1 className="lm-title">Models on this computer</h1>
         <p className="lm-sub">
           Neo can run AI models on your own machine. Nothing you type leaves it.

@@ -484,7 +484,7 @@ describe("the screen on arrival", () => {
   });
 
   test("it explains itself before anything has loaded", () => {
-    const markup = renderToStaticMarkup(createElement(CompareModels, { onBack() {} }));
+    const markup = renderToStaticMarkup(createElement(CompareModels, {}));
 
     assert.match(markup, /Compare models/);
     /* The first paint happens before the models are known, so it must not look broken. */
@@ -492,14 +492,14 @@ describe("the screen on arrival", () => {
   });
 
   test("it frames the feature as comparing your own work, not ranking intelligence", () => {
-    const markup = renderToStaticMarkup(createElement(CompareModels, { onBack() {} }));
+    const markup = renderToStaticMarkup(createElement(CompareModels, {}));
 
     assert.match(markup, /tasks you actually care about/);
     assert.ok(!/smartest|which model is best|winner/i.test(markup));
   });
 
   test("it promises that local models keep the prompt on this computer", () => {
-    const markup = renderToStaticMarkup(createElement(CompareModels, { onBack() {} }));
+    const markup = renderToStaticMarkup(createElement(CompareModels, {}));
     assert.match(markup, /nothing you type leaves it/i);
   });
 });

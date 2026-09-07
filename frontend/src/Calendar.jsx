@@ -138,7 +138,7 @@ function formatEventTime(occurrence) {
     : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-export default function Calendar({ initialEventId = null, onBack }) {
+export default function Calendar({ initialEventId = null }) {
   const [monthCursor, setMonthCursor] = useState(() => startOfMonth(new Date()));
   const [occurrences, setOccurrences] = useState([]);
   const [selectedDay, setSelectedDay] = useState(() => dateKey(new Date()));
@@ -281,9 +281,6 @@ export default function Calendar({ initialEventId = null, onBack }) {
     <main className="calendar-layout">
       <section className="calendar-grid-pane">
         <div className="tasks-pane-header">
-          <button className="neo-button secondary" type="button" onClick={onBack}>
-            Back
-          </button>
           <h2>Calendar</h2>
           <button className="neo-button" type="button" onClick={() => openNewEvent()}>
             New Event
