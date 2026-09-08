@@ -102,10 +102,16 @@ def build_prompt(
             f"{header} (read them from disk -- they are the source of truth):\n{change_summary}"
         )
 
-    sections.append(f"Your task:\n{objective.strip()}")
-
-    return _clip("\n\n---\n\n".join(section for section in sections if section.strip()),
-                 MAX_PREAMBLE_CHARS)
+    # The cap is on the *preamble*, as its name says, and the task is added
+    # after it rather than inside it. Everything above is context whose loss
+    # degrades a run; the objective's loss ends it, and a long agent role or
+    # skill must not be able to push the actual question off the end.
+    preamble = _clip(
+        "\n\n---\n\n".join(section for section in sections if section.strip()),
+        MAX_PREAMBLE_CHARS,
+    )
+    task = f"Your task:\n{objective.strip()}"
+    return f"{preamble}\n\n---\n\n{task}" if preamble else task
 
 
 __all__ = ["MAX_HISTORY_MESSAGES", "build_prompt", "history_lines"]

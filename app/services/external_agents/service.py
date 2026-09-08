@@ -40,6 +40,7 @@ from app.services.external_agents.types import (
     InvocationContext,
     RunOutcome,
 )
+from app.services.skills import resolver as skills_resolver
 
 #: Which adapter drives which CLI. The whole of Neo's engine-specific dispatch,
 #: in one table -- everything past this point is uniform.
@@ -213,7 +214,16 @@ def run_step(
     # the chat-level one goes first -- the same order Neo's own system prompt
     # uses, and the order in which the narrower instruction wins by being last.
     role = ((session.agent_definition_snapshot or {}).get("system_prompt") or "").strip()
-    combined = "\n\n".join(part for part in (role, (instructions or "").strip()) if part)
+    # Skills go ahead of both roles, in full. These CLIs take one prompt string
+    # and hand nothing back until they are done, so there is no `load_skill`
+    # round trip to make the way Neo's own loop does -- the choice is between
+    # sending the instructions up front and not sending them at all. Recorded
+    # here rather than hidden because it is a real difference between engines.
+    # What does not differ: a skill the chat turned off contributes nothing.
+    skills_preamble = skills_resolver.prepended_text(session.skills or [])
+    combined = "\n\n".join(
+        part for part in (skills_preamble, role, (instructions or "").strip()) if part
+    )
 
     prompt = context.build_prompt(
         objective,

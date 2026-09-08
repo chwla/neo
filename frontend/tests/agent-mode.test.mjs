@@ -64,6 +64,68 @@ describe("agent mode composer", () => {
     }
   });
 
+  // Usage is the one item in this menu that disappears rather than greying out.
+  // The Tools button beside it does the opposite on purpose -- its toggles still
+  // govern Neo's own turns when the engine ignores them -- so the two rules sit
+  // next to each other in the markup and are worth pinning apart.
+  describe("the usage item", () => {
+    const CONNECTED = [
+      { id: "claude_code", name: "Claude Code", available: true, capabilities: {} },
+    ];
+    const SIGNED_OUT = [
+      { id: "claude_code", name: "Claude Code", available: false, capabilities: {} },
+    ];
+    const menuOf = (overrides) => {
+      const html = render(overrides);
+      return html.slice(html.indexOf('id="composer-menu"'));
+    };
+
+    test("is offered once an engine is connected", () => {
+      assert.ok(menuOf({ externalAgents: CONNECTED }).includes('aria-label="Usage"'));
+    });
+
+    test("is absent when no engine is connected", () => {
+      assert.ok(!menuOf({ externalAgents: SIGNED_OUT }).includes('aria-label="Usage"'));
+      assert.ok(!menuOf({ externalAgents: [] }).includes('aria-label="Usage"'));
+    });
+
+    test("does not disturb the chip count it sits beside", () => {
+      assert.equal(count(render({ externalAgents: CONNECTED }), 'class="agent-chip"'), 4);
+    });
+
+    test("is an agent-mode control only", () => {
+      const html = render({ mode: "chat", externalAgents: CONNECTED });
+      assert.ok(!html.includes('aria-label="Usage"'));
+    });
+  });
+
+  // A warning nobody sees until they open a menu is not a warning, so this one
+  // renders above the box rather than inside the "+".
+  describe("the near-limit warning", () => {
+    const AT_THE_LIMIT = [
+      { key: "five_hour", title: "Session (5h)", used_percent: 96, severity: "warning" },
+    ];
+
+    test("names the engine and the window before a turn is sent", () => {
+      const html = render({
+        executor: "claude_code",
+        externalAgents: [
+          { id: "claude_code", name: "Claude Code", available: true, capabilities: {} },
+        ],
+        usageWarnings: AT_THE_LIMIT,
+      });
+
+      assert.ok(html.includes("composer-usage-warning"));
+      assert.ok(html.includes("Claude Code is at 96% of its session (5h) limit"));
+    });
+
+    test("stays quiet on a Neo turn, which has no such limit", () => {
+      const html = render({ executor: "neo", usageWarnings: AT_THE_LIMIT });
+
+      assert.ok(!html.includes("composer-usage-warning"));
+    });
+  });
+
   // A run started from the composer is not filed under a project any more, so
   // the picker that used to say so is gone rather than left showing "No project".
   test("there is no project picker", () => {
@@ -256,8 +318,9 @@ describe("agent mode composer", () => {
 
     assert.equal(
       count(html, 'disabled=""'),
-      11,
-      "4 chips (engine, repo, mode, agent) + folder + tools + attach + compact + model + textarea + Start",
+      12,
+      "4 chips (engine, repo, mode, agent) + folder + tools + skills + attach + compact"
+        + " + model + textarea + Start",
     );
   });
 });

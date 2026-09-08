@@ -22,6 +22,8 @@ import { buildKeymap } from "./keys/keymap.js";
 import { useCommandHandlers, useKeyboardEngine, useScopes } from "./keys/useCommands.js";
 import OpenFolderDialog from "./OpenFolderDialog.jsx";
 import ChatToolsPanel from "./ChatToolsPanel.jsx";
+import UsagePanel from "./UsagePanel.jsx";
+import SkillsPanel from "./SkillsPanel.jsx";
 import ExternalAgents from "./ExternalAgents.jsx";
 import CompareModels from "./CompareModels.jsx";
 import LocalModels from "./LocalModels.jsx";
@@ -264,8 +266,21 @@ function NeoButton({ children, className = "", type = "button", ...props }) {
  * stack. The corner "\u00d7" used to be the only way out, which reads as a trap in the
  * taller dialogs where it scrolls away; `backLabel` adds a second, spelled-out exit
  * next to the title for the ones you can get deep inside.
+ *
+ * `onBack` is for a dialog with steps inside it: the labelled exit returns to the
+ * previous step while the corner "\u00d7" and Escape still leave altogether, which
+ * is what both of those mean everywhere else. Without it the labelled exit closes,
+ * as it always did.
  */
-export function Modal({ title, children, onClose, wide = false, className = "", backLabel = "" }) {
+export function Modal({
+  title,
+  children,
+  onClose,
+  wide = false,
+  className = "",
+  backLabel = "",
+  onBack = null,
+}) {
   // Held in a ref so an inline onClose does not re-register the dialog on every
   // render, which would shuffle it back to the top of the stack.
   const closeRef = useRef(onClose);
@@ -287,7 +302,7 @@ export function Modal({ title, children, onClose, wide = false, className = "", 
         <div className="dialog-title-row">
           <div className="dialog-title-main">
             {backLabel ? (
-              <button className="dialog-back" onClick={onClose} type="button">
+              <button className="dialog-back" onClick={onBack || onClose} type="button">
                 {"\u2190"} {backLabel}
               </button>
             ) : null}
@@ -1211,6 +1226,40 @@ function WrenchIcon() {
   );
 }
 
+/** A book: a skill is instructions the agent reads, not a tool it operates. */
+function SkillsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+  );
+}
+
+/** " -- resets in 2h", when the window said when. Relative, because the question
+    behind a limit warning is "how long until I can carry on", not "at what time". */
+function resetPhrase(epochSeconds) {
+  if (typeof epochSeconds !== "number") return "";
+  const remaining = Math.round(epochSeconds * 1000 - Date.now());
+  if (remaining <= 0) return "";
+  const minutes = Math.round(remaining / 60000);
+  if (minutes < 60) return ` — resets in ${Math.max(1, minutes)}m`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? ` — resets in ${hours}h` : ` — resets in ${Math.round(hours / 24)}d`;
+}
+
+/** A gauge: how much of an allowance is spent, which is what the panel shows. */
+function GaugeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3.5 17a9 9 0 1 1 17 0" />
+      <path d="m12 13 4.5-3.5" />
+    </svg>
+  );
+}
+
 /** Attaching files reads the same in both modes, so it is written once. */
 function AttachFilesAction({ attaching, disabled, onPick }) {
   return (
@@ -1360,6 +1409,12 @@ export function ChatComposer({
   onOpenFolder,
   folderAttaching = false,
   onOpenToolsPanel,
+  onOpenSkillsPanel,
+  onOpenUsagePanel,
+  //: Windows of the active engine that are close to or past their limit. Passed
+  //: in rather than fetched here so the composer stays a rendering component,
+  //: and so a test can hand it a warning without a server.
+  usageWarnings = [],
   agentMessage,
   attachments = [],
   images = [],
@@ -1587,6 +1642,24 @@ export function ChatComposer({
         {attachError ? (
           <div className="chat-attach-error">{attachError}</div>
         ) : null}
+        {/* Above the form rather than inside the "+" menu, because a warning
+            nobody sees until they open a menu is not a warning. This is the one
+            thing about a limit worth saying before a turn is sent: the run is
+            going to stop, and roughly when the window frees up. The panel behind
+            the menu carries the rest. */}
+        {externalEngine && usageWarnings.length ? (
+          <div className="composer-usage-warning">
+            {usageWarnings.map((limit) => (
+              <span key={limit.key}>
+                {activeExecutor?.name || "This engine"}
+                {limit.severity === "exhausted"
+                  ? ` has used all of its ${limit.title.toLowerCase()} limit`
+                  : ` is at ${Math.round(limit.used_percent)}% of its ${limit.title.toLowerCase()} limit`}
+                {resetPhrase(limit.resets_at)}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <form className="chat-input-form" onSubmit={onSubmit}>
           <div className="composer-head">
             <div className="composer-tools">
@@ -1784,6 +1857,44 @@ export function ChatComposer({
                       <WrenchIcon />
                       <span>{toolTogglesApply ? "Tools" : "Tools (Neo turns only)"}</span>
                     </button>
+                    <button
+                      type="button"
+                      className="composer-menu-action agent-skills-button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenSkillsPanel?.();
+                      }}
+                      disabled={disabled}
+                      title="Choose which skills agent turns in this chat can use, or add a new one."
+                      aria-label="Skills"
+                    >
+                      <SkillsIcon />
+                      <span>Skills</span>
+                    </button>
+                    {/* Hidden rather than disabled, which is the opposite of
+                        the Tools button above -- and the difference is real. Tool
+                        toggles still govern Neo's own turns when the engine
+                        ignores them, so a dead control there would misrepresent
+                        something that is happening. Here there is nothing behind
+                        the button at all until a CLI is connected: usage is a
+                        fact about Claude Code or Codex, and with neither signed
+                        in there is no allowance to report. */}
+                    {hasConnectedEngine ? (
+                      <button
+                        type="button"
+                        className="composer-menu-action agent-usage-button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onOpenUsagePanel?.();
+                        }}
+                        disabled={disabled}
+                        title="How much of your Claude Code or Codex subscription limit is used."
+                        aria-label="Usage"
+                      >
+                        <GaugeIcon />
+                        <span>Usage</span>
+                      </button>
+                    ) : null}
                     <CompactConversationAction
                       compacting={compacting}
                       disabled={disabled}
@@ -3189,6 +3300,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [chatAgentMessage, setChatAgentMessage] = useState("");
   const [showOpenFolder, setShowOpenFolder] = useState(false);
   const [showChatTools, setShowChatTools] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  //: Usage windows of every connected engine, keyed by engine. Loaded beside the
+  //: engine list rather than by the panel, because the composer needs it too --
+  //: the warning above the box has to be there before the panel is opened.
+  const [externalUsage, setExternalUsage] = useState({});
+  const [showSkills, setShowSkills] = useState(false);
   const bootstrapped = useRef(false);
   const createChatPromiseRef = useRef(null);
   const visibleChatIdRef = useRef(null);
@@ -3206,16 +3323,22 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
   const loadAgentContext = useCallback(async () => {
     try {
-      const [agentData, repoData, externalData] = await Promise.all([
+      const [agentData, repoData, externalData, usageData] = await Promise.all([
         api.agentDefinitions(false),
         api.reposList({ limit: 100 }).catch(() => ({ repos: [] })),
         // External executors are optional and off by default, so a failure here
         // must leave Agent mode fully usable rather than taking it down.
         api.externalAgents().catch(() => ({ executors: [] })),
+        // Same reasoning one line up, and more so: usage is an extra, and a
+        // machine that cannot report it must still be able to run a turn.
+        api.externalAgentUsage().catch(() => ({ executors: [] })),
       ]);
       setAgentDefinitions(agentData.definitions || []);
       setAgentRepos(repoData.repos || []);
       setExternalAgents(externalData.executors || []);
+      setExternalUsage(
+        Object.fromEntries((usageData.executors || []).map((row) => [row.id, row])),
+      );
     } catch (error) {
       setStatusError(`Could not load Agent mode context: ${errorMessage(error)}`);
     }
@@ -4713,6 +4836,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onOpenFolder={handleOpenFolder}
           folderAttaching={false}
           onOpenToolsPanel={() => setShowChatTools(true)}
+          onOpenSkillsPanel={() => setShowSkills(true)}
+          onOpenUsagePanel={() => setShowUsage(true)}
+          usageWarnings={(externalUsage[chatExecutor]?.windows || []).filter(
+            (limit) => limit.severity !== "normal",
+          )}
           agentMessage={chatAgentMessage}
           onCompactConversation={handleCompactConversation}
           compacting={compacting}
@@ -4726,6 +4854,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
         )}
         {showChatTools && activeChat?.id && (
           <ChatToolsPanel chatId={activeChat.id} onClose={() => setShowChatTools(false)} />
+        )}
+        {/* Opens without a chat, like the skills panel: the question it answers
+            is about the account, not about this conversation. */}
+        {showUsage && <UsagePanel onClose={() => setShowUsage(false)} />}
+        {/* Unlike the tools panel this opens without a chat: the library is
+            worth managing before there is a conversation to scope it to, and
+            the panel says so rather than the menu entry being dead. */}
+        {showSkills && (
+          <SkillsPanel chatId={activeChat?.id ?? null} onClose={() => setShowSkills(false)} />
         )}
       </main>
       )}

@@ -427,7 +427,7 @@ def handle(args, client: NeoApiClient) -> Any:
         path = "/api/tools/definitions" if args.tools_command == "list" else "/api/tools/calls"
         return client.get(path)
     if args.command == "skills":
-        return client.get("/api/tools/skills")
+        return client.get("/api/skills")
     if args.command == "tests":
         return handle_tests(args, client)
     if args.command == "git":

@@ -109,6 +109,18 @@ class Chat(TimestampMixin, Base):
         JSON, nullable=False, default=list, server_default="'[]'"
     )
 
+    #: Per-skill decisions for this chat, ``{slug: bool}``. A slug absent here
+    #: means "whatever the skill's own default is" rather than "off", so
+    #: installing a skill that is on by default reaches existing chats too --
+    #: which is what someone who just installed it expects.
+    #:
+    #: ``server_default`` for the same reason ``disabled_tools`` needs one: the
+    #: raw-sqlite3 INSERT in ``agent_core.store.create_chat_for_session`` never
+    #: goes through the ORM, so the NOT NULL fallback has to be in the DDL.
+    skill_overrides: Mapped[dict[str, bool]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="'{}'"
+    )
+
     project = relationship("Project", back_populates="chats")
     messages = relationship(
         "ChatMessage",

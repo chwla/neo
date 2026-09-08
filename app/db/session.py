@@ -99,6 +99,7 @@ def ensure_chat_columns(target_engine=engine) -> None:
         "effort": "VARCHAR(16) NOT NULL DEFAULT 'low'",
         "agent_definition_id": "VARCHAR(64)",
         "disabled_tools": "JSON NOT NULL DEFAULT '[]'",
+        "skill_overrides": "JSON NOT NULL DEFAULT '{}'",
         "executor": "VARCHAR(24) NOT NULL DEFAULT 'neo'",
         "external_models": "JSON NOT NULL DEFAULT '{}'",
         "external_efforts": "JSON NOT NULL DEFAULT '{}'",

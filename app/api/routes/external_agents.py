@@ -30,6 +30,7 @@ from app.services import chat_prefs
 from app.services.external_agents import chain as external_chain
 from app.services.external_agents import detect, login
 from app.services.external_agents import models as external_models
+from app.services.external_agents import usage as external_usage
 from app.services.external_agents.types import ExternalAgentError
 
 router = APIRouter(tags=["external-agents"])
@@ -174,6 +175,30 @@ def external_agent_setup(
     }
 
 
+@router.get("/external-agents/usage")
+def external_agent_usage(
+    refresh: bool = Query(default=False, description="Re-read instead of using the cache."),
+) -> dict[str, Any]:
+    """How much of each engine's subscription window is spent.
+
+    Gated like the composer listing above and for the same reason: it is loaded
+    from the composer, and a profile that has not opted into external engines
+    should not have its disk walked for them. A disabled profile gets rows whose
+    ``reason`` says so, exactly as the listing does.
+
+    Every row states *when* its figure was observed and which source it came
+    from, because none of them is live -- see ``external_agents.usage``. Callers
+    are expected to show both; a percentage without an "as of" reads as current
+    when it may be days old.
+    """
+
+    return {
+        "enabled": chat_prefs.external_agents_enabled(),
+        "executors": external_usage.snapshots(refresh=refresh),
+        "warning_percent": external_usage.WARNING_PERCENT,
+    }
+
+
 @router.get("/external-agents/{executor}/models")
 def executor_models(
     executor: str,
@@ -215,6 +240,7 @@ def set_external_agents_enabled(request: EnableRequest) -> dict[str, Any]:
     enabled = chat_prefs.set_external_agents_enabled(request.enabled)
     detect.clear_cache()
     external_models.clear_cache()
+    external_usage.clear_cache()
     if not enabled:
         # Nothing half-started should outlive the switch being turned off.
         login.reset()

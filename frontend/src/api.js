@@ -204,6 +204,12 @@ export const api = {
   // signed in, just not switched on" rather than a flat "unavailable".
   externalAgentSetup: (refresh = false) =>
     request(`/external-agents/setup?refresh=${refresh ? "true" : "false"}`),
+  // How much of each engine's subscription window is spent. Every row carries an
+  // observed_at and a source because none of these figures is live -- they come
+  // from what the CLI last wrote down -- and a percentage shown without its "as
+  // of" reads as current when it may be days old.
+  externalAgentUsage: (refresh = false) =>
+    request(`/external-agents/usage?refresh=${refresh ? "true" : "false"}`),
   // What this engine can be asked for. Short by design: neither CLI enumerates
   // an account's models, so this reports only what the machine actually said.
   externalAgentModels: (executor, refresh = false) =>
@@ -232,6 +238,22 @@ export const api = {
   disableAgentDefinition: (id) => request(`/agents/definitions/${id}`, { method: "DELETE" }),
   resetBuiltinAgents: () => request("/agents/definitions/reset-builtins", { method: "POST" }),
   chatTools: (chatId) => request(`/chats/${chatId}/tools`),
+  /**
+   * The skills library, each entry carrying whether it is on for this chat.
+   * Without a chat id the answer is the library's own defaults, which is what
+   * the panel wants before a conversation exists.
+   */
+  skills: (chatId = null) =>
+    request(`/skills${chatId ? `?chat_id=${chatId}` : ""}`),
+  createSkill: (payload) =>
+    request("/skills", { method: "POST", body: JSON.stringify(payload) }),
+  installSkillFromFolder: (path) =>
+    request("/skills/folder", { method: "POST", body: JSON.stringify({ path }) }),
+  installSkillFromGithub: (url) =>
+    request("/skills/github", { method: "POST", body: JSON.stringify({ url }) }),
+  updateSkill: (skillId, changes) =>
+    request(`/skills/${skillId}`, { method: "PATCH", body: JSON.stringify(changes) }),
+  removeSkill: (skillId) => request(`/skills/${skillId}`, { method: "DELETE" }),
   agentDelegations: (params = {}) => {
     const search = new URLSearchParams();
     if (params.parentRunId) search.set("parent_run_id", params.parentRunId);

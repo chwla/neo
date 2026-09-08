@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     llm_config_path: str = Field(default="neo_llms.json")
     workspace_files_dir: str = Field(default="data/workspace_files")
     workspace_repos_dir: str = Field(default="data/workspace_repos")
+    #: Where installed skills live, one directory per skill. Per profile like
+    #: the rest of these: a skill is something the user added, not something the
+    #: installation ships, so two accounts sharing a machine do not share a
+    #: library -- and one of them removing a skill cannot empty the other's.
+    skills_dir: str = Field(default="data/skills")
     #: Colon-separated absolute directories under which a folder may be attached
     #: live -- that is, with the agent editing the user's own files rather than a
     #: copy. Empty means "wherever ``validate_repo_root`` already allows", which
@@ -355,6 +360,8 @@ class Settings(BaseSettings):
             self.gallery_thumbnails_dir = str(data_root / "gallery_thumbnails")
         if "workspace_repos_dir" not in fields_set:
             self.workspace_repos_dir = str(data_root / "workspace_repos")
+        if "skills_dir" not in fields_set:
+            self.skills_dir = str(data_root / "skills")
         if "llm_config_path" not in fields_set:
             self.llm_config_path = str(data_root / "neo_llms.json")
         return self
@@ -382,6 +389,7 @@ def get_settings() -> Settings:
                 "workspace_files_dir": str(root / "workspace_files"),
                 "gallery_thumbnails_dir": str(root / "gallery_thumbnails"),
                 "workspace_repos_dir": str(root / "workspace_repos"),
+                "skills_dir": str(root / "skills"),
                 "llm_config_path": str(root / "neo_llms.json"),
             }
         )

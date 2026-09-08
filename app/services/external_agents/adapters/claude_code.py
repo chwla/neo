@@ -13,11 +13,13 @@ notable shapes:
   the model sees it.
 * ``result`` closes the run with the final text, cost, and token usage.
 * ``rate_limit_event`` reports how much of the user's subscription window is
-  spent. It is recorded as metadata and streams nothing.
+  spent. It is recorded as metadata, and streams a status line only in the two
+  states that explain why a run is about to stop or has stopped.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.services.agent_core import events
@@ -82,6 +84,59 @@ def build_argv(
     return argv
 
 
+#: The limit windows Claude Code names in a rate-limit notice, in the words its own
+#: usage display uses. An unrecognised one still gets a line -- a new window is a
+#: reason to say something less specific, not a reason to say nothing.
+_LIMIT_NAMES = {
+    "five_hour": "5-hour limit",
+    "seven_day": "weekly limit",
+    "seven_day_opus": "weekly Opus limit",
+    "seven_day_sonnet": "weekly Sonnet limit",
+    "seven_day_overage_included": "weekly limit",
+    "overage": "extra usage limit",
+}
+
+
+def _limit_notice(info: dict[str, Any]) -> str:
+    """A sentence for the trace when a limit is close or reached, else empty.
+
+    ``allowed`` is the state of nearly every one of these events and says nothing
+    worth interrupting a transcript for, so only the other two produce a line.
+    """
+
+    status = str(info.get("status") or "")
+    if status not in {"allowed_warning", "rejected"}:
+        return ""
+    window = _LIMIT_NAMES.get(str(info.get("rateLimitType") or ""), "usage limit")
+    resets = _reset_phrase(info.get("resetsAt"))
+    if status == "rejected":
+        return f"Claude Code has reached its {window}{resets}."
+    return f"Claude Code is close to its {window}{resets}."
+
+
+def _reset_phrase(resets_at: Any) -> str:
+    """The trailing clause naming when the window frees up, or nothing.
+
+    Relative rather than absolute: the transcript is read in the session that
+    produced it, and "resets in 2h" answers the question a wall-clock time makes
+    someone work out for themselves.
+    """
+
+    if not isinstance(resets_at, (int, float)) or isinstance(resets_at, bool):
+        return ""
+    remaining = resets_at - time.time()
+    if remaining <= 0:
+        return ""
+    # Rounded, not truncated. Two hours away is "2h", not "1h 59m" -- the second
+    # is technically closer to the seconds and reads as a stale clock.
+    hours, minutes = divmod(round(remaining / 60), 60)
+    if hours and minutes:
+        return f" -- resets in {hours}h {minutes}m"
+    if hours:
+        return f" -- resets in {hours}h"
+    return f" -- resets in {max(1, minutes)}m"
+
+
 def _blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
     content = (record.get("message") or {}).get("content")
     if not isinstance(content, list):
@@ -118,10 +173,20 @@ def translate(record: dict[str, Any]) -> list[ExternalEvent]:
         ]
 
     if kind == "rate_limit_event":
-        # Metadata only: how much of the subscription window is spent is worth
-        # recording, but it is not a step in the run and must not draw one.
+        # Routine notices are metadata only: how much of the subscription window
+        # is spent is worth recording, but it is not a step in the run and must
+        # not draw one. The two non-routine states are different in kind -- the
+        # CLI is saying the run is about to stop, or has stopped, for a reason
+        # nothing else in the stream will mention. Recording those silently is
+        # how a throttled run came to end with no explanation at all.
         info = record.get("rate_limit_info") or {}
-        return [ExternalEvent(meta={"rate_limit": info})] if info else []
+        if not info:
+            return []
+        events_out = [ExternalEvent(meta={"rate_limit": info})]
+        notice = _limit_notice(info)
+        if notice:
+            events_out.append(ExternalEvent(type=events.STATUS, payload={"content": notice}))
+        return events_out
 
     if kind == "assistant":
         out: list[ExternalEvent] = []

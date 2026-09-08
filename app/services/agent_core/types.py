@@ -174,6 +174,11 @@ class AgentSession(BaseModel):
     #: Tool names withheld from this run, snapshotted from the chat at session
     #: creation -- like ``agent_definition_snapshot``, not re-read mid-run.
     disabled_tools: list[str] = Field(default_factory=list)
+    #: The skills this run may load: ``slug``, ``name``, ``description`` and the
+    #: directory each was installed to. Snapshotted at creation like the line
+    #: above, so a skill toggled off mid-run stays loadable for this run and a
+    #: skill toggled on does not appear in it.
+    skills: list[dict[str, Any]] = Field(default_factory=list)
     todo: list[TodoItem] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     budgets: Budgets = Field(default_factory=Budgets)

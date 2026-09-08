@@ -43,6 +43,7 @@ from app.api.routes.repos import router as repos_router
 from app.api.routes.research import router as research_router
 from app.api.routes.rules import router as rules_router
 from app.api.routes.search import router as search_router
+from app.api.routes.skills import router as skills_router
 from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.test_runner import router as test_runner_router
@@ -83,6 +84,7 @@ from app.services.provider_runtime import initialize_provider_runtime_tables
 from app.services.research.store import initialize_research_tables
 from app.services.research_mode import initialize_research_mode_tables
 from app.services.rules.store import initialize_rule_tables
+from app.services.skills.store import initialize_skill_tables
 from app.services.tasks.store import initialize_task_tables
 from app.services.test_runner.store import initialize_test_runner_tables
 from app.services.web_search import initialize_web_search_tables
@@ -208,6 +210,7 @@ def create_app() -> FastAPI:
     app.include_router(git_router, prefix="/api")
     app.include_router(github_router, prefix="/api")
     app.include_router(rules_router, prefix="/api")
+    app.include_router(skills_router, prefix="/api")
     initialize_notes_tables()
     initialize_profile_registry()
     initialize_project_tables()
@@ -236,6 +239,7 @@ def create_app() -> FastAPI:
     initialize_lsp_tables()
     LLMRegistryService().ensure_defaults()
     initialize_rule_tables()
+    initialize_skill_tables()
     initialize_web_search_tables()
     initialize_workspace_orchestration_tables()
     initialize_continuity_tables()

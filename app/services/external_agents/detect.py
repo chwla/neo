@@ -149,30 +149,58 @@ def _run(argv: list[str], executor_spec: ExecutorSpec) -> subprocess.CompletedPr
         return None
 
 
-def _claude_auth(binary: str, executor_spec: ExecutorSpec) -> tuple[str | None, str | None]:
-    """(auth, reason). ``claude auth status --json`` is machine-readable."""
+#: What the account probe can report beyond a yes/no, kept on the row so a usage
+#: panel can name the account a limit belongs to. Present as ``None`` on every row
+#: whether or not the CLI answers, so the shape does not depend on the engine.
+ACCOUNT_FIELDS = ("auth_method", "email", "organization", "plan")
+
+_NO_ACCOUNT: dict[str, str | None] = dict.fromkeys(ACCOUNT_FIELDS)
+
+
+def _claude_auth(
+    binary: str, executor_spec: ExecutorSpec
+) -> tuple[str | None, str | None, dict[str, str | None]]:
+    """(auth, reason, account). ``claude auth status --json`` is machine-readable.
+
+    The account fields come free: this probe already parses the payload they are in,
+    so naming them costs no extra spawn. Read rather than inferred, and absent when
+    the CLI omits them.
+    """
 
     result = _run([binary, "auth", "status", "--json"], executor_spec)
     if result is None:
-        return None, "could not run `claude auth status`"
+        return None, "could not run `claude auth status`", dict(_NO_ACCOUNT)
     try:
         data = json.loads(result.stdout.strip() or "{}")
     except json.JSONDecodeError:
         # The command ran but said something we do not understand. That is not
         # evidence of being signed in.
-        return "unknown", None
+        return "unknown", None, dict(_NO_ACCOUNT)
     if not data.get("loggedIn"):
-        return None, "not signed in -- run `claude auth login`"
+        return None, "not signed in -- run `claude auth login`", dict(_NO_ACCOUNT)
     method = str(data.get("authMethod") or "")
+    account = {
+        # Its own vocabulary, softened only where it is a slug rather than a name.
+        "auth_method": "Claude AI" if method == "claude.ai" else (method or None),
+        "email": _text(data.get("email")),
+        "organization": _text(data.get("orgName")),
+        "plan": _text(data.get("subscriptionType")),
+    }
     if method == "claude.ai":
-        return "subscription", None
+        return "subscription", None, account
     if method:
-        return "api_key" if "key" in method.lower() else method, None
-    return "unknown", None
+        return ("api_key" if "key" in method.lower() else method), None, account
+    return "unknown", None, account
 
 
-def _codex_auth(binary: str, executor_spec: ExecutorSpec) -> tuple[str | None, str | None]:
-    """(auth, reason). ``codex login status`` prints prose, so parse narrowly.
+def _text(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _codex_auth(
+    binary: str, executor_spec: ExecutorSpec
+) -> tuple[str | None, str | None, dict[str, str | None]]:
+    """(auth, reason, account). ``codex login status`` prints prose, so parse narrowly.
 
     Only two phrasings are recognised. Anything else is reported as ``unknown``
     rather than being coerced into a category -- a wrong guess here is worse than
@@ -181,15 +209,18 @@ def _codex_auth(binary: str, executor_spec: ExecutorSpec) -> tuple[str | None, s
 
     result = _run([binary, "login", "status"], executor_spec)
     if result is None:
-        return None, "could not run `codex login status`"
+        return None, "could not run `codex login status`", dict(_NO_ACCOUNT)
     text = f"{result.stdout} {result.stderr}".strip().lower()
     if result.returncode != 0 or "not logged in" in text or "no credentials" in text:
-        return None, "not signed in -- run `codex login`"
+        return None, "not signed in -- run `codex login`", dict(_NO_ACCOUNT)
+    # The method is the only account fact in that sentence. Codex names no email, no
+    # organization and no plan anywhere Neo can read without its credentials, so the
+    # rest stays empty rather than being filled in from somewhere it does not belong.
     if "chatgpt" in text:
-        return "subscription", None
+        return "subscription", None, {**_NO_ACCOUNT, "auth_method": "ChatGPT"}
     if "api key" in text:
-        return "api_key", None
-    return "unknown", None
+        return "api_key", None, {**_NO_ACCOUNT, "auth_method": "API key"}
+    return "unknown", None, dict(_NO_ACCOUNT)
 
 
 _AUTH_PROBES = {"claude_code": _claude_auth, "codex": _codex_auth}
@@ -207,6 +238,7 @@ def _probe(executor: str) -> dict[str, Any]:
         # The capability record, whole and typed, rather than a handful of
         # ad-hoc booleans the frontend has to keep in step by hand.
         "capabilities": executor_spec.capabilities.model_dump(),
+        **_NO_ACCOUNT,
     }
 
     binary = resolve_binary(executor)
@@ -225,8 +257,9 @@ def _probe(executor: str) -> dict[str, Any]:
         return row
     row["version"] = (version.stdout or version.stderr or "").strip().splitlines()[0][:120]
 
-    auth, reason = _AUTH_PROBES[executor](binary, executor_spec)
+    auth, reason, account = _AUTH_PROBES[executor](binary, executor_spec)
     row["auth"] = auth
+    row.update(account)
     if auth is None:
         row["reason"] = reason or "not signed in"
         return row
@@ -250,6 +283,7 @@ def _resting_row(executor_spec: ExecutorSpec, reason: str) -> dict[str, Any]:
         "reason": reason,
         "auth": None,
         "capabilities": executor_spec.capabilities.model_dump(),
+        **_NO_ACCOUNT,
     }
 
 
@@ -327,6 +361,7 @@ def clear_cache() -> None:
 
 
 __all__ = [
+    "ACCOUNT_FIELDS",
     "CLAUDE_CODE",
     "CODEX",
     "DISABLED_REASON",

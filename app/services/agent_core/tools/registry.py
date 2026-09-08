@@ -23,6 +23,9 @@ from app.services.agent_core.tools import (
     shell,
     todo,
 )
+from app.services.agent_core.tools import (
+    skills as skills_tool,
+)
 from app.services.agent_core.tools.base import AgentTool, ToolContext
 from app.services.agent_core.types import PermissionMode, ToolCall, ToolResult
 from app.services.agent_core.workspace import is_live
@@ -58,13 +61,16 @@ def default_tools() -> list[AgentTool]:
         *deliver.TOOLS,
         *calendar.TOOLS,
         *gallery.TOOLS,
+        *skills_tool.TOOLS,
     ]
 
 
 #: The categories the per-chat Tools panel exposes. Toggling one off disables
 #: every tool named here for that chat. Names absent here (todo_write,
-#: create_checkpoint, deliver_changes) are ungrouped: always enabled, never
-#: shown in that panel.
+#: create_checkpoint, deliver_changes, load_skill) are ungrouped: always
+#: enabled, never shown in that panel. ``load_skill`` belongs with them because
+#: the Skills panel already governs it -- a run with no skills turned on is not
+#: offered the tool at all, which is a truer off switch than a second toggle.
 TOOL_GROUPS: dict[str, list[str]] = {
     "shell": ["run_command", "run_tests"],
     "file_operations": ["read_file", "list_dir", "write_file", "edit_file", "delete_file"],
@@ -114,10 +120,15 @@ class ToolRegistry:
         has_repo: bool,
         live: bool = False,
         disabled: frozenset[str] = frozenset(),
+        skills: list[dict] | None = None,
     ) -> list[AgentTool]:
         chosen = []
         for tool in self._tools.values():
             if tool.name in disabled:
+                continue
+            if tool.name == "load_skill" and not skills:
+                # Nothing to load. Offering the tool would advertise a library
+                # this chat has turned off, which is the opposite of the point.
                 continue
             if tool.requires_repo and not has_repo:
                 continue
@@ -135,11 +146,21 @@ class ToolRegistry:
         has_repo: bool,
         live: bool = False,
         disabled: frozenset[str] = frozenset(),
+        skills: list[dict] | None = None,
     ) -> list[dict[str, Any]]:
-        return [
-            tool.schema()
-            for tool in self.available(mode=mode, has_repo=has_repo, live=live, disabled=disabled)
-        ]
+        chosen = self.available(
+            mode=mode, has_repo=has_repo, live=live, disabled=disabled, skills=skills
+        )
+        result = []
+        for tool in chosen:
+            schema = tool.schema()
+            if tool.name == "load_skill":
+                # The enum is the session's own skill list, so a disabled skill
+                # is not merely unmentioned -- it is not a value the parameter
+                # accepts. The handler refuses it a second time regardless.
+                schema["function"]["parameters"] = skills_tool.schema_for(skills or [])
+            result.append(schema)
+        return result
 
     def execute(
         self, call: ToolCall, context: ToolContext, *, disabled: frozenset[str] = frozenset()

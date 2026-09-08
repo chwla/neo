@@ -268,6 +268,7 @@ class AgentLoop:
             has_repo=bool(session.repo_id),
             live=is_live(session.repo_id),
             disabled=frozenset(session.disabled_tools),
+            skills=session.skills,
         )
         native = bool(getattr(self.llm_factory(), "supports_tools", lambda: False)())
         repo, project = self._context_records(session)
@@ -339,6 +340,7 @@ class AgentLoop:
             has_repo=bool(session.repo_id),
             live=is_live(session.repo_id),
             disabled=frozenset(session.disabled_tools),
+            skills=session.skills,
         )
         return request_tool_calls(self.llm_factory(), fit(messages, budget), schemas)
 
@@ -443,7 +445,9 @@ class AgentLoop:
             repo_id=session.repo_id,
             task_id=session.task_id,
             mode=session.mode,
-            extras={"todo_sink": sink},
+            # The session's own snapshot, so ``load_skill`` refuses anything the
+            # chat did not have turned on when this run started.
+            extras={"todo_sink": sink, "skills": session.skills},
         )
 
     def _execute(self, session: AgentSession, call: ToolCall) -> ToolResult:

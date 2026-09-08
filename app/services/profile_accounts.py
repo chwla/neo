@@ -671,6 +671,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
         from app.services.research.store import initialize_research_tables
         from app.services.research_mode import initialize_research_mode_tables
         from app.services.rules.store import initialize_rule_tables
+        from app.services.skills.store import initialize_skill_tables
         from app.services.tasks.store import initialize_task_tables
         from app.services.test_runner.store import initialize_test_runner_tables
         from app.services.web_search import initialize_web_search_tables
@@ -700,6 +701,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_provider_runtime_tables,
             initialize_lsp_tables,
             initialize_rule_tables,
+            initialize_skill_tables,
             initialize_web_search_tables,
             initialize_workspace_orchestration_tables,
             initialize_continuity_tables,

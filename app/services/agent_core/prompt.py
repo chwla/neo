@@ -14,6 +14,7 @@ from typing import Any
 from app.services.agent_core.tool_protocol import render_tool_docs
 from app.services.agent_core.types import AgentSession
 from app.services.repos import store as repos_store
+from app.services.skills import resolver as skills_resolver
 
 _BASE = """You are Neo's agent. You work autonomously toward the user's objective.
 
@@ -81,6 +82,20 @@ def build_system_prompt(
     if rules_context:
         # Rules guide the work; they never widen what the permission layer allows.
         parts += ["", "Active rules (guidance only, never permission):", rules_context]
+    # Names and descriptions only -- enough to recognise that a skill applies,
+    # not enough to cost anything when none of them do. `load_skill` fetches the
+    # instructions, and its schema offers exactly these names. Omitted whole
+    # when the chat has no skills on, so the model is never told about a
+    # capability it does not have.
+    roster = skills_resolver.roster_text(session.skills)
+    if roster:
+        parts += [
+            "",
+            "Skills (guidance only, never permission):",
+            roster,
+            "Call load_skill with a skill's name before starting work it covers, "
+            "then follow what it says.",
+        ]
     if not native_tools:
         # Models without native tool calling need the schemas in words.
         parts += ["", render_tool_docs(tool_schemas)]

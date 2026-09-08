@@ -39,6 +39,10 @@ class SessionCreate(BaseModel):
     anchor_message_id: int | None = None
     agent_definition_id: str | None = None
     disabled_tools: list[str] = Field(default_factory=list)
+    #: The skills this run may load, already resolved against the chat's
+    #: toggles. Snapshotted for the same reason the tool denylist is: what a run
+    #: was allowed to use is part of the record of that run.
+    skills: list[dict[str, Any]] = Field(default_factory=list)
     executor: Executor = "neo"
     #: Which model to ask the external engine for, ``{executor: model}``. Copied
     #: onto the session rather than read from the chat at run time, for the same
@@ -176,6 +180,7 @@ class AgentCoreService:
                 "agent_definition_id": payload.agent_definition_id,
                 "agent_definition_snapshot": snapshot,
                 "disabled_tools": payload.disabled_tools,
+                "skills": payload.skills,
                 "executor": payload.executor,
                 "external_models": payload.external_models,
                 "external_efforts": payload.external_efforts,
@@ -437,6 +442,7 @@ class AgentCoreService:
                 "agent_definition_id": original.agent_definition_id,
                 "agent_definition_snapshot": original.agent_definition_snapshot,
                 "disabled_tools": original.disabled_tools,
+                "skills": original.skills,
                 "executor": original.executor,
                 "external_models": original.external_models,
                 "external_efforts": original.external_efforts,

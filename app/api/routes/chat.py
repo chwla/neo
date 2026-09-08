@@ -51,6 +51,7 @@ from app.services.provider_runtime.errors import (
 )
 from app.services.rules.resolver import RuleResolver
 from app.services.rules.types import RuleResolveRequest
+from app.services.skills import resolver as skills_resolver
 
 router = APIRouter()
 StoreDependency = Annotated[AppStore, Depends(get_store)]
@@ -187,6 +188,9 @@ class ChatRead(BaseModel):
     agent_mode: str = "normal"
     agent_definition_id: str | None = None
     disabled_tools: list[str] = Field(default_factory=list)
+    #: ``{slug: bool}`` for skills this chat has an opinion about. Absent slugs
+    #: follow the skill's own default; the panel resolves the two.
+    skill_overrides: dict[str, bool] = Field(default_factory=dict)
     effort: str = "low"
     executor: str = "neo"
     #: ``{executor: model}`` and ``{executor: effort}``. An engine absent from
@@ -370,6 +374,11 @@ class ChatUpdateRequest(BaseModel):
     agent_mode: Literal["plan", "normal", "auto"] | None = None
     agent_definition_id: str | None = Field(default=None, max_length=64)
     disabled_tools: list[str] | None = None
+    #: ``{slug: bool}``, replaced wholesale like the engine maps below. A slug
+    #: the map omits falls back to the skill's own default, so clearing this
+    #: puts the chat back on the library's defaults rather than turning
+    #: everything off.
+    skill_overrides: dict[str, bool] | None = None
     effort: Literal["low", "high"] | None = None
     executor: Executor | None = None
     #: The whole map, replaced wholesale. The composer patches one engine's
@@ -2168,6 +2177,10 @@ def _start_agent_turn(
                     repo_id=chat.repo_id,
                     agent_definition_id=chat.agent_definition_id,
                     disabled_tools=chat.disabled_tools or [],
+                    # Resolved here and carried on the session rather than read
+                    # again later, so every engine sees one answer and a toggle
+                    # flipped mid-run changes the next turn, not this one.
+                    skills=skills_resolver.effective_skills(chat.skill_overrides or {}),
                     executor=executor,
                     external_models=chat.external_models or {},
                     external_efforts=chat.external_efforts or {},
@@ -2849,6 +2862,8 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
         chat.agent_definition_id = request.agent_definition_id or None
     if request.disabled_tools is not None:
         chat.disabled_tools = request.disabled_tools
+    if request.skill_overrides is not None:
+        chat.skill_overrides = request.skill_overrides
     if request.effort is not None:
         chat.effort = request.effort
     if request.executor is not None:

@@ -88,6 +88,7 @@ def initialize_agent_core_tables() -> None:
                 agent_definition_id TEXT,
                 agent_definition_snapshot_json TEXT,
                 disabled_tools_json TEXT,
+                skills_json TEXT,
                 -- The chat this run is a turn of, and the assistant row that
                 -- holds its place in that chat's transcript.
                 chat_id INTEGER,
@@ -245,6 +246,8 @@ def initialize_agent_core_tables() -> None:
             conn.execute(
                 "ALTER TABLE workspace_agent_sessions ADD COLUMN disabled_tools_json TEXT"
             )
+        if "skills_json" not in existing:
+            conn.execute("ALTER TABLE workspace_agent_sessions ADD COLUMN skills_json TEXT")
         # The external-executor columns, added the same way and for the same
         # reason.  `executor` carries its default so existing rows -- every one
         # of which was Neo's own loop -- read correctly without an UPDATE.
@@ -321,6 +324,7 @@ def _row_to_session(row: sqlite3.Row) -> dict:
         data.pop("agent_definition_snapshot_json", None), None
     )
     data["disabled_tools"] = _loads(data.pop("disabled_tools_json", None), [])
+    data["skills"] = _loads(data.pop("skills_json", None), [])
     data["todo"] = _loads(data.pop("todo_json", None), [])
     data["evidence"] = _loads(data.pop("evidence_json", None), [])
     data["budgets"] = _loads(data.pop("budgets_json", None), {}) or {}
@@ -346,11 +350,12 @@ def insert_session(item: dict) -> dict:
             INSERT INTO workspace_agent_sessions (
                 id, objective, title, status, mode, project_id, repo_id, task_id,
                 agent_definition_id, agent_definition_snapshot_json, disabled_tools_json,
+                skills_json,
                 chat_id, anchor_message_id, executor, external_session_id,
                 external_meta_json, external_models_json, external_efforts_json,
                 handoff_json, todo_json, evidence_json, budgets_json,
                 client_request_id, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 item["id"],
@@ -366,6 +371,7 @@ def insert_session(item: dict) -> dict:
                 if item.get("agent_definition_snapshot")
                 else None,
                 json.dumps(item.get("disabled_tools") or []),
+                json.dumps(item.get("skills") or []),
                 item.get("chat_id"),
                 item.get("anchor_message_id"),
                 item.get("executor") or "neo",
@@ -803,6 +809,40 @@ def models_seen(executor: str, *, limit: int = 200) -> list[str]:
         if isinstance(model, str) and model.strip() and model not in seen:
             seen.append(model.strip())
     return seen
+
+
+def latest_external_meta(executor: str, key: str, *, limit: int = 40) -> tuple[Any, str | None]:
+    """The newest value this executor recorded under ``key``, and when.
+
+    A sibling of :func:`models_seen`, and for the same reason: the per-executor
+    metadata a run leaves behind is the only record of things the CLI said in
+    passing. Claude Code's rate-limit notice is one of those -- it arrives mid
+    run, is true at that moment, and nothing else on the machine writes it down.
+
+    The timestamp comes back with the value because a caller comparing this
+    against another source needs to know which one is more recent; a usage
+    figure with no "as of" is indistinguishable from a fresh one.
+    """
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT external_meta_json, updated_at FROM workspace_agent_sessions"
+            " WHERE executor = ? AND external_meta_json IS NOT NULL"
+            " ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+            (executor, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None, None
+    finally:
+        conn.close()
+
+    for row in rows:
+        meta = _loads(row["external_meta_json"], {}) or {}
+        value = (meta.get(executor) or {}).get(key)
+        if value:
+            return value, row["updated_at"]
+    return None, None
 
 
 def chat_history_before(chat_id: int, message_id: int, limit: int = 40) -> list[dict]:
