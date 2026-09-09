@@ -545,6 +545,9 @@ export const api = {
   updateChatConfig: (payload) =>
     request("/chat-config", { method: "POST", body: JSON.stringify(payload) }),
   keyboardConfig: () => request("/keybindings/config"),
+  appearanceConfig: () => request("/appearance/config"),
+  updateAppearanceConfig: (payload) =>
+    request("/appearance/config", { method: "POST", body: JSON.stringify(payload) }),
 
   // -- Voice input ----------------------------------------------------------
   voiceStatus: () => request("/voice/status"),

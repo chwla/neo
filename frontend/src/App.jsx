@@ -17,8 +17,10 @@ import { registerModal } from "./modalStack.js";
 import { replaceRange } from "./voice/insertion.js";
 import { useDictation } from "./voice/useDictation.js";
 import CommandPalette from "./CommandPalette.jsx";
+import AppearanceSettings from "./AppearanceSettings.jsx";
 import KeyboardSettings from "./KeyboardSettings.jsx";
 import VoiceSettings from "./VoiceSettings.jsx";
+import { DEFAULT_THEME_ID, applyTheme } from "./themes.js";
 import { COMMANDS } from "./keys/commands.js";
 import { detectPlatform } from "./keys/engine.js";
 import { buildKeymap } from "./keys/keymap.js";
@@ -3108,7 +3110,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines,
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenAppearance,
   onOpenVoice, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
@@ -3172,6 +3174,14 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
         ["Repositories", "Registered code repositories", onOpenRepos],
         ["Bundles", "Export and import sanitized archives", onOpenBundles],
         ["GitHub", "Issue and pull request workflow", onOpenGitHub],
+      ],
+    },
+    {
+      title: "Appearance",
+      icon: "sparkle",
+      description: "How Neo looks.",
+      items: [
+        ["Theme", "The colour of every surface, from phosphor green to daylight", onOpenAppearance],
       ],
     },
   ];
@@ -3320,7 +3330,7 @@ function mergeLiveRun(run, live, messageId) {
   };
 }
 
-function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
+function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChange }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
   // What each chat is doing, keyed by chat id, because more than one of them can
@@ -3422,6 +3432,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   //: is why the microphone renders disabled rather than absent while it is unknown.
   const [voiceStatus, setVoiceStatus] = useState(null);
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
+  const [showAppearance, setShowAppearance] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
@@ -4822,6 +4833,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     "app.showKeyboardHelp": () => setShowKeyboardSettings(true),
     "app.toggleSidebar": toggleSidebar,
     "app.openSettings": openSettings,
+    "app.openAppearance": () => setShowAppearance(true),
     "chat.new": () => handleNewChat(),
     // Declines rather than swallowing the key when there is nothing to stop.
     "chat.stop": () => {
@@ -5271,6 +5283,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           }}
           onOpenKeyboard={() => { setShowSettings(false); setShowKeyboardSettings(true); }}
           onOpenVoice={() => { setShowSettings(false); setShowVoiceSettings(true); }}
+          onOpenAppearance={() => { setShowSettings(false); setShowAppearance(true); }}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -5361,6 +5374,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           />
         </Modal>
       )}
+      {showAppearance && (
+        <Modal title="Appearance" onClose={() => setShowAppearance(false)}>
+          <AppearanceSettings
+            theme={theme}
+            onThemeChange={onThemeChange}
+            onClose={() => setShowAppearance(false)}
+          />
+        </Modal>
+      )}
       {showKeyboardSettings && (
         <KeyboardSettings
           platform={keyboardKeymap.platform}
@@ -5406,11 +5428,27 @@ export function clearProfileScopedState() {
 export default function App() {
   const [profile, setProfile] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [theme, setTheme] = useState(DEFAULT_THEME_ID);
 
+  // The theme is fetched inside the gate that already holds back the first
+  // paint of the real interface, rather than after it. A palette that arrives a
+  // frame late is a visible flash of the wrong colours on every load, and this
+  // costs nothing: the request goes out alongside the session check, not after
+  // it, so the wait is the slower of the two rather than their sum.
+  //
+  // A profile that cannot be reached, or has never chosen, stays on the default
+  // -- which is also what the loading line and the profile picker render in,
+  // since there is no profile yet whose preference could apply.
   useEffect(() => {
-    api.currentAccountProfile()
-      .then((data) => setProfile(data.profile))
-      .catch(() => setProfile(null))
+    Promise.all([
+      api.currentAccountProfile().then((data) => data.profile).catch(() => null),
+      api.appearanceConfig().then((config) => config.theme).catch(() => DEFAULT_THEME_ID),
+    ])
+      .then(([nextProfile, nextTheme]) => {
+        setProfile(nextProfile);
+        setTheme(nextTheme);
+        applyTheme(nextTheme);
+      })
       .finally(() => setCheckingSession(false));
   }, []);
 
@@ -5432,9 +5470,23 @@ export default function App() {
         onSignedIn={(next) => {
           clearProfileScopedState();
           setProfile(next);
+          // Signing in here does not reload the page, so the theme fetched
+          // before there was a profile is the default rather than this
+          // profile's. Ask again now that there is a session to ask about.
+          api.appearanceConfig()
+            .then((config) => { setTheme(config.theme); applyTheme(config.theme); })
+            .catch(() => { /* stay on the default; the next load will try again */ });
         }}
       />
     );
   }
-  return <NeoApp profile={profile} onProfileUpdated={setProfile} onSwitchProfile={switchProfile} />;
+  return (
+    <NeoApp
+      profile={profile}
+      onProfileUpdated={setProfile}
+      onSwitchProfile={switchProfile}
+      theme={theme}
+      onThemeChange={setTheme}
+    />
+  );
 }

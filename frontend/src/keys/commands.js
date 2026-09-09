@@ -75,6 +75,14 @@ export const COMMANDS = [
     keywords: "preferences options config",
   },
   {
+    id: "app.openAppearance",
+    title: "Change theme",
+    section: "Global",
+    keys: "",
+    altKeys: "",
+    keywords: "theme appearance colour color palette dark light cyberpunk paper",
+  },
+  {
     id: "app.showKeyboardHelp",
     title: "Keyboard shortcuts",
     section: "Global",

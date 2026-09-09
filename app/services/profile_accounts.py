@@ -649,6 +649,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
         # The feature stores use get_settings(), which is profile-aware inside this context.
         from app.services.agent_core.store import initialize_agent_core_tables
         from app.services.agent_framework import initialize_agent_framework_tables
+        from app.services.appearance import initialize_appearance_tables
         from app.services.bundles import initialize_bundle_tables
         from app.services.calendar import initialize_calendar_tables
         from app.services.chat_prefs import initialize_chat_preference_tables
@@ -694,6 +695,7 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_gallery_tables,
             initialize_chat_preference_tables,
             initialize_keybinding_tables,
+            initialize_appearance_tables,
             initialize_test_runner_tables,
             initialize_git_tables,
             initialize_github_tables,

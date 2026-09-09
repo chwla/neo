@@ -1,23 +1,14 @@
 /** @type {import('tailwindcss').Config} */
+// Tailwind is here for its preflight reset and nothing else -- the interface is
+// written in hand-authored classes in index.css, and the one utility in the
+// whole codebase is a `w-full`. There used to be a `theme.extend` with a `neo`
+// palette in it; it was removed with the themes, because it was unused by every
+// file and its values had drifted from the real ones (`#030603` against the
+// actual background of `#0a0a0a`), so the only thing it could do was mislead
+// whoever read it next. Colours live in index.css as custom properties, which
+// is what the themes switch.
 export default {
   content: ["./index.html", "./src/**/*.{js,jsx}"],
-  theme: {
-    extend: {
-      colors: {
-        neo: {
-          green: "#39ff14",
-          black: "#030603",
-          panel: "#071007",
-          panel2: "#0b180b",
-          text: "#eaffea",
-          muted: "#89ad89",
-        },
-      },
-      boxShadow: {
-        neo: "0 0 22px rgba(57,255,20,.06)",
-        "neo-button": "0 0 16px rgba(57,255,20,.25)",
-      },
-    },
-  },
+  theme: { extend: {} },
   plugins: [],
 };

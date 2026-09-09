@@ -26,6 +26,7 @@ from app.api.routes.git import router as git_router
 from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
 from app.api.routes.integration import router as integration_router
+from app.api.routes.appearance import router as appearance_router
 from app.api.routes.keybindings import router as keybindings_router
 from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
@@ -69,6 +70,7 @@ from app.services.files.store import initialize_workspace_file_tables
 from app.services.gallery.store import initialize_gallery_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
+from app.services.appearance import initialize_appearance_tables
 from app.services.keybindings import initialize_keybinding_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
@@ -177,6 +179,7 @@ def create_app() -> FastAPI:
     app.include_router(llms_router, prefix="/api")
     app.include_router(lsp_router, prefix="/api")
     app.include_router(keybindings_router, prefix="/api")
+    app.include_router(appearance_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(local_models_router, prefix="/api")
     app.include_router(model_compare_router, prefix="/api")
@@ -231,6 +234,7 @@ def create_app() -> FastAPI:
     initialize_gallery_tables()
     initialize_chat_preference_tables()
     initialize_keybinding_tables()
+    initialize_appearance_tables()
     initialize_test_runner_tables()
     initialize_git_tables()
     initialize_github_tables()
