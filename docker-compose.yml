@@ -14,7 +14,16 @@
 
 services:
   neo:
-    build: .
+    build:
+      context: .
+      args:
+        # Voice input (speak instead of typing) adds a few hundred megabytes of
+        # speech-recognition libraries to the image, so it is off unless asked for:
+        #   NEO_WITH_VOICE=1 docker compose up -d --build
+        # Without it the microphone reports itself unavailable and nothing else
+        # changes. The model itself is downloaded later from Settings > Voice input
+        # and lands in the data volume, so it survives a container replacement.
+        WITH_VOICE: ${NEO_WITH_VOICE:-0}
     image: neo:latest
     container_name: neo
     restart: unless-stopped

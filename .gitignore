@@ -23,6 +23,9 @@ build/
 data/workspace_files/
 data/workspace_repos/
 data/searxng/
+# Speech-to-text model weights: hundreds of megabytes, downloaded on demand from
+# the Voice input settings screen and reproducible from the model catalogue.
+data/voice-models/
 neo_llms.json
 neo_llms.json.tmp
 neo_memory.db

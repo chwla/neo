@@ -46,6 +46,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEO_SEARXNG_SETTINGS_PATH=/opt/searxng/settings.yml \
     OLLAMA_BASE_URL=http://host.docker.internal:11434
 
+# Voice input is off by default. faster-whisper drags in ctranslate2, onnxruntime,
+# tokenizers and PyAV -- a few hundred megabytes -- which is far too much to impose on
+# every image for a feature not everyone wants. Build with
+# `--build-arg WITH_VOICE=1` to include it; without it the microphone reports itself
+# unavailable in the interface and nothing else changes.
+ARG WITH_VOICE=0
+
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -57,8 +64,19 @@ COPY app/ ./app/
 # container as themselves (NEO_UID) or every write to their folder fails; that
 # would otherwise leave /app/data unwritable, because it was chowned to a uid
 # they are no longer running as.
-RUN pip install --no-cache-dir . \
-    && mkdir -p /app/data/workspace_files /app/data/workspace_repos \
+# ARG has to be restated after WORKDIR to be visible to this RUN.
+ARG WITH_VOICE
+# libgomp is what CTranslate2 links against for its thread pool; the slim base image
+# does not carry it, and without it `import ctranslate2` fails at first use rather
+# than at build time.
+RUN if [ "$WITH_VOICE" = "1" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends libgomp1 \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+RUN if [ "$WITH_VOICE" = "1" ]; then pip install --no-cache-dir ".[voice]"; \
+    else pip install --no-cache-dir .; fi \
+    && mkdir -p /app/data/workspace_files /app/data/workspace_repos /app/data/voice-models \
     && useradd --create-home --uid 10001 --gid 0 neo \
     && chown -R 10001:0 /app/data \
     && chmod -R g=u /app/data
