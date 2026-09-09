@@ -17,10 +17,10 @@ PermissionMode = Literal["plan", "normal", "auto"]
 # Which engine runs a session. ``neo`` is the built-in loop in ``loop.py``; the
 # others hand the reasoning and tool execution to an external coding CLI driven
 # as a subprocess, while Neo keeps the session, the event log and the workspace.
-Executor = Literal["neo", "claude_code", "codex"]
+Executor = Literal["neo", "claude_code", "codex", "cursor", "antigravity"]
 
 #: Executors that are an external process rather than Neo's own loop.
-EXTERNAL_EXECUTORS: frozenset[str] = frozenset({"claude_code", "codex"})
+EXTERNAL_EXECUTORS: frozenset[str] = frozenset({"claude_code", "codex", "cursor", "antigravity"})
 
 # A run ends for exactly one of these reasons. ``verified_complete`` and
 # ``unverified_complete`` are deliberately distinct: a model that stops emitting

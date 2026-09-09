@@ -4998,12 +4998,26 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   gap: 4px;
   margin-bottom: 8px;
   margin-left: var(--composer-gutter, 0px);
-  border-left: 2px solid #d9a441;
-  background: #17130a;
+  /* The composer's own green rather than a warning yellow. This sits directly
+     above the box it is about, and a second accent colour there read as an error
+     in the composer rather than as a note about the engine behind it. */
+  border-left: 2px solid var(--composer-edge);
+  background: rgba(57, 255, 20, .05);
   padding: 7px 9px;
-  color: #d9a441;
+  color: #79ef8b;
   font-size: 11px;
 }
+.composer-usage-warning > span { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.composer-usage-dismiss {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: var(--composer-ink);
+  font-size: 13px;
+  line-height: 1;
+}
+.composer-usage-dismiss:hover { color: #79ef8b; }
 
 .usage-panel .usage-engine { margin-top: 18px; }
 .usage-panel .usage-engine:first-of-type { margin-top: 12px; }

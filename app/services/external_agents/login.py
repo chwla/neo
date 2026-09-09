@@ -50,6 +50,11 @@ _LOG = logging.getLogger(__name__)
 LOGIN_ARGV: dict[str, list[str]] = {
     "claude_code": ["auth", "login"],
     "codex": ["login"],
+    "cursor": ["login"],
+    # Antigravity documents no `login` subcommand: signing in happens the first
+    # time the CLI is run interactively. So the sign-in *is* the bare binary, and
+    # the pty this module already opens is exactly what that needs.
+    "antigravity": [],
 }
 
 #: The same thing as a person would type it. Shown whenever Neo cannot drive the
@@ -58,6 +63,8 @@ LOGIN_ARGV: dict[str, list[str]] = {
 LOGIN_COMMAND: dict[str, str] = {
     "claude_code": "claude auth login",
     "codex": "codex login",
+    "cursor": "cursor-agent login",
+    "antigravity": "agy",
 }
 
 #: A browser sign-in that nobody completes must not leave a process holding a pty
@@ -80,7 +87,20 @@ _ESC = re.compile(r"\x1b[@-Z\\-_]")
 _URL = re.compile(r"https?://[^\s\x00-\x1f\"'<>\\\]]+")
 
 #: What the visible text looks like when a CLI is waiting for a pasted code.
-_CODE_PROMPT = ("paste code", "paste the code", "authorization code", "enter the code")
+_CODE_PROMPT = (
+    "paste code",
+    "paste the code",
+    "authorization code",
+    "enter the code",
+    # Antigravity's headless sign-in is documented as printing a URL and a
+    # one-time code. Its exact wording is unrecorded, so these are the phrasings
+    # its documentation uses -- and a miss here is not a wrong answer but a
+    # sign-in that hangs until the ten-minute timeout, which is why the tuple
+    # errs wide.
+    "verification code",
+    "one-time code",
+    "enter your code",
+)
 
 
 def _sanitize(raw: str) -> str:
@@ -468,6 +488,7 @@ def reset() -> None:
 
 
 __all__ = [
+    "LOGIN_ARGV",
     "LOGIN_COMMAND",
     "LOGIN_TIMEOUT_SECONDS",
     "cancel",

@@ -5,7 +5,7 @@ import { Modal } from "./App.jsx";
 import ExternalAgentSetup from "./ExternalAgentSetup.jsx";
 
 /**
- * Settings > Engines: signing in to Claude Code and Codex.
+ * Settings > Engines: signing in to the coding CLIs that run agent turns.
  *
  * This is where an external engine is connected, and the only place. The
  * composer's Engine picker offers a CLI once it is genuinely usable and says
@@ -25,10 +25,15 @@ import ExternalAgentSetup from "./ExternalAgentSetup.jsx";
  * opt-in is missing.
  */
 
-/** Which CLI to install for each engine, as documented in the README. */
+/** Each vendor's own documented install command, verbatim. */
 const INSTALL = {
   claude_code: "npm i -g @anthropic-ai/claude-code",
   codex: "npm i -g @openai/codex",
+  // These two write to ~/.local/bin, which many login shells do not search.
+  // Neo looks there anyway (see ExecutorSpec.extra_bin_dirs), so the command
+  // shown is just the vendor's and needs no caveat attached to it.
+  cursor: "curl https://cursor.com/install -fsS | bash",
+  antigravity: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
 };
 
 /**
@@ -88,7 +93,13 @@ export default function ExternalAgents({ onClose, onChanged }) {
   }, []);
 
   useEffect(() => {
-    load();
+    /* Re-probed on open, not read from the cache. Detection is cached for the
+       life of the server process -- right for a CLI's version, wrong here: the
+       reason someone opens this panel is usually that they just installed or
+       signed in to something, and a cached "not installed" from ten minutes ago
+       is the one answer that makes the panel useless. Opening it *is* the
+       check, which is why there is no button asking you to ask again. */
+    load(true);
   }, [load]);
 
   /**
@@ -160,7 +171,7 @@ export default function ExternalAgents({ onClose, onChanged }) {
   return (
     <Modal title="Engines" onClose={onClose} className="engines-dialog">
       <p className="dialog-caption">
-        Claude Code and Codex run agent turns on your own CLI subscription, in the folder
+        These CLIs run agent turns on your own subscription, in the folder
         attached to the chat. Sign in here and the engine is offered in the composer&apos;s
         Engine picker; until then only Neo&apos;s own engine is.
       </p>
@@ -258,14 +269,6 @@ export default function ExternalAgents({ onClose, onChanged }) {
       </div>
 
       <div className="engine-rows-footer">
-        <button
-          type="button"
-          className="engine-button quiet"
-          onClick={() => load(true)}
-          disabled={Boolean(busy) || loading}
-        >
-          {loading ? "Checking…" : "Re-check"}
-        </button>
         {data?.trust_boundary?.summary ? (
           <p className="engine-connect-note">{data.trust_boundary.summary}</p>
         ) : null}

@@ -85,6 +85,15 @@ class ExecutorSpec(BaseModel):
     bin_setting: str
     #: The name to look for on PATH when no explicit path is configured.
     program: str
+    #: Where else to look when ``program`` is not on PATH, searched in order and
+    #: only after PATH. Every entry must be an install location the CLI's own
+    #: installer documents -- this is a recorded fact about an installer, not a
+    #: guess at where a binary might live, and Neo must never run something it
+    #: merely found lying around. It exists because two of these CLIs install to
+    #: ``~/.local/bin``, which plenty of login shells do not search, and
+    #: "not found on PATH" is a poor answer to give someone who installed the
+    #: thing thirty seconds ago exactly as instructed.
+    extra_bin_dirs: tuple[str, ...] = ()
     #: Settings attribute holding the CLI's own config/credential directory,
     #: when a deployment explicitly overrides it. Empty means "say nothing".
     home_setting: str

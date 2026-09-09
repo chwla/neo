@@ -27,6 +27,7 @@ import logging
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
@@ -97,7 +98,73 @@ CODEX = ExecutorSpec(
     ),
 )
 
-SPECS: dict[str, ExecutorSpec] = {CLAUDE_CODE.id: CLAUDE_CODE, CODEX.id: CODEX}
+#: Where these two install themselves. Both vendors' installers write to
+#: ``~/.local/bin``, which many login shells do not search -- so without this a
+#: correctly-followed install reads back as "not found on PATH".
+_LOCAL_BIN = ("~/.local/bin",)
+
+CURSOR = ExecutorSpec(
+    id="cursor",
+    name="Cursor",
+    bin_setting="cursor_bin",
+    program="cursor-agent",
+    # No configuration-directory variable is documented, and Neo does not invent
+    # one: an unset home means "let the CLI find its own credentials", which is
+    # the correct default for every engine here.
+    home_setting="",
+    home_env="",
+    extra_bin_dirs=_LOCAL_BIN,
+    # Cursor mints the chat id and reports it on the `system`/`init` line.
+    session_id_key="session_id",
+    capabilities=ExecutorCapabilities(
+        # `--resume <chatId>`, and `--continue` for the previous one.
+        resume=True,
+        # **No read-only mode exists.** Permissions are configuration-file only
+        # (`~/.cursor/cli-config.json`), so there is no flag that stops a run
+        # touching the repository. Neo refuses a plan-mode run here rather than
+        # quietly executing it as a normal one.
+        plan_mode=False,
+        # No `--disallowedTools` equivalent; deny rules live in that same file.
+        tool_denylist=False,
+        per_tool_approval=False,
+        cost_reporting=False,
+        # Undocumented in the result event, and undocumented means false here.
+        token_reporting=False,
+    ),
+)
+
+ANTIGRAVITY = ExecutorSpec(
+    id="antigravity",
+    name="Antigravity",
+    bin_setting="antigravity_bin",
+    program="agy",
+    home_setting="",
+    home_env="",
+    extra_bin_dirs=_LOCAL_BIN,
+    session_id_key="conversation_id",
+    capabilities=ExecutorCapabilities(
+        # `--conversation <id>`, and `--continue` for the most recent.
+        resume=True,
+        # `--sandbox` restricts the terminal, not the repository, so it is not
+        # the repository protection Neo's plan mode promises.
+        plan_mode=False,
+        tool_denylist=False,
+        # Headless soft-denies a tool it cannot get approval for; it does not
+        # hand the decision back to Neo.
+        per_tool_approval=False,
+        cost_reporting=False,
+        # A `usage` object with real token counts is documented on both the
+        # result envelope and each step.
+        token_reporting=True,
+    ),
+)
+
+SPECS: dict[str, ExecutorSpec] = {
+    CLAUDE_CODE.id: CLAUDE_CODE,
+    CODEX.id: CODEX,
+    CURSOR.id: CURSOR,
+    ANTIGRAVITY.id: ANTIGRAVITY,
+}
 
 _CACHE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
@@ -108,7 +175,14 @@ def spec(executor: str) -> ExecutorSpec | None:
 
 
 def resolve_binary(executor: str) -> str | None:
-    """The path to run, preferring an explicitly configured one over PATH."""
+    """The path to run: an explicitly configured one, else PATH, else the installer's.
+
+    The order is the point. A configured path wins outright and never falls
+    through -- see below. PATH comes next, so a user who has their own build of a
+    CLI earlier in PATH keeps getting it. Only then does ``extra_bin_dirs`` get a
+    look, which is what makes a freshly-installed CLI work without anyone having
+    to discover that their shell does not search where its installer wrote it.
+    """
 
     executor_spec = SPECS.get(executor)
     if executor_spec is None:
@@ -119,7 +193,14 @@ def resolve_binary(executor: str) -> str | None:
         # reporting as such, rather than silently falling back to PATH and
         # running a different binary than the one that was asked for.
         return configured if shutil.which(configured) or _is_executable(configured) else None
-    return shutil.which(executor_spec.program)
+    found = shutil.which(executor_spec.program)
+    if found:
+        return found
+    for directory in executor_spec.extra_bin_dirs:
+        candidate = Path(directory).expanduser() / executor_spec.program
+        if _is_executable(str(candidate)):
+            return str(candidate)
+    return None
 
 
 def _is_executable(path: str) -> bool:
@@ -223,7 +304,70 @@ def _codex_auth(
     return "unknown", None, dict(_NO_ACCOUNT)
 
 
-_AUTH_PROBES = {"claude_code": _claude_auth, "codex": _codex_auth}
+def _cursor_auth(
+    binary: str, executor_spec: ExecutorSpec
+) -> tuple[str | None, str | None, dict[str, str | None]]:
+    """(auth, reason, account). ``cursor-agent status --format json``.
+
+    **Written against documentation, not a recorded run** -- see the Cursor
+    section of ``docs/external-agents/cli-surface.md``. The command and its
+    ``--format json`` are documented; the field *names* inside are not, and this
+    package does not get to invent them. So the exit code carries the yes/no,
+    which is the part that decides whether the engine is offered, and the shape
+    inside is read for a few plausible keys and otherwise reported as ``unknown``.
+    Re-check this against a real install before trusting anything more from it.
+    """
+
+    result = _run([binary, "status", "--format", "json"], executor_spec)
+    if result is None:
+        return None, "could not run `cursor-agent status`", dict(_NO_ACCOUNT)
+    text = f"{result.stdout} {result.stderr}".strip().lower()
+    if result.returncode != 0 or "not logged in" in text or "logged out" in text:
+        return None, "not signed in -- run `cursor-agent login`", dict(_NO_ACCOUNT)
+    try:
+        data = json.loads(result.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        # It ran and exited zero, which is evidence of being signed in, but not
+        # of anything more specific.
+        return "unknown", None, dict(_NO_ACCOUNT)
+    if not isinstance(data, dict):
+        return "unknown", None, dict(_NO_ACCOUNT)
+    account = {**_NO_ACCOUNT, "email": _text(data.get("email"))}
+    return "unknown", None, account
+
+
+def _antigravity_auth(
+    binary: str, executor_spec: ExecutorSpec
+) -> tuple[str | None, str | None, dict[str, str | None]]:
+    """(auth, reason, account). Antigravity documents no auth-status command.
+
+    Nothing in ``agy`` prints login state non-interactively, so the probe is
+    indirect: ``agy models`` needs an authenticated account, and a headless run
+    that needs a prompt is documented to exit with an actionable error. A
+    non-zero exit is therefore read as signed out, and a clean one as signed in
+    without claiming to know how.
+
+    That is weaker evidence than the other three probes have, and it is the least
+    verified thing in this file -- it must be checked against a real install
+    before it is trusted, because a false "signed in" turns into a failed run
+    several minutes later with a worse error than the one given here.
+    """
+
+    result = _run([binary, "models"], executor_spec)
+    if result is None:
+        return None, "could not run `agy models`", dict(_NO_ACCOUNT)
+    text = f"{result.stdout} {result.stderr}".strip().lower()
+    if result.returncode != 0 or "sign in" in text or "not authenticated" in text:
+        return None, "not signed in -- run `agy` once and sign in", dict(_NO_ACCOUNT)
+    return "unknown", None, dict(_NO_ACCOUNT)
+
+
+_AUTH_PROBES = {
+    "claude_code": _claude_auth,
+    "codex": _codex_auth,
+    "cursor": _cursor_auth,
+    "antigravity": _antigravity_auth,
+}
 
 
 def _probe(executor: str) -> dict[str, Any]:
@@ -244,11 +388,14 @@ def _probe(executor: str) -> dict[str, Any]:
     binary = resolve_binary(executor)
     if not binary:
         configured = str(getattr(get_settings(), executor_spec.bin_setting, "") or "").strip()
-        row["reason"] = (
-            f"configured path '{configured}' is not executable"
-            if configured
-            else f"`{executor_spec.program}` not found on PATH"
-        )
+        if configured:
+            row["reason"] = f"configured path '{configured}' is not executable"
+        else:
+            # Name everywhere that was actually looked, so "not found" is a fact
+            # about the search rather than an invitation to re-read the install
+            # instructions that were already followed correctly.
+            searched = ", ".join(("PATH", *executor_spec.extra_bin_dirs))
+            row["reason"] = f"`{executor_spec.program}` not found in {searched}"
         return row
 
     version = _run([binary, "--version"], executor_spec)
@@ -362,8 +509,10 @@ def clear_cache() -> None:
 
 __all__ = [
     "ACCOUNT_FIELDS",
+    "ANTIGRAVITY",
     "CLAUDE_CODE",
     "CODEX",
+    "CURSOR",
     "DISABLED_REASON",
     "SPECS",
     "clear_cache",

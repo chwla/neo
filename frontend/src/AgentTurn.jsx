@@ -45,7 +45,13 @@ function groupEntries(entries) {
   return grouped;
 }
 
-const EXECUTOR_NAMES = { claude_code: "Claude Code", codex: "Codex", neo: "Neo" };
+const EXECUTOR_NAMES = {
+  claude_code: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  antigravity: "Antigravity",
+  neo: "Neo",
+};
 
 /**
  * Who to name as the author of an assistant turn.

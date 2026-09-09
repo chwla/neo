@@ -32,8 +32,10 @@ from app.services.agent_core.types import AgentSession, Budgets
 from app.services.agent_core.workspace import repo_root
 from app.services.external_agents import context, detect, models, runner, snapshot
 from app.services.external_agents import env as env_module
+from app.services.external_agents.adapters import antigravity as antigravity_adapter
 from app.services.external_agents.adapters import claude_code as claude_adapter
 from app.services.external_agents.adapters import codex as codex_adapter
+from app.services.external_agents.adapters import cursor as cursor_adapter
 from app.services.external_agents.types import (
     ExternalAgentError,
     ExternalEvent,
@@ -44,7 +46,12 @@ from app.services.skills import resolver as skills_resolver
 
 #: Which adapter drives which CLI. The whole of Neo's engine-specific dispatch,
 #: in one table -- everything past this point is uniform.
-_ADAPTERS = {"claude_code": claude_adapter, "codex": codex_adapter}
+_ADAPTERS = {
+    "claude_code": claude_adapter,
+    "codex": codex_adapter,
+    "cursor": cursor_adapter,
+    "antigravity": antigravity_adapter,
+}
 
 _LOG = logging.getLogger(__name__)
 

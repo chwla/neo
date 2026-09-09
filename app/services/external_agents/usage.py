@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -50,10 +51,19 @@ from app.services.external_agents import detect
 _LOG = logging.getLogger(__name__)
 
 #: Reading a config file is cheap, but walking Codex's session directory is not, and
-#: the composer asks on every load. Cached for the life of the process like the other
-#: probes in this package; ``refresh=True`` is the way to get a new answer.
-_CACHE: dict[str, dict[str, Any]] = {}
+#: the composer asks on every load. So answers are cached -- but unlike the other
+#: probes in this package, **for a fixed time rather than for the life of the
+#: process**. The difference matters and was found the hard way: a CLI's version
+#: does not change while Neo runs, so caching it forever is right, whereas usage
+#: changes with every turn the user takes. Holding it forever meant the panel showed
+#: whatever was true when the server started -- a fifteen-hour-old 99% next to a
+#: window that had already reset -- and only the Refresh button ever corrected it.
+_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _LOCK = threading.Lock()
+
+#: Short enough that an open panel is telling the truth, long enough that opening the
+#: composer repeatedly does not re-walk Codex's session directory each time.
+CACHE_TTL_SECONDS = 60.0
 
 #: Where a window stops being background information and starts being something to
 #: say out loud. Derived here, once, so the composer's warning and the panel's colour
@@ -107,11 +117,20 @@ def _window(key: str, title: str, percent: Any, resets_at: Any) -> dict[str, Any
     if value != value:  # NaN, which float() accepts and no bar can draw
         return None
     value = max(0.0, value)
+    resets = _epoch(resets_at)
+    # A window that has already reset is not a window with a high number in it, it
+    # is a window that no longer exists -- its allowance came back. Claude Code's own
+    # schema says as much: a window is reported "only while the API reports it and
+    # its resets_at has not passed". Drawing the last figure from an expired window
+    # is how the panel came to show a 99% session that had in fact reset hours
+    # earlier, right above the words "Resets now".
+    if resets is not None and resets <= time.time():
+        return None
     return {
         "key": key,
         "title": title,
         "used_percent": round(value, 1),
-        "resets_at": _epoch(resets_at),
+        "resets_at": resets,
         "severity": _severity(value),
     }
 
@@ -383,6 +402,21 @@ def _codex_usage() -> dict[str, Any]:
 
 _READERS = {"claude_code": _claude_usage, "codex": _codex_usage}
 
+#: Why an engine with no reader has none. An engine absent from ``_READERS`` gets
+#: an empty row either way; this is the difference between a panel that looks
+#: broken and one that has told you where the number actually lives.
+_NO_USAGE_REASON = {
+    # Cursor publishes usage to its dashboard only. The tools that surface it
+    # read the browser session, which is precisely the boundary this module
+    # exists on the right side of -- so Neo says where to look instead.
+    "cursor": "Cursor publishes usage only to its web dashboard -- cursor.com/dashboard",
+    # Antigravity does cache quotas on disk; `/usage` is documented as checking
+    # "your quotas on disk and from the backend service". The file has not been
+    # located yet because the CLI is not installed on any machine this has run
+    # on, so there is nothing to read rather than nothing to read *from*.
+    "antigravity": "Antigravity usage is not readable yet -- its quota cache has not been located",
+}
+
 
 def _account(row: dict[str, Any], plan: str | None) -> dict[str, Any] | None:
     """Who the CLI says it is signed in as, when it says anything at all.
@@ -424,7 +458,7 @@ def _snapshot(executor: str) -> dict[str, Any]:
 
     reader = _READERS.get(executor)
     if reader is None:
-        return base
+        return {**base, "account": _account(row, None), "reason": _NO_USAGE_REASON.get(executor)}
     try:
         found = reader()
     except Exception as exc:  # noqa: BLE001 - a usage panel must not break a composer
@@ -457,12 +491,14 @@ def snapshot(executor: str, *, refresh: bool = False) -> dict[str, Any]:
             "reason": "unknown executor",
         }
 
+    now = time.monotonic()
     with _LOCK:
-        if not refresh and executor in _CACHE:
-            return dict(_CACHE[executor])
+        cached = _CACHE.get(executor)
+        if not refresh and cached is not None and now - cached[0] < CACHE_TTL_SECONDS:
+            return dict(cached[1])
     row = _snapshot(executor)
     with _LOCK:
-        _CACHE[executor] = row
+        _CACHE[executor] = (time.monotonic(), row)
     return dict(row)
 
 

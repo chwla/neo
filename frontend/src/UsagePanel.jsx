@@ -39,10 +39,13 @@ export function observedPhrase(epochSeconds) {
   return `as of ${Math.round(hours / 24)}d ago`;
 }
 
+// Keyed by the source token, so the prose must hold for whichever engine returned
+// it. Naming a specific CLI here was wrong the moment a second engine could report
+// the same token -- the label would then confidently credit the wrong tool.
 const SOURCE_LABEL = {
-  cli_cache: "from Claude Code's own usage cache",
+  cli_cache: "from the CLI's own usage cache",
   run: "from the last run through Neo",
-  session_log: "from Codex's last recorded session",
+  session_log: "from the CLI's last recorded session",
 };
 
 const ACCOUNT_ROWS = [

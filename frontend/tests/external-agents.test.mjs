@@ -115,7 +115,7 @@ describe("the engine chip", () => {
   test("the way to connect one is named where the engines would have been", () => {
     // An option that vanishes teaches nothing on its own; the picker has to
     // point at the place that brings it back.
-    assert.ok(composer({ externalAgents: [] }).includes("Connect Claude Code or Codex"));
+    assert.ok(composer({ externalAgents: [] }).includes("Connect a coding CLI"));
     assert.ok(composer().includes("Manage engines in Settings"));
   });
 

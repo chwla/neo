@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     #: shell's PATH is not inherited.
     claude_code_bin: str = Field(default="")
     codex_bin: str = Field(default="")
+    #: The other two install to ~/.local/bin, which plenty of login shells do not
+    #: search -- so their specs name that directory as a fallback and these stay
+    #: empty for almost everyone. Set one only to run a build from elsewhere.
+    cursor_bin: str = Field(default="")
+    antigravity_bin: str = Field(default="")
     #: Where each CLI keeps its own configuration and credentials, when it is
     #: *not* the CLI's own default. Empty means "say nothing and let the CLI
     #: find its own credentials", which is the only correct default: setting

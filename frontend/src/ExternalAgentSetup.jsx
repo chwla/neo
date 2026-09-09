@@ -4,7 +4,7 @@ import { api } from "./api.js";
 import { Modal } from "./App.jsx";
 
 /**
- * The part of signing in to Claude Code or Codex that needs a browser.
+ * The part of signing in to a coding CLI that needs a browser.
  *
  * Opened by Settings > Engines, and only when there is genuinely something for
  * a person to do. Turning the feature on, re-probing the CLI and starting its

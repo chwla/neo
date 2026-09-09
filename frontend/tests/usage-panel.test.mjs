@@ -71,7 +71,9 @@ describe("an engine block", () => {
     assert.ok(html.includes(">pro<"));
     assert.ok(html.includes(">59%<"), "the percentage is the accessible copy of the bar");
     assert.ok(html.includes("Resets in 3h"));
-    assert.ok(html.includes("as of just now · from Claude Code&#x27;s own usage cache"));
+    // Engine-neutral on purpose: the token is what selects this prose, and more
+    // than one engine can return it.
+    assert.ok(html.includes("as of just now · from the CLI&#x27;s own usage cache"));
   });
 
   test("the bar is decoration over a number already stated", () => {

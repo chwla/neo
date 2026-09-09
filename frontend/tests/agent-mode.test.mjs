@@ -119,6 +119,34 @@ describe("agent mode composer", () => {
       assert.ok(html.includes("Claude Code is at 96% of its session (5h) limit"));
     });
 
+    // A notice with no way out of it is a nag, and this one sits directly above
+    // the box you are trying to type in.
+    test("can be waved away", () => {
+      const html = render({
+        executor: "claude_code",
+        externalAgents: [
+          { id: "claude_code", name: "Claude Code", available: true, capabilities: {} },
+        ],
+        usageWarnings: AT_THE_LIMIT,
+      });
+
+      assert.ok(html.includes('aria-label="Dismiss usage warning"'));
+    });
+
+    // Rendered with no storage available at all, which is what the server render
+    // here actually is -- and the safe direction on a limit notice is to show it.
+    test("survives a browser that will not store the dismissal", () => {
+      const html = render({
+        executor: "claude_code",
+        externalAgents: [
+          { id: "claude_code", name: "Claude Code", available: true, capabilities: {} },
+        ],
+        usageWarnings: AT_THE_LIMIT,
+      });
+
+      assert.ok(html.includes("composer-usage-warning"));
+    });
+
     test("stays quiet on a Neo turn, which has no such limit", () => {
       const html = render({ executor: "neo", usageWarnings: AT_THE_LIMIT });
 

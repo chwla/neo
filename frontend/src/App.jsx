@@ -1237,6 +1237,37 @@ function SkillsIcon() {
   );
 }
 
+const DISMISSED_LIMITS_KEY = "neo.dismissedUsageWarnings";
+
+/** Identifies one filling of one window, so a dismissal expires when it resets. */
+function limitKey(executor, limit) {
+  return `${executor}:${limit.key}:${limit.resets_at ?? "none"}`;
+}
+
+/* Storage is a convenience here, never a source of truth: it can be absent
+   (server rendering in tests), empty (a fresh browser), or throw outright
+   (Safari with site data blocked). Every path has to end with the warning
+   *shown*, because failing open on a limit notice is the safe direction. */
+function readDismissedLimits() {
+  try {
+    const raw = globalThis.localStorage?.getItem(DISMISSED_LIMITS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissedLimits(keys) {
+  try {
+    // Bounded: each entry dies with its window, but a long-lived browser should
+    // not accumulate them without limit either.
+    globalThis.localStorage?.setItem(DISMISSED_LIMITS_KEY, JSON.stringify(keys.slice(-40)));
+  } catch {
+    /* A browser that will not store this still renders the dismissal for now. */
+  }
+}
+
 /** " -- resets in 2h", when the window said when. Relative, because the question
     behind a limit warning is "how long until I can carry on", not "at what time". */
 function resetPhrase(epochSeconds) {
@@ -1458,6 +1489,21 @@ export function ChatComposer({
   // the line below the picker is an invitation or a way back to the panel.
   const hasConnectedEngine = externalAgents.some((agent) => agent.available);
   const [menuOpen, setMenuOpen] = useState(false);
+  /* Which limit warnings have been waved away. Keyed by the window's *reset
+     time*, not just its name, so dismissing is an acknowledgement of this
+     window rather than a permanent mute: once the allowance resets and fills up
+     again, that is news, and the warning comes back on its own. Persisted so a
+     page reload does not resurrect something already dealt with. */
+  const [dismissedLimits, setDismissedLimits] = useState(readDismissedLimits);
+  const liveWarnings = usageWarnings.filter(
+    (limit) => !dismissedLimits.includes(limitKey(executor, limit)),
+  );
+
+  function dismissLimit(limit) {
+    const next = [...dismissedLimits, limitKey(executor, limit)];
+    setDismissedLimits(next);
+    writeDismissedLimits(next);
+  }
 
   useLayoutEffect(() => {
     const at = pendingCaretRef.current;
@@ -1647,15 +1693,26 @@ export function ChatComposer({
             thing about a limit worth saying before a turn is sent: the run is
             going to stop, and roughly when the window frees up. The panel behind
             the menu carries the rest. */}
-        {externalEngine && usageWarnings.length ? (
+        {externalEngine && liveWarnings.length ? (
           <div className="composer-usage-warning">
-            {usageWarnings.map((limit) => (
+            {liveWarnings.map((limit) => (
               <span key={limit.key}>
-                {activeExecutor?.name || "This engine"}
-                {limit.severity === "exhausted"
-                  ? ` has used all of its ${limit.title.toLowerCase()} limit`
-                  : ` is at ${Math.round(limit.used_percent)}% of its ${limit.title.toLowerCase()} limit`}
-                {resetPhrase(limit.resets_at)}
+                <span>
+                  {activeExecutor?.name || "This engine"}
+                  {limit.severity === "exhausted"
+                    ? ` has used all of its ${limit.title.toLowerCase()} limit`
+                    : ` is at ${Math.round(limit.used_percent)}% of its ${limit.title.toLowerCase()} limit`}
+                  {resetPhrase(limit.resets_at)}
+                </span>
+                <button
+                  type="button"
+                  className="composer-usage-dismiss"
+                  onClick={() => dismissLimit(limit)}
+                  title="Hide this until the window resets"
+                  aria-label="Dismiss usage warning"
+                >
+                  ×
+                </button>
               </span>
             ))}
           </div>
@@ -1722,7 +1779,7 @@ export function ChatComposer({
                       <span className="agent-chip-label">Engine</span>
                       <select value={executor} onChange={(event) => onExecutorChange(event.target.value)}
                         disabled={disabled} aria-label="Select agent engine"
-                        title="Which engine runs agent turns in this chat. Claude Code and Codex appear here once you have signed in to them in Settings, and run on your own CLI subscription in the attached folder.">
+                        title="Which engine runs agent turns in this chat. A coding CLI appears here once you have signed in to it in Settings, and runs on your own subscription in the attached folder.">
                         {/* Only engines that would actually run the next turn.
                             Picking one here is a switch and nothing else -- no
                             sign-in, no browser, no waiting. */}
@@ -1743,13 +1800,13 @@ export function ChatComposer({
                          points at the one place they are set up; and when the
                          engine this chat is on has stopped working, it says so
                          instead -- which is the only warning there would be. */
-                      title="Sign in to Claude Code or Codex so they can run agent turns in this chat."
+                      title="Sign in to a coding CLI so it can run agent turns in this chat."
                     >
                       {engineBroken
                         ? `${activeChoice.name} is not connected — set it up in Settings`
                         : hasConnectedEngine
                           ? "Manage engines in Settings"
-                          : "Connect Claude Code or Codex…"}
+                          : "Connect a coding CLI…"}
                     </button>
                     {externalEngine ? (
                       <>
@@ -1877,8 +1934,8 @@ export function ChatComposer({
                         ignores them, so a dead control there would misrepresent
                         something that is happening. Here there is nothing behind
                         the button at all until a CLI is connected: usage is a
-                        fact about Claude Code or Codex, and with neither signed
-                        in there is no allowance to report. */}
+                        fact about the CLI that is signed in, and with none of
+                        them signed in there is no allowance to report. */}
                     {hasConnectedEngine ? (
                       <button
                         type="button"
@@ -1888,7 +1945,7 @@ export function ChatComposer({
                           onOpenUsagePanel?.();
                         }}
                         disabled={disabled}
-                        title="How much of your Claude Code or Codex subscription limit is used."
+                        title="How much of your coding CLI subscription limits are used."
                         aria-label="Usage"
                       >
                         <GaugeIcon />
@@ -2861,7 +2918,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "terminal",
       description: "Connected tools and runtime services.",
       items: [
-        ["Engines", "Sign in to Claude Code and Codex so they can run agent turns", onOpenEngines],
+        ["Engines", "Sign in to the coding CLIs that run agent turns", onOpenEngines],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
         ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch],
         ["Language Server", "Workspace language intelligence", onOpenLsp],
