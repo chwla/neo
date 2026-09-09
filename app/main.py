@@ -47,6 +47,7 @@ from app.api.routes.skills import router as skills_router
 from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.test_runner import router as test_runner_router
+from app.api.routes.voice import router as voice_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
@@ -194,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(web_router)
     app.include_router(web_router, prefix="/api")
     app.include_router(web_search_router, prefix="/api")
+    app.include_router(voice_router, prefix="/api")
     app.include_router(workspaces_router, prefix="/api")
     app.include_router(continuity_router, prefix="/api")
     app.include_router(integration_router, prefix="/api")

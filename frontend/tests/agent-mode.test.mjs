@@ -346,9 +346,9 @@ describe("agent mode composer", () => {
 
     assert.equal(
       count(html, 'disabled=""'),
-      12,
-      "4 chips (engine, repo, mode, agent) + folder + tools + skills + attach + compact"
-        + " + model + textarea + Start",
+      13,
+      "4 chips (engine, repo, mode, agent) + folder + tools + skills + attach + dictate"
+        + " + compact + model + textarea + Start",
     );
   });
 });

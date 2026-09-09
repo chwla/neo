@@ -168,6 +168,29 @@ def _readiness_checks() -> dict[str, dict[str, object]]:
             "error": str(exc),
         }
 
+    # Voice is an optional extra, and readiness is all-or-nothing: the caller below
+    # requires every check to be ok. So "not installed" and "switched off" both report
+    # ok, with the reason alongside -- reporting them as failures would take readiness
+    # down on every existing deployment, none of which asked for speech recognition.
+    # Only a voice setup that is switched on and genuinely broken is a failure.
+    try:
+        from app.services.voice.service import VoiceService
+
+        report = VoiceService().availability()
+        checks["voice"] = {
+            "ok": report.available or report.reason != "engine_error",
+            "enabled": bool(settings.voice_enabled),
+            "available": report.available,
+            "reason": report.reason,
+        }
+    except Exception as exc:
+        checks["voice"] = {
+            "ok": True,
+            "enabled": False,
+            "reason": "engine_error",
+            "error": str(exc),
+        }
+
     return checks
 
 

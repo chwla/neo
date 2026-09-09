@@ -14,8 +14,11 @@ import BackgroundTurnToast, {
 } from "./BackgroundTurnToast.jsx";
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
+import { replaceRange } from "./voice/insertion.js";
+import { useDictation } from "./voice/useDictation.js";
 import CommandPalette from "./CommandPalette.jsx";
 import KeyboardSettings from "./KeyboardSettings.jsx";
+import VoiceSettings from "./VoiceSettings.jsx";
 import { COMMANDS } from "./keys/commands.js";
 import { detectPlatform } from "./keys/engine.js";
 import { buildKeymap } from "./keys/keymap.js";
@@ -1338,6 +1341,71 @@ function CompactConversationAction({ compacting, disabled, onCompact }) {
   );
 }
 
+/** m:ss, which is how long a dictation is ever worth showing. */
+function formatDictationTime(seconds) {
+  const whole = Math.max(0, Math.floor(seconds ?? 0));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/** A microphone, drawn to sit beside the paperclip rather than to be noticed. */
+function MicrophoneIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v4" />
+    </svg>
+  );
+}
+
+/**
+ * Dictation reads the same in both modes, so it is written once, like AttachFilesAction.
+ *
+ * When speech recognition is installed but its model is not downloaded, this opens the
+ * settings screen instead of recording. An unset-up capability is a task, not a
+ * choice, and every other control in this menu takes effect the moment it is pressed.
+ */
+function DictateAction({ available, reason, message, recording, busy, disabled, onDictate, onSetUp }) {
+  /* The entry always does something. Every unavailable state that a person can fix
+     routes to the settings screen instead of being greyed out, because a disabled
+     control that never says why is the thing this menu previously got wrong. Only a
+     browser that cannot record at all -- no secure context, no AudioWorklet -- is
+     genuinely inert, and nothing in Neo can change that. */
+  const setUpStates = ["dependency_missing", "model_not_downloaded", "model_downloading", "disabled"];
+  const needsSetUp = !available && setUpStates.includes(reason);
+  const inert = !available && !needsSetUp;
+
+  const hint = {
+    dependency_missing: "Voice setup required",
+    model_not_downloaded: "Download voice model",
+    model_downloading: "Downloading voice model…",
+    disabled: "Turn on voice input",
+  }[reason];
+
+  const label = recording ? "Stop dictation" : busy ? "Transcribing…" : "Dictate";
+
+  return (
+    <button
+      type="button"
+      className={`composer-menu-action chat-dictate-button${recording ? " is-recording" : ""}`}
+      onClick={needsSetUp ? onSetUp : onDictate}
+      disabled={disabled || busy || inert}
+      title={available ? "Speak instead of typing. The text lands here for you to check." : message}
+      /* The hint is part of the accessible name, not decoration: a screen-reader user
+         gets "Dictate, voice setup required" rather than an unexplained button. */
+      aria-label={needsSetUp ? `${label}, ${hint}` : label}
+      aria-pressed={recording}
+    >
+      <MicrophoneIcon />
+      <span className="composer-menu-action-body">
+        <span>{label}</span>
+        {needsSetUp && hint ? <span className="composer-menu-action-hint">{hint}</span> : null}
+      </span>
+    </button>
+  );
+}
+
 function SubmitArrowIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
@@ -1442,6 +1510,13 @@ export function ChatComposer({
   onOpenToolsPanel,
   onOpenSkillsPanel,
   onOpenUsagePanel,
+  //: What /api/voice/status said, and the dictation state machine driving it.
+  //: Passed in rather than owned here so the composer stays a rendering component
+  //: and a test can put it in any state without a microphone.
+  voice = null,
+  dictation = null,
+  onDictate,
+  onOpenVoiceSettings,
   //: Windows of the active engine that are close to or past their limit. Passed
   //: in rather than fetched here so the composer stays a rendering component,
   //: and so a test can hand it a warning without a server.
@@ -1542,6 +1617,36 @@ export function ChatComposer({
         pendingCaretRef.current = (value ?? "").length + 1;
         onChange(`${value ?? ""}\n`);
         return true;
+      },
+      /* Where the caret is, so dictation can put words there rather than at the end.
+         Returns null rather than a guess when there is no composer on screen. */
+      selection() {
+        const node = textareaRef.current;
+        if (!node) return null;
+        return { start: node.selectionStart ?? 0, end: node.selectionEnd ?? 0 };
+      },
+      /* Insert at the caret, replacing whatever is selected -- the same thing typing
+         would do. Spacing is decided by insertion.js, which knows what sits either
+         side; the caller passes bare text. */
+      insert(text) {
+        const node = textareaRef.current;
+        if (!node) return false;
+        return this.replaceRange(
+          { start: node.selectionStart ?? 0, end: node.selectionEnd ?? 0 },
+          text,
+        );
+      },
+      /* Replace a span, which is how each partial refines the one before it. Written
+         through onChange with the caret parked in pendingCaretRef, exactly as newLine
+         does, because the textarea is controlled and setting selection before React
+         has re-rendered would land in the wrong place. */
+      replaceRange(range, text) {
+        const node = textareaRef.current;
+        if (!node || typeof onChange !== "function") return false;
+        const next = replaceRange(value ?? "", range, text);
+        pendingCaretRef.current = next.caret;
+        onChange(next.value);
+        return next.range;
       },
       openAttach() {
         if (!attachInputRef.current) return false;
@@ -1715,6 +1820,60 @@ export function ChatComposer({
                 </button>
               </span>
             ))}
+          </div>
+        ) : null}
+        {/* The microphone lives inside the "+" menu, so the fact that it is running
+            has to be shown outside it -- a status you only see by reopening a popover
+            is not a status. This is also the only place to stop, for anyone who
+            reached the microphone by mouse rather than by shortcut. */}
+        {dictation?.recording || dictation?.busy ? (
+          <div
+            className={`composer-dictation${dictation.nearLimit ? " is-near-limit" : ""}`}
+            /* Announced, because the visual cue for "your microphone is open" is a
+               coloured dot, and that is exactly the cue a screen-reader user does not
+               get. Polite rather than assertive: it should not interrupt speech
+               already in progress. */
+            role="status"
+            aria-live="polite"
+          >
+            <span className="composer-dictation-dot" aria-hidden="true" />
+            <span className="composer-dictation-label">
+              {dictation.busy ? "Transcribing…" : "Listening"}
+            </span>
+            {dictation.recording ? (
+              <>
+                <span className="composer-dictation-time">{formatDictationTime(dictation.seconds)}</span>
+                <span
+                  className="composer-dictation-level"
+                  aria-hidden="true"
+                  style={{ "--level": Math.min(1, (dictation.level ?? 0) * 6) }}
+                />
+                <button type="button" className="composer-dictation-stop" onClick={dictation.stop}>
+                  Stop
+                </button>
+                <button type="button" className="composer-dictation-cancel" onClick={dictation.cancel}>
+                  Cancel
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+        {dictation?.error ? (
+          /* An error nobody is told about is an error that reads as the feature
+             silently not working. */
+          <div className="composer-dictation-error" role="alert">
+            <span>
+              {dictation.error.message}
+              {dictation.error.remedy ? ` ${dictation.error.remedy}` : ""}
+            </span>
+            <button
+              type="button"
+              className="composer-usage-dismiss"
+              onClick={dictation.dismissError}
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
           </div>
         ) : null}
         <form className="chat-input-form" onSubmit={onSubmit}>
@@ -1892,6 +2051,22 @@ export function ChatComposer({
                         attachInputRef.current?.click();
                       }}
                     />
+                    <DictateAction
+                      available={voice?.available}
+                      reason={voice?.reason}
+                      message={voice?.message}
+                      recording={dictation?.recording}
+                      busy={dictation?.busy}
+                      disabled={disabled}
+                      onDictate={() => {
+                        setMenuOpen(false);
+                        onDictate?.();
+                      }}
+                      onSetUp={() => {
+                        setMenuOpen(false);
+                        onOpenVoiceSettings?.();
+                      }}
+                    />
                     <button
                       type="button"
                       className="composer-menu-action agent-tools-button"
@@ -1986,6 +2161,22 @@ export function ChatComposer({
                         attachInputRef.current?.click();
                       }}
                     />
+                    <DictateAction
+                      available={voice?.available}
+                      reason={voice?.reason}
+                      message={voice?.message}
+                      recording={dictation?.recording}
+                      busy={dictation?.busy}
+                      disabled={disabled}
+                      onDictate={() => {
+                        setMenuOpen(false);
+                        onDictate?.();
+                      }}
+                      onSetUp={() => {
+                        setMenuOpen(false);
+                        onOpenVoiceSettings?.();
+                      }}
+                    />
                     <CompactConversationAction
                       compacting={compacting}
                       disabled={disabled}
@@ -2016,6 +2207,27 @@ export function ChatComposer({
               rows={1}
               disabled={disabled}
               onKeyDown={(event) => {
+                /* Dictation owns both keys while it runs. Escape cancels it rather
+                   than blurring the box, and Enter finishes it *without sending* --
+                   finalising and then submitting would put a variable pause between
+                   the keypress and the message, and would send text the user never
+                   got to read, which is the one thing this feature must not do.
+                   Handled here rather than through the modal stack: the keyboard
+                   engine goes inert whenever anything is on that stack, which would
+                   disable the very shortcut needed to stop. */
+                if (dictation?.recording) {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    dictation.cancel();
+                    return;
+                  }
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    dictation.stop();
+                    return;
+                  }
+                }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
@@ -2896,7 +3108,8 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines,
+  onOpenVoice, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
       title: "Intelligence",
@@ -2919,6 +3132,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       description: "Connected tools and runtime services.",
       items: [
         ["Engines", "Sign in to the coding CLIs that run agent turns", onOpenEngines],
+        ["Voice input", "Speak instead of typing: engine, model, and microphone", onOpenVoice],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
         ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch],
         ["Language Server", "Workspace language intelligence", onOpenLsp],
@@ -3204,6 +3418,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
   const [memoryIncognito, setMemoryIncognito] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
+  //: What the server says about speech recognition. Null until the first fetch, which
+  //: is why the microphone renders disabled rather than absent while it is unknown.
+  const [voiceStatus, setVoiceStatus] = useState(null);
+  const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
@@ -4538,6 +4756,28 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     composerRef.current = composer;
   }, []);
 
+  /* Whether speech recognition can run, fetched once. A failure leaves the status
+     null, which renders the microphone disabled rather than absent -- the same
+     conservative default the keyboard config takes. */
+  useEffect(() => {
+    let cancelled = false;
+    api.voiceStatus()
+      .then((data) => { if (!cancelled) setVoiceStatus(data); })
+      .catch(() => { /* the microphone stays disabled; nothing else is affected */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  /* Dictation puts words where the caret is and stops there. It never submits:
+     the whole point is that speech becomes text the user reads before sending. */
+  const dictation = useDictation({
+    onText: (text) => {
+      const composer = composerRef.current;
+      if (!composer) return;
+      composer.insert(text);
+      composer.focus("end");
+    },
+  });
+
   /* Scrolling declines when there is nothing to scroll, which leaves the
      browser's own behaviour in place rather than replacing it with a worse one. */
   const scrollTranscript = useCallback((amount) => {
@@ -4605,6 +4845,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
     // Declines when there is no composer on screen, so the key falls through to
     // the browser instead of vanishing.
     "chat.focusComposer": () => focusComposer("caret"),
+
+    // Declines rather than swallowing the key when speech recognition cannot run,
+    // so the shortcut is inert on a machine without it instead of silently doing
+    // nothing and looking broken.
+    "chat.dictate": () => {
+      if (!voiceStatus?.available && !dictation.recording) return false;
+      dictation.toggle();
+      return true;
+    },
 
     "chat.scrollDown": ({ count = 1 }) => scrollTranscript(SCROLL_STEP * count),
     "chat.scrollUp": ({ count = 1 }) => scrollTranscript(-SCROLL_STEP * count),
@@ -4833,6 +5082,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
 
         <ChatComposer
           onComposerReady={handleComposerReady}
+          voice={voiceStatus}
+          dictation={dictation}
+          onDictate={dictation.toggle}
+          onOpenVoiceSettings={() => setShowVoiceSettings(true)}
           /* Stop is offered whenever something is running, full stop -- a run
              being steered is still a run someone may want to cancel outright. */
           generating={sending && Boolean(activeTurn)}
@@ -5017,6 +5270,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
             setShowRepos(true);
           }}
           onOpenKeyboard={() => { setShowSettings(false); setShowKeyboardSettings(true); }}
+          onOpenVoice={() => { setShowSettings(false); setShowVoiceSettings(true); }}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -5097,6 +5351,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile }) {
           onCancel={() => setConfirmingSignOut(false)}
           onConfirm={onSwitchProfile}
         />
+      )}
+      {showVoiceSettings && (
+        <Modal title="Voice input" onClose={() => setShowVoiceSettings(false)}>
+          <VoiceSettings
+            status={voiceStatus}
+            onStatusChange={setVoiceStatus}
+            onClose={() => setShowVoiceSettings(false)}
+          />
+        </Modal>
       )}
       {showKeyboardSettings && (
         <KeyboardSettings

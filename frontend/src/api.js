@@ -157,6 +157,63 @@ async function streamGet(path, onEvent, signal) {
   }
 }
 
+
+/**
+ * The streaming counterpart to `streamRequest` for a body that is raw bytes.
+ *
+ * Separate rather than a branch inside `streamRequest` so that no existing caller's
+ * behaviour changes. Audio travels as `application/octet-stream` because the
+ * alternative -- multipart -- spools to a temporary file on the server past about a
+ * megabyte, and the user's voice should not touch the disk.
+ */
+async function streamBinaryRequest(path, body, onEvent, signal) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+      signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    throw new Error(
+      `Backend API is not reachable. Start FastAPI on http://127.0.0.1:8000. Details: ${
+        error.message || error
+      }`,
+    );
+  }
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(errorDetail(detail, `Request failed with ${response.status}`));
+  }
+  if (!response.body) {
+    throw new Error("Streaming response is not available in this browser.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      throw error;
+    }
+    if (chunk.done) break;
+    buffered += decoder.decode(chunk.value, { stream: true });
+    const lines = buffered.split("\n");
+    buffered = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim()) onEvent?.(JSON.parse(line));
+    }
+  }
+  if (buffered.trim()) onEvent?.(JSON.parse(buffered));
+}
+
 export const api = {
   accountProfiles: () => request("/account-profiles"),
   currentAccountProfile: () => request("/account-profiles/session/current"),
@@ -488,6 +545,32 @@ export const api = {
   updateChatConfig: (payload) =>
     request("/chat-config", { method: "POST", body: JSON.stringify(payload) }),
   keyboardConfig: () => request("/keybindings/config"),
+
+  // -- Voice input ----------------------------------------------------------
+  voiceStatus: () => request("/voice/status"),
+  /**
+   * Transcribe a recording. `pcm` is an Int16Array of 16 kHz mono samples.
+   *
+   * Results arrive as newline-delimited JSON rather than one response because a long
+   * recording takes seconds to decode, and a composer that sits still that long reads
+   * as a hung screen. The record with `type: "final"` is the authoritative one.
+   */
+  transcribeVoice: (pcm, { language, partial, spokenPunctuation, onEvent, signal } = {}) => {
+    const query = new URLSearchParams();
+    if (language) query.set("language", language);
+    if (partial) query.set("partial", "true");
+    if (spokenPunctuation) query.set("spoken_punctuation", "true");
+    const suffix = query.toString() ? `?${query}` : "";
+    return streamBinaryRequest(`/voice/transcribe${suffix}`, pcm, onEvent, signal);
+  },
+  voiceModels: () => request("/voice/models"),
+  installVoiceModel: (modelId, onEvent, signal) =>
+    streamRequest("/voice/models/install", { model_id: modelId }, onEvent, signal),
+  cancelVoiceModelInstall: (modelId) =>
+    request("/voice/models/install/cancel", {
+      method: "POST",
+      body: JSON.stringify({ model_id: modelId }),
+    }),
   updateKeyboardConfig: (payload) =>
     request("/keybindings/config", { method: "POST", body: JSON.stringify(payload) }),
   setKeybinding: (keymap, commandId, sequence) =>

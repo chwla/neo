@@ -5061,3 +5061,137 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .usage-observed { margin: 10px 0 0; color: var(--neo-muted); font-size: 10px; }
 .usage-empty { margin: 0; color: var(--neo-muted); font-size: 11px; }
 .usage-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
+
+/* -- Dictation ----------------------------------------------------------- */
+/* The microphone itself lives inside the "+" menu, so everything here is about
+   making its state visible from outside that popover. Same gutter, accent and
+   type scale as .composer-usage-warning, because both are notes about the box
+   directly below them and a second visual language there reads as an error. */
+.composer-dictation {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+  margin-left: var(--composer-gutter, 0px);
+  border-left: 2px solid var(--composer-edge);
+  background: rgba(57, 255, 20, .05);
+  padding: 7px 9px;
+  color: #79ef8b;
+  font-size: 11px;
+}
+.composer-dictation.is-near-limit { color: #f0c674; border-left-color: #f0c674; }
+
+.composer-dictation-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: composer-dictation-pulse 1.4s ease-in-out infinite;
+}
+@keyframes composer-dictation-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+/* A blinking dot next to text somebody is reading is a real accessibility
+   problem, and the label already says "Listening". */
+@media (prefers-reduced-motion: reduce) {
+  .composer-dictation-dot { animation: none; }
+}
+
+.composer-dictation-label { font-weight: 500; }
+.composer-dictation-time { opacity: .75; font-variant-numeric: tabular-nums; }
+
+/* An input meter, so a microphone that is muted at the operating system level is
+   visibly doing nothing rather than invisibly doing nothing. --level is set
+   inline from the recorder's RMS. */
+.composer-dictation-level {
+  flex: 1 1 auto;
+  height: 3px;
+  min-width: 24px;
+  max-width: 120px;
+  border-radius: 2px;
+  background: rgba(121, 239, 139, .18);
+  background-image: linear-gradient(to right, currentColor 0, currentColor calc(var(--level, 0) * 100%), transparent calc(var(--level, 0) * 100%));
+  background-repeat: no-repeat;
+}
+
+.composer-dictation-stop,
+.composer-dictation-cancel {
+  flex: 0 0 auto;
+  border: 1px solid var(--composer-edge);
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.composer-dictation-cancel { border-color: transparent; opacity: .7; }
+.composer-dictation-stop:hover,
+.composer-dictation-cancel:hover { background: rgba(57, 255, 20, .1); }
+
+.composer-dictation-error {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  margin-left: var(--composer-gutter, 0px);
+  border-left: 2px solid #ef6b6b;
+  background: rgba(239, 107, 107, .07);
+  padding: 7px 9px;
+  color: #ef9b9b;
+  font-size: 11px;
+}
+
+/* Recording is shown on the menu entry too, for the moment between opening the
+   popover and finding the microphone in it. */
+.chat-dictate-button.is-recording { color: #79ef8b; }
+
+/* -- Voice settings ------------------------------------------------------- */
+.voice-settings { display: flex; flex-direction: column; gap: 18px; min-width: 420px; }
+.voice-settings-lede { margin: 0; color: var(--muted, #8a9a8a); font-size: 12px; line-height: 1.55; }
+
+.voice-status { display: flex; flex-direction: column; gap: 8px; }
+.voice-status-row { display: grid; grid-template-columns: 10px 140px 1fr; align-items: center; gap: 10px; font-size: 12px; }
+.voice-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #4a5a4a; }
+/* Colour is doubled by the wording in every row, so this reads the same to anyone
+   who cannot distinguish the three greens. */
+.voice-status-dot.is-ok { background: #39ff14; }
+.voice-status-dot.is-bad { background: #ef6b6b; }
+.voice-status-dot.is-busy { background: #f0c674; }
+.voice-status-dot.is-unknown { background: #4a5a4a; }
+.voice-status-label { color: var(--text, #d6e6d6); }
+.voice-status-detail { color: var(--muted, #8a9a8a); }
+
+.voice-panel { border: 1px solid var(--composer-edge, #1f3a1f); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.voice-panel.is-blocked { border-color: #6b4a1f; }
+.voice-panel h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.voice-panel p { margin: 0; font-size: 12px; color: var(--muted, #8a9a8a); line-height: 1.55; }
+.voice-panel-lede { margin: 0; }
+.voice-command { margin: 0; padding: 8px 10px; background: rgba(57, 255, 20, .06); border-radius: 4px; font-family: var(--mono, monospace); font-size: 12px; overflow-x: auto; user-select: all; }
+
+.voice-model { border-top: 1px solid var(--composer-edge, #1f3a1f); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.voice-model:first-of-type { border-top: none; padding-top: 0; }
+.voice-model-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.voice-model-name { font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.voice-model-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(57, 255, 20, .12); color: #79ef8b; }
+.voice-model-size { font-size: 11px; color: var(--muted, #8a9a8a); font-variant-numeric: tabular-nums; }
+.voice-model-detail { font-size: 11px; color: var(--muted, #8a9a8a); margin: 0; }
+.voice-model-ready { font-size: 11px; color: #79ef8b; }
+
+.voice-progress { display: flex; align-items: center; gap: 10px; }
+.voice-progress-bar { flex: 1 1 auto; height: 4px; border-radius: 2px; background: rgba(57, 255, 20, .12); overflow: hidden; }
+.voice-progress-bar > span { display: block; height: 100%; background: #39ff14; transition: width .25s ease; }
+.voice-progress-text { font-size: 11px; color: var(--muted, #8a9a8a); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.voice-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-left: 2px solid #ef6b6b; background: rgba(239, 107, 107, .07); padding: 9px 11px; color: #ef9b9b; font-size: 12px; }
+.voice-ready-note { margin: 0; font-size: 12px; color: #79ef8b; }
+.voice-ready-note kbd { font-family: var(--mono, monospace); font-size: 11px; padding: 1px 5px; border: 1px solid var(--composer-edge, #1f3a1f); border-radius: 3px; }
+.voice-settings-foot { display: flex; justify-content: flex-end; }
+
+/* The Dictate entry's second line, when it is pointing at setup rather than
+   recording. Kept visually quiet: it is an explanation, not a second action. */
+.composer-menu-action-body { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.composer-menu-action-hint { font-size: 10px; opacity: .65; }

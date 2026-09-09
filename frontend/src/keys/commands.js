@@ -95,6 +95,21 @@ export const COMMANDS = [
     keys: "escape",
     fixed: true,
   },
+  {
+    // A modifier chord and no alternate, deliberately. allowsBareKeys() means a bare
+    // key never fires while a textarea has focus, and the composer is exactly where
+    // somebody starts dictating from -- an alternate would be dead in the only place
+    // it is wanted. mod+shift+v is avoided because that is paste-as-plain-text.
+    //
+    // A toggle rather than hold-to-talk: the engine listens on keydown only, so there
+    // is no key-up to release on.
+    id: "chat.dictate",
+    title: "Start or stop dictation",
+    section: "Composer",
+    when: ["chat"],
+    keys: "mod+shift+d",
+    keywords: "voice speech mic microphone dictate talk transcribe say",
+  },
 
   // -- Chat -----------------------------------------------------------------
   {

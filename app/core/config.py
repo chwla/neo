@@ -346,6 +346,39 @@ class Settings(BaseSettings):
         ),
     )
 
+    # -- Voice input ---------------------------------------------------------
+    #: Speech-to-text runs locally through faster-whisper, which is an optional
+    #: extra. Everything here has a working default, so a machine that installed
+    #: it needs no configuration at all; a machine that did not reports the
+    #: microphone as unavailable and carries on.
+    voice_enabled: bool = Field(default=True)
+    voice_provider: str = Field(default="faster_whisper")
+    #: ``small`` is the honest floor that fits anywhere. The settings screen
+    #: recommends a larger model when the machine scan says there is room.
+    voice_model: str = Field(default="small")
+    #: Pinned rather than auto-detected. Detection runs on the first window only
+    #: and is unreliable on short or quiet audio, and when it guesses wrong
+    #: Whisper does not mislabel the text -- it transliterates, producing fluent
+    #: nonsense. Empty means detect, which is opt-in.
+    voice_language: str = Field(default="en")
+    #: "auto" resolves to cuda/float16 where there is a CUDA device and
+    #: cpu/int8 everywhere else, Apple Silicon included: CTranslate2 has no
+    #: Metal backend, so there is no third answer to pick.
+    voice_device: str = Field(default="auto")
+    voice_compute_type: str = Field(default="auto")
+    #: 0 means half the cores, capped at eight. A local language model is
+    #: usually running on the same machine and dictation must not starve it.
+    voice_cpu_threads: int = Field(default=0, ge=0, le=64)
+    #: Empty means ``<base data dir>/voice-models``. Deliberately machine-level:
+    #: ``data_dir`` is rewritten per profile inside a request, so a path built
+    #: from it would download the same gigabyte once per profile.
+    voice_model_dir: str = Field(default="")
+    #: Five minutes is far more than a chat message needs, and it is what keeps
+    #: the in-memory audio buffers trivially bounded at ~10 MB per session.
+    voice_max_seconds: int = Field(default=300, ge=5, le=1800)
+    #: Give the memory back when dictation has been idle. 0 keeps it loaded.
+    voice_idle_unload_seconds: int = Field(default=900, ge=0)
+
     @model_validator(mode="after")
     def apply_data_directory(self) -> "Settings":
         fields_set = self.model_fields_set
