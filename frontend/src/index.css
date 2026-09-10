@@ -5687,3 +5687,70 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .appearance-error { border-left: 2px solid var(--neo-danger-bright); background: var(--neo-danger-a08); padding: 9px 11px; color: var(--neo-danger-soft); font-size: 12px; }
 .appearance-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .appearance-saved { font-size: 11px; color: var(--neo-muted); }
+
+/* --- the chat background ---------------------------------------------------
+   A canvas behind the transcript, mounted as the first child of `.neo-main`.
+
+   The stacking here is deliberate and narrow. `.neo-main` and the two elements
+   above the canvas get `position` and nothing else, because a `z-index` on any
+   of them would make them a stacking context, and `.message-actions-menu` and
+   `.context-window-menu` live inside `.neo-shell` at z-index 30 specifically so
+   they can escape it and draw over the composer at 20. Positioning alone is
+   enough: the canvas and its siblings then sit in the same painting layer,
+   where document order already puts the header and the transcript on top.
+
+   For the same reason nothing here gains a transform, filter, backdrop-filter,
+   will-change or contain: any of those would make `.neo-main` the containing
+   block for the fixed composer and drop it out of the viewport corner.
+
+   Scoped to `.neo-main` rather than added to the rule it shares at the top of
+   this file, which also dresses `.project-page`, `.task-page` and four others
+   that have no background layer to anchor. */
+.neo-main { position: relative; }
+.neo-main > .neo-view-header,
+.neo-main > .neo-shell { position: relative; }
+
+.chat-bg-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  /* Load-bearing: the layer covers the transcript's whole scrolling area, so
+     without this it would swallow every click, drag and wheel event in the
+     conversation. */
+  pointer-events: none;
+  overflow: hidden;
+}
+.chat-bg-layer canvas { display: block; width: 100%; height: 100%; }
+
+/* The empty state is the only text in the panel with no opaque bubble under it,
+   so it brings its own ground when something is moving behind it. A background
+   on the element itself rather than a negative-z-index pseudo-element, which
+   would escape to the root stacking context and paint under the canvas. */
+[data-chat-bg] .neo-empty-state {
+  background: radial-gradient(ellipse at center,
+    var(--neo-scrim-a90) 0%, var(--neo-scrim-a70) 45%, var(--neo-scrim-a00) 72%);
+}
+
+/* Reduced motion is handled in the engine rather than here: the canvas paints a
+   single still frame and never starts its loop, which keeps the field worth
+   looking at instead of blanking the panel. */
+
+/* --- the background picker ------------------------------------------------
+   Reuses the theme picker's cards. There is no swatch: five chips can show what
+   a palette looks like, but nothing still can show what motion looks like, so
+   the name and the sentence carry it and the preview is the panel behind the
+   dialog. */
+.bg-intensity { display: flex; align-items: center; gap: 6px; }
+.bg-intensity-label { margin-right: 4px; font-size: 11px; color: var(--neo-muted); }
+.bg-intensity-option {
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  background: var(--neo-panel);
+  padding: 5px 11px;
+  color: var(--neo-text);
+  font-size: 11px;
+  transition: border-color .14s ease, background .14s ease, color .14s ease;
+}
+.bg-intensity-option:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); }
+.bg-intensity-option.is-selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a06); color: var(--neo-accent); }
+.bg-intensity-option:focus-visible { outline: 1px solid var(--neo-accent-a55); outline-offset: 1px; }

@@ -10,7 +10,13 @@ The list of valid ids is duplicated from ``frontend/src/themes.js`` on purpose.
 The browser needs it to draw the picker and the server needs it to refuse a
 value it would otherwise store forever, and a shared source would mean shipping
 the palette through an endpoint that exists only to restate a constant. A test
-holds the two lists together.
+holds the two lists together. The same goes for the chat background, whose
+catalogue lives in ``frontend/src/backgrounds/index.js``.
+
+Each preference is its own row, so a write of one never restates another: the
+theme and the background are chosen on different screens, and a patch carrying
+the whole configuration would let the later of two writes win on every field
+rather than on the one it meant to change.
 """
 
 from __future__ import annotations
@@ -38,6 +44,31 @@ VALID_THEMES = (
     "crimson",
     "paper",
 )
+
+BACKGROUND_KEY = "background"
+
+#: Motion behind the transcript is off unless it is asked for. The default has
+#: to be the one that mounts no canvas at all, so that a profile which has never
+#: chosen pays nothing for the feature existing.
+DEFAULT_BACKGROUND = "none"
+
+#: Every id with an effect module in ``frontend/src/backgrounds/``, plus "none".
+VALID_BACKGROUNDS = (
+    DEFAULT_BACKGROUND,
+    "jellyfish",
+    "stars",
+    "rain",
+    "waves",
+)
+
+INTENSITY_KEY = "background_intensity"
+
+DEFAULT_INTENSITY = "medium"
+
+#: How strongly the background draws itself. Separate from the choice of effect
+#: because the readable strength depends on the theme underneath it -- the same
+#: alpha that reads as a whisper on Ice is a smear on Paper.
+VALID_INTENSITIES = ("subtle", DEFAULT_INTENSITY, "vivid")
 
 
 def _db_path() -> str:
@@ -126,19 +157,79 @@ def set_theme(value: str) -> str:
     return value
 
 
-def config() -> dict:
-    """Everything the browser needs to dress itself."""
+def background() -> str:
+    """This profile's chat background.
 
-    return {"theme": theme(), "available": list(VALID_THEMES)}
+    Falls back the same way a theme does, and for a sharper reason: the id
+    selects a rendering module in the browser, so one that is no longer shipped
+    would otherwise leave a mounted canvas with nothing to draw on it.
+    """
+
+    stored = get_preference(BACKGROUND_KEY)
+    return stored if stored in VALID_BACKGROUNDS else DEFAULT_BACKGROUND
+
+
+def set_background(value: str) -> str:
+    """Store a background, rejecting one that has no effect module."""
+
+    if value not in VALID_BACKGROUNDS:
+        raise ValueError(f"unknown background: {value!r}")
+    set_preference(BACKGROUND_KEY, value)
+    return value
+
+
+def intensity() -> str:
+    """How strongly this profile's background draws itself."""
+
+    stored = get_preference(INTENSITY_KEY)
+    return stored if stored in VALID_INTENSITIES else DEFAULT_INTENSITY
+
+
+def set_intensity(value: str) -> str:
+    """Store an intensity, rejecting one the effects do not know how to scale."""
+
+    if value not in VALID_INTENSITIES:
+        raise ValueError(f"unknown intensity: {value!r}")
+    set_preference(INTENSITY_KEY, value)
+    return value
+
+
+def config() -> dict:
+    """Everything the browser needs to dress itself.
+
+    ``available`` stays the list of themes rather than growing into a map of
+    every catalogue: it is already the shape the picker reads, and renaming it
+    would break a client that is only ever served from this repository for no
+    gain over adding the new lists beside it.
+    """
+
+    return {
+        "theme": theme(),
+        "available": list(VALID_THEMES),
+        "background": background(),
+        "backgrounds": list(VALID_BACKGROUNDS),
+        "intensity": intensity(),
+        "intensities": list(VALID_INTENSITIES),
+    }
 
 
 __all__ = [
+    "BACKGROUND_KEY",
+    "DEFAULT_BACKGROUND",
+    "DEFAULT_INTENSITY",
     "DEFAULT_THEME",
+    "INTENSITY_KEY",
     "THEME_KEY",
+    "VALID_BACKGROUNDS",
+    "VALID_INTENSITIES",
     "VALID_THEMES",
+    "background",
     "config",
     "get_preference",
     "initialize_appearance_tables",
+    "intensity",
+    "set_background",
+    "set_intensity",
     "set_preference",
     "set_theme",
     "theme",

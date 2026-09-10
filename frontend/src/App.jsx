@@ -18,9 +18,16 @@ import { replaceRange } from "./voice/insertion.js";
 import { useDictation } from "./voice/useDictation.js";
 import CommandPalette from "./CommandPalette.jsx";
 import AppearanceSettings from "./AppearanceSettings.jsx";
+import BackgroundSettings from "./BackgroundSettings.jsx";
+import ChatBackground from "./ChatBackground.jsx";
 import KeyboardSettings from "./KeyboardSettings.jsx";
 import VoiceSettings from "./VoiceSettings.jsx";
 import { DEFAULT_THEME_ID, applyTheme } from "./themes.js";
+import {
+  DEFAULT_BACKGROUND_ID,
+  DEFAULT_INTENSITY_ID,
+  applyBackground,
+} from "./backgrounds/index.js";
 import { COMMANDS } from "./keys/commands.js";
 import { detectPlatform } from "./keys/engine.js";
 import { buildKeymap } from "./keys/keymap.js";
@@ -3126,7 +3133,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenIntegrations, onOpenAppearance,
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenIntegrations, onOpenAppearance, onOpenChatBackground,
   onOpenVoice, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
@@ -3199,6 +3206,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       description: "How Neo looks.",
       items: [
         ["Theme", "The colour of every surface, from phosphor green to daylight", onOpenAppearance],
+        ["Background", "Motion behind the conversation, or none at all", onOpenChatBackground],
       ],
     },
   ];
@@ -3347,7 +3355,8 @@ function mergeLiveRun(run, live, messageId) {
   };
 }
 
-function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChange }) {
+function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChange,
+  background, intensity, onBackgroundChange, onIntensityChange }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
   // What each chat is doing, keyed by chat id, because more than one of them can
@@ -3451,6 +3460,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   const [voiceStatus, setVoiceStatus] = useState(null);
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   const [showAppearance, setShowAppearance] = useState(false);
+  const [showChatBackground, setShowChatBackground] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
@@ -5039,6 +5049,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         />
       ) : (
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
+        {/* First child, so it paints under the header and the transcript. It is
+            absolutely positioned and takes no pointer events, so it is out of
+            the flex flow and out of the way of every control above it. */}
+        <ChatBackground background={background} intensity={intensity} />
         <header className="neo-view-header">
           {/* The same words the backend names a new chat with. On a refresh the
               chat is briefly not loaded yet, so this placeholder renders first
@@ -5303,6 +5317,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           onOpenKeyboard={() => { setShowSettings(false); setShowKeyboardSettings(true); }}
           onOpenVoice={() => { setShowSettings(false); setShowVoiceSettings(true); }}
           onOpenAppearance={() => { setShowSettings(false); setShowAppearance(true); }}
+          onOpenChatBackground={() => { setShowSettings(false); setShowChatBackground(true); }}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -5405,6 +5420,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           />
         </Modal>
       )}
+      {showChatBackground && (
+        <Modal title="Background" onClose={() => setShowChatBackground(false)}>
+          <BackgroundSettings
+            background={background}
+            intensity={intensity}
+            onBackgroundChange={onBackgroundChange}
+            onIntensityChange={onIntensityChange}
+            onClose={() => setShowChatBackground(false)}
+          />
+        </Modal>
+      )}
       {showKeyboardSettings && (
         <KeyboardSettings
           platform={keyboardKeymap.platform}
@@ -5451,8 +5477,24 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [theme, setTheme] = useState(DEFAULT_THEME_ID);
+  const [background, setBackground] = useState(DEFAULT_BACKGROUND_ID);
+  const [intensity, setIntensity] = useState(DEFAULT_INTENSITY_ID);
 
-  // The theme is fetched inside the gate that already holds back the first
+  //: The one place a configuration response becomes what is on the screen, so
+  //: the first-paint gate and signing in cannot drift apart in what they apply.
+  //: A null response is a profile that could not be reached, which wears the
+  //: defaults rather than nothing.
+  function dressUp(config) {
+    const nextTheme = config?.theme || DEFAULT_THEME_ID;
+    const nextBackground = config?.background || DEFAULT_BACKGROUND_ID;
+    setTheme(nextTheme);
+    applyTheme(nextTheme);
+    setBackground(nextBackground);
+    applyBackground(nextBackground);
+    setIntensity(config?.intensity || DEFAULT_INTENSITY_ID);
+  }
+
+  // The appearance is fetched inside the gate that already holds back the first
   // paint of the real interface, rather than after it. A palette that arrives a
   // frame late is a visible flash of the wrong colours on every load, and this
   // costs nothing: the request goes out alongside the session check, not after
@@ -5464,12 +5506,11 @@ export default function App() {
   useEffect(() => {
     Promise.all([
       api.currentAccountProfile().then((data) => data.profile).catch(() => null),
-      api.appearanceConfig().then((config) => config.theme).catch(() => DEFAULT_THEME_ID),
+      api.appearanceConfig().catch(() => null),
     ])
-      .then(([nextProfile, nextTheme]) => {
+      .then(([nextProfile, config]) => {
         setProfile(nextProfile);
-        setTheme(nextTheme);
-        applyTheme(nextTheme);
+        dressUp(config);
       })
       .finally(() => setCheckingSession(false));
   }, []);
@@ -5492,12 +5533,12 @@ export default function App() {
         onSignedIn={(next) => {
           clearProfileScopedState();
           setProfile(next);
-          // Signing in here does not reload the page, so the theme fetched
+          // Signing in here does not reload the page, so the appearance fetched
           // before there was a profile is the default rather than this
           // profile's. Ask again now that there is a session to ask about.
           api.appearanceConfig()
-            .then((config) => { setTheme(config.theme); applyTheme(config.theme); })
-            .catch(() => { /* stay on the default; the next load will try again */ });
+            .then(dressUp)
+            .catch(() => { /* stay on the defaults; the next load will try again */ });
         }}
       />
     );
@@ -5509,6 +5550,10 @@ export default function App() {
       onSwitchProfile={switchProfile}
       theme={theme}
       onThemeChange={setTheme}
+      background={background}
+      intensity={intensity}
+      onBackgroundChange={setBackground}
+      onIntensityChange={setIntensity}
     />
   );
 }
