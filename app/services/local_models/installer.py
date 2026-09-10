@@ -110,7 +110,7 @@ def _progress_message(status: str, completed: float, total: float) -> str:
     """Ollama's own status strings are jargon; these are not."""
 
     if total and completed:
-        return f"Downloading — {_human_bytes(completed)} of {_human_bytes(total)}"
+        return f"Downloading {_human_bytes(completed)} of {_human_bytes(total)}"
     if "verif" in status or "sha" in status.lower():
         return "Checking the download is intact"
     if "manifest" in status:

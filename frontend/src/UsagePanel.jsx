@@ -143,7 +143,7 @@ export default function UsagePanel({ onClose }) {
     <Modal title="Usage" onClose={onClose} className="usage-panel">
       <p className="dialog-caption">
         Subscription limits for the coding CLIs you have connected. Neo reads what each
-        CLI recorded for itself — it never reads their credentials, and never asks the
+        CLI recorded for itself. Neo never reads their credentials, and never asks the
         vendor. That is why each figure is stamped with when it was true.
       </p>
 

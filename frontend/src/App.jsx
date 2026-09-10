@@ -30,6 +30,7 @@ import ChatToolsPanel from "./ChatToolsPanel.jsx";
 import UsagePanel from "./UsagePanel.jsx";
 import SkillsPanel from "./SkillsPanel.jsx";
 import ExternalAgents from "./ExternalAgents.jsx";
+import Integrations from "./Integrations.jsx";
 import CompareModels from "./CompareModels.jsx";
 import LocalModels from "./LocalModels.jsx";
 import Notes from "./Notes.jsx";
@@ -1280,9 +1281,9 @@ function resetPhrase(epochSeconds) {
   const remaining = Math.round(epochSeconds * 1000 - Date.now());
   if (remaining <= 0) return "";
   const minutes = Math.round(remaining / 60000);
-  if (minutes < 60) return ` — resets in ${Math.max(1, minutes)}m`;
+  if (minutes < 60) return ` (resets in ${Math.max(1, minutes)}m)`;
   const hours = Math.round(minutes / 60);
-  return hours < 24 ? ` — resets in ${hours}h` : ` — resets in ${Math.round(hours / 24)}d`;
+  return hours < 24 ? ` (resets in ${hours}h)` : ` (resets in ${Math.round(hours / 24)}d)`;
 }
 
 /** A gauge: how much of an allowance is spent, which is what the panel shows. */
@@ -1964,7 +1965,7 @@ export function ChatComposer({
                       title="Sign in to a coding CLI so it can run agent turns in this chat."
                     >
                       {engineBroken
-                        ? `${activeChoice.name} is not connected — set it up in Settings`
+                        ? `${activeChoice.name} is not connected. Set it up in Settings`
                         : hasConnectedEngine
                           ? "Manage engines in Settings"
                           : "Connect a coding CLI…"}
@@ -3110,7 +3111,7 @@ function GallerySettingsDialog({ onClose }) {
   );
 }
 
-function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenAppearance,
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenIntegrations, onOpenAppearance,
   onOpenVoice, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
@@ -3133,6 +3134,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "terminal",
       description: "Connected tools and runtime services.",
       items: [
+        ["Connected accounts", "Link Google so Neo can use your mail, calendar and documents", onOpenIntegrations],
         ["Engines", "Sign in to the coding CLIs that run agent turns", onOpenEngines],
         ["Voice input", "Speak instead of typing: engine, model, and microphone", onOpenVoice],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
@@ -3407,6 +3409,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   // from Settings and from the composer's engine picker, which no longer offers
   // an engine it cannot actually run.
   const [showEngines, setShowEngines] = useState(false);
+  const [showIntegrations, setShowIntegrations] = useState(false);
   const [showGallerySettings, setShowGallerySettings] = useState(false);
   const [showBackgroundChats, setShowBackgroundChats] = useState(false);
   const [showSidebarChats, setShowSidebarChats] = useState(false);
@@ -5202,6 +5205,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           onOpenAccount={() => { setShowSettings(false); setShowAccount(true); }}
           onOpenBackgroundChats={() => { setShowSettings(false); setShowBackgroundChats(true); }}
           onOpenEngines={() => { setShowSettings(false); setShowEngines(true); }}
+          onOpenIntegrations={() => { setShowSettings(false); setShowIntegrations(true); }}
           onOpenRules={() => { setShowSettings(false); setShowRulesSettings(true); }}
           onOpenAgents={() => { setShowSettings(false); setShowAgentSettings(true); }}
           onOpenBundles={() => { setShowSettings(false); setShowBundles(true); }}
@@ -5316,6 +5320,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         <GallerySettingsDialog onClose={() => setShowGallerySettings(false)} />
       )}
 
+      {showIntegrations && (
+        <Integrations onClose={() => setShowIntegrations(false)} />
+      )}
       {showEngines && (
         <ExternalAgents
           onClose={() => setShowEngines(false)}

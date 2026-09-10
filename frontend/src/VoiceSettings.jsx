@@ -143,7 +143,7 @@ export default function VoiceSettings({ status, onStatusChange, onClose }) {
             announced twice by a screen reader. */}
         <p className="voice-settings-lede">
           Speak instead of typing. What you say is turned into text on this computer and
-          put in the message box for you to check — nothing is sent until you send it,
+          put in the message box for you to check. Nothing is sent until you send it,
           and no audio leaves the machine.
         </p>
       </header>

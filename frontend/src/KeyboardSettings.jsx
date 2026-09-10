@@ -106,7 +106,7 @@ export function KeyboardRow({
                 title={SLOT_LABEL[slot]}
                 onClick={() => onRecord?.(command.id, slot)}
               >
-                {recording === slot ? "Press keys…" : label(slot) || "—"}
+                {recording === slot ? "Press keys…" : label(slot) || "-"}
               </button>
             </span>
           ))}

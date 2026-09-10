@@ -11,13 +11,24 @@ requires-python = ">=3.12"
 dependencies = [
     "cryptography>=43.0",
     "fastapi>=0.115",
+    "numpy>=1.26",
+    "pillow>=11.0",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
+    "python-dateutil>=2.9",
     "python-multipart>=0.0.9",
     "PyYAML>=6.0",
     "qdrant-client>=1.11",
     "requests>=2.34",
     "sqlalchemy>=2.0",
+    # A runtime dependency rather than part of the voice extra, even though only
+    # the voice model downloader uses it: `_ProgressTqdm` subclasses `tqdm` at
+    # module scope, so `app.services.voice.models` fails to import without it and
+    # takes the whole application down at startup, microphone or no microphone.
+    # It arrives transitively with faster-whisper, which is why a build with the
+    # extra never noticed. None of the bulk that keeps faster-whisper optional
+    # applies here: tqdm is a few tens of kilobytes of pure Python.
+    "tqdm>=4.66",
     "tzdata>=2025.2",
     "uvicorn[standard]>=0.30",
 ]
@@ -30,13 +41,21 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.6",
 ]
+# Speech-to-text. An extra rather than a runtime dependency: faster-whisper pulls
+# ctranslate2, tokenizers, onnxruntime and PyAV, which is a few hundred megabytes --
+# far too much to impose on every install of an app whose install story is a selling
+# point. Without it the microphone reports itself unavailable and nothing else changes,
+# the same way the embedded SearXNG provider does when its optional setup was skipped.
+voice = [
+    "faster-whisper>=1.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# tests/ is currently absent, so pytest falls back to scanning the repo root. Keep that
-# scan out of application code: app/api/routes/test_runner.py is a route module, not a
-# test, and importing it as one trips an import cycle that never occurs in normal use.
+# Keeps collection out of application code even when a run names a path outside
+# testpaths: app/api/routes/test_runner.py is a route module, not a test, and
+# importing it as one trips an import cycle that never occurs in normal use.
 norecursedirs = [
     ".*",
     "app",

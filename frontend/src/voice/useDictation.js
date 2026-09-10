@@ -1,7 +1,7 @@
 /**
  * Dictation, wired to the composer.
  *
- * The state lives in `dictationMachine.js`; this owns the side effects — the
+ * The state lives in `dictationMachine.js`; this owns the side effects: the
  * microphone, the request, and the teardown. Two invariants are worth naming because
  * everything awkward here exists to hold them:
  *

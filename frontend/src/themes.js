@@ -52,7 +52,7 @@ export const THEMES = [
   {
     id: "indigo",
     name: "Indigo",
-    description: "Periwinkle on neutral graphite — the one dark theme that isn't near-black.",
+    description: "Periwinkle on neutral graphite, the one dark theme that isn't near-black.",
     swatch: ["#7c83ff", "#16161c", "#202029", "#464657", "#e8e9f7"],
   },
   {

@@ -143,7 +143,7 @@ export default function SkillsPanel({ chatId, onClose }) {
         <div className="open-folder-empty-state">
           <p>No skills yet.</p>
           <p className="open-folder-note">
-            A skill is a folder with a <code>SKILL.md</code> in it — a name, a line saying when to
+            A skill is a folder with a <code>SKILL.md</code> in it: a name, a line saying when to
             use it, and the instructions to follow. Add one from a folder on this computer, from
             GitHub, or write one here.
           </p>
@@ -301,7 +301,7 @@ function AddSkill({ onClose, onCancel, onAdded }) {
           </label>
           <p className="open-folder-note">
             The folder that holds <code>SKILL.md</code>, not the file itself. Its instructions are
-            guidance for the model — they never widen what a run is allowed to do.
+            guidance for the model, and never widen what a run is allowed to do.
           </p>
           <button className="ws-primary" type="submit" disabled={busy || !url.trim()}>
             {busy ? "Fetching…" : "Add skill"}

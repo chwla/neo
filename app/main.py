@@ -26,6 +26,7 @@ from app.api.routes.git import router as git_router
 from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
 from app.api.routes.integration import router as integration_router
+from app.api.routes.integrations import router as integrations_router
 from app.api.routes.appearance import router as appearance_router
 from app.api.routes.keybindings import router as keybindings_router
 from app.api.routes.llm_registry import router as llm_registry_router
@@ -53,6 +54,7 @@ from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
 from app.core.config import get_settings
+from app.core.origins import ALLOWED_BROWSER_ORIGINS
 from app.services.agent_core.store import (
     delete_chatless_sessions,
     initialize_agent_core_tables,
@@ -70,6 +72,7 @@ from app.services.files.store import initialize_workspace_file_tables
 from app.services.gallery.store import initialize_gallery_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
+from app.services.integrations.store import initialize_integration_tables
 from app.services.appearance import initialize_appearance_tables
 from app.services.keybindings import initialize_keybinding_tables
 from app.services.llm_registry.service import LLMRegistryService
@@ -160,12 +163,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Neo Memory", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:4173",
-            "http://127.0.0.1:4173",
-        ],
+        allow_origins=list(ALLOWED_BROWSER_ORIGINS),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -202,6 +200,7 @@ def create_app() -> FastAPI:
     app.include_router(workspaces_router, prefix="/api")
     app.include_router(continuity_router, prefix="/api")
     app.include_router(integration_router, prefix="/api")
+    app.include_router(integrations_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
     app.include_router(gallery_router, prefix="/api")
     app.include_router(health_router, prefix="/api")
@@ -245,6 +244,7 @@ def create_app() -> FastAPI:
     initialize_lsp_tables()
     LLMRegistryService().ensure_defaults()
     initialize_rule_tables()
+    initialize_integration_tables()
     initialize_skill_tables()
     initialize_web_search_tables()
     initialize_workspace_orchestration_tables()

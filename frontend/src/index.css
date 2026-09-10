@@ -4797,6 +4797,79 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .engine-state-connected { border-color: var(--neo-accent-a45); color: var(--neo-green); }
 .engine-state-off { border-color: var(--neo-warn-a40); color: var(--neo-warn-text); }
 .engine-state-not_installed { opacity: .75; }
+/* A connection whose stored key stopped working, and one the user revoked at
+   the provider: both are "this account will not work", but only the first is
+   fixed from inside Neo, so they do not share a colour. */
+.engine-state-needs_reauth { border-color: var(--neo-warn-a40); color: var(--neo-warn-text); }
+.engine-state-revoked { opacity: .75; }
+
+/* Connected accounts: the per-capability consent list. Granting is a series of
+   separate decisions rather than one, so each row has to read as its own
+   question -- hence the description under every label rather than a bare list
+   of names. */
+.integration-capabilities { display: grid; gap: 10px; margin: 4px 0 0; padding: 0; list-style: none; }
+.integration-capabilities > li { display: grid; gap: 2px; }
+.integration-capabilities label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.integration-capability-label { color: var(--neo-text); font-size: 12px; }
+.integration-capability-description {
+  margin: 0 0 0 24px;
+  color: var(--neo-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Registering an OAuth client. A one-time setup that used to be an env file and
+   a container restart, so it is written as instructions with the fields at the
+   end rather than as a bare form somebody has to already understand. */
+.integration-setup { display: grid; gap: 10px; margin-top: 4px; }
+.integration-setup-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--neo-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.integration-setup-steps code {
+  color: var(--neo-text);
+  font: 10px "JetBrains Mono", monospace;
+}
+/* The redirect URI has to be copied character for character, so it gets its own
+   selectable block rather than sitting inline in a sentence. */
+.integration-redirect {
+  display: block;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--neo-line);
+  border-radius: 3px;
+  background: var(--neo-panel);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.integration-field { display: grid; gap: 4px; }
+.integration-field > span { color: var(--neo-text); font-size: 11px; }
+.integration-field input {
+  border: 1px solid var(--neo-line);
+  border-radius: 3px;
+  background: var(--neo-panel);
+  padding: 7px 9px;
+  color: var(--neo-text);
+  font: 11px "JetBrains Mono", monospace;
+}
+.integration-field input:focus-visible { outline: 1px solid var(--neo-accent); }
+.integration-setup-actions { display: flex; gap: 8px; }
+/* A destructive action inside a sentence, so it reads as part of the sentence
+   rather than competing with the primary button beneath it. */
+.integration-link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--neo-accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .engine-row code {
   border-radius: 2px;
   background: var(--neo-lift-a05);

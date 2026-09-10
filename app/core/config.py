@@ -379,6 +379,38 @@ class Settings(BaseSettings):
     #: Give the memory back when dictation has been idle. 0 keeps it loaded.
     voice_idle_unload_seconds: int = Field(default=900, ge=0)
 
+    #: OAuth client for the built-in one-click Google connection. Neo registers one
+    #: "Desktop app" client and ships both halves: per RFC 8252 section 8.5 a native
+    #: app's client secret is a public identifier rather than a secret, which is why
+    #: PKCE and not confidentiality is what secures the flow. Empty means no built-in
+    #: client is configured, and Connected Accounts offers the bring-your-own path
+    #: instead of a Connect button -- the way voice reports itself unavailable rather
+    #: than erroring when its optional extra is missing.
+    google_oauth_client_id: str = Field(default="")
+    google_oauth_client_secret: str = Field(default="")
+    #: Base64url of exactly 32 bytes, sealing every stored OAuth token. Deliberately
+    #: machine-level rather than per-profile: the vault's ``scoped_aad`` already keeps
+    #: one profile's ciphertext unreadable by another, and a key derived from profile
+    #: credentials would be orphaned by an ordinary password change, silently costing
+    #: the user every connected account. Empty falls back to the key file below.
+    connector_master_key: str = Field(default="")
+    #: Where that key is generated and read when ``connector_master_key`` is unset.
+    #: Empty means ``<profiles root>/.neo-connector-master-key``. The Dockerfile
+    #: already points NEO_CONNECTOR_MASTER_KEY_FILE at /app/data so the key survives
+    #: a container rebuild; losing it means every account has to be reconnected.
+    connector_master_key_file: str = Field(default="")
+    #: Where a provider sends the user back after they approve or refuse. A
+    #: registered constant rather than something derived from the incoming
+    #: request: providers match this string exactly against the value registered
+    #: with them, so deriving it from a Host header would break the moment Neo
+    #: sat behind a proxy, ran on another port, or was reached by a different
+    #: spelling of loopback. Plain HTTP is correct here -- the request never
+    #: leaves the machine, which is why it is the redirect Google recommends for
+    #: desktop clients.
+    integration_oauth_redirect_uri: str = Field(
+        default="http://127.0.0.1:8000/api/integrations/oauth/callback"
+    )
+
     @model_validator(mode="after")
     def apply_data_directory(self) -> "Settings":
         fields_set = self.model_fields_set

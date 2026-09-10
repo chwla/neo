@@ -75,4 +75,11 @@ Thumbs.db
 !/scripts/manual_memory_v2_phase6.py
 !/scripts/memory_v2_index_worker.py
 !/scripts/setup_searxng.py
-profiles/.neo-connector-master-key
+# Profile storage. Every account's own SQLite database, uploaded files, gallery
+# thumbnails and -- once connected accounts ship -- its sealed OAuth tokens live
+# here. The *.db rules above already cover the databases, but not the files
+# beside them: the data/ entries stop the base workspace_files/ and
+# gallery_thumbnails/ while a profile keeps its own copies under
+# profiles/accounts/<id>/, so "git add -A" was one command away from committing
+# somebody's uploads. The whole directory is runtime state; none of it is source.
+profiles/

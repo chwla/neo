@@ -70,7 +70,7 @@ describe("a command's row", () => {
   test("an empty slot shows a placeholder rather than a blank button", () => {
     const markup = row({ bindings: bindingsFor("palette.open") });
     assert.ok(markup.includes("⌘K"));
-    assert.ok(markup.includes(">—<"), "the quick key it has never had");
+    assert.ok(markup.includes(">-<"), "the quick key it has never had");
   });
 
   test("a built-in key is shown but not offered for rebinding", () => {

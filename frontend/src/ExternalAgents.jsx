@@ -183,7 +183,7 @@ export default function ExternalAgents({ onClose, onChanged }) {
           </div>
           <p>
             Off, Neo starts no external CLI and none is offered in any chat. Turning it off
-            does not sign you out of the CLIs themselves — turn it back on and whatever was
+            does not sign you out of the CLIs themselves. Turn it back on and whatever was
             signed in still is.
           </p>
         </div>
@@ -215,7 +215,7 @@ export default function ExternalAgents({ onClose, onChanged }) {
                 <>
                   <p className="engine-connect-muted">
                     {row.reason || "Neo could not find the CLI on this computer."} Neo runs the
-                    copy installed on this machine — it cannot install one for you.
+                    copy installed on this machine, and cannot install one for you.
                   </p>
                   {INSTALL[row.id] ? <p className="engine-connect-url">{INSTALL[row.id]}</p> : null}
                 </>

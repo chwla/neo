@@ -1070,6 +1070,43 @@ export const api = {
   ackCalendarReminder: (deliveryId) =>
     request(`/calendar/reminders/${deliveryId}/ack`, { method: "POST" }),
 
+  // Connected accounts. Nothing here ever carries a token: the backend builds
+  // every connection shape from an allowlist (see store.PUBLIC_CONNECTION_FIELDS),
+  // so there is no field for one to arrive in.
+  integrationCatalog: () => request("/integrations/catalog"),
+  integrationConnections: () => request("/integrations/connections"),
+  // `return_origin` is where the provider's callback sends the browser back to.
+  // It is checked against a fixed allowlist server-side before a state is minted
+  // and again before it is followed, so passing window.location.origin is safe
+  // and a tampered value is refused rather than obeyed.
+  startIntegrationConnect: (provider, capabilities) =>
+    request("/integrations/oauth/start", {
+      method: "POST",
+      body: JSON.stringify({
+        provider,
+        capabilities,
+        return_origin: window.location.origin,
+      }),
+    }),
+  setIntegrationSync: (connectionId, enabled) =>
+    request(`/integrations/connections/${connectionId}/sync`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  disconnectIntegration: (connectionId) =>
+    request(`/integrations/connections/${connectionId}`, { method: "DELETE" }),
+  // Registering the OAuth client Neo identifies itself with. Neo is installed
+  // rather than hosted, so the client belongs to whoever installed it. The
+  // secret is write-only from here: the catalog reports that one is set, never
+  // what it is.
+  setIntegrationClient: (provider, clientId, clientSecret) =>
+    request(`/integrations/providers/${provider}/client`, {
+      method: "PUT",
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    }),
+  clearIntegrationClient: (provider) =>
+    request(`/integrations/providers/${provider}/client`, { method: "DELETE" }),
+
   createAgentSession: (payload) =>
     request("/agent-sessions", { method: "POST", body: JSON.stringify(payload) }),
   agentSession: (sessionId) => request(`/agent-sessions/${sessionId}`),
