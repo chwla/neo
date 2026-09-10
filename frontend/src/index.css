@@ -502,12 +502,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   letter-spacing: .02em;
   text-align: left;
 }
-.neo-logo-mark { position: relative; display: block; width: 22px; height: 22px; flex: 0 0 auto; background: var(--neo-green); clip-path: polygon(0 0,100% 0,100% 100%,5px 100%,0 calc(100% - 5px)); }
-.neo-logo-inner { position: absolute; inset: 3px; display: block; background: var(--neo-bg); clip-path: polygon(0 0,100% 0,100% 100%,4px 100%,0 calc(100% - 4px)); }
-.neo-logo-stem { position: absolute; left: 3px; top: 3px; width: 5px; height: 10px; background: var(--neo-green); }
-.neo-logo-dot { position: absolute; left: 10px; width: 3px; height: 3px; background: var(--neo-green); }
-.neo-logo-dot-top { top: 3px; }
-.neo-logo-dot-bottom { top: 10px; }
+.neo-logo-mark { display: block; width: 22px; height: 22px; flex: 0 0 auto; overflow: visible; }
 
 .sidebar-primary-action { padding: 0 16px 16px; }
 .neo-button {
