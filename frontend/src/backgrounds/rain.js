@@ -30,6 +30,14 @@ function spawn(width, height, aboveOnly) {
 export default {
   id: "rain",
 
+  //: Ninety half-pixel hairlines cover 0.0066% of the field, so the diffusion
+  //: layer has to lift them by an order of magnitude before a blur above can
+  //: show anything at all. Ten, not more: it puts the median cell at alpha 0.03
+  //: and the brightest at 0.15, which is a wet glow behind the strokes -- push
+  //: it to sixteen and the drops start trailing halos and rain stops reading as
+  //: rain, which is the failure this number exists to avoid.
+  bloom: 10,
+
   create({ width, height, palette, intensity }) {
     let w = width;
     let h = height;

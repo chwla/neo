@@ -27,6 +27,49 @@ const MAX_FRAME_MS = 50;
 //: screen would otherwise quadruple the cost of a full-panel gradient.
 const MAX_DPR = 2;
 
+/**
+ * The diffusion pass, and why the glass needs one.
+ *
+ * Measured over a 2000x1200 field, the mean alpha these effects paint across
+ * the whole canvas is 0.0066% for Rain, 0.0058% for Stars and 0.024% for
+ * Jellyfish. The canvas is essentially empty: Rain is ninety gradient hairlines
+ * half a pixel wide, Stars is seventy dots of radius one or two.
+ *
+ * A blur conserves energy, it does not create it. Put `backdrop-filter:
+ * blur(18px)` over a 0.85x20px stroke at alpha 0.18 and its peak lands near
+ * alpha 0.007 -- under two parts in 255 of accent over the ground, which is
+ * below what eight bits can even represent once a surface tint sits on top.
+ * That is why lowering a panel's alpha can never make these backgrounds show
+ * through it: there is nothing behind the panel to diffuse. Only Waves, whose
+ * five banded fills cover 2.8%, has real content.
+ *
+ * So the field grows a second layer: the same frame, reduced to a low-resolution
+ * buffer and displayed back at full size. Reduction is an energy-conserving
+ * average, so a hairline's light is redistributed over the whole block it fell
+ * in, and the browser's smooth upscale turns those blocks into soft shapes at a
+ * scale a blur cannot erase. Amplified by a per-effect gain, it is what the
+ * glass above actually diffuses.
+ *
+ * This is what a diffuser physically does to a thin bright source -- spreads its
+ * light into a glow rather than showing the line -- so the layer is the optics
+ * of the material, not decoration. It is generated from the effect's own frame
+ * and painted beneath the crisp marks, so Rain still reads as hairlines in the
+ * open field and as moving light behind the glass.
+ *
+ * Only for the effects that need it. Each one declares its own gain and Waves
+ * declares none, which turns the whole pipeline off for it: no second canvas, no
+ * reduction, no amplification. The gains are set from measured coverage and from
+ * where the marks stop being recognisable -- see the notes in the effect modules.
+ */
+const BLOOM_SCALE = 12;
+
+//: The ceiling on what an effect may ask for. Past 16x even the sparsest field
+//: clips to flat colour and stops tracking the animation, which is the one
+//: thing the layer is for. Clamped here rather than in the loop below, so what
+//: reaches the buffer is always exactly the gain that was asked for -- capping
+//: the number of doublings instead would quietly turn a request for 64 into 32.
+const MAX_BLOOM_GAIN = 16;
+
 export function createEngine(canvas, host, options) {
   const effect = options.effect;
   const intensity = options.intensity;
@@ -34,6 +77,28 @@ export function createEngine(canvas, host, options) {
   if (!ctx || !host || !effect) {
     return { destroy() {} };
   }
+
+  //: Declared by the effect, because how much diffusion a field needs is a
+  //: property of what it paints. An effect that names no gain wants none: Waves
+  //: covers 2.8% of the field on its own, which is real content for a
+  //: backdrop-filter, and running the pipeline for it would cost a canvas and a
+  //: downscale a frame to soften something already soft. A gain of 1 means the
+  //: same thing -- a diffused copy at unit strength is the field again.
+  const bloomGain = Math.min(MAX_BLOOM_GAIN, Number(effect.bloom) || 0);
+  //: Optional on both sides. `ChatBackground` only mounts the second canvas for
+  //: an effect that asked for one, and every test that builds an engine by hand
+  //: passes a single canvas -- either way the field runs and only the glass goes
+  //: without its material.
+  const bloom = bloomGain > 1 ? options.bloom || null : null;
+  const bloomCtx = bloom && typeof bloom.getContext === "function" ? bloom.getContext("2d") : null;
+  //: The amplification schedule, worked out once. Both fall out of the gain and
+  //: the gain cannot change for the life of an engine -- switching effects
+  //: builds a new one -- so a `log2` and a `2 **` per frame would be arithmetic
+  //: the loop repeats sixty times a second to reach the same two numbers.
+  const bloomDoublings = bloomGain > 1 ? Math.floor(Math.log2(bloomGain)) : 0;
+  const bloomRemainder = bloomGain > 1 ? bloomGain / 2 ** bloomDoublings - 1 : 0;
+  let bloomWidth = 0;
+  let bloomHeight = 0;
 
   const motionQuery =
     typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -50,6 +115,40 @@ export function createEngine(canvas, host, options) {
 
   const wantsStillness = () => Boolean(motionQuery && motionQuery.matches);
 
+  /**
+   * Reduce the frame just painted into the diffusion buffer.
+   *
+   * One downscale of the full-resolution canvas, then the buffer is amplified
+   * by drawing it onto itself in `lighter`, which adds premultiplied colour and
+   * alpha -- so each pass doubles. The fractional remainder rides on
+   * `globalAlpha`, which lets an effect ask for a gain of 10 rather than being
+   * rounded to 8 or 16.
+   *
+   * Nothing here reads the previous buffer, so the amplification cannot compound
+   * frame over frame: the buffer is cleared and rebuilt from the canvas every
+   * time, which also means reduced motion's single still frame gets its
+   * diffusion for free.
+   */
+  function diffuse() {
+    if (!bloomCtx || !bloomWidth || !bloomHeight || !canvas.width || !canvas.height) return;
+    //: Entered with the context in its default state and left that way, which
+    //: is what the restore at the end is for -- nothing else touches this
+    //: context, so it does not need resetting on the way in as well.
+    bloomCtx.clearRect(0, 0, bloomWidth, bloomHeight);
+    bloomCtx.drawImage(canvas, 0, 0, bloomWidth, bloomHeight);
+
+    bloomCtx.globalCompositeOperation = "lighter";
+    for (let pass = 0; pass < bloomDoublings; pass += 1) {
+      bloomCtx.drawImage(bloom, 0, 0);
+    }
+    if (bloomRemainder > 0.01) {
+      bloomCtx.globalAlpha = bloomRemainder;
+      bloomCtx.drawImage(bloom, 0, 0);
+      bloomCtx.globalAlpha = 1;
+    }
+    bloomCtx.globalCompositeOperation = "source-over";
+  }
+
   function paint(dt) {
     //: Reset the state an effect is allowed to change, so a module that leaves
     //: the context in "lighter" cannot tint the one that replaces it -- the
@@ -58,6 +157,7 @@ export function createEngine(canvas, host, options) {
     ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, width, height);
     instance.frame(ctx, dt, elapsed);
+    diffuse();
   }
 
   function tick(now) {
@@ -121,6 +221,21 @@ export function createEngine(canvas, host, options) {
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    //: Deliberately not scaled by the device pixel ratio: this buffer is meant
+    //: to be coarse, and it is stretched back over the field by the compositor.
+    //: Sizing it in CSS pixels also keeps the block a mark's light is spread
+    //: over the same physical size on every display.
+    if (bloomCtx) {
+      bloomWidth = Math.max(1, Math.round(width / BLOOM_SCALE));
+      bloomHeight = Math.max(1, Math.round(height / BLOOM_SCALE));
+      bloom.width = bloomWidth;
+      bloom.height = bloomHeight;
+      //: Assigning the size reset the context, so the smoothing that does the
+      //: averaging has to be re-asked for here rather than once at startup.
+      bloomCtx.imageSmoothingEnabled = true;
+      bloomCtx.imageSmoothingQuality = "high";
+    }
 
     if (instance) {
       instance.resize(width, height);

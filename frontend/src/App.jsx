@@ -5049,18 +5049,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         />
       ) : (
       <main className={`neo-main ${chatMode === "agent" ? "agent-chat-mode" : ""}`}>
-        {/* First child, so it paints under the header and the transcript. It is
-            absolutely positioned and takes no pointer events, so it is out of
-            the flex flow and out of the way of every control above it. */}
+        {/* First child, so it paints under the transcript. It is fixed to the
+            viewport and takes no pointer events, so it is out of the flex flow
+            and out of the way of every control above it.
+
+            No view header above it: the chat is the one view with nothing to put
+            there that is not already on screen -- the sidebar marks the active
+            chat by name, and the mode is a live control in the composer -- so
+            the bar was a rule drawn across the field for two labels. The other
+            six views keep theirs. */}
         <ChatBackground background={background} intensity={intensity} />
-        <header className="neo-view-header">
-          {/* The same words the backend names a new chat with. On a refresh the
-              chat is briefly not loaded yet, so this placeholder renders first
-              and the real title replaces it -- and when the two disagreed that
-              swap was visible as a flash from "New conversation" to "New chat". */}
-          <span>{activeChat?.title || "New chat"}</span>
-          <span className="neo-view-context">{chatMode === "agent" ? "Agent Mode" : "Chat Mode"}</span>
-        </header>
         <section className="neo-shell" ref={transcriptRef}>
           {showEmptyState && (
             <div className="neo-empty-state">

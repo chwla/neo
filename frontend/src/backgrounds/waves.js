@@ -24,6 +24,14 @@ const BANDS = 5;
 export default {
   id: "waves",
 
+  //: No `bloom`, and that is the whole entry: five banded fills cover 2.8% of
+  //: the field, four hundred times Rain, which is real content for a
+  //: backdrop-filter to diffuse on its own. Declaring a gain here would buy a
+  //: second canvas and a downscale every frame to reduce a field that is
+  //: already broad and soft, and any amplification would flood the lower half
+  //: with accent. The engine skips the whole pipeline for an effect that asks
+  //: for none.
+
   create({ width, height, palette, intensity }) {
     let w = width;
     let h = height;

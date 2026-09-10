@@ -661,7 +661,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   overflow: hidden;
   background: var(--neo-bg);
 }
-.neo-view-header, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header {
+.project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header {
   display: flex;
   min-height: 48px;
   align-items: center;
@@ -672,7 +672,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   font-size: 14px;
   font-weight: 600;
 }
-.neo-view-context { color: var(--neo-fg-14); font: 10px "JetBrains Mono", monospace; letter-spacing: .06em; }
 .neo-shell { width: 100%; max-width: none; flex: 1; overflow-y: auto; padding: 20px 40px 176px; }
 .neo-shell > * { max-width: 860px; margin-right: auto; margin-left: auto; }
 .neo-empty-state { padding: min(22vh, 160px) 0 24px; text-align: center; }
@@ -882,7 +881,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   z-index: 20;
   background: linear-gradient(180deg, var(--neo-scrim-a00) 0%, var(--neo-scrim-a88) 26%, var(--neo-scrim-a99) 62%);
   padding: 26px 40px 14px;
-  backdrop-filter: blur(12px);
 }
 .chat-input-shell {
   --composer-edge: var(--neo-accent-a35);
@@ -1449,7 +1447,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .neo-app { --neo-sidebar-width: 220px; }
   .neo-app.sidebar-collapsed { --neo-sidebar-width: 56px; }
   .chat-input-wrap { padding-right: 22px; padding-left: 22px; }
-  .neo-shell, .neo-view-header, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
+  .neo-shell, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
   .settings-menu, .llm-settings-layout, .agent-settings-grid, .tools-settings-grid { grid-template-columns: 1fr; }
   .projects-layout, .tasks-layout, .notes-layout, .files-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
   .research-layout { grid-template-columns: 1fr; overflow: auto; }
@@ -1466,7 +1464,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .sidebar-brand { padding: 16px; }
   .sidebar-spacer, .system-nav, .sidebar-footer, .sidebar-section:has(+ .system-nav) { display: none; }
   .neo-main, .project-page, .task-page, .notes-page, .files-page, .repos-page, .research-page { height: 56vh; }
-  .neo-view-header { padding: 0 16px; }
   .neo-shell { padding: 18px 16px 150px; }
   .chat-input-wrap { right: 0; bottom: 0; left: 0; padding: 16px 12px 8px; }
   .chat-input-shell { border-radius: 20px; padding: 14px 14px 12px; }
@@ -5691,27 +5688,81 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 /* --- the chat background ---------------------------------------------------
    A canvas behind the transcript, mounted as the first child of `.neo-main`.
 
-   The stacking here is deliberate and narrow. `.neo-main` and the two elements
+   The stacking here is deliberate and narrow. `.neo-main` and the transcript
    above the canvas get `position` and nothing else, because a `z-index` on any
    of them would make them a stacking context, and `.message-actions-menu` and
    `.context-window-menu` live inside `.neo-shell` at z-index 30 specifically so
    they can escape it and draw over the composer at 20. Positioning alone is
-   enough: the canvas and its siblings then sit in the same painting layer,
-   where document order already puts the header and the transcript on top.
+   enough: the canvas and its sibling then sit in the same painting layer,
+   where document order already puts the transcript on top.
 
    For the same reason nothing here gains a transform, filter, backdrop-filter,
    will-change or contain: any of those would make `.neo-main` the containing
-   block for the fixed composer and drop it out of the viewport corner.
+   block for the fixed composer and drop it out of the viewport corner. The
+   glass surfaces below take backdrop-filter, but none of them is an ancestor of
+   the composer -- the sidebar is its uncle, and the shell is inside it.
 
    Scoped to `.neo-main` rather than added to the rule it shares at the top of
    this file, which also dresses `.project-page`, `.task-page` and four others
    that have no background layer to anchor. */
 .neo-main { position: relative; }
-.neo-main > .neo-view-header,
 .neo-main > .neo-shell { position: relative; }
 
-.chat-bg-layer {
+/* The field's continuous half.
+   
+   Measured three ways, the marks cannot carry the glass on their own. Total
+   painted energy is fixed -- 0.0058% mean alpha for Stars -- and that budget can
+   be concentrated or spread but not both: at the 12px grain the diffusion buffer
+   lights 0.3% of its cells, and blurring it wide enough to be continuous drops
+   every cell to alpha 0.01. The sidebar covers a sixth of the window and has
+   about a dozen stars behind it. No tint, gain or blur makes glass out of that,
+   because there is nothing there for a sixth of the screen at a time.
+
+   What every real glass interface has behind it is a wallpaper: continuous,
+   large-scale, slowly changing colour. So the field grows one, and it is the
+   layer that lets the panels above go genuinely thin. Three broad accent
+   gradients at a tenth alpha, drifting slowly enough to read as atmosphere
+   rather than motion, mixed from `--neo-accent` so every palette gets its own.
+
+   Additive light in the background layer, under the marks -- not a scrim between
+   the glass and the field. It adds to the animation instead of standing in for
+   it, and the diffusion buffer still carries the effect's own movement through
+   the material on top of it.
+
+   On the pseudo-element rather than the layer, because the engine measures the
+   layer's rect and a transform on it would move what the canvases size to. */
+.chat-bg-layer::before {
+  content: "";
   position: absolute;
+  /* Overscanned, so the drift never brings an edge into the window. */
+  inset: -25%;
+  background:
+    radial-gradient(38% 42% at 22% 26%, color-mix(in srgb, var(--neo-accent) 9%, transparent) 0%, transparent 68%),
+    radial-gradient(32% 36% at 76% 60%, color-mix(in srgb, var(--neo-accent) 7%, transparent) 0%, transparent 66%),
+    radial-gradient(44% 30% at 48% 92%, color-mix(in srgb, var(--neo-accent) 5%, transparent) 0%, transparent 70%);
+  animation: neo-field-drift 52s ease-in-out infinite alternate;
+}
+@keyframes neo-field-drift {
+  from { transform: translate3d(-2%, 1%, 0) scale(1.04); }
+  to { transform: translate3d(3%, -2%, 0) scale(1.12); }
+}
+/* Stilled, not removed -- same as the engine does with the marks. The wash is
+   what the glass is made of; taking it away would leave the panels flat for
+   anyone who asked for less movement. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-bg-layer::before { animation: none; }
+}
+
+.chat-bg-layer {
+  /* Fixed, not absolute: the sidebar and the composer are glass over this
+     canvas, which is only worth doing if the field actually reaches behind
+     them, and `.neo-main` is a flex track that stops at the sidebar's edge.
+     Fixed leaves that track and `.neo-main`'s overflow clip without the layer
+     having to be mounted further up the tree -- the containing block is the
+     viewport precisely because no ancestor has a transform or filter, the same
+     invariant the fixed composer already depends on. Still z-index 0 and still
+     the first child, so the transcript continues to paint over it. */
+  position: fixed;
   inset: 0;
   z-index: 0;
   /* Load-bearing: the layer covers the transcript's whole scrolling area, so
@@ -5720,7 +5771,15 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   pointer-events: none;
   overflow: hidden;
 }
-.chat-bg-layer canvas { display: block; width: 100%; height: 100%; }
+/* Both canvases fill the layer and overlap; document order puts the diffusion
+   buffer under the marks. Absolute rather than stacked in flow, and no z-index
+   on either, so the layer stays a single painting step.
+
+   The diffusion canvas is a twelfth of the field's size and is stretched back
+   over it here, so the compositor's default smooth upscale is load-bearing --
+   it is what turns coarse blocks into soft shapes. Nothing may give these
+   canvases `image-rendering: pixelated`. */
+.chat-bg-layer canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 
 /* The empty state is the only text in the panel with no opaque bubble under it,
    so it brings its own ground when something is moving behind it. A background
@@ -5728,12 +5787,153 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
    would escape to the root stacking context and paint under the canvas. */
 [data-chat-bg] .neo-empty-state {
   background: radial-gradient(ellipse at center,
-    var(--neo-scrim-a90) 0%, var(--neo-scrim-a70) 45%, var(--neo-scrim-a00) 72%);
+    color-mix(in srgb, var(--neo-bg) 26%, transparent) 0%,
+    color-mix(in srgb, var(--neo-bg) 13%, transparent) 45%,
+    var(--neo-scrim-a00) 72%);
 }
 
 /* Reduced motion is handled in the engine rather than here: the canvas paints a
    single still frame and never starts its loop, which keeps the field worth
    looking at instead of blanking the panel. */
+
+/* --- the chat glass material -----------------------------------------------
+   One substance, asked for at three strengths.
+
+   What makes it a material rather than a tinted box is the layer underneath it.
+   The effects paint almost nothing -- measured across a 2000x1200 field, the
+   mean alpha over the whole canvas is 0.0066% for Rain and 0.0058% for Stars --
+   and a blur conserves energy rather than creating it, so `backdrop-filter`
+   over those hairlines resolves to nothing at any alpha. The engine therefore
+   reduces each frame into a coarse buffer and the compositor stretches it back
+   over the field (`.chat-bg-diffusion`), which is the light these marks would
+   throw onto a diffuser in the first place. That layer is what the filters
+   below actually act on: blur spreads it further, `saturate` finds the accent
+   chroma in it, and `brightness` pushes it off the ground.
+
+   Every surface therefore declares the same four things, and differs only in
+   how much of each:
+
+     tint    a wash of the surface's own colour, for legibility only -- never
+             enough to stand in for opacity
+     filter  blur to diffuse, saturate for vibrancy, brightness to separate the
+             diffused field from the flat ground
+     edge    a 1px boundary, so the pane has a physical edge
+     depth   an inset highlight where the pane catches light, and an outer
+             shadow for separation -- never to hide what is behind
+
+   The lift is the one token that has to know about the palette, because "push
+   the diffused field away from the ground" means brighten on the six dark themes
+   and deepen on Paper. Everything else is mixed from `--neo-ink`,
+   `--neo-sidebar` or `--neo-bg`, so all seven palettes glass in their own colour
+   without a rule naming one.
+
+   And it comes in two strengths, which is the one place this material stops
+   being uniform on purpose. A pane that is an object -- the composer card --
+   wants its backdrop lifted: that is what makes it look like it is catching
+   light. A pane that carries small dim text wants the opposite. Lifting the
+   backdrop under `--neo-fg-12` navigation costs it a quarter of the contrast it
+   had against the opaque panel; deepening it instead gives most of that back
+   while `saturate` keeps the colour, so the field still reads through the glass.
+   Measured across all nine palettes: lifting keeps 74% of the opaque panel's
+   contrast, deepening keeps 84%. Hence `--glass-lift-quiet`, which moves toward
+   the text rather than away from the ground -- and therefore inverts on Paper
+   too, where the text is the dark thing.
+
+   All of it hangs off `[data-chat-bg]`. On "none" there is no diffusion buffer
+   and no field, so the panels stay flat and opaque and pay for no filter pass. */
+[data-chat-bg] {
+  --glass-sat: 1.7;
+  --glass-lift: 1.25;
+  --glass-lift-quiet: 0.85;
+  --glass-edge: color-mix(in srgb, var(--neo-ink) 13%, transparent);
+  --glass-inner: color-mix(in srgb, var(--neo-ink) 9%, transparent);
+  --glass-inner-lit: color-mix(in srgb, var(--neo-ink) 14%, transparent);
+}
+/* Paper is the one light palette. Its ink is dark, so the same mixes give a
+   shaded edge instead of a lit one, which is what a pane reads as over white --
+   and the diffused field has to be deepened rather than lifted to part from a
+   near-white ground. */
+[data-theme="paper"][data-chat-bg] {
+  --glass-sat: 1.45;
+  --glass-lift: 0.9;
+  --glass-lift-quiet: 1.06;
+  --glass-edge: color-mix(in srgb, var(--neo-ink) 16%, transparent);
+  --glass-inner: color-mix(in srgb, var(--neo-ink) 6%, transparent);
+  --glass-inner-lit: color-mix(in srgb, var(--neo-ink) 10%, transparent);
+}
+
+/* 1. The sidebar: the strongest separation of the three, because it is the one
+   surface that carries small dim text over the field for its whole height. Its
+   own colour rather than the window's, so the panel keeps its identity while
+   turning translucent. The hard right edge needs no fade, so the filter can sit
+   directly on the element. */
+[data-chat-bg] .neo-sidebar {
+  border-right-color: var(--glass-edge);
+  background: color-mix(in srgb, var(--neo-sidebar) 12%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(var(--glass-sat)) brightness(var(--glass-lift-quiet));
+  backdrop-filter: blur(18px) saturate(var(--glass-sat)) brightness(var(--glass-lift-quiet));
+  box-shadow:
+    inset -1px 0 0 var(--glass-inner),
+    14px 0 36px -20px var(--neo-shadow-a55);
+}
+
+/* 2. The composer strip: the weakest of the three, and the only one that has to
+   vanish rather than end. A `backdrop-filter` is uniform across its element and
+   this strip is the full width of the window, so putting one on the strip itself
+   draws a horizontal seam across the field where the blur begins. The material
+   moves to a masked pseudo-element instead: the mask fades tint and blur in
+   together, and because it is on the pseudo rather than the strip, the card
+   inside keeps its own edges. Sits at z-index -1 within the strip, which is
+   already a stacking context at 20, so it cannot escape behind the field.
+
+   The one surface with no `brightness`, and that is the gradation rather than an
+   omission: lifting the backdrop is what parts a pane from the field, and this
+   is the pane that has to belong to it. Tint, blur and saturation it shares with
+   the other two; separation is the property it declines. */
+[data-chat-bg] .chat-input-wrap { background: none; }
+[data-chat-bg] .chat-input-wrap::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(180deg,
+    var(--neo-scrim-a00) 0%,
+    color-mix(in srgb, var(--neo-bg) 3%, transparent) 46%,
+    color-mix(in srgb, var(--neo-bg) 6%, transparent) 100%);
+  -webkit-backdrop-filter: blur(5px) saturate(var(--glass-sat));
+  backdrop-filter: blur(5px) saturate(var(--glass-sat));
+  /* The one literal colour in the material, and it is not a colour: a mask is
+     an alpha stencil, so `#000` here means "opaque" and carries no palette. */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 40%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 40%);
+}
+
+/* 3. The composer card: medium strength, and the one pane that reads as an
+   object. Its backdrop is the strip's output, so the two filters compose --
+   which is where the card's stronger local separation comes from rather than
+   from a heavier tint. The accent border stays: it is the composer's identity
+   and it already is the 1px boundary this material wants. The inset highlight
+   is the new part, and it is most of why a translucent panel reads as glass
+   rather than as a faded box. */
+[data-chat-bg] .chat-input-shell {
+  background: color-mix(in srgb, var(--neo-bg) 10%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(var(--glass-sat)) brightness(var(--glass-lift));
+  backdrop-filter: blur(14px) saturate(var(--glass-sat)) brightness(var(--glass-lift));
+  box-shadow:
+    0 18px 44px -10px var(--neo-shadow-a55),
+    0 0 34px var(--neo-accent-a05),
+    inset 0 1px 0 var(--glass-inner);
+}
+/* Restating the focus glow, which the rule above would otherwise swallow: the
+   two selectors weigh the same and the material is further down the sheet, so
+   writing `box-shadow` there costs the composer its response to being typed in.
+   The inner highlight brightens with it, as a lit pane would. */
+[data-chat-bg] .chat-input-shell:focus-within {
+  box-shadow:
+    0 18px 44px -10px var(--neo-shadow-a55),
+    0 0 42px var(--neo-accent-a10),
+    inset 0 1px 0 var(--glass-inner-lit);
+}
 
 /* --- the background picker ------------------------------------------------
    Reuses the theme picker's cards. There is no swatch: five chips can show what

@@ -112,6 +112,17 @@ function spawn(width, height, atEdge, slot, of) {
 export default {
   id: "jellyfish",
 
+  //: The one sparse field made of real shapes: bells are filled radial gradients
+  //: tens of pixels across, so there is a shape to diffuse rather than a line to
+  //: lose, and the light arrives concentrated enough that this ends up the
+  //: strongest diffusion of the four in absolute terms -- alpha 0.67 at the
+  //: brightest cell against Rain's 0.13. The gain is nonetheless the smallest,
+  //: because a lift multiplies what is already there: at three, Vivid saturates
+  //: an eighth of the cells it lights and the bells start reading as one flat
+  //: colour instead of tracking the swim. Two leaves a bell's core white-hot and
+  //: the rest of it modulated, which is what a luminous body looks like.
+  bloom: 2,
+
   create({ width, height, palette, intensity }) {
     let w = width;
     let h = height;

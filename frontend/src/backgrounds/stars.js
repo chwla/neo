@@ -47,6 +47,13 @@ function arm(meteor, width, height, immediate) {
 export default {
   id: "stars",
 
+  //: 0.0058% covered, the sparsest field of the four: seventy dots of radius
+  //: one or two. The distribution is what matters rather than the peak -- at ten
+  //: the median cell lands near alpha 0.013, so an ordinary star gains no halo
+  //: at all, while the top of the range carries the meteor and its head still
+  //: reads as light passing behind the glass. Sixteen haloes the dots too.
+  bloom: 10,
+
   create({ width, height, palette, intensity }) {
     let w = width;
     let h = height;

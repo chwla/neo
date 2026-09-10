@@ -103,18 +103,42 @@ def initialize_appearance_tables() -> None:
         conn.close()
 
 
+def _read(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM appearance_preferences WHERE key = ?", (key,)
+    ).fetchone()
+    return row["value"] if row else None
+
+
 def get_preference(key: str) -> str | None:
-    """The stored value for an appearance preference, or None if never set."""
+    """The stored value for an appearance preference, or None if never set.
+
+    A missing table is repaired and re-read rather than reported as "never
+    chose". The two are indistinguishable to the caller and they are not the
+    same thing: a profile whose initialisers have not run in this process yet
+    would otherwise be dressed in the defaults on every single load, with
+    nothing logged and nothing to notice, and the only thing that could ever fix
+    it is a write -- because ``set_preference`` creates the table and a read
+    never did. That is a preference that silently refuses to persist, which is
+    exactly how this reads to someone who picked a background and refreshed.
+
+    ``ensure_profile_storage`` is memoised per process, so the gap is real:
+    a long-running server that was started before this table joined the
+    initialiser list never creates it, and every read here returns the default
+    forever.
+    """
 
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT value FROM appearance_preferences WHERE key = ?", (key,)
-        ).fetchone()
-        return row["value"] if row else None
+        try:
+            return _read(conn, key)
+        except sqlite3.OperationalError:
+            initialize_appearance_tables()
+            return _read(conn, key)
     except sqlite3.OperationalError:
-        # A profile database that predates this table has no preference yet;
-        # the caller falls back to the default rather than failing the read.
+        # The table could not be created either -- a read-only or missing
+        # database. The caller's default is the only answer left, and failing
+        # the whole appearance read would leave the interface with no palette.
         return None
     finally:
         conn.close()
