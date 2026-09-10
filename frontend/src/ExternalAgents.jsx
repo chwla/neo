@@ -70,7 +70,7 @@ const STATE_ACTION = {
   connected: "",
 };
 
-export default function ExternalAgents({ onClose, onChanged }) {
+export default function ExternalAgents({ onClose, onChanged, backLabel, onBack }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -169,7 +169,8 @@ export default function ExternalAgents({ onClose, onChanged }) {
   // hides its overflow -- which this panel has neither the layout for nor the
   // room to spare.
   return (
-    <Modal title="Engines" onClose={onClose} className="engines-dialog">
+    <Modal title="Engines" onClose={onClose} backLabel={backLabel} onBack={onBack}
+      className="engines-dialog">
       <p className="dialog-caption">
         These CLIs run agent turns on your own subscription, in the folder
         attached to the chat. Sign in here and the engine is offered in the composer&apos;s

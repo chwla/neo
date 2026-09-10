@@ -58,8 +58,18 @@ VALID_BACKGROUNDS = (
     "jellyfish",
     "stars",
     "rain",
-    "waves",
+    "gradient",
 )
+
+#: Backgrounds that were replaced rather than removed, and what replaced them.
+#:
+#: A stored id that is no longer shipped reads as the default, which is correct
+#: for a background that is simply gone -- but "waves" was retired in favour of
+#: "gradient", another broad field effect, so falling back would silently take
+#: motion away from every profile that had chosen it. The choice was for a
+#: moving field, and that still exists. Read as the successor and the next write
+#: from the picker stores the new id, so a profile migrates by being used.
+SUPERSEDED_BACKGROUNDS = {"waves": "gradient"}
 
 INTENSITY_KEY = "background_intensity"
 
@@ -187,10 +197,16 @@ def background() -> str:
     Falls back the same way a theme does, and for a sharper reason: the id
     selects a rendering module in the browser, so one that is no longer shipped
     would otherwise leave a mounted canvas with nothing to draw on it.
+
+    An id that was replaced rather than retired reads as its replacement --
+    see ``SUPERSEDED_BACKGROUNDS``. The row is left alone either way, so nothing
+    is rewritten underneath a profile that has not opened the picker.
     """
 
     stored = get_preference(BACKGROUND_KEY)
-    return stored if stored in VALID_BACKGROUNDS else DEFAULT_BACKGROUND
+    if stored in VALID_BACKGROUNDS:
+        return stored
+    return SUPERSEDED_BACKGROUNDS.get(stored, DEFAULT_BACKGROUND)
 
 
 def set_background(value: str) -> str:

@@ -1133,6 +1133,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .neo-dialog-wide { width: min(1120px, 100%); }
 .dialog-title-row { position: sticky; top: 0; z-index: 4; display: flex; min-height: 48px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--neo-line); }
 .dialog-title-row h2 { margin: 0; color: var(--neo-text); font-size: 14px; font-weight: 600; }
+/* The title and its way back share the left half of the row, so the corner
+   close stays where it is in every dialog whether or not there is a back. */
+.dialog-title-main { display: flex; min-width: 0; align-items: center; gap: 10px; }
+/* Quieter than the title it sits beside: this is the way out, not the subject.
+   It says where it goes rather than only pointing, because "back" is a question
+   ("back to what?") in a dialog you reached from another one. */
+.dialog-back {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-right: 1px solid var(--neo-line);
+  border-radius: 0;
+  background: transparent;
+  padding: 0 10px 0 0;
+  color: var(--neo-fg-12);
+  font: 11px "JetBrains Mono", monospace;
+  letter-spacing: .02em;
+  cursor: pointer;
+  transition: color .12s ease;
+}
+.dialog-back:hover, .dialog-back:focus-visible { color: var(--neo-green); }
 .dialog-close { border: 0; background: transparent; color: var(--neo-fg-12); font: 18px "JetBrains Mono", monospace; }
 .dialog-close:hover { color: var(--neo-green); }
 .dialog-caption { color: var(--neo-fg-12); font-size: 12px; line-height: 1.5; }
@@ -5730,8 +5753,13 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
    the material on top of it.
 
    On the pseudo-element rather than the layer, because the engine measures the
-   layer's rect and a transform on it would move what the canvases size to. */
-.chat-bg-layer::before {
+   layer's rect and a transform on it would move what the canvases size to.
+
+   And only on `.has-wash`, which `ChatBackground` sets for exactly the effects
+   that declare a diffusion gain -- the sparse ones. Gradient is already a broad
+   moving field, so washing it would lay a second gradient under the one that
+   was chosen. One condition, both halves of the field. */
+.chat-bg-layer.has-wash::before {
   content: "";
   position: absolute;
   /* Overscanned, so the drift never brings an edge into the window. */
@@ -5750,7 +5778,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
    what the glass is made of; taking it away would leave the panels flat for
    anyone who asked for less movement. */
 @media (prefers-reduced-motion: reduce) {
-  .chat-bg-layer::before { animation: none; }
+  .chat-bg-layer.has-wash::before { animation: none; }
 }
 
 .chat-bg-layer {

@@ -2331,7 +2331,7 @@ export function ChatComposer({
   );
 }
 
-function WebSearchSettingsDialog({ onClose }) {
+function WebSearchSettingsDialog({ onClose, backLabel, onBack }) {
   const [searchConfig, setSearchConfig] = useState(null);
   const [provider, setProvider] = useState("duckduckgo");
   const [searxngInstance, setSearxngInstance] = useState("http://localhost:8080");
@@ -2417,7 +2417,8 @@ function WebSearchSettingsDialog({ onClose }) {
   }
 
   return (
-    <Modal title="Web Search" onClose={onClose} className="settings-dialog web-search-dialog">
+    <Modal title="Web Search" onClose={onClose} backLabel={backLabel} onBack={onBack}
+      className="settings-dialog web-search-dialog">
       <section className="settings-section">
         {loading ? (
           <p className="dialog-caption">Loading...</p>
@@ -2498,7 +2499,7 @@ const EMPTY_MODEL_FORM = {
   enabled: true,
 };
 
-function LLMSettingsDialog({ onClose, onChanged }) {
+function LLMSettingsDialog({ onClose, onChanged, backLabel, onBack }) {
   const [registry, setRegistry] = useState({ providers: [], models: [], routes: [], calls: [] });
   const [providerForm, setProviderForm] = useState(EMPTY_PROVIDER_FORM);
   const [modelForm, setModelForm] = useState(EMPTY_MODEL_FORM);
@@ -2700,7 +2701,8 @@ function LLMSettingsDialog({ onClose, onChanged }) {
   }
 
   return (
-    <Modal title="LLM Providers" onClose={onClose} wide className="llm-settings-dialog">
+    <Modal title="LLM Providers" onClose={onClose} backLabel={backLabel} onBack={onBack}
+      wide className="llm-settings-dialog">
       <p className="dialog-caption">API keys are read from environment variables only. Fallbacks and failures are recorded in usage history.</p>
       <div className="llm-settings-layout">
         <section className="llm-config-list">
@@ -2820,7 +2822,7 @@ function LLMSettingsDialog({ onClose, onChanged }) {
  * On, each upload is its own image with its own id, which is what you want when
  * the same file is genuinely a separate occasion.
  */
-function BackgroundChatsDialog({ onClose }) {
+function BackgroundChatsDialog({ onClose, backLabel, onBack }) {
   const [limit, setLimit] = useState(3);
   const [notify, setNotify] = useState(() => notificationsEnabled());
   const [loading, setLoading] = useState(true);
@@ -2900,7 +2902,7 @@ function BackgroundChatsDialog({ onClose }) {
   }
 
   return (
-    <Modal title="Background chats" onClose={onClose}>
+    <Modal title="Background chats" onClose={onClose} backLabel={backLabel} onBack={onBack}>
       <p className="dialog-caption">
         Chats keep working when you switch away from them. These decide how many run at once,
         and how you hear about one that finishes while you are elsewhere.
@@ -2963,7 +2965,7 @@ function BackgroundChatsDialog({ onClose }) {
  * first, and stays reachable under Archived. Ten is the default because a
  * sidebar is for the conversation you are returning to, not for all of them.
  */
-function SidebarChatsDialog({ onClose, onChanged }) {
+function SidebarChatsDialog({ onClose, onChanged, backLabel, onBack }) {
   const [limit, setLimit] = useState(DEFAULT_SIDEBAR_CHATS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3013,7 +3015,7 @@ function SidebarChatsDialog({ onClose, onChanged }) {
   }
 
   return (
-    <Modal title="Sidebar" onClose={onClose}>
+    <Modal title="Sidebar" onClose={onClose} backLabel={backLabel} onBack={onBack}>
       <p className="dialog-caption">
         The sidebar keeps your most recent chats. Older ones are archived rather than deleted --
         they stay under Archived, keep their messages, and come back the moment you unarchive one
@@ -3060,7 +3062,7 @@ function SidebarChatsDialog({ onClose, onChanged }) {
 }
 
 
-function GallerySettingsDialog({ onClose }) {
+function GallerySettingsDialog({ onClose, backLabel, onBack }) {
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3102,7 +3104,7 @@ function GallerySettingsDialog({ onClose }) {
   }
 
   return (
-    <Modal title="Gallery" onClose={onClose}>
+    <Modal title="Gallery" onClose={onClose} backLabel={backLabel} onBack={onBack}>
       <p className="dialog-caption">
         Every image you paste into a chat or add here is kept in the gallery, described and
         searchable by what was in it.
@@ -3414,6 +3416,32 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  /**
+   * The two directions of a settings page, minted together.
+   *
+   * Every page under Settings is entered by closing the menu and opening the
+   * page, and left by the exact inverse. Writing that pair out at each of the
+   * twenty-odd call sites is how one of them ends up closing to nothing: the
+   * corner close and Escape leave the dialog altogether, which is what they mean
+   * everywhere, and the labelled exit goes back where you came from. Spreading
+   * this into a `<Modal>` gives it both, so a new settings page arrives with a
+   * way back instead of it being something to remember.
+   *
+   * `back` restores the menu rather than remembering which group was open --
+   * `SettingsDialog` keeps its own group state, and it is mounted fresh here.
+   */
+  const fromSettings = useCallback(
+    (setter) => ({
+      backLabel: "Settings",
+      onBack: () => {
+        setter(false);
+        setShowSettings(true);
+      },
+      onClose: () => setter(false),
+    }),
+    [],
+  );
   const [showAccount, setShowAccount] = useState(false);
   const [chatAttachments, setChatAttachments] = useState([]);
   //: Images travel separately from text attachments: they are enrolled in the
@@ -5223,7 +5251,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         <AccountSettings
           profile={profile}
           onProfileUpdated={onProfileUpdated}
-          onClose={() => setShowAccount(false)}
+          {...fromSettings(setShowAccount)}
         />
       )}
 
@@ -5322,38 +5350,38 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 
       {showLlmSettings && (
         <LLMSettingsDialog
-          onClose={() => setShowLlmSettings(false)}
+          {...fromSettings(setShowLlmSettings)}
           onChanged={handleLlmConfigChanged}
         />
       )}
-      {showProviderRuntime && <Modal title="Provider Runtime" onClose={() => setShowProviderRuntime(false)} wide><ProviderRuntime /></Modal>}
-      {showEvaluationHarness && <Modal title="Evaluation Harness" onClose={() => setShowEvaluationHarness(false)} wide><EvaluationHarness /></Modal>}
-      {showWorkspaceOrchestration && <Modal title="Workspace Orchestration" onClose={() => setShowWorkspaceOrchestration(false)} wide><WorkspaceOrchestration /></Modal>}
-      {showContinuity && <Modal title="Continuity" onClose={() => setShowContinuity(false)} wide><Continuity /></Modal>}
-      {showRulesSettings && <RulesProfiles onClose={() => setShowRulesSettings(false)} />}
-      {showAgentSettings && <AgentSettings onClose={() => setShowAgentSettings(false)} />}
-      {showBundles && <Modal title="Bundles" onClose={() => setShowBundles(false)} wide><Bundles /></Modal>}
-      {showGitHub && <Modal title="GitHub" onClose={() => setShowGitHub(false)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
-      {showContextMemory && <Modal title="Context Memory" onClose={() => setShowContextMemory(false)} wide><ContextMemory /></Modal>}
-      {showMemoryRetrieval && <Modal title="Workspace Retrieval" onClose={() => setShowMemoryRetrieval(false)} wide><MemoryRetrieval /></Modal>}
-      {showCommandSandbox && <Modal title="Command Sandbox" onClose={() => setShowCommandSandbox(false)} wide><CommandSandbox /></Modal>}
-      {showLsp && <Modal title="Language Server Protocol" onClose={() => setShowLsp(false)} wide><LspPanel /></Modal>}
-      {showReliableWebSearch && <Modal title="Reliable Web Search" onClose={() => setShowReliableWebSearch(false)} wide><WebSearch /></Modal>}
+      {showProviderRuntime && <Modal title="Provider Runtime" {...fromSettings(setShowProviderRuntime)} wide><ProviderRuntime /></Modal>}
+      {showEvaluationHarness && <Modal title="Evaluation Harness" {...fromSettings(setShowEvaluationHarness)} wide><EvaluationHarness /></Modal>}
+      {showWorkspaceOrchestration && <Modal title="Workspace Orchestration" {...fromSettings(setShowWorkspaceOrchestration)} wide><WorkspaceOrchestration /></Modal>}
+      {showContinuity && <Modal title="Continuity" {...fromSettings(setShowContinuity)} wide><Continuity /></Modal>}
+      {showRulesSettings && <RulesProfiles {...fromSettings(setShowRulesSettings)} />}
+      {showAgentSettings && <AgentSettings {...fromSettings(setShowAgentSettings)} />}
+      {showBundles && <Modal title="Bundles" {...fromSettings(setShowBundles)} wide><Bundles /></Modal>}
+      {showGitHub && <Modal title="GitHub" {...fromSettings(setShowGitHub)} wide><GitHub onClose={() => setShowGitHub(false)} /></Modal>}
+      {showContextMemory && <Modal title="Context Memory" {...fromSettings(setShowContextMemory)} wide><ContextMemory /></Modal>}
+      {showMemoryRetrieval && <Modal title="Workspace Retrieval" {...fromSettings(setShowMemoryRetrieval)} wide><MemoryRetrieval /></Modal>}
+      {showCommandSandbox && <Modal title="Command Sandbox" {...fromSettings(setShowCommandSandbox)} wide><CommandSandbox /></Modal>}
+      {showLsp && <Modal title="Language Server Protocol" {...fromSettings(setShowLsp)} wide><LspPanel /></Modal>}
+      {showReliableWebSearch && <Modal title="Reliable Web Search" {...fromSettings(setShowReliableWebSearch)} wide><WebSearch /></Modal>}
 
       {showWebSearchSettings && (
-        <WebSearchSettingsDialog onClose={() => setShowWebSearchSettings(false)} />
+        <WebSearchSettingsDialog {...fromSettings(setShowWebSearchSettings)} />
       )}
 
       {showGallerySettings && (
-        <GallerySettingsDialog onClose={() => setShowGallerySettings(false)} />
+        <GallerySettingsDialog {...fromSettings(setShowGallerySettings)} />
       )}
 
       {showIntegrations && (
-        <Integrations onClose={() => setShowIntegrations(false)} />
+        <Integrations {...fromSettings(setShowIntegrations)} />
       )}
       {showEngines && (
         <ExternalAgents
-          onClose={() => setShowEngines(false)}
+          {...fromSettings(setShowEngines)}
           /* Signing in here has to reach the composer's picker without a
              reload: its list was fetched when Agent mode was entered, and an
              engine that appears only on the next visit reads as one that did
@@ -5363,12 +5391,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       )}
 
       {showBackgroundChats && (
-        <BackgroundChatsDialog onClose={() => setShowBackgroundChats(false)} />
+        <BackgroundChatsDialog {...fromSettings(setShowBackgroundChats)} />
       )}
 
       {showSidebarChats && (
         <SidebarChatsDialog
-          onClose={() => setShowSidebarChats(false)}
+          {...fromSettings(setShowSidebarChats)}
           /* Lowering the number archives chats behind this dialog, so the list
              it is sitting on top of has to be re-read before it is uncovered. */
           onChanged={() => refreshSidebar().catch(() => {})}
@@ -5401,7 +5429,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         />
       )}
       {showVoiceSettings && (
-        <Modal title="Voice input" onClose={() => setShowVoiceSettings(false)}>
+        <Modal title="Voice input" {...fromSettings(setShowVoiceSettings)}>
           <VoiceSettings
             status={voiceStatus}
             onStatusChange={setVoiceStatus}
@@ -5410,7 +5438,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         </Modal>
       )}
       {showAppearance && (
-        <Modal title="Appearance" onClose={() => setShowAppearance(false)}>
+        <Modal title="Appearance" {...fromSettings(setShowAppearance)}>
           <AppearanceSettings
             theme={theme}
             onThemeChange={onThemeChange}
@@ -5419,7 +5447,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         </Modal>
       )}
       {showChatBackground && (
-        <Modal title="Background" onClose={() => setShowChatBackground(false)}>
+        <Modal title="Background" {...fromSettings(setShowChatBackground)}>
           <BackgroundSettings
             background={background}
             intensity={intensity}
@@ -5433,7 +5461,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         <KeyboardSettings
           platform={keyboardKeymap.platform}
           onConfigChange={setKeyboardConfig}
-          onClose={() => setShowKeyboardSettings(false)}
+          {...fromSettings(setShowKeyboardSettings)}
         />
       )}
       {showCommandPalette && (

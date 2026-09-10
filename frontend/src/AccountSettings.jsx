@@ -12,7 +12,7 @@ function Avatar({ profile, preview }) {
   return <span className="account-avatar account-avatar-initials">{initials}</span>;
 }
 
-export default function AccountSettings({ profile, onClose, onProfileUpdated }) {
+export default function AccountSettings({ profile, onClose, onProfileUpdated, backLabel, onBack }) {
   const [username, setUsername] = useState(profile?.username || "");
   const [avatarPreview, setAvatarPreview] = useState(null);
   const [clearAvatar, setClearAvatar] = useState(false);
@@ -89,7 +89,14 @@ export default function AccountSettings({ profile, onClose, onProfileUpdated }) 
     <div className="modal-backdrop" role="presentation">
       <div className="neo-dialog account-dialog" role="dialog" aria-modal="true" aria-label="Account">
         <div className="dialog-title-row">
-          <h2>Account</h2>
+          <div className="dialog-title-main">
+            {backLabel ? (
+              <button className="dialog-back" type="button" onClick={onBack || onClose}>
+                {"\u2190"} {backLabel}
+              </button>
+            ) : null}
+            <h2>Account</h2>
+          </div>
           <button className="dialog-close" type="button" onClick={onClose} aria-label="Close">×</button>
         </div>
 

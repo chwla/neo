@@ -232,7 +232,7 @@ export function ClientSetup({ provider, busy, onSave, onClear }) {
   );
 }
 
-export default function Integrations({ onClose }) {
+export default function Integrations({ onClose, backLabel, onBack }) {
   const [catalog, setCatalog] = useState({ providers: [] });
   const [connections, setConnections] = useState([]);
   const [chosen, setChosen] = useState([]);
@@ -339,7 +339,7 @@ export default function Integrations({ onClose }) {
   }
 
   return (
-    <Modal title="Connected accounts" onClose={onClose} wide>
+    <Modal title="Connected accounts" onClose={onClose} backLabel={backLabel} onBack={onBack} wide>
       <p className="dialog-caption">
         Neo keeps the keys to a connected account on this machine, in this profile, encrypted.
         They are never sent anywhere else. Anything other people would see, such as a sent message or a

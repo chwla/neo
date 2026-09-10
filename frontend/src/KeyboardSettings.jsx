@@ -171,7 +171,7 @@ export function ConflictDialog({ sequence, platform, claimant, holders, onKeep, 
  * field must not depend on being inside one: recording "g c" while the engine is
  * live navigates you to the chat view halfway through the recording.
  */
-export default function KeyboardSettings({ onClose, onConfigChange, platform = "other" }) {
+export default function KeyboardSettings({ onClose, onConfigChange, platform = "other", backLabel, onBack }) {
   const [config, setConfig] = useState(null);
   //: { commandId, slot, chords, sequenceMode } while recording, else null.
   const [recording, setRecording] = useState(null);
@@ -339,7 +339,8 @@ export default function KeyboardSettings({ onClose, onConfigChange, platform = "
   const sections = sectionsFor(COMMANDS, filter);
 
   return (
-    <Modal title="Keyboard" onClose={onClose} wide className="keyboard-dialog">
+    <Modal title="Keyboard" onClose={onClose} backLabel={backLabel} onBack={onBack}
+      wide className="keyboard-dialog">
       <p className="dialog-caption">
         Every command can have a shortcut and a quick key. The shortcut works
         anywhere; the quick key only when you are not typing. Both are yours to

@@ -77,7 +77,7 @@ function fromAgent(agent) {
   };
 }
 
-export default function AgentSettings({ onClose }) {
+export default function AgentSettings({ onClose, backLabel, onBack }) {
   const [agents, setAgents] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [routes, setRoutes] = useState([]);
@@ -160,7 +160,17 @@ export default function AgentSettings({ onClose }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="settings-dialog agent-settings-dialog" role="dialog" aria-modal="true" aria-label="Agents">
-        <div className="modal-header"><h2>Agents</h2><button type="button" onClick={onClose}>×</button></div>
+        <div className="modal-header">
+          <div className="dialog-title-main">
+            {backLabel ? (
+              <button className="dialog-back" type="button" onClick={onBack || onClose}>
+                {"\u2190"} {backLabel}
+              </button>
+            ) : null}
+            <h2>Agents</h2>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close">×</button>
+        </div>
         <p className="dialog-caption">Agents cannot bypass approvals. Unsafe permissions are clamped; disabled agents cannot run.</p>
         <div className="agent-settings-grid">
           <section className="settings-section">

@@ -43,9 +43,9 @@ export const BACKGROUNDS = [
     description: "Fine rain leaning with the wind, near drops falling faster than far ones.",
   },
   {
-    id: "waves",
-    name: "Waves",
-    description: "Layered swells rolling under the conversation, slower the further back they are.",
+    id: "gradient",
+    name: "Gradient",
+    description: "Fine lines flowing in ribbons, gathering into a bright core where they cross.",
   },
 ];
 

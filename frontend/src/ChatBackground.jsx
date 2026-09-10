@@ -14,8 +14,9 @@
  * Two canvases where the effect needs two. The marks canvas is the effect; the
  * diffusion canvas beneath it is the same frame reduced and spread, and it is
  * what makes the glass above a material rather than a tinted box for the sparse
- * fields. Waves paints enough on its own and gets one canvas. The engine owns
- * whichever are there.
+ * fields. Gradient paints a broad field on its own and gets one canvas -- and
+ * no `has-wash`, so the stylesheet's continuous wash stays off for it too. The
+ * engine owns whichever canvases are there.
  *
  * Not mounted inside `.neo-shell`: that rule set clamps every direct child to
  * 860px and centres it, and a child of a scroller is the wrong place to hang a
@@ -55,8 +56,19 @@ export default function ChatBackground({ background, intensity }) {
 
   if (!effect) return null;
 
+  //: One condition governs both halves of the field. An effect that declares a
+  //: gain is one whose marks are too sparse to be a backdrop on their own, so it
+  //: needs the diffusion buffer *and* the continuous wash underneath. Gradient
+  //: declares none because it is already a broad moving field -- washing it
+  //: again would lay a second gradient under the one the user chose.
+  const sparse = effect.bloom > 1;
+
   return (
-    <div className="chat-bg-layer" ref={hostRef} aria-hidden="true">
+    <div
+      className={`chat-bg-layer ${sparse ? "has-wash" : ""}`.trim()}
+      ref={hostRef}
+      aria-hidden="true"
+    >
       {/* Under the marks, and first in the DOM for that reason: the low
           resolution buffer the engine reduces each frame into, stretched back
           over the field by the compositor. It is the layer the glass above has
@@ -66,7 +78,7 @@ export default function ChatBackground({ background, intensity }) {
           Mounted only for an effect that asked for a gain. Waves covers enough
           of the field to be a backdrop on its own, so it gets no second canvas
           and no reduction rather than an element the engine would skip. */}
-      {effect.bloom > 1 && <canvas className="chat-bg-diffusion" ref={bloomRef} />}
+      {sparse && <canvas className="chat-bg-diffusion" ref={bloomRef} />}
       <canvas className="chat-bg-marks" ref={canvasRef} />
     </div>
   );

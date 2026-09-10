@@ -12,7 +12,7 @@ const EMPTY = {
   rules: { instructions: [] },
 };
 
-export default function RulesProfiles({ onClose }) {
+export default function RulesProfiles({ onClose, backLabel, onBack }) {
   const [profiles, setProfiles] = useState([]);
   const [logs, setLogs] = useState([]);
   const [form, setForm] = useState(EMPTY);
@@ -127,7 +127,17 @@ export default function RulesProfiles({ onClose }) {
   }
 
   return <div className="modal-backdrop"><section className="neo-dialog neo-dialog-wide" role="dialog" aria-modal="true" aria-label="Rules & Profiles">
-    <div className="dialog-title-row"><h2>Rules &amp; Profiles</h2><button className="dialog-close" aria-label="Close rules" onClick={onClose}>×</button></div>
+    <div className="dialog-title-row">
+      <div className="dialog-title-main">
+        {backLabel ? (
+        <button className="dialog-back" type="button" onClick={onBack || onClose}>
+          {"\u2190"} {backLabel}
+        </button>
+        ) : null}
+        <h2>Rules &amp; Profiles</h2>
+      </div>
+      <button className="dialog-close" aria-label="Close rules" onClick={onClose}>×</button>
+    </div>
     <p className="dialog-caption">Scoped guidance for Neo. Rules never grant permission or override safety.</p>
     <form className="coding-agent-form" onSubmit={save}>
       <h3>{editingId ? "Edit profile" : "Create profile"}</h3>

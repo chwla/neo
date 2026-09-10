@@ -10,12 +10,12 @@
  * no canvas and no engine are ever created.
  */
 
+import gradient from "./gradient.js";
 import jellyfish from "./jellyfish.js";
 import rain from "./rain.js";
 import stars from "./stars.js";
-import waves from "./waves.js";
 
-const MODULES = [jellyfish, stars, rain, waves];
+const MODULES = [jellyfish, stars, rain, gradient];
 
 const BY_ID = new Map(MODULES.map((module) => [module.id, module]));
 
