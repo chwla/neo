@@ -384,17 +384,19 @@ class AppStore:
     def set_chat_archived(self, chat_id: int, archived: bool) -> Chat | None:
         """Move a chat out of the sidebar, or bring it back.
 
-        Unarchiving touches ``updated_at``, and has to. The sidebar shows the
-        newest ``N`` chats, so restoring one without moving it would drop it back
-        in below the cut and the next load would archive it straight back out --
-        an Unarchive button that visibly does nothing. Bringing it back *is*
-        touching the thread, so it goes to the top and the chat it displaces
-        falls off the bottom, which is what the user asked for by unarchiving it.
+        Only ever called because someone chose Archive or Unarchive on the row,
+        or sent a message into an archived thread. Nothing archives a chat on a
+        schedule or for being old.
+
+        Unarchiving touches ``updated_at``: a restored chat lands at the top of
+        the list rather than wherever in the scroll its last message would put
+        it, which is the only way the button visibly does anything on a list
+        long enough to need scrolling.
 
         Archiving leaves the timestamp alone, which takes explicit work: the
         column carries ``onupdate=now()``, so any ordinary write to the row would
         restamp it. That would make every archived chat look freshly used and
-        sort the archive by when Neo tidied it away rather than by when the
+        sort the archive by when it was put away rather than by when the
         conversation actually happened.
         """
 
@@ -411,44 +413,6 @@ class AppStore:
             chat.updated_at = datetime.now(UTC)
             self.db.flush()
         return chat
-
-    def archive_sidebar_overflow(
-        self, limit: int, protected_ids: set[int] | None = None
-    ) -> list[int]:
-        """Archive loose chats past the newest ``limit``, and say which.
-
-        The order is the sidebar's own -- pinned first, then most recently
-        updated -- so "past the cut" means exactly what the eye means by it.
-        What is skipped is skipped for a reason:
-
-        * pinned chats, because a pin is a promise the thread stays put, and a
-          cap that overrode it would make pinning a chat the way to lose it;
-        * chats with a turn still going, because archiving takes a thread out of
-          the only place its progress is visible, and a long agent run on an
-          otherwise idle chat is exactly the one that drifts past the cut;
-        * chats with no messages, because they are not in the sidebar to begin
-          with -- ``list_chats`` hides them and ``find_empty_chat`` recycles them.
-
-        Chats inside a project are untouched. A project is a container the user
-        built on purpose and its list is already bounded by the folder it lives
-        in; the cap is about the loose pile that grows without anyone deciding.
-        """
-
-        protected = protected_ids or set()
-        ranked = self.db.scalars(
-            select(Chat)
-            .where(
-                Chat.archived.is_(False),
-                Chat.project_id.is_(None),
-                exists().where(ChatMessage.chat_id == Chat.id),
-            )
-            .order_by(Chat.pinned.desc(), Chat.updated_at.desc(), Chat.id.desc())
-            .offset(max(int(limit), 0))
-        )
-        overflow = [chat.id for chat in ranked if not chat.pinned and chat.id not in protected]
-        if overflow:
-            self._set_archived_preserving_timestamps(overflow, True)
-        return overflow
 
     def _set_archived_preserving_timestamps(self, chat_ids: list[int], archived: bool) -> None:
         """Flip ``archived`` without letting ``onupdate`` restamp ``updated_at``.

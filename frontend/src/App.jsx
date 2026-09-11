@@ -88,13 +88,6 @@ const NEW_CHAT_GUARD_KEY = "new-chat";
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 
-//: The server's bounds for the sidebar's chat limit, mirrored so the field can
-//: correct an out-of-range number in place instead of round-tripping to find out.
-//: See ``app/services/chat_prefs.py``, which is where they are enforced.
-const DEFAULT_SIDEBAR_CHATS = 10;
-const MIN_SIDEBAR_CHATS = 1;
-const MAX_SIDEBAR_CHATS = 100;
-
 function errorMessage(error) {
   if (!error) {
     return "";
@@ -361,6 +354,16 @@ export function Modal({
  * The two lists (loose chats and chats inside a project) differ only in class names,
  * so they share this row rather than growing two copies of the rename flow.
  */
+//: How far the menu sits from the row it belongs to, and the closest it will
+//: come to the edge of the window before it is nudged back inside.
+const ROW_MENU_GAP = 4;
+const ROW_MENU_EDGE = 8;
+
+//: Measuring is a browser-only job, and the sidebar is rendered to static markup
+//: in tests, where `useLayoutEffect` only warns. It degrades to `useEffect`
+//: there rather than making every row print a paragraph about hydration.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 /**
  * A row's own controls, behind a vertical "..." that only shows on hover or
  * focus. Same popover rules as the transcript's menu: escape, an outside click,
@@ -368,8 +371,59 @@ export function Modal({
  */
 function RowActionsMenu({ label, className = "", children }) {
   const [open, setOpen] = useState(false);
+  //: Where the open menu sits in the window, or null while it is still being
+  //: measured. Viewport coordinates, because the menu is positioned against the
+  //: window rather than against the row.
+  const [at, setAt] = useState(null);
   const menuRef = useRef(null);
   const buttonRef = useRef(null);
+
+  // The menu is taken out of the sidebar and placed against the window, because
+  // the chat list is a scrolling box and an absolutely positioned menu inside
+  // one is cut off at its edges. Flipping the menu upward is not enough on its
+  // own: a list holding three chats is shorter than the menu, so there is no
+  // room in either direction and the choice is only which end gets clipped.
+  //
+  // Below the row when the window has room for it, above when it does not, and
+  // pulled back inside the window rather than allowed off the edge. Measured
+  // after the menu exists but before it is painted, so it never appears in one
+  // place and jumps to another.
+  useIsomorphicLayoutEffect(() => {
+    if (!open) {
+      setAt(null);
+      return;
+    }
+    const button = buttonRef.current;
+    const menu = menuRef.current;
+    if (!button || !menu) {
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const { offsetWidth: width, offsetHeight: height } = menu;
+    const below = rect.bottom + ROW_MENU_GAP;
+    const top =
+      below + height + ROW_MENU_EDGE <= window.innerHeight
+        ? below
+        : Math.max(ROW_MENU_EDGE, rect.top - ROW_MENU_GAP - height);
+    // Right-aligned with the trigger, the way it was when it hung off the row.
+    const left = Math.min(
+      Math.max(ROW_MENU_EDGE, rect.right - width),
+      window.innerWidth - width - ROW_MENU_EDGE
+    );
+    setAt({ top, left });
+  }, [open]);
+
+  // Rendered through the body, the menu is no longer the next thing after the
+  // trigger in tab order -- it is at the end of the document, which for a
+  // keyboard is the same as unreachable. So opening moves focus into it, and
+  // Escape hands focus back to the trigger below. Waits for the placement,
+  // because a menu still `visibility: hidden` for measurement cannot take focus.
+  useEffect(() => {
+    if (!open || !at) {
+      return;
+    }
+    menuRef.current?.querySelector("button")?.focus();
+  }, [open, at]);
 
   useEffect(() => {
     if (!open) {
@@ -383,6 +437,23 @@ function RowActionsMenu({ label, className = "", children }) {
       setOpen(false);
     }
 
+    // A menu placed against the window cannot follow the row it belongs to, so
+    // anything that moves the row closes it rather than leaving it stranded
+    // where the row no longer is. Capture, because the scroll that matters is
+    // the chat list's own and scroll events do not bubble -- and only scrolls
+    // that actually carry this row, so a transcript auto-scrolling behind a
+    // streaming reply does not close a menu the user just opened.
+    function onScroll(event) {
+      const scrolled = event.target === document ? document.documentElement : event.target;
+      if (scrolled?.contains?.(buttonRef.current)) {
+        setOpen(false);
+      }
+    }
+
+    function onResize() {
+      setOpen(false);
+    }
+
     // Escape goes through the dialog stack rather than a listener of this
     // popover's own. Two reasons: a popover opened over a dialog closes only
     // itself, and the keyboard engine stands down whenever anything is on that
@@ -393,11 +464,34 @@ function RowActionsMenu({ label, className = "", children }) {
     });
 
     document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
     return () => {
       releaseEscape();
       document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
     };
   }, [open]);
+
+  const menu = (
+    <span
+      ref={menuRef}
+      className="row-actions-menu"
+      hidden={!open}
+      // Hidden rather than mispositioned for the one frame between existing and
+      // being measured: `visibility` still lays the menu out, which is what the
+      // measurement needs.
+      style={
+        open
+          ? { top: at?.top ?? 0, left: at?.left ?? 0, visibility: at ? "visible" : "hidden" }
+          : undefined
+      }
+      onClick={() => setOpen(false)}
+    >
+      {children}
+    </span>
+  );
 
   return (
     <span className={`row-actions ${className}`.trim()}>
@@ -416,9 +510,10 @@ function RowActionsMenu({ label, className = "", children }) {
       >
         {"\u22ee"}
       </button>
-      <span ref={menuRef} className="row-actions-menu" hidden={!open} onClick={() => setOpen(false)}>
-        {children}
-      </span>
+      {/* Through the body only while it is open: closed, it is a hidden span
+          that may as well stay on the row, and server-rendered there is no body
+          to go through. */}
+      {open && typeof document !== "undefined" ? createPortal(menu, document.body) : menu}
     </span>
   );
 }
@@ -511,14 +606,17 @@ function SidebarChatRow({
         <button type="button" onClick={startRename}>
           Rename
         </button>
-        {/* A pinned chat is already exempt from the sidebar's cap, so offering
-            to archive it would be offering to undo the pin by another name. */}
         {chat.archived ? null : (
           <button type="button" onClick={() => onPinChat?.(chat, !chat.pinned)}>
             {chat.pinned ? "Unpin chat" : "Pin chat"}
           </button>
         )}
-        {onArchiveChat && !chat.pinned ? (
+        {/* Offered on every chat, pinned ones included. Archiving used to be
+            something the list did to old chats and a pin was the exemption from
+            it; now it is only ever something you choose, and there is no reason
+            a pinned thread should have to be unpinned before it can be put
+            away. */}
+        {onArchiveChat ? (
           <button type="button" onClick={() => onArchiveChat(chat, !chat.archived)}>
             {chat.archived ? "Unarchive" : "Archive"}
           </button>
@@ -859,29 +957,37 @@ export function Sidebar({
           CHATS
         </button>
       </div>
+      {/* Ten rows tall and scrolling inside itself, however many chats there
+          are. The whole history stays in the list -- nothing is put away for
+          being far down it -- and the sidebar below (SYSTEM, Settings, the
+          profile) keeps its place instead of being pushed off the bottom by a
+          long history. */}
       {chatsCollapsed ? null : filteredChats.length === 0 ? (
         <p className="sidebar-caption">No chats yet.</p>
       ) : (
-        filteredChats.map((chat) => (
-          <SidebarChatRow
-            key={chat.id}
-            chat={chat}
-            href={chatPermalink(chat.id)}
-            isActive={chat.id === activeChatId}
-            classes={{ item: "chat-item", link: "chat-item-title", menu: "chat-item-menu" }}
-            status={statusFor?.(chat)}
-            onOpenChat={onOpenChat}
-            onDeleteChat={onDeleteChat}
-            onRenameChat={onRenameChat}
-            onPinChat={onPinChat}
-            onArchiveChat={onArchiveChat}
-          />
-        ))
+        <div className="sidebar-scroll-list">
+          {filteredChats.map((chat) => (
+            <SidebarChatRow
+              key={chat.id}
+              chat={chat}
+              href={chatPermalink(chat.id)}
+              isActive={chat.id === activeChatId}
+              classes={{ item: "chat-item", link: "chat-item-title", menu: "chat-item-menu" }}
+              status={statusFor?.(chat)}
+              onOpenChat={onOpenChat}
+              onDeleteChat={onDeleteChat}
+              onRenameChat={onRenameChat}
+              onPinChat={onPinChat}
+              onArchiveChat={onArchiveChat}
+            />
+          ))}
+        </div>
       )}
 
-      {/* Where chats go when the list outgrows its cap, and where you get them
-          back from. Hidden entirely until there is something in it: an empty
-          Archived heading is a permanent reminder of a feature nobody used. */}
+      {/* Where a chat goes when you choose Archive on it, and where you get it
+          back from. Nothing else puts a chat here. Hidden entirely until there
+          is something in it: an empty Archived heading is a permanent reminder
+          of a feature nobody used. */}
       {archivedCount > 0 && (
         <>
           <div className="sidebar-section sidebar-section-row">
@@ -907,19 +1013,24 @@ export function Sidebar({
             ) : filteredArchived.length === 0 ? (
               <p className="sidebar-caption">{query ? "No archived chats match." : "Nothing archived."}</p>
             ) : (
-              filteredArchived.map((chat) => (
-                <SidebarChatRow
-                  key={chat.id}
-                  chat={chat}
-                  href={chatPermalink(chat.id)}
-                  isActive={chat.id === activeChatId}
-                  classes={{ item: "chat-item is-archived", link: "chat-item-title", menu: "chat-item-menu" }}
-                  onOpenChat={onOpenChat}
-                  onDeleteChat={onDeleteChat}
-                  onRenameChat={onRenameChat}
-                  onArchiveChat={onArchiveChat}
-                />
-              ))
+              /* Bounded and scrolling like the chat list above it, and for the
+                 same reason: an archive of a hundred threads must not be able
+                 to bury the rest of the sidebar when it is opened. */
+              <div className="sidebar-scroll-list">
+                {filteredArchived.map((chat) => (
+                  <SidebarChatRow
+                    key={chat.id}
+                    chat={chat}
+                    href={chatPermalink(chat.id)}
+                    isActive={chat.id === activeChatId}
+                    classes={{ item: "chat-item is-archived", link: "chat-item-title", menu: "chat-item-menu" }}
+                    onOpenChat={onOpenChat}
+                    onDeleteChat={onDeleteChat}
+                    onRenameChat={onRenameChat}
+                    onArchiveChat={onArchiveChat}
+                  />
+                ))}
+              </div>
             )
           ) : null}
         </>
@@ -2942,110 +3053,6 @@ function BackgroundChatsDialog({ onClose, backLabel, onBack }) {
 }
 
 
-/**
- * How long the sidebar's chat list is allowed to get.
- *
- * The number is the whole setting: everything past it is archived, oldest
- * first, and stays reachable under Archived. Ten is the default because a
- * sidebar is for the conversation you are returning to, not for all of them.
- */
-function SidebarChatsDialog({ onClose, onChanged, backLabel, onBack }) {
-  const [limit, setLimit] = useState(DEFAULT_SIDEBAR_CHATS);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .chatConfig()
-      .then((config) => {
-        if (!cancelled) setLimit(Number(config.sidebar_chat_limit) || DEFAULT_SIDEBAR_CHATS);
-      })
-      .catch((requestError) => {
-        if (!cancelled) setError(errorMessage(requestError));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function changeLimit(next) {
-    // Clamped here as well as on the server, so a typed-in 900 is corrected in
-    // the field the user is looking at rather than silently on the way back.
-    const wanted = Math.max(MIN_SIDEBAR_CHATS, Math.min(MAX_SIDEBAR_CHATS, Math.round(next)));
-    if (!Number.isFinite(wanted)) {
-      return;
-    }
-    setSaving(true);
-    setError("");
-    const previous = limit;
-    setLimit(wanted);
-    try {
-      const config = await api.updateChatConfig({ sidebar_chat_limit: wanted });
-      setLimit(Number(config.sidebar_chat_limit) || wanted);
-      // Lowering the number archives the overflow server-side, so the list on
-      // screen is stale the moment this returns.
-      await onChanged?.();
-    } catch (requestError) {
-      setLimit(previous);
-      setError(errorMessage(requestError));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Modal title="Sidebar" onClose={onClose} backLabel={backLabel} onBack={onBack}>
-      <p className="dialog-caption">
-        The sidebar keeps your most recent chats. Older ones are archived rather than deleted --
-        they stay under Archived, keep their messages, and come back the moment you unarchive one
-        or send another message in it.
-      </p>
-      <div className="chat-tools-row">
-        <div className="chat-tools-row-info">
-          <div className="chat-tools-row-title">
-            <strong>Chats in the sidebar</strong>
-          </div>
-          <p>
-            Once there are more than this, the least recently used is archived. Pinned chats and
-            chats still working on a reply are never archived, and chats inside a project are not
-            counted here.
-          </p>
-        </div>
-        <label className="chat-tools-toggle">
-          <input
-            type="number"
-            className="sidebar-limit-input"
-            min={MIN_SIDEBAR_CHATS}
-            max={MAX_SIDEBAR_CHATS}
-            step={1}
-            value={limit}
-            disabled={loading || saving}
-            // Committed on blur or Enter rather than per keystroke: typing "25"
-            // passes through "2", and saving that would archive the list down to
-            // two chats on the way to the number the user meant.
-            onChange={(event) => setLimit(event.target.value)}
-            onBlur={(event) => changeLimit(Number(event.target.value))}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                event.currentTarget.blur();
-              }
-            }}
-            aria-label="How many chats stay in the sidebar"
-          />
-        </label>
-      </div>
-      {error && <div className="neo-error">{error}</div>}
-    </Modal>
-  );
-}
-
-
 function GallerySettingsDialog({ onClose, backLabel, onBack }) {
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -3119,7 +3126,7 @@ function GallerySettingsDialog({ onClose, backLabel, onBack }) {
   );
 }
 
-function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenSidebarItems, onOpenEngines, onOpenIntegrations, onOpenAppearance, onOpenChatBackground,
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarItems, onOpenEngines, onOpenIntegrations, onOpenAppearance, onOpenChatBackground,
   onOpenVoice, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
@@ -3186,18 +3193,16 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       ],
     },
     {
-      /* Its own group rather than another line under Workspace. What the sidebar
-         offers is not workspace configuration, and Workspace's "Sidebar" row --
-         how many chats the list keeps before archiving -- would have been a
-         second thing by almost that name in one dialog, which is how you send
-         people to the wrong screen. That row moved here with it: both are about
-         what the sidebar shows, and they are the only two things that are. */
+      /* Its own group rather than another line under Workspace: what the sidebar
+         offers is not workspace configuration, and filing it there is how you
+         send people to the wrong screen looking for it. How long the chat list
+         gets is no longer a setting -- the list scrolls and keeps everything,
+         and a chat leaves it only when you archive it yourself. */
       title: "Navigation",
       icon: "pin",
-      description: "What the sidebar offers, and how much of it.",
+      description: "What the sidebar offers.",
       items: [
         ["Sidebar items", "Which of Memory, Notes, Calendar and the rest stay pinned", onOpenSidebarItems],
-        ["Chat list", "How many chats stay in the list before older ones are archived", onOpenSidebarChats],
       ],
     },
     {
@@ -3466,7 +3471,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   const [showIntegrations, setShowIntegrations] = useState(false);
   const [showGallerySettings, setShowGallerySettings] = useState(false);
   const [showBackgroundChats, setShowBackgroundChats] = useState(false);
-  const [showSidebarChats, setShowSidebarChats] = useState(false);
   // The footer avatar asks before it acts. It sits next to Settings and is the
   // easiest control in the sidebar to hit by accident, and for a guest what it
   // does cannot be undone.
@@ -4233,8 +4237,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     try {
       const updated = await api.archiveChat(chat.id, archived);
       setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
-      // The server may have archived a second chat to make room for this one, so
-      // the whole sidebar is re-read rather than the one row being patched.
+      // Both lists change at once -- the row leaves one and joins the other, and
+      // the Archived heading's count moves with it -- so the sidebar is re-read
+      // rather than the one row being patched from here.
       await refreshSidebar();
     } catch (error) {
       setStatusError(errorMessage(error));
@@ -5287,7 +5292,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           }}
           onOpenReliableWebSearch={() => { setShowSettings(false); setShowReliableWebSearch(true); }}
           onOpenGallerySettings={() => { setShowSettings(false); setShowGallerySettings(true); }}
-          onOpenSidebarChats={() => { setShowSettings(false); setShowSidebarChats(true); }}
           onOpenSidebarItems={() => { setShowSettings(false); setShowSidebarItems(true); }}
           onOpenMemory={() => {
             setShowSettings(false);
@@ -5404,15 +5408,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           {...fromSettings(setShowSidebarItems)}
           hidden={hiddenSystemItems}
           onHiddenChange={onHiddenSystemItemsChange}
-        />
-      )}
-
-      {showSidebarChats && (
-        <SidebarChatsDialog
-          {...fromSettings(setShowSidebarChats)}
-          /* Lowering the number archives chats behind this dialog, so the list
-             it is sitting on top of has to be re-read before it is uncovered. */
-          onChanged={() => refreshSidebar().catch(() => {})}
         />
       )}
 

@@ -57,6 +57,14 @@ router = APIRouter()
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 PROCESS_WORKER_ID = str(uuid.uuid4())
 GENERATION_LEASE_SECONDS = 120
+
+#: How many loose chats one sidebar payload will carry. Not a cap on how many a
+#: profile may keep -- nothing is archived for exceeding it. The sidebar scrolls,
+#: so the list is as long as the history is, and this is only the point past
+#: which sending more rows stops being useful to anyone and starts being a large
+#: response nobody reads. Anything below the line is still reachable by search
+#: and still opens by permalink.
+SIDEBAR_CHAT_CEILING = 200
 _GENERATION_THREADS: set[str] = set()
 _GENERATION_THREADS_LOCK = Lock()
 
@@ -256,9 +264,6 @@ class SidebarRead(BaseModel):
     #: How many chats sit in the archive, so the sidebar can label the section
     #: without a second request for a list it has not been asked to show yet.
     archived_count: int = 0
-    #: The cap ``chats`` was trimmed to, echoed back so the sidebar can explain
-    #: why a thread left it without going and reading the setting itself.
-    chat_limit: int = chat_prefs.DEFAULT_SIDEBAR_CHATS
 
 
 class ChatThreadRead(BaseModel):
@@ -367,8 +372,8 @@ class ChatUpdateRequest(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=120)
     pinned: bool | None = None
-    #: Out of the sidebar, or back into it. Unarchiving is what makes room:
-    #: the chat returns to the top of the list and whatever was last falls off.
+    #: Out of the sidebar, or back into it. Only ever set because someone chose
+    #: Archive or Unarchive on the row -- Neo never archives a chat on its own.
     archived: bool | None = None
     repo_id: str | None = Field(default=None, max_length=64)
     agent_mode: Literal["plan", "normal", "auto"] | None = None
@@ -526,11 +531,10 @@ def _get_required_chat(store: AppStore, chat_id: int):
     """The chat, archived or not.
 
     Archived used to mean gone here, which was harmless while nothing ever set
-    the flag. It is now the ordinary resting place of every chat past the
-    sidebar's cap, so an archived thread is one you can still open, read,
-    rename, reply to and delete -- it is simply not in the list. Reporting it
-    missing would make Unarchive unreachable through the very endpoint that
-    performs it.
+    the flag. Archiving is now a thing the user does to a thread they want out
+    of the way, so an archived chat is one you can still open, read, rename,
+    reply to and delete -- it is simply not in the list. Reporting it missing
+    would make Unarchive unreachable through the very endpoint that performs it.
     """
 
     chat = store.get_chat(chat_id)
@@ -1008,9 +1012,9 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 return
             llm_id = generation.llm_id
             chat = db.get(Chat, generation.chat_id)
-            # Deleted, not archived. Archiving is a sidebar decision now and can
-            # happen to a thread whose reply is still being written; failing the
-            # turn for it would lose an answer the user is waiting on.
+            # Deleted, not archived. Archiving is the user's decision and can
+            # be made about a thread whose reply is still being written; failing
+            # the turn for it would lose an answer the user is waiting on.
             if chat is None:
                 _update_leased_generation(
                     db,
@@ -1577,12 +1581,6 @@ def get_sidebar(request: Request, store: StoreDependency) -> SidebarRead:
     # query per chat, which is the shape of thing that only shows up once a
     # profile has a hundred of them.
     turn_statuses = _turn_status_by_chat(running)
-    limit = chat_prefs.sidebar_chat_limit()
-    # Settled here rather than only where chats are created, because every way
-    # the list can outgrow its cap ends at this endpoint: a new chat, an
-    # unarchived one, a lowered setting, or a profile that predates the cap
-    # entirely. Costs nothing when there is no overflow, which is almost always.
-    _enforce_sidebar_limit(store, limit, turn_statuses)
     projects = []
     for project in store.list_projects(ProjectStatus.ACTIVE):
         chats = store.list_chats(project_id=project.id, with_messages_only=True, limit=12)
@@ -1596,42 +1594,14 @@ def get_sidebar(request: Request, store: StoreDependency) -> SidebarRead:
     chats = store.list_chats(
         unprojected_only=True,
         with_messages_only=True,
-        limit=limit,
+        limit=SIDEBAR_CHAT_CEILING,
         always_include_ids=set(turn_statuses),
     )
     return SidebarRead(
         projects=projects,
         chats=[_sidebar_chat_read(chat, running, turn_statuses) for chat in chats],
         archived_count=store.count_archived_chats(),
-        chat_limit=limit,
     )
-
-
-def _enforce_sidebar_limit(
-    store: AppStore, limit: int, turn_statuses: dict[int, str] | None = None
-) -> list[int]:
-    """Archive whatever the loose chat list is holding past ``limit``.
-
-    Chats mid-turn are held back rather than archived: the sidebar badge is the
-    only place a background reply's progress shows, so taking the row away while
-    it works would hide the very thing the user is waiting for. The next load
-    archives it once the turn is done, if it is still past the cut.
-
-    Never allowed to fail a read. Nothing here is load-bearing for showing the
-    sidebar -- an overflow that survives one load is a list one row too long,
-    and it will be trimmed on the next.
-    """
-
-    try:
-        protected = set(turn_statuses or {})
-        archived = store.archive_sidebar_overflow(limit, protected_ids=protected)
-        if archived:
-            store.db.commit()
-        return archived
-    except Exception:
-        _CHAT_LOG.exception("sidebar_archive_overflow_failed")
-        store.db.rollback()
-        return []
 
 
 def _restore_if_archived(store: AppStore, chat: Chat) -> None:
@@ -1639,16 +1609,15 @@ def _restore_if_archived(store: AppStore, chat: Chat) -> None:
 
     Sending into an archived thread makes it the most recent conversation there
     is, so leaving it out of the list would mean a reply arriving somewhere the
-    user cannot see it. Restoring it here also keeps the cap honest: the thread
-    takes its place at the top and the oldest one falls off, exactly as if the
-    message had arrived while it was still in the list.
+    user cannot see it. This is the one thing that moves a chat between the two
+    lists without the user having pressed Archive or Unarchive, and it only ever
+    moves it the safe way -- back into view, never out of it.
     """
 
     if not chat.archived:
         return
     store.set_chat_archived(chat.id, False)
     store.db.commit()
-    _enforce_sidebar_limit(store, chat_prefs.sidebar_chat_limit(), _turn_status_by_chat())
 
 
 @router.get("/chats/archived", response_model=list[ChatRead])
@@ -2873,12 +2842,6 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
     if request.external_efforts is not None:
         chat.external_efforts = request.external_efforts
     store.db.commit()
-    # A chat coming back into the list is what pushes the last one out of it.
-    # Done here rather than left to the next sidebar load so the two changes
-    # land in the same response the browser is already waiting for, and the
-    # list never briefly shows one row too many.
-    if request.archived is False:
-        _enforce_sidebar_limit(store, chat_prefs.sidebar_chat_limit(), _turn_status_by_chat())
     store.db.refresh(chat)
     return ChatRead.model_validate(chat)
 
@@ -2975,39 +2938,28 @@ def _delete_chat_project(project_id: int, store: StoreDependency) -> Response:
 
 
 class ChatConfig(BaseModel):
-    """How this profile runs and lists its chats."""
+    """How this profile runs its chats."""
 
     max_concurrent_turns: int = Field(
         ge=chat_prefs.MIN_CONCURRENT_TURNS, le=chat_prefs.MAX_CONCURRENT_TURNS
     )
-    sidebar_chat_limit: int = Field(
-        default=chat_prefs.DEFAULT_SIDEBAR_CHATS,
-        ge=chat_prefs.MIN_SIDEBAR_CHATS,
-        le=chat_prefs.MAX_SIDEBAR_CHATS,
-    )
 
 
 class ChatConfigUpdate(BaseModel):
-    """One setting at a time, or both.
+    """A change to one of the settings above.
 
-    Optional rather than required so a dialog that owns one of these does not
-    have to restate the other -- and so an older client sending only
-    ``max_concurrent_turns`` keeps working unchanged.
+    Optional rather than required, so a dialog that owns one of these does not
+    have to restate the others, and so a client still sending a setting that has
+    since been removed is ignored rather than refused.
     """
 
     max_concurrent_turns: int | None = Field(
         default=None, ge=chat_prefs.MIN_CONCURRENT_TURNS, le=chat_prefs.MAX_CONCURRENT_TURNS
     )
-    sidebar_chat_limit: int | None = Field(
-        default=None, ge=chat_prefs.MIN_SIDEBAR_CHATS, le=chat_prefs.MAX_SIDEBAR_CHATS
-    )
 
 
 def _chat_config() -> ChatConfig:
-    return ChatConfig(
-        max_concurrent_turns=chat_prefs.max_concurrent_turns(),
-        sidebar_chat_limit=chat_prefs.sidebar_chat_limit(),
-    )
+    return ChatConfig(max_concurrent_turns=chat_prefs.max_concurrent_turns())
 
 
 @router.get("/chat-config", response_model=ChatConfig)
@@ -3016,26 +2968,17 @@ def read_chat_config() -> ChatConfig:
 
 
 @router.post("/chat-config", response_model=ChatConfig)
-def update_chat_config(request: ChatConfigUpdate, store: StoreDependency) -> ChatConfig:
-    """Set how many chats may generate at once, and how many stay in the sidebar.
+def update_chat_config(request: ChatConfigUpdate) -> ChatConfig:
+    """Set how many chats may generate at once.
 
     Raising the concurrency releases turns that are already waiting: the next
     pump sees the larger number and starts them.  Lowering it never stops
     anything already running -- the excess simply drains and nothing new is
     admitted until the count falls below the new limit.
-
-    Lowering the sidebar limit archives the overflow here rather than on the next
-    load, so the list the user is looking at while they change the number is the
-    list they end up with. Raising it never un-archives anything: Neo cannot tell
-    a chat it tidied away from one the user archived on purpose, and guessing
-    wrong would drag back threads that were put away deliberately.
     """
 
     if request.max_concurrent_turns is not None:
         chat_prefs.set_max_concurrent_turns(request.max_concurrent_turns)
-    if request.sidebar_chat_limit is not None:
-        limit = chat_prefs.set_sidebar_chat_limit(request.sidebar_chat_limit)
-        _enforce_sidebar_limit(store, limit, _turn_status_by_chat())
     return _chat_config()
 
 

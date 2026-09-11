@@ -20,7 +20,7 @@ function chat(id, title, extra = {}) {
 
 function render(overrides = {}) {
   const props = {
-    sidebar: { projects: [], chats: [], archived_count: 0, chat_limit: 10 },
+    sidebar: { projects: [], chats: [], archived_count: 0 },
     activeChatId: null,
     statusFor: () => null,
     selectedProjectId: null,
@@ -53,7 +53,7 @@ function render(overrides = {}) {
 describe("the Archived section", () => {
   test("stays out of the way entirely when nothing is archived", () => {
     const markup = render({
-      sidebar: { projects: [], chats: [chat(1, "Only chat")], archived_count: 0, chat_limit: 10 },
+      sidebar: { projects: [], chats: [chat(1, "Only chat")], archived_count: 0 },
     });
 
     assert.ok(!markup.includes("ARCHIVED"));
@@ -62,7 +62,7 @@ describe("the Archived section", () => {
 
   test("names how many are in there, and starts shut", () => {
     const markup = render({
-      sidebar: { projects: [], chats: [chat(1, "Recent")], archived_count: 7, chat_limit: 10 },
+      sidebar: { projects: [], chats: [chat(1, "Recent")], archived_count: 7 },
     });
 
     assert.ok(markup.includes("ARCHIVED"));
@@ -76,30 +76,29 @@ describe("the Archived section", () => {
 describe("the row's Archive action", () => {
   test("is offered on an ordinary chat", () => {
     const markup = render({
-      sidebar: { projects: [], chats: [chat(1, "Ordinary")], archived_count: 0, chat_limit: 10 },
+      sidebar: { projects: [], chats: [chat(1, "Ordinary")], archived_count: 0 },
     });
 
     assert.ok(markup.includes(">Archive<"));
     assert.ok(markup.includes(">Pin chat<"));
   });
 
-  test("is withheld from a pinned chat, which the cap already exempts", () => {
+  test("is offered on a pinned chat too, now that nothing archives one for it", () => {
     const markup = render({
       sidebar: {
         projects: [],
         chats: [chat(1, "Held", { pinned: true })],
         archived_count: 0,
-        chat_limit: 10,
       },
     });
 
     assert.ok(markup.includes(">Unpin chat<"));
-    assert.ok(!markup.includes(">Archive<"));
+    assert.ok(markup.includes(">Archive<"));
   });
 
   test("is absent where no handler was given, rather than rendering a dead button", () => {
     const markup = render({
-      sidebar: { projects: [], chats: [chat(1, "Ordinary")], archived_count: 0, chat_limit: 10 },
+      sidebar: { projects: [], chats: [chat(1, "Ordinary")], archived_count: 0 },
       onArchiveChat: undefined,
     });
 

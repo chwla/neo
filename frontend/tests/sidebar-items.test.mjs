@@ -25,7 +25,7 @@ import { SYSTEM_NAV, SYSTEM_NAV_IDS, isSystemNavId, visibleSystemNav } from "../
 
 function renderSidebar(overrides = {}) {
   const props = {
-    sidebar: { projects: [], chats: [], archived_count: 0, chat_limit: 10 },
+    sidebar: { projects: [], chats: [], archived_count: 0 },
     activeChatId: null,
     statusFor: () => null,
     selectedProjectId: null,

@@ -551,6 +551,28 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .sidebar-caption { margin: 5px 20px; color: var(--neo-fg-14); font-size: 11px; }
 .sidebar-spacer { flex: 1; min-height: 22px; }
 
+/* A chat list of its own height, scrolling inside itself rather than stretching
+   the sidebar. Ten rows exactly: a row is `min-height: 30px` plus its 1px
+   margins, so the height is the arithmetic rather than a number that happens to
+   look right, and it follows the row if the row ever changes.
+
+   The overflow clips anything hanging out of a row, which is why the row's
+   actions menu is positioned against the window and rendered through the body
+   rather than inside the row (see `RowActionsMenu`). `overscroll-behavior` keeps
+   a flick at the end of the chats from carrying on into the sidebar behind it. */
+.sidebar-scroll-list {
+  --neo-chat-row: 32px;
+  /* `flex: none` is what makes the ten rows a promise. A scrolling flex item has
+     an automatic minimum size of zero, so without it the list is the first thing
+     the column squeezes when the window is short -- measured at four rows on a
+     laptop and under three on a phone before this line. Held at its full height,
+     the sidebar's own scroll takes the overflow instead. */
+  flex: none;
+  max-height: calc(var(--neo-chat-row) * 10);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .project-folder { margin: 1px 8px; }
 .project-folder summary { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 8px; color: var(--neo-fg-12); list-style: none; cursor: pointer; }
 .project-folder summary::-webkit-details-marker { display: none; }
@@ -584,10 +606,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .row-actions-trigger:focus-visible,
 .row-actions-trigger.is-open { opacity: 1; }
 .row-actions-trigger:hover, .row-actions-trigger.is-open { background: var(--neo-lift-a06); color: var(--neo-green); }
+/* Positioned against the window, not the row: the chat list scrolls, and a menu
+   absolutely positioned inside a scrolling box is cut off at its edges. The
+   coordinates come from `RowActionsMenu`, which measures before paint and puts
+   the menu below the row or above it depending on where there is room. */
 .row-actions-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
+  position: fixed;
   z-index: 40;
   display: flex;
   min-width: 132px;
