@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
+import { registerCover } from "./modalStack.js";
 
 const EMPTY = {
   name: "",
@@ -78,6 +79,11 @@ function fromAgent(agent) {
 }
 
 export default function AgentSettings({ onClose, backLabel, onBack }) {
+  //: The field behind is stopped while this panel is up. It is glass, and a
+  //: `backdrop-filter` over a canvas that repaints every frame is a blur pass
+  //: every frame. Coverage only -- Escape still does not close this dialog.
+  useEffect(() => registerCover(), []);
+
   const [agents, setAgents] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [routes, setRoutes] = useState([]);

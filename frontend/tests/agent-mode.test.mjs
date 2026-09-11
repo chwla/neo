@@ -285,12 +285,18 @@ describe("agent mode composer", () => {
     assert.ok(!html.includes("agent-created-tasks"));
   });
 
-  test("send is disabled until there is something to send", () => {
+  test("the send button arrives with the first thing worth sending", () => {
     const blank = render({ value: "   ", selectedRepoId: "r1" });
     const typed = render({ value: "do the thing", selectedRepoId: "r1" });
 
-    assert.ok(blank.includes('disabled="" aria-label="Send message"'));
-    assert.ok(!typed.includes('disabled="" aria-label="Send message"'));
+    // Whitespace is not something to send -- `handleSendMessage` trims before it
+    // decides -- so the slot is still dictation's, and the button that would have
+    // been there is the disabled one it replaced.
+    assert.ok(!blank.includes('aria-label="Send message"'), "a send button with nothing to send");
+    assert.ok(blank.includes("chat-dictate-button"));
+
+    assert.ok(typed.includes('aria-label="Send message"'));
+    assert.ok(!typed.includes("chat-dictate-button"), "two controls cannot share one slot");
   });
 
   // Agent runs resolve their model through the same picker chat uses, so it has
@@ -346,8 +352,8 @@ describe("agent mode composer", () => {
 
     assert.equal(
       count(html, 'disabled=""'),
-      13,
-      "4 chips (engine, repo, mode, agent) + folder + tools + skills + attach + dictate"
+      12,
+      "4 chips (engine, repo, mode, agent) + folder + tools + skills + attach"
         + " + compact + model + textarea + Start",
     );
   });

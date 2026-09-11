@@ -1,10 +1,12 @@
 /**
- * The dictation entry in the composer, rendered for real and read back as markup.
+ * The dictation button in the composer, rendered for real and read back as markup.
  *
- * Two things are pinned here that a refactor would otherwise quietly break. The entry
- * has to appear in *both* menu branches -- agent mode and chat mode render separate
- * sets of actions -- and its state has to be visible from outside the popover it lives
- * in, because a status you can only see by reopening a menu is not a status.
+ * It shares one slot with send, and the rule deciding which of them is in it is the
+ * thing worth pinning: empty composer dictates, the first character worth sending
+ * swaps it, a recording in progress outranks both so it can be stopped, and a turn in
+ * flight outranks everything. Both modes render their own composer chrome, so the rule
+ * is checked in each. The listening bar below is separate and stays separate -- it
+ * carries the elapsed time, the input level and Cancel, none of which fit in 40px.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
@@ -47,18 +49,73 @@ function render(overrides = {}) {
 
 const count = (haystack, needle) => haystack.split(needle).length - 1;
 
-describe("the dictation entry", () => {
-  test("appears in chat mode", () => {
-    assert.equal(count(render({ mode: "chat" }), "chat-dictate-button"), 1);
+describe("the dictation button", () => {
+  test("holds the send slot while the composer is empty, in chat mode", () => {
+    const html = render({ mode: "chat", value: "" });
+    assert.equal(count(html, "chat-dictate-button"), 1);
+    assert.ok(!html.includes('aria-label="Send message"'), "nothing to send, so no send button");
   });
 
-  test("appears in agent mode too", () => {
-    // The menu renders a separate set of actions per mode; an entry added to only
-    // one branch is invisible in the other.
-    assert.equal(count(render({ mode: "agent" }), "chat-dictate-button"), 1);
+  test("holds it in agent mode too", () => {
+    // Each mode renders its own composer chrome; a control wired into one branch
+    // only is missing from the other, which is how the old menu entry was built.
+    const html = render({ mode: "agent", value: "" });
+    assert.equal(count(html, "chat-dictate-button"), 1);
+    assert.ok(!html.includes('aria-label="Send message"'));
   });
 
-  test("is disabled with the reason when speech recognition is not installed", () => {
+  for (const mode of ["chat", "agent"]) {
+    test(`the first character worth sending takes the slot back in ${mode} mode`, () => {
+      const html = render({ mode, value: "h" });
+      assert.ok(html.includes('aria-label="Send message"'));
+      assert.equal(count(html, "chat-dictate-button"), 0, "two controls cannot share one slot");
+    });
+  }
+
+  test("whitespace alone is not something to send", () => {
+    // `handleSendMessage` trims before deciding, so a lone space would otherwise
+    // swap in a send button that refuses to send.
+    const html = render({ value: "   " });
+    assert.equal(count(html, "chat-dictate-button"), 1);
+    assert.ok(!html.includes('aria-label="Send message"'));
+  });
+
+  test("a recording in progress keeps the slot whatever is in the field", () => {
+    // Text can be in the composer before dictation starts, or land there when an
+    // earlier take transcribes. Handing the slot to send at that moment would leave
+    // the recording running with no button to stop it.
+    const html = render({
+      value: "already typed this",
+      dictation: { recording: true, busy: false, seconds: 3, level: 0.1, stop() {}, cancel() {} },
+    });
+    assert.ok(html.includes("chat-dictate-button"));
+    assert.ok(html.includes("is-recording"));
+    assert.ok(html.includes('aria-label="Stop dictation"'));
+    assert.ok(!html.includes('aria-label="Send message"'));
+  });
+
+  test("transcribing holds the slot as well, and cannot be pressed", () => {
+    const html = render({ value: "", dictation: { recording: false, busy: true } });
+    assert.ok(/chat-dictate-button[^>]*disabled/.test(html), "there is nothing to start or stop");
+    assert.ok(html.includes('aria-label="Transcribing…"'));
+  });
+
+  test("a turn in flight outranks both", () => {
+    const html = render({ value: "", generating: true, onStop() {} });
+    assert.ok(html.includes("stop-button"));
+    assert.equal(count(html, "chat-dictate-button"), 0, "the microphone cannot stop a turn");
+  });
+
+  test("is gone from the + menu it used to live in", () => {
+    // Speaking is one of the two ways to fill the composer, not a thing you do once
+    // a conversation, so it does not belong in a popover with those.
+    for (const mode of ["chat", "agent"]) {
+      const html = render({ mode, value: "typed, so the button is send" });
+      assert.ok(!html.includes("chat-dictate-button"), `${mode} mode still has a menu entry`);
+    }
+  });
+
+  test("stays reachable, with the reason, when speech recognition is not installed", () => {
     const html = render({
       voice: {
         available: false,
@@ -67,19 +124,20 @@ describe("the dictation entry", () => {
       },
     });
     assert.ok(html.includes("chat-dictate-button"), "still rendered, so the reason is reachable");
-    assert.ok(html.includes("Speech recognition is not installed."));
-    assert.ok(/chat-dictate-button[^>]*disabled/.test(html) || html.includes("disabled=\"\""));
+    assert.ok(html.includes("Speech recognition is not installed."), "the title carries it");
+    // Enabled: this state is a task, and the button routes to the settings screen.
+    assert.ok(!/chat-dictate-button[^>]*disabled/.test(html));
   });
 
   test("offers set-up rather than recording when the model is missing", () => {
     const html = render({
       voice: { available: false, reason: "model_not_downloaded", message: "Not downloaded." },
     });
-    // The label stays "Dictate" and a second line says what is missing, so the entry
+    // The name stays "Dictate" and the missing piece is named after it, so the button
     // reads as the thing you want with a prerequisite rather than as a different
-    // feature. An unset-up capability is a task, not a choice.
-    assert.ok(html.includes("Download voice model"));
-    assert.ok(html.includes(">Dictate<"));
+    // feature. There is no visible label at 40px square, so the accessible name is
+    // where both halves have to live.
+    assert.ok(html.includes('aria-label="Dictate, Download voice model"'));
   });
 });
 
@@ -119,7 +177,7 @@ describe("the listening bar", () => {
   });
 });
 
-describe("the Dictate entry never leads nowhere", () => {
+describe("the Dictate button never leads nowhere", () => {
   const cases = [
     ["dependency_missing", "Voice setup required"],
     ["model_not_downloaded", "Download voice model"],

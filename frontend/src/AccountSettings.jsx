@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import { registerCover } from "./modalStack.js";
 import PasswordField from "./PasswordField.jsx";
 
 function Avatar({ profile, preview }) {
@@ -13,6 +14,11 @@ function Avatar({ profile, preview }) {
 }
 
 export default function AccountSettings({ profile, onClose, onProfileUpdated, backLabel, onBack }) {
+  //: The field behind is stopped while this panel is up. It is glass, and a
+  //: `backdrop-filter` over a canvas that repaints every frame is a blur pass
+  //: every frame. Coverage only -- Escape still does not close this dialog.
+  useEffect(() => registerCover(), []);
+
   const [username, setUsername] = useState(profile?.username || "");
   const [avatarPreview, setAvatarPreview] = useState(null);
   const [clearAvatar, setClearAvatar] = useState(false);

@@ -1052,6 +1052,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-input-form .send-button svg { width: 19px; height: 19px; }
 .chat-input-form .send-button:hover:not(:disabled) { background: var(--neo-accent-bright); color: var(--neo-on-accent); }
 .chat-input-form .send-button:disabled { opacity: .32; }
+
+/* Dictation holds that slot while the composer is empty. Same 40px square, so the
+   first character typed swaps the glyph without moving anything around it -- but not
+   the same weight. The filled accent is what "send" means in this composer, and a
+   microphone wearing it would promise a turn it cannot take; quiet until hovered is
+   also the truer description of a control that is offering an input method rather
+   than an action. */
+.chat-input-form .send-button.chat-dictate-button {
+  border: 1px solid var(--neo-line-bright);
+  background: transparent;
+  color: var(--neo-fg-9);
+}
+.chat-input-form .send-button.chat-dictate-button:hover:not(:disabled) {
+  border-color: var(--neo-accent-a45);
+  background: var(--neo-accent-a08);
+  color: var(--neo-accent);
+}
+.chat-input-form .send-button.chat-dictate-button svg { width: 17px; height: 17px; }
+/* The one state that lights up, because it is the only control in the composer doing
+   something while nobody is touching it. Filled like send, which is the point: it is
+   the live control now, and it is also the way to stop. */
+.chat-input-form .send-button.chat-dictate-button.is-recording {
+  border-color: transparent;
+  background: var(--composer-accent);
+  color: var(--neo-on-accent);
+}
+.chat-input-form .send-button.chat-dictate-button.is-recording:hover:not(:disabled) {
+  background: var(--neo-accent-bright);
+  color: var(--neo-on-accent);
+}
 .visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
 
 /* Agent context controls. Each chip is a single bordered unit holding a small
@@ -5615,10 +5645,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 11px;
 }
 
-/* Recording is shown on the menu entry too, for the moment between opening the
-   popover and finding the microphone in it. */
-.chat-dictate-button.is-recording { color: var(--neo-accent-soft); }
-
 /* -- Voice settings ------------------------------------------------------- */
 .voice-settings { display: flex; flex-direction: column; gap: 18px; min-width: 420px; }
 .voice-settings-lede { margin: 0; color: var(--neo-fg-9); font-size: 12px; line-height: 1.55; }
@@ -5780,6 +5806,12 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 @media (prefers-reduced-motion: reduce) {
   .chat-bg-layer.has-wash::before { animation: none; }
 }
+/* Parked while a dialog is over the app, which is the other half of what the
+   engine does with `data-modal-open` -- stopping the marks and leaving the wash
+   drifting would keep the glass above re-blurring a moving backdrop for the sake
+   of a gradient nobody can see. `paused` rather than `none`, so it holds the
+   position it reached instead of snapping back to the start on every dialog. */
+[data-modal-open] .chat-bg-layer.has-wash::before { animation-play-state: paused; }
 
 .chat-bg-layer {
   /* Fixed, not absolute: the sidebar and the composer are glass over this
@@ -5961,6 +5993,73 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
     0 18px 44px -10px var(--neo-shadow-a55),
     0 0 42px var(--neo-accent-a10),
     inset 0 1px 0 var(--glass-inner-lit);
+}
+
+/* 4. The settings dialog: the fourth surface, and the only one that is not
+   already over the field -- it is over `.modal-backdrop`, and what that costs
+   is the whole design of this rule.
+
+   One filter, on the pane, and nothing else in the stack. The field repaints
+   every frame, and a `backdrop-filter` re-runs whenever anything beneath it
+   changes, so each surface here is a full blur pass at 60fps for as long as the
+   dialog is open. The sidebar has paid that all along and it is affordable: a
+   few hundred thousand pixels, once. What is not affordable is nesting. Filter
+   the scrim as well and the viewport-sized pass under the dialog has to be
+   materialised before the dialog's own can sample it, every frame -- three
+   stacked roots starved the compositor badly enough that a `.12s` hover took
+   seconds to arrive.
+
+   So the scrim thins instead of blurring. That is not only the cheap option, it
+   is close to free visually: the region the user looks at is the pane, and
+   everything behind the pane is blurred anyway by the pane's own filter. Only
+   the surround stays sharp, and dimming is what a surround wants. 50% rather
+   than the 78% every other modal keeps, because the field has to survive the
+   scrim to be worth sampling.
+
+   `--glass-lift-quiet` rather than `--glass-lift`, and this is the surface that
+   token was measured for: settings carries the densest dim text in the app --
+   10.5px `--neo-fg-13` captions under every row -- so the backdrop moves toward
+   the text instead of away from the ground.
+
+   Scoped with `:has` to modals holding a settings panel. The scrim is shared by
+   every dialog in the app, and thinning it changes what a modal is -- worth
+   doing for a panel you sit in and read, not for the confirm prompts that flash
+   past. */
+[data-chat-bg] .modal-backdrop:has(> .settings-dialog) {
+  background: var(--neo-shadow-a50);
+}
+[data-chat-bg] .settings-dialog {
+  border-color: var(--glass-edge);
+  background: color-mix(in srgb, var(--neo-bg) 14%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(var(--glass-sat)) brightness(var(--glass-lift-quiet));
+  backdrop-filter: blur(16px) saturate(var(--glass-sat)) brightness(var(--glass-lift-quiet));
+  box-shadow:
+    0 24px 80px var(--neo-shadow-a70),
+    inset 0 1px 0 var(--glass-inner);
+}
+
+/* Everything inside is a sub-surface, not a pane: tint and edge, no filter of
+   its own. Partly because a second blur of an already-blurred backdrop returns
+   almost the same pixels, and mostly because it would be that nested pass
+   again. The nav keeps `--neo-sidebar` rather than the dialog's colour for the
+   reason the real sidebar does: that is how a column stays a column once it
+   turns translucent. Both edges are named because the column becomes a row
+   under 640px and the border moves with it. */
+[data-chat-bg] .settings-dialog .set-nav {
+  border-right-color: var(--glass-edge);
+  border-bottom-color: var(--glass-edge);
+  background: color-mix(in srgb, var(--neo-sidebar) 20%, transparent);
+}
+
+/* The hand-rolled header (Agents, LLM Providers) is the one place the tint has
+   to stay heavy. It is sticky over a pane that scrolls, so its ground is
+   load-bearing in a way the nav's is not -- thin it and the rows travel visibly
+   through the title. Glass could have hidden them, but only by putting a filter
+   back inside the dialog's root, so this surface takes the opacity instead and
+   the pane around it stays cheap. */
+[data-chat-bg] .settings-dialog .modal-header {
+  border-bottom-color: var(--glass-edge);
+  background: color-mix(in srgb, var(--neo-bg) 88%, transparent);
 }
 
 /* --- the background picker ------------------------------------------------

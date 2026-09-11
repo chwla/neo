@@ -263,8 +263,8 @@ export default function VoiceSettings({ status, onStatusChange, onClose }) {
 
       {ready ? (
         <p className="voice-ready-note" role="status">
-          Voice input is ready. Open the <strong>+</strong> menu and choose Dictate, or
-          press <kbd>⌘⇧D</kbd>.
+          Voice input is ready. Press <kbd>⌘⇧D</kbd>, or use the Dictate button in the
+          composer — it takes the send button's place while there is nothing to send.
         </p>
       ) : null}
 

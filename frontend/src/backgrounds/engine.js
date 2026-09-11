@@ -115,6 +115,17 @@ export function createEngine(canvas, host, options) {
 
   const wantsStillness = () => Boolean(motionQuery && motionQuery.matches);
 
+  //: Two ways to be invisible, and the loop owes nothing to either. A hidden tab
+  //: is the obvious one. The other is a dialog: `modalStack` flags the document
+  //: while anything is open, and an open dialog is both an occluder and -- since
+  //: the settings panel became glass -- the one thing that makes this loop
+  //: expensive, because every frame it paints is a frame the pane above has to
+  //: blur again. Stopping is what makes that pane free rather than cheap.
+  const isCovered = () => {
+    if (typeof document === "undefined") return false;
+    return document.hidden || document.documentElement?.dataset.modalOpen !== undefined;
+  };
+
   /**
    * Reduce the frame just painted into the diffusion buffer.
    *
@@ -192,7 +203,7 @@ export function createEngine(canvas, host, options) {
       paintStill();
       return;
     }
-    if (typeof document !== "undefined" && document.hidden) return;
+    if (isCovered()) return;
     running = true;
     //: Re-anchored on every start, not just the first. Coming back from a
     //: hidden tab is otherwise a delta measured from whenever it was hidden,
@@ -257,21 +268,31 @@ export function createEngine(canvas, host, options) {
   //: pushed in. Watching the attribute rather than taking a React prop keeps
   //: this correct no matter who calls applyTheme -- the picker, the first-paint
   //: gate, or a profile switch.
-  const themeObserver = new MutationObserver(() => {
-    palette = readPalette();
-    if (instance) instance.retint(palette);
-    if (wantsStillness()) paintStill();
+  //: `data-modal-open` rides along because it is on the same element and the
+  //: engine already had an observer there -- a dialog opening is a stop, and a
+  //: dialog closing is the same resume a tab regaining focus gets, clock and
+  //: all.
+  const rootObserver = new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.attributeName === "data-theme") {
+        palette = readPalette();
+        if (instance) instance.retint(palette);
+        if (wantsStillness()) paintStill();
+      } else {
+        syncActivity();
+      }
+    }
   });
-  themeObserver.observe(document.documentElement, {
+  rootObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["data-theme"],
+    attributeFilter: ["data-theme", "data-modal-open"],
   });
 
-  function onVisibility() {
-    if (document.hidden) stop();
+  function syncActivity() {
+    if (isCovered()) stop();
     else start();
   }
-  document.addEventListener("visibilitychange", onVisibility);
+  document.addEventListener("visibilitychange", syncActivity);
 
   function onMotionPreferenceChange() {
     if (wantsStillness()) paintStill();
@@ -286,8 +307,8 @@ export function createEngine(canvas, host, options) {
       destroyed = true;
       stop();
       resizeObserver.disconnect();
-      themeObserver.disconnect();
-      document.removeEventListener("visibilitychange", onVisibility);
+      rootObserver.disconnect();
+      document.removeEventListener("visibilitychange", syncActivity);
       if (motionQuery) motionQuery.removeEventListener("change", onMotionPreferenceChange);
       instance = null;
     },

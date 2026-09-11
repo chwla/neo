@@ -45,6 +45,7 @@ from app.api.routes.repos import router as repos_router
 from app.api.routes.research import router as research_router
 from app.api.routes.rules import router as rules_router
 from app.api.routes.search import router as search_router
+from app.api.routes.sidebar_nav import router as sidebar_nav_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.symbols import router as symbols_router
 from app.api.routes.tasks import router as tasks_router
@@ -74,6 +75,7 @@ from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.integrations.store import initialize_integration_tables
 from app.services.appearance import initialize_appearance_tables
+from app.services.sidebar_nav import initialize_sidebar_nav_tables
 from app.services.keybindings import initialize_keybinding_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
@@ -178,6 +180,7 @@ def create_app() -> FastAPI:
     app.include_router(lsp_router, prefix="/api")
     app.include_router(keybindings_router, prefix="/api")
     app.include_router(appearance_router, prefix="/api")
+    app.include_router(sidebar_nav_router, prefix="/api")
     app.include_router(llm_registry_router, prefix="/api")
     app.include_router(local_models_router, prefix="/api")
     app.include_router(model_compare_router, prefix="/api")
@@ -234,6 +237,7 @@ def create_app() -> FastAPI:
     initialize_chat_preference_tables()
     initialize_keybinding_tables()
     initialize_appearance_tables()
+    initialize_sidebar_nav_tables()
     initialize_test_runner_tables()
     initialize_git_tables()
     initialize_github_tables()

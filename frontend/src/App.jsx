@@ -14,6 +14,7 @@ import BackgroundTurnToast, {
 } from "./BackgroundTurnToast.jsx";
 import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
+import { visibleSystemNav } from "./systemNav.js";
 import { replaceRange } from "./voice/insertion.js";
 import { useDictation } from "./voice/useDictation.js";
 import CommandPalette from "./CommandPalette.jsx";
@@ -54,6 +55,7 @@ import GalleryImages from "./GalleryImages.jsx";
 import ImageLightbox from "./ImageLightbox.jsx";
 import Repos from "./Repos.jsx";
 import RulesProfiles from "./RulesProfiles.jsx";
+import SidebarItemsSettings from "./SidebarItemsSettings.jsx";
 import AgentSettings from "./AgentSettings.jsx";
 import Bundles from "./Bundles.jsx";
 import GitHub from "./GitHub.jsx";
@@ -555,6 +557,10 @@ export function Sidebar({
   onOpenGallery,
   onOpenLocalModels,
   onOpenCompareModels,
+  //: The SYSTEM entries this profile turned off. Passed in rather than fetched
+  //: here so the sidebar stays a rendering component and the settings panel can
+  //: move it without a round trip.
+  hiddenSystemItems = [],
   activeView,
   profile,
   onSwitchProfile,
@@ -633,15 +639,24 @@ export function Sidebar({
 
   const filteredChats = sidebar.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
   const filteredArchived = archived.filter((chat) => !query || chat.title.toLowerCase().includes(query));
-  const systemItems = [
-    ["memory", "Memory", onOpenMemory],
-    ["research", "Research", onOpenResearch],
-    ["notes", "Notes", onOpenNotes],
-    ["calendar", "Calendar", onOpenCalendar],
-    ["gallery", "Gallery", onOpenGallery],
-    ["localModels", "Local Models", onOpenLocalModels],
-    ["compareModels", "Compare Models", onOpenCompareModels],
-  ];
+  /* The catalogue lives in `systemNav.js`; this only says where each entry goes.
+     Splitting them is what lets the settings panel offer the same list without
+     either screen owning the other's half, and it keeps "what the sidebar can
+     take you to" in one place when the next entry is added. */
+  const systemHandlers = {
+    memory: onOpenMemory,
+    research: onOpenResearch,
+    notes: onOpenNotes,
+    calendar: onOpenCalendar,
+    gallery: onOpenGallery,
+    localModels: onOpenLocalModels,
+    compareModels: onOpenCompareModels,
+  };
+  const systemItems = visibleSystemNav(hiddenSystemItems).map((item) => [
+    item.id,
+    item.label,
+    systemHandlers[item.id],
+  ]);
 
   // Minimised, the sidebar keeps only what you would reopen it for: the way
   // home, a new chat, settings, and the control that brings it back.
@@ -912,15 +927,22 @@ export function Sidebar({
       )}
 
       <div className="sidebar-spacer" />
-      <div className="sidebar-section">SYSTEM</div>
-      <nav className="system-nav" aria-label="Neo system">
-        {systemItems.map(([id, label, onClick]) => (
-          <button className={activeView === id ? "active" : ""} type="button" onClick={onClick} key={id}>
-            <NavIcon name={id} />
-            <span>{label}</span>
-          </button>
-        ))}
-      </nav>
+      {/* Heading and list together: a section label over nothing is worse than no
+          section, and "SYSTEM" with an empty space under it reads as a list that
+          failed to load rather than one that was emptied on purpose. */}
+      {systemItems.length ? (
+        <>
+          <div className="sidebar-section">SYSTEM</div>
+          <nav className="system-nav" aria-label="Neo system">
+            {systemItems.map(([id, label, onClick]) => (
+              <button className={activeView === id ? "active" : ""} type="button" onClick={onClick} key={id}>
+                <NavIcon name={id} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+        </>
+      ) : null}
       <div className="sidebar-footer">
         <button className={activeView === "settings" ? "sidebar-settings active" : "sidebar-settings"} type="button" onClick={onOpenSettings}>
           <NavIcon name="settings" />
@@ -1385,18 +1407,28 @@ function MicrophoneIcon() {
 }
 
 /**
- * Dictation reads the same in both modes, so it is written once, like AttachFilesAction.
+ * Dictation, in the slot the send button occupies while there is nothing to send.
+ *
+ * It used to be a row in the "+" menu, which put the microphone two clicks away and
+ * behind a popover -- and put it there permanently, next to things you do once a
+ * conversation. Speaking is not that: it is one of the two ways to fill the composer,
+ * so it belongs where the other one ends. The slot was free for the asking, because a
+ * send button with nothing to send has never done anything: `handleSendMessage`
+ * returns on an empty prompt, and attachments alone cannot be sent either.
  *
  * When speech recognition is installed but its model is not downloaded, this opens the
  * settings screen instead of recording. An unset-up capability is a task, not a
- * choice, and every other control in this menu takes effect the moment it is pressed.
+ * choice, and every other control here takes effect the moment it is pressed.
  */
-function DictateAction({ available, reason, message, recording, busy, disabled, onDictate, onSetUp }) {
-  /* The entry always does something. Every unavailable state that a person can fix
+function DictateButton({ available, reason, message, recording, busy, disabled, onDictate, onSetUp }) {
+  /* The control always does something. Every unavailable state that a person can fix
      routes to the settings screen instead of being greyed out, because a disabled
-     control that never says why is the thing this menu previously got wrong. Only a
+     control that never says why is the thing the old menu entry got wrong. Only a
      browser that cannot record at all -- no secure context, no AudioWorklet -- is
-     genuinely inert, and nothing in Neo can change that. */
+     genuinely inert, and nothing in Neo can change that. It still renders in that
+     case, carrying the reason in its title: the slot held a disabled button when the
+     composer was empty before this, so nothing is lost by it, and a microphone that
+     vanishes on some machines is harder to explain than one that is dimmed. */
   const setUpStates = ["dependency_missing", "model_not_downloaded", "model_downloading", "disabled"];
   const needsSetUp = !available && setUpStates.includes(reason);
   const inert = !available && !needsSetUp;
@@ -1413,20 +1445,28 @@ function DictateAction({ available, reason, message, recording, busy, disabled, 
   return (
     <button
       type="button"
-      className={`composer-menu-action chat-dictate-button${recording ? " is-recording" : ""}`}
+      className={`send-button chat-dictate-button${recording ? " is-recording" : ""}`}
       onClick={needsSetUp ? onSetUp : onDictate}
       disabled={disabled || busy || inert}
-      title={available ? "Speak instead of typing. The text lands here for you to check." : message}
-      /* The hint is part of the accessible name, not decoration: a screen-reader user
-         gets "Dictate, voice setup required" rather than an unexplained button. */
+      /* The idle tooltip explains the feature; once it is running the tooltip has to
+         say what pressing it does now, or it describes the button you are no longer
+         looking at. Unavailable states say why instead, which is the more useful
+         sentence when the press is going to open settings. */
+      title={
+        available
+          ? recording || busy
+            ? label
+            : "Speak instead of typing. The text lands here for you to check."
+          : message
+      }
+      /* The hint is the accessible name's second half, not decoration: a screen-reader
+         user gets "Dictate, voice setup required" rather than an unexplained button.
+         There is no visible label any more -- the slot is 40px square -- so this and
+         the title are the only things carrying the state. */
       aria-label={needsSetUp ? `${label}, ${hint}` : label}
       aria-pressed={recording}
     >
       <MicrophoneIcon />
-      <span className="composer-menu-action-body">
-        <span>{label}</span>
-        {needsSetUp && hint ? <span className="composer-menu-action-hint">{hint}</span> : null}
-      </span>
     </button>
   );
 }
@@ -1585,6 +1625,9 @@ export function ChatComposer({
   // turn ignores, sitting where the answer's author is named. It comes back the
   // moment the turn would be Neo's again, which is either mode.
   const externalEngine = mode === "agent" && executor !== "neo";
+  // A recording is running, or the take it produced is still being transcribed.
+  // Either way dictation owns the send slot -- see the note where that is chosen.
+  const dictating = Boolean(dictation?.recording || dictation?.busy);
   // Whether anything beyond Neo is genuinely connected, which decides whether
   // the line below the picker is an invitation or a way back to the panel.
   const hasConnectedEngine = externalAgents.some((agent) => agent.available);
@@ -1847,10 +1890,11 @@ export function ChatComposer({
             ))}
           </div>
         ) : null}
-        {/* The microphone lives inside the "+" menu, so the fact that it is running
-            has to be shown outside it -- a status you only see by reopening a popover
-            is not a status. This is also the only place to stop, for anyone who
-            reached the microphone by mouse rather than by shortcut. */}
+        {/* The button in the send slot says *that* a recording is running; this says
+            how it is going. The elapsed time matters because transcription has a
+            ceiling, the level meter is the only way to catch a microphone muted at the
+            operating system level, and Cancel is the exit the button does not offer --
+            stopping keeps the take, and somebody who mis-spoke wants it dropped. */}
         {dictation?.recording || dictation?.busy ? (
           <div
             className={`composer-dictation${dictation.nearLimit ? " is-near-limit" : ""}`}
@@ -2076,22 +2120,6 @@ export function ChatComposer({
                         attachInputRef.current?.click();
                       }}
                     />
-                    <DictateAction
-                      available={voice?.available}
-                      reason={voice?.reason}
-                      message={voice?.message}
-                      recording={dictation?.recording}
-                      busy={dictation?.busy}
-                      disabled={disabled}
-                      onDictate={() => {
-                        setMenuOpen(false);
-                        onDictate?.();
-                      }}
-                      onSetUp={() => {
-                        setMenuOpen(false);
-                        onOpenVoiceSettings?.();
-                      }}
-                    />
                     <button
                       type="button"
                       className="composer-menu-action agent-tools-button"
@@ -2184,22 +2212,6 @@ export function ChatComposer({
                       onPick={() => {
                         setMenuOpen(false);
                         attachInputRef.current?.click();
-                      }}
-                    />
-                    <DictateAction
-                      available={voice?.available}
-                      reason={voice?.reason}
-                      message={voice?.message}
-                      recording={dictation?.recording}
-                      busy={dictation?.busy}
-                      disabled={disabled}
-                      onDictate={() => {
-                        setMenuOpen(false);
-                        onDictate?.();
-                      }}
-                      onSetUp={() => {
-                        setMenuOpen(false);
-                        onOpenVoiceSettings?.();
                       }}
                     />
                     <CompactConversationAction
@@ -2300,9 +2312,21 @@ export function ChatComposer({
                 className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
             </div>
             <div className="composer-actions">
-              {/* One control for both kinds of turn. The toggle opposite decides
-                  what the next one does, not what the button is called -- and a
-                  turn already running is stopped the same way whichever it is. */}
+              {/* One slot, three jobs, in the order of what is happening rather than
+                  of what is nominally the primary action.
+
+                  A turn in flight outranks everything: it is stopped the same way
+                  whichever kind it is, and the toggle opposite decides what the next
+                  one does, not what this button is called.
+
+                  Otherwise the slot follows the composer. Empty, it dictates -- a send
+                  button with nothing to send was inert anyway, so this costs no
+                  affordance and saves the microphone from living two clicks deep in a
+                  menu. The first character that survives a trim turns it back into
+                  send. Dictation in progress holds the slot regardless of what is in
+                  the field, because the control that started a recording has to be the
+                  one that stops it: text typed before dictating, or landing in the
+                  field when a previous take transcribed, must not strand it. */}
               {generating ? (
                 <button
                   type="button"
@@ -2316,8 +2340,19 @@ export function ChatComposer({
                     <rect x="7" y="7" width="10" height="10" rx="1.5" />
                   </svg>
                 </button>
+              ) : dictating || !value.trim() ? (
+                <DictateButton
+                  available={voice?.available}
+                  reason={voice?.reason}
+                  message={voice?.message}
+                  recording={dictation?.recording}
+                  busy={dictation?.busy}
+                  disabled={disabled}
+                  onDictate={onDictate}
+                  onSetUp={onOpenVoiceSettings}
+                />
               ) : (
-                <NeoButton type="submit" className="send-button" disabled={disabled || !value.trim()}
+                <NeoButton type="submit" className="send-button" disabled={disabled}
                   aria-label="Send message" title="Send message">
                   <SubmitArrowIcon />
                 </NeoButton>
@@ -3135,7 +3170,7 @@ function GallerySettingsDialog({ onClose, backLabel, onBack }) {
   );
 }
 
-function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenEngines, onOpenIntegrations, onOpenAppearance, onOpenChatBackground,
+function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, onOpenSidebarChats, onOpenSidebarItems, onOpenEngines, onOpenIntegrations, onOpenAppearance, onOpenChatBackground,
   onOpenVoice, onOpenLLMs, onOpenProviderRuntime, onOpenEvaluationHarness, onOpenWorkspaceOrchestration, onOpenContinuity, onOpenRules, onOpenAgents, onOpenBundles, onOpenFiles, onOpenGitHub, onOpenRepos, onOpenContextMemory, onOpenMemoryRetrieval, onOpenReliableWebSearch, onOpenCommandSandbox, onOpenLsp, onOpenMemory, onOpenNotes, onOpenProjects, onOpenResearch, onOpenTasks, onOpenWebSearch, onOpenGallerySettings, onClose }) {
   const groups = [
     {
@@ -3194,12 +3229,26 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       description: "Projects, work tracking, and portability.",
       items: [
         ["Keyboard", "Every shortcut and quick key, and how to change them", onOpenKeyboard],
-        ["Sidebar", "How many chats stay in the list before older ones are archived", onOpenSidebarChats],
         ["Projects", "Organize related chats and work", onOpenProjects],
         ["Files", "Uploaded and generated workspace files", onOpenFiles],
         ["Repositories", "Registered code repositories", onOpenRepos],
         ["Bundles", "Export and import sanitized archives", onOpenBundles],
         ["GitHub", "Issue and pull request workflow", onOpenGitHub],
+      ],
+    },
+    {
+      /* Its own group rather than another line under Workspace. What the sidebar
+         offers is not workspace configuration, and Workspace's "Sidebar" row --
+         how many chats the list keeps before archiving -- would have been a
+         second thing by almost that name in one dialog, which is how you send
+         people to the wrong screen. That row moved here with it: both are about
+         what the sidebar shows, and they are the only two things that are. */
+      title: "Navigation",
+      icon: "pin",
+      description: "What the sidebar offers, and how much of it.",
+      items: [
+        ["Sidebar items", "Which of Memory, Notes, Calendar and the rest stay pinned", onOpenSidebarItems],
+        ["Chat list", "How many chats stay in the list before older ones are archived", onOpenSidebarChats],
       ],
     },
     {
@@ -3358,7 +3407,11 @@ function mergeLiveRun(run, live, messageId) {
 }
 
 function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChange,
-  background, intensity, onBackgroundChange, onIntensityChange }) {
+  background, intensity, onBackgroundChange, onIntensityChange,
+  //: Resolved above the first-paint gate with the theme, not fetched here. A
+  //: sidebar that draws its full list and then drops entries is indistinguishable
+  //: from one whose setting did not save.
+  hiddenSystemItems, onHiddenSystemItemsChange }) {
   const [sidebar, setSidebar] = useState(EMPTY_SIDEBAR);
   const [activeChat, setActiveChat] = useState(null);
   // What each chat is doing, keyed by chat id, because more than one of them can
@@ -3487,6 +3540,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   //: is why the microphone renders disabled rather than absent while it is unknown.
   const [voiceStatus, setVoiceStatus] = useState(null);
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
+  const [showSidebarItems, setShowSidebarItems] = useState(false);
   const [showAppearance, setShowAppearance] = useState(false);
   const [showChatBackground, setShowChatBackground] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState(null);
@@ -4999,6 +5053,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         onOpenGallery={openGallery}
         onOpenLocalModels={openLocalModels}
         onOpenCompareModels={openCompareModels}
+        hiddenSystemItems={hiddenSystemItems}
         activeView={activeView}
         profile={profile}
         onSwitchProfile={() => setConfirmingSignOut(true)}
@@ -5284,6 +5339,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           onOpenReliableWebSearch={() => { setShowSettings(false); setShowReliableWebSearch(true); }}
           onOpenGallerySettings={() => { setShowSettings(false); setShowGallerySettings(true); }}
           onOpenSidebarChats={() => { setShowSettings(false); setShowSidebarChats(true); }}
+          onOpenSidebarItems={() => { setShowSettings(false); setShowSidebarItems(true); }}
           onOpenMemory={() => {
             setShowSettings(false);
             setShowMemory(true);
@@ -5392,6 +5448,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 
       {showBackgroundChats && (
         <BackgroundChatsDialog {...fromSettings(setShowBackgroundChats)} />
+      )}
+
+      {showSidebarItems && (
+        <SidebarItemsSettings
+          {...fromSettings(setShowSidebarItems)}
+          hidden={hiddenSystemItems}
+          onHiddenChange={onHiddenSystemItemsChange}
+        />
       )}
 
       {showSidebarChats && (
@@ -5505,19 +5569,28 @@ export default function App() {
   const [theme, setTheme] = useState(DEFAULT_THEME_ID);
   const [background, setBackground] = useState(DEFAULT_BACKGROUND_ID);
   const [intensity, setIntensity] = useState(DEFAULT_INTENSITY_ID);
+  const [hiddenSystemItems, setHiddenSystemItems] = useState([]);
 
   //: The one place a configuration response becomes what is on the screen, so
   //: the first-paint gate and signing in cannot drift apart in what they apply.
   //: A null response is a profile that could not be reached, which wears the
   //: defaults rather than nothing.
-  function dressUp(config) {
-    const nextTheme = config?.theme || DEFAULT_THEME_ID;
-    const nextBackground = config?.background || DEFAULT_BACKGROUND_ID;
+  //:
+  //: The sidebar is in here with the palette rather than being fetched further
+  //: down, and for the same reason. Both are things a profile decided once and
+  //: expects to find the way it left them, and an entry that is pinned for a
+  //: frame and then disappears is the flash-of-the-wrong-theme defect wearing a
+  //: worse coat: a palette that corrects itself looks like a load, a menu that
+  //: corrects itself looks like the setting did not save.
+  function applyProfileConfig(appearance, sidebar) {
+    const nextTheme = appearance?.theme || DEFAULT_THEME_ID;
+    const nextBackground = appearance?.background || DEFAULT_BACKGROUND_ID;
     setTheme(nextTheme);
     applyTheme(nextTheme);
     setBackground(nextBackground);
     applyBackground(nextBackground);
-    setIntensity(config?.intensity || DEFAULT_INTENSITY_ID);
+    setIntensity(appearance?.intensity || DEFAULT_INTENSITY_ID);
+    setHiddenSystemItems(sidebar?.hidden || []);
   }
 
   // The appearance is fetched inside the gate that already holds back the first
@@ -5533,10 +5606,11 @@ export default function App() {
     Promise.all([
       api.currentAccountProfile().then((data) => data.profile).catch(() => null),
       api.appearanceConfig().catch(() => null),
+      api.sidebarNavConfig().catch(() => null),
     ])
-      .then(([nextProfile, config]) => {
+      .then(([nextProfile, appearance, sidebar]) => {
         setProfile(nextProfile);
-        dressUp(config);
+        applyProfileConfig(appearance, sidebar);
       })
       .finally(() => setCheckingSession(false));
   }, []);
@@ -5559,11 +5633,16 @@ export default function App() {
         onSignedIn={(next) => {
           clearProfileScopedState();
           setProfile(next);
-          // Signing in here does not reload the page, so the appearance fetched
+          // Signing in here does not reload the page, so everything fetched
           // before there was a profile is the default rather than this
-          // profile's. Ask again now that there is a session to ask about.
-          api.appearanceConfig()
-            .then(dressUp)
+          // profile's. Ask again now that there is a session to ask about --
+          // both of them, or the half that is left out is the half that appears
+          // to forget itself every time somebody logs back in.
+          Promise.all([
+            api.appearanceConfig().catch(() => null),
+            api.sidebarNavConfig().catch(() => null),
+          ])
+            .then(([appearance, sidebar]) => applyProfileConfig(appearance, sidebar))
             .catch(() => { /* stay on the defaults; the next load will try again */ });
         }}
       />
@@ -5580,6 +5659,8 @@ export default function App() {
       intensity={intensity}
       onBackgroundChange={setBackground}
       onIntensityChange={setIntensity}
+      hiddenSystemItems={hiddenSystemItems}
+      onHiddenSystemItemsChange={setHiddenSystemItems}
     />
   );
 }

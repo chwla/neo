@@ -13,7 +13,7 @@
  * at twice the frame cost, which is invisible until it is four loops.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, test } from "node:test";
 
 import { createElement } from "react";
@@ -289,6 +289,10 @@ function installDom({ reduceMotion = false, hidden = false } = {}) {
   define("MutationObserver", class {
     constructor(callback) {
       this.callback = callback;
+      //: Exposed so a test can deliver an attribute change the way the browser
+      //: would. The engine watches `data-theme` and `data-modal-open` on one
+      //: observer, so this is the only handle either of them has.
+      state.mutate = (records) => callback(records);
       state.mutationObservers += 1;
     }
     observe() {}
@@ -382,6 +386,58 @@ describe("the engine's lifecycle", () => {
       assert.equal(dom.mutationObservers, 0, "theme observer leaked");
       assert.equal(dom.visibilityListeners, 0, "visibility listener leaked");
       assert.equal(dom.motionListeners, 0, "reduced-motion listener leaked");
+    } finally {
+      dom.restore();
+    }
+  });
+
+  test("a dialog over the field stops the loop, and closing it starts it again", () => {
+    // The field is invisible under a dialog, and since the settings panel became
+    // glass it is worse than invisible: every frame it paints is a frame the
+    // pane above has to blur again. `modalStack` flags the document, and this is
+    // the engine holding up its half of that.
+    const dom = installDom();
+    try {
+      const engine = createEngine(dom.canvas, dom.host, {
+        effect: effectById("jellyfish"),
+        intensity: intensityById("medium"),
+      });
+      assert.equal(dom.flush(), 1, "one loop is running");
+
+      document.documentElement.dataset.modalOpen = "";
+      dom.mutate([{ attributeName: "data-modal-open" }]);
+      assert.equal(dom.flush(), 0, "the field is still painting under a pane that blurs it");
+
+      delete document.documentElement.dataset.modalOpen;
+      dom.mutate([{ attributeName: "data-modal-open" }]);
+      assert.equal(dom.flush(), 1, "closing the dialog left the field stopped");
+
+      engine.destroy();
+    } finally {
+      dom.restore();
+    }
+  });
+
+  test("a theme change while a dialog is open does not restart the loop", () => {
+    // Both attributes arrive on the same observer, and a retint must not be read
+    // as a resume -- the picker sits inside a dialog, so this is the ordinary
+    // case rather than a corner of one.
+    const dom = installDom();
+    try {
+      const engine = createEngine(dom.canvas, dom.host, {
+        effect: effectById("jellyfish"),
+        intensity: intensityById("medium"),
+      });
+      dom.flush();
+
+      document.documentElement.dataset.modalOpen = "";
+      dom.mutate([{ attributeName: "data-modal-open" }]);
+      assert.equal(dom.flush(), 0, "the loop did not stop");
+
+      dom.mutate([{ attributeName: "data-theme" }]);
+      assert.equal(dom.flush(), 0, "a retint restarted a loop the dialog had stopped");
+
+      engine.destroy();
     } finally {
       dom.restore();
     }
@@ -749,6 +805,45 @@ describe("the chat glass material", () => {
     const layer = ruleFor(".chat-bg-layer");
     assert.match(layer, /position:\s*fixed/);
     assert.doesNotMatch(layer, /position:\s*absolute/);
+  });
+
+  test("the settings pane is the only filtered surface in its own stack", () => {
+    // The lag this rule exists to prevent. A `backdrop-filter` re-runs whenever
+    // anything beneath it changes and the field beneath repaints every frame, so
+    // one pass over the pane is a cost and a second one under it is a different
+    // kind of cost: a filtered ancestor becomes a backdrop root, and the
+    // viewport-sized pass has to be materialised before the pane's own can
+    // sample it, sixty times a second. Three stacked roots starved the
+    // compositor badly enough that a .12s hover took seconds to arrive.
+    const filtered = rulesMentioning(".settings-dialog")
+      .filter((rule) => /backdrop-filter/.test(rule.body))
+      .map((rule) => rule.selector);
+    assert.deepEqual(filtered, ["[data-chat-bg] .settings-dialog"]);
+  });
+
+  test("every dialog that covers the field says so, however it was built", () => {
+    // The whole fix rests on the field knowing it is covered, and `Modal` is not
+    // the only way a dialog gets on screen: four settings pages hand-roll their
+    // own backdrop, so `registerModal` never reaches them and the field would
+    // keep painting under exactly the panels that are glass. Whoever adds the
+    // fifth should hear it here rather than from a hover that takes a second.
+    const src = new URL("../src/", import.meta.url);
+    const unregistered = readdirSync(src)
+      .filter((name) => name.endsWith(".jsx"))
+      .filter((name) => {
+        const text = readFileSync(new URL(name, src), "utf8");
+        return text.includes("modal-backdrop") && !/register(Cover|Modal)/.test(text);
+      });
+    assert.deepEqual(unregistered, [], "these dialogs cover the field without stopping it");
+  });
+
+  test("the wash parks under a dialog instead of drifting behind the glass", () => {
+    // The other half of what the engine does with `data-modal-open`: stopping
+    // the marks and leaving the wash moving would keep the pane re-blurring a
+    // backdrop nobody can see. Paused rather than removed, so it holds its
+    // position instead of snapping back every time a dialog opens.
+    const parked = ruleFor("[data-modal-open] .chat-bg-layer.has-wash::before");
+    assert.match(parked, /animation-play-state:\s*paused/);
   });
 
   test("the diffusion buffer paints under the marks, not over them", () => {

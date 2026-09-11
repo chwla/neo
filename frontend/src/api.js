@@ -548,6 +548,11 @@ export const api = {
   appearanceConfig: () => request("/appearance/config"),
   updateAppearanceConfig: (payload) =>
     request("/appearance/config", { method: "POST", body: JSON.stringify(payload) }),
+  sidebarNavConfig: () => request("/sidebar-nav/config"),
+  //: `hidden` is sent in full rather than as a patch -- one screen of toggles,
+  //: no second writer to race. See the route module for why.
+  updateSidebarNavConfig: (payload) =>
+    request("/sidebar-nav/config", { method: "POST", body: JSON.stringify(payload) }),
 
   // -- Voice input ----------------------------------------------------------
   voiceStatus: () => request("/voice/status"),
