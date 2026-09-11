@@ -70,6 +70,26 @@ const BLOOM_SCALE = 12;
 //: the number of doublings instead would quietly turn a request for 64 into 32.
 const MAX_BLOOM_GAIN = 16;
 
+//: How far the buffer is softened before it is amplified, in buffer pixels --
+//: so about one cell, twelve pixels of field.
+//:
+//: The layer was built on the assumption that the compositor's upscale would
+//: turn coarse blocks into soft shapes. Bilinear does not do that at twelve
+//: times magnification: it interpolates between cell centres and leaves the
+//: grid legible as facets. On the static field that passes for texture, but a
+//: meteor is a thin bright diagonal, and a thin bright diagonal across a coarse
+//: grid lights a staircase of single cells -- which is what it looked like,
+//: a row of blocks trailing the streak, and worse once there were four times as
+//: many meteors to notice it on.
+//:
+//: One Gaussian at buffer resolution fixes it, and costs nothing worth
+//: measuring: the buffer is around 130x80, not 1600x1000. Before the gain
+//: rather than after, so a block is never amplified to clipping and then
+//: spread -- the spreading has to happen while there is still a gradient to
+//: spread. Total light is unchanged; a blur conserves it. What changes is that
+//: it arrives as a glow instead of as a staircase.
+const BLOOM_BLUR = 1;
+
 export function createEngine(canvas, host, options) {
   const effect = options.effect;
   const intensity = options.intensity;
@@ -99,6 +119,9 @@ export function createEngine(canvas, host, options) {
   const bloomRemainder = bloomGain > 1 ? bloomGain / 2 ** bloomDoublings - 1 : 0;
   let bloomWidth = 0;
   let bloomHeight = 0;
+  //: Whether this browser's 2D context has `filter`. Safari only grew it in 17,
+  //: and the layer has to keep working without it.
+  let bloomBlurs = false;
 
   const motionQuery =
     typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -114,17 +137,6 @@ export function createEngine(canvas, host, options) {
   let destroyed = false;
 
   const wantsStillness = () => Boolean(motionQuery && motionQuery.matches);
-
-  //: Two ways to be invisible, and the loop owes nothing to either. A hidden tab
-  //: is the obvious one. The other is a dialog: `modalStack` flags the document
-  //: while anything is open, and an open dialog is both an occluder and -- since
-  //: the settings panel became glass -- the one thing that makes this loop
-  //: expensive, because every frame it paints is a frame the pane above has to
-  //: blur again. Stopping is what makes that pane free rather than cheap.
-  const isCovered = () => {
-    if (typeof document === "undefined") return false;
-    return document.hidden || document.documentElement?.dataset.modalOpen !== undefined;
-  };
 
   /**
    * Reduce the frame just painted into the diffusion buffer.
@@ -146,8 +158,16 @@ export function createEngine(canvas, host, options) {
     //: is what the restore at the end is for -- nothing else touches this
     //: context, so it does not need resetting on the way in as well.
     bloomCtx.clearRect(0, 0, bloomWidth, bloomHeight);
+    //: Feature-detected rather than assumed: a browser without Canvas2D filters
+    //: gets the reduction it always got, which is the faceted version rather
+    //: than a broken one.
+    if (bloomBlurs) bloomCtx.filter = `blur(${BLOOM_BLUR}px)`;
     bloomCtx.drawImage(canvas, 0, 0, bloomWidth, bloomHeight);
+    if (bloomBlurs) bloomCtx.filter = "none";
 
+    //: The amplification passes are deliberately unfiltered. Each one is the
+    //: buffer drawn onto itself, so a filter here would blur what is already
+    //: blurred, once per doubling, and the spread would compound into a wash.
     bloomCtx.globalCompositeOperation = "lighter";
     for (let pass = 0; pass < bloomDoublings; pass += 1) {
       bloomCtx.drawImage(bloom, 0, 0);
@@ -203,7 +223,10 @@ export function createEngine(canvas, host, options) {
       paintStill();
       return;
     }
-    if (isCovered()) return;
+    //: A hidden tab and nothing else. Anything open in the interface -- a dialog,
+    //: a popover, a menu -- leaves this running: the field is the feature, and a
+    //: field that stops because somebody opened a menu is a broken one.
+    if (typeof document !== "undefined" && document.hidden) return;
     running = true;
     //: Re-anchored on every start, not just the first. Coming back from a
     //: hidden tab is otherwise a delta measured from whenever it was hidden,
@@ -246,6 +269,9 @@ export function createEngine(canvas, host, options) {
       //: averaging has to be re-asked for here rather than once at startup.
       bloomCtx.imageSmoothingEnabled = true;
       bloomCtx.imageSmoothingQuality = "high";
+      //: Re-checked here for the same reason the smoothing is: assigning the
+      //: size resets the context, and a stub context in a test has neither.
+      bloomBlurs = typeof bloomCtx.filter === "string";
     }
 
     if (instance) {
@@ -268,31 +294,21 @@ export function createEngine(canvas, host, options) {
   //: pushed in. Watching the attribute rather than taking a React prop keeps
   //: this correct no matter who calls applyTheme -- the picker, the first-paint
   //: gate, or a profile switch.
-  //: `data-modal-open` rides along because it is on the same element and the
-  //: engine already had an observer there -- a dialog opening is a stop, and a
-  //: dialog closing is the same resume a tab regaining focus gets, clock and
-  //: all.
-  const rootObserver = new MutationObserver((records) => {
-    for (const record of records) {
-      if (record.attributeName === "data-theme") {
-        palette = readPalette();
-        if (instance) instance.retint(palette);
-        if (wantsStillness()) paintStill();
-      } else {
-        syncActivity();
-      }
-    }
+  const themeObserver = new MutationObserver(() => {
+    palette = readPalette();
+    if (instance) instance.retint(palette);
+    if (wantsStillness()) paintStill();
   });
-  rootObserver.observe(document.documentElement, {
+  themeObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["data-theme", "data-modal-open"],
+    attributeFilter: ["data-theme"],
   });
 
-  function syncActivity() {
-    if (isCovered()) stop();
+  function onVisibility() {
+    if (document.hidden) stop();
     else start();
   }
-  document.addEventListener("visibilitychange", syncActivity);
+  document.addEventListener("visibilitychange", onVisibility);
 
   function onMotionPreferenceChange() {
     if (wantsStillness()) paintStill();
@@ -307,8 +323,8 @@ export function createEngine(canvas, host, options) {
       destroyed = true;
       stop();
       resizeObserver.disconnect();
-      rootObserver.disconnect();
-      document.removeEventListener("visibilitychange", syncActivity);
+      themeObserver.disconnect();
+      document.removeEventListener("visibilitychange", onVisibility);
       if (motionQuery) motionQuery.removeEventListener("change", onMotionPreferenceChange);
       instance = null;
     },

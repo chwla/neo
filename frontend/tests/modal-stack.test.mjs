@@ -4,7 +4,6 @@ import { beforeEach, describe, test } from "node:test";
 import {
   dispatchEscape,
   openModalCount,
-  registerCover,
   registerModal,
   resetModalStack,
 } from "../src/modalStack.js";
@@ -14,51 +13,21 @@ const escape = { key: "Escape" };
 describe("modal escape stack", () => {
   beforeEach(() => resetModalStack());
 
-  test("the document is flagged while anything is over the app", () => {
-    // The background engine and the stylesheet both read this to stop painting a
-    // field that is covered -- and, since the settings panel became glass, to
-    // stop the pane above it re-blurring a moving backdrop sixty times a second.
-    // The flag is about whether the app is covered at all, so it has to outlast
-    // the dialogs stacked on top of the first one.
+  test("registering is about escape and nothing else", () => {
+    /* This module briefly flagged the document while anything was registered, so
+       the background engine could stop painting a field it thought was covered.
+       Popovers register here too -- the composer's "+" menu and every row's
+       "..." do it so one Escape closes the top thing rather than the pile behind
+       it -- so opening a menu froze the field. Nothing here touches the document
+       any more, and the engine stops for a hidden tab alone. */
     const saved = globalThis.document;
-    globalThis.document = { documentElement: { dataset: {} } };
+    const root = { dataset: {} };
+    globalThis.document = { documentElement: root };
     try {
-      const closeSettings = registerModal(() => {});
-      assert.equal(document.documentElement.dataset.modalOpen, "");
-
-      const closeConfirm = registerModal(() => {});
-      closeConfirm();
-      assert.equal(
-        document.documentElement.dataset.modalOpen,
-        "",
-        "the dialog underneath is still covering the field",
-      );
-
-      closeSettings();
-      assert.equal(document.documentElement.dataset.modalOpen, undefined);
-    } finally {
-      if (saved === undefined) delete globalThis.document;
-      else globalThis.document = saved;
-    }
-  });
-
-  test("covering the app is not the same as claiming escape", () => {
-    // The settings pages that hand-roll their backdrop need the field stopped,
-    // and they have never closed on Escape. Handing them the stack to get the
-    // first would have given them the second, which closes a half-filled form on
-    // a keypress that did nothing yesterday.
-    const saved = globalThis.document;
-    globalThis.document = { documentElement: { dataset: {} } };
-    try {
-      const uncover = registerCover();
-
-      assert.equal(document.documentElement.dataset.modalOpen, "", "the field is still running");
-      assert.equal(openModalCount(), 0, "a cover took a place in the escape stack");
-      assert.equal(dispatchEscape(escape), false, "escape was swallowed by a dialog that ignores it");
-
-      uncover();
-      uncover();
-      assert.equal(document.documentElement.dataset.modalOpen, undefined, "releasing twice double-counted");
+      const close = registerModal(() => {});
+      assert.deepEqual(root.dataset, {}, "registering wrote to <html>");
+      close();
+      assert.deepEqual(root.dataset, {}, "unregistering wrote to <html>");
     } finally {
       if (saved === undefined) delete globalThis.document;
       else globalThis.document = saved;

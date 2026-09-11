@@ -643,12 +643,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 
 .system-nav { display: grid; gap: 1px; }
 .system-nav button, .sidebar-settings { display: flex; align-items: center; gap: 8px; min-height: 30px; margin: 0 8px; border: 0; border-left: 2px solid transparent; border-radius: 0 2px 2px 0; background: transparent; padding: 0 12px; color: var(--neo-fg-12); font-size: 13px; text-align: left; }
+/* The SYSTEM rows are a label on their own now. The gap above stays for
+   `.sidebar-settings`, which still has a glyph to sit beside. */
+.system-nav button { gap: 0; }
 .system-nav button:hover, .sidebar-settings:hover { background: var(--neo-lift-a03); color: var(--neo-fg-9); }
 .system-nav button.active, .sidebar-settings.active { border-left-color: var(--neo-green); background: var(--neo-accent-a04); color: var(--neo-green); }
 .system-nav-icon { width: 14px; height: 14px; flex: 0 0 auto; }
 .sidebar-footer { display: flex; align-items: center; justify-content: space-between; margin: 12px 16px 0; border-top: 1px solid var(--neo-line); padding: 8px 0 16px; }
 .sidebar-settings { margin: 0; padding: 0; border-left: 0; font-size: 12px; }
-.sidebar-profile { display: grid; width: 26px; height: 26px; place-items: center; overflow: hidden; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: transparent; color: var(--neo-fg-12); font: 600 10px "JetBrains Mono", monospace; }
+/* Round: `overflow: hidden` was already here for the cropped photo, so it clips
+   the image to the same circle the initial sits in. */
+.sidebar-profile { display: grid; width: 26px; height: 26px; place-items: center; overflow: hidden; border: 1px solid var(--neo-line-bright); border-radius: 50%; background: transparent; color: var(--neo-fg-12); font: 600 10px "JetBrains Mono", monospace; }
 .sidebar-profile img { width: 100%; height: 100%; object-fit: cover; }
 .sidebar-profile:hover { border-color: var(--neo-green); color: var(--neo-green); }
 
@@ -997,7 +1002,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   display: flex;
   min-height: 38px;
   align-items: center;
-  gap: 10px;
   border: 1px solid var(--neo-accent-a16);
   border-radius: 11px;
   background: var(--neo-accent-a04);
@@ -1006,7 +1010,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   font: 11px "JetBrains Mono", monospace;
   transition: border-color .14s ease, background .14s ease, color .14s ease;
 }
-.composer-menu-action svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--neo-accent-soft); }
 .composer-menu-action:hover:not(:disabled) { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-text); }
 .composer-menu-action:disabled { opacity: .45; }
 
@@ -1266,7 +1269,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .profile-card:hover { border-color: var(--neo-green); }
 .profile-card small, .profile-form small { color: var(--neo-fg-12); text-align: center; }
 .profile-card-add { border-style: dashed; }
-.profile-add-icon, .profile-guest-icon, .profile-avatar { display: grid; place-items: center; width: 52px; height: 52px; overflow: hidden; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-bg); color: var(--neo-green); font: 22px "JetBrains Mono", monospace; }
+/* Round, like every other avatar in Neo. `overflow: hidden` was already here to
+   crop an uploaded picture, so it clips one to the same circle the initials sit
+   in. "New profile" and "Guest" are round for the same reason they are this
+   size: they stand in the avatar's place on their cards, and a square among
+   circles reads as one of them having failed to load rather than as a choice. */
+.profile-add-icon, .profile-guest-icon, .profile-avatar { display: grid; place-items: center; width: 52px; height: 52px; overflow: hidden; border: 1px solid var(--neo-line-bright); border-radius: 50%; background: var(--neo-bg); color: var(--neo-green); font: 22px "JetBrains Mono", monospace; }
 .profile-avatar { width: 34px; height: 34px; object-fit: cover; font-size: 12px; }
 .profile-avatar-large { width: 64px; height: 64px; }
 .profile-form { display: grid; max-width: 430px; gap: 12px; }
@@ -2719,7 +2727,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--neo-line-bright);
-  border-radius: 2px;
+  border-radius: 50%;
   background: var(--neo-bg);
   object-fit: cover;
   color: var(--neo-green);
@@ -5689,8 +5697,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 
 /* The Dictate entry's second line, when it is pointing at setup rather than
    recording. Kept visually quiet: it is an explanation, not a second action. */
-.composer-menu-action-body { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
-.composer-menu-action-hint { font-size: 10px; opacity: .65; }
 
 /* --- appearance: the theme picker -----------------------------------------
    The cards are wide rather than a tight grid of swatches because the name and
@@ -5806,12 +5812,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 @media (prefers-reduced-motion: reduce) {
   .chat-bg-layer.has-wash::before { animation: none; }
 }
-/* Parked while a dialog is over the app, which is the other half of what the
-   engine does with `data-modal-open` -- stopping the marks and leaving the wash
-   drifting would keep the glass above re-blurring a moving backdrop for the sake
-   of a gradient nobody can see. `paused` rather than `none`, so it holds the
-   position it reached instead of snapping back to the start on every dialog. */
-[data-modal-open] .chat-bg-layer.has-wash::before { animation-play-state: paused; }
 
 .chat-bg-layer {
   /* Fixed, not absolute: the sidebar and the composer are glass over this

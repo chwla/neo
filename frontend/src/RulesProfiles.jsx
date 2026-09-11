@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
 import { api } from "./api.js";
-import { registerCover } from "./modalStack.js";
 
 const EMPTY = {
   name: "",
@@ -14,11 +13,6 @@ const EMPTY = {
 };
 
 export default function RulesProfiles({ onClose, backLabel, onBack }) {
-  //: The field behind is stopped while this panel is up. It is glass, and a
-  //: `backdrop-filter` over a canvas that repaints every frame is a blur pass
-  //: every frame. Coverage only -- Escape still does not close this dialog.
-  useEffect(() => registerCover(), []);
-
   const [profiles, setProfiles] = useState([]);
   const [logs, setLogs] = useState([]);
   const [form, setForm] = useState(EMPTY);

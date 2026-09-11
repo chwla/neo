@@ -12,7 +12,6 @@ import BackgroundTurnToast, {
   notificationsEnabled,
   shouldNotify,
 } from "./BackgroundTurnToast.jsx";
-import { PaperclipIcon } from "./icons.jsx";
 import { registerModal } from "./modalStack.js";
 import { visibleSystemNav } from "./systemNav.js";
 import { replaceRange } from "./voice/insertion.js";
@@ -936,7 +935,6 @@ export function Sidebar({
           <nav className="system-nav" aria-label="Neo system">
             {systemItems.map(([id, label, onClick]) => (
               <button className={activeView === id ? "active" : ""} type="button" onClick={onClick} key={id}>
-                <NavIcon name={id} />
                 <span>{label}</span>
               </button>
             ))}
@@ -1255,38 +1253,6 @@ function formatFileSize(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** A folder is not a file, so the action that opens one gets its own glyph. */
-function FolderPlusIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 20a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1z" />
-      <path d="M12 11v6" />
-      <path d="M9 14h6" />
-    </svg>
-  );
-}
-
-function WrenchIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M14.7 6.3a4 4 0 0 0-5.6 4.9L3 17.3l1.4 1.4 6-6.1a4 4 0 0 0 4.9-5.6z" />
-    </svg>
-  );
-}
-
-/** A book: a skill is instructions the agent reads, not a tool it operates. */
-function SkillsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-    </svg>
-  );
-}
-
 const DISMISSED_LIMITS_KEY = "neo.dismissedUsageWarnings";
 
 /** Identifies one filling of one window, so a dismissal expires when it resets. */
@@ -1330,17 +1296,6 @@ function resetPhrase(epochSeconds) {
   return hours < 24 ? ` (resets in ${hours}h)` : ` (resets in ${Math.round(hours / 24)}d)`;
 }
 
-/** A gauge: how much of an allowance is spent, which is what the panel shows. */
-function GaugeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3.5 17a9 9 0 1 1 17 0" />
-      <path d="m12 13 4.5-3.5" />
-    </svg>
-  );
-}
-
 /** Attaching files reads the same in both modes, so it is written once. */
 function AttachFilesAction({ attaching, disabled, onPick }) {
   return (
@@ -1352,7 +1307,6 @@ function AttachFilesAction({ attaching, disabled, onPick }) {
       title="Attach files"
       aria-label="Attach files"
     >
-      <PaperclipIcon />
       <span>{attaching ? "Attaching…" : "Attach files"}</span>
     </button>
   );
@@ -1382,7 +1336,6 @@ function CompactConversationAction({ compacting, disabled, onCompact }) {
       title="Summarize older messages to reduce context window usage."
       aria-label={compacting ? "Compacting conversation" : "Compact conversation"}
     >
-      <CompactIcon />
       <span>{compacting ? "Compacting…" : "Compact conversation"}</span>
     </button>
   );
@@ -2109,7 +2062,6 @@ export function ChatComposer({
                       title="Open a folder on this computer. The agent edits it directly."
                       aria-label={folderAttaching ? "Opening a folder" : "Open a folder"}
                     >
-                      <FolderPlusIcon />
                       <span>{folderAttaching ? "Opening a folder…" : "Open a folder"}</span>
                     </button>
                     <AttachFilesAction
@@ -2139,7 +2091,6 @@ export function ChatComposer({
                       }
                       aria-label="Tools"
                     >
-                      <WrenchIcon />
                       <span>{toolTogglesApply ? "Tools" : "Tools (Neo turns only)"}</span>
                     </button>
                     <button
@@ -2153,7 +2104,6 @@ export function ChatComposer({
                       title="Choose which skills agent turns in this chat can use, or add a new one."
                       aria-label="Skills"
                     >
-                      <SkillsIcon />
                       <span>Skills</span>
                     </button>
                     {/* Hidden rather than disabled, which is the opposite of
@@ -2176,7 +2126,6 @@ export function ChatComposer({
                         title="How much of your coding CLI subscription limits are used."
                         aria-label="Usage"
                       >
-                        <GaugeIcon />
                         <span>Usage</span>
                       </button>
                     ) : null}

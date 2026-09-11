@@ -391,11 +391,12 @@ describe("the engine's lifecycle", () => {
     }
   });
 
-  test("a dialog over the field stops the loop, and closing it starts it again", () => {
-    // The field is invisible under a dialog, and since the settings panel became
-    // glass it is worse than invisible: every frame it paints is a frame the
-    // pane above has to blur again. `modalStack` flags the document, and this is
-    // the engine holding up its half of that.
+  test("nothing in the interface stops the loop", () => {
+    /* The regression: `registerModal` was made to flag the document as covered,
+       and the composer's "+" menu is on that stack -- it registers there so one
+       Escape closes the popover rather than the pile behind it. Opening the menu
+       therefore froze the background. The field is the feature; the only thing
+       it owes anything to is a tab nobody is looking at. */
     const dom = installDom();
     try {
       const engine = createEngine(dom.canvas, dom.host, {
@@ -404,39 +405,30 @@ describe("the engine's lifecycle", () => {
       });
       assert.equal(dom.flush(), 1, "one loop is running");
 
+      //: Whatever else ends up on `documentElement`, the loop is not listening.
       document.documentElement.dataset.modalOpen = "";
       dom.mutate([{ attributeName: "data-modal-open" }]);
-      assert.equal(dom.flush(), 0, "the field is still painting under a pane that blurs it");
+      assert.equal(dom.flush(), 1, "an attribute on <html> stopped the field");
+
+      dom.mutate([{ attributeName: "data-theme" }]);
+      assert.equal(dom.flush(), 1, "a retint stopped the field");
 
       delete document.documentElement.dataset.modalOpen;
-      dom.mutate([{ attributeName: "data-modal-open" }]);
-      assert.equal(dom.flush(), 1, "closing the dialog left the field stopped");
-
       engine.destroy();
     } finally {
       dom.restore();
     }
   });
 
-  test("a theme change while a dialog is open does not restart the loop", () => {
-    // Both attributes arrive on the same observer, and a retint must not be read
-    // as a resume -- the picker sits inside a dialog, so this is the ordinary
-    // case rather than a corner of one.
-    const dom = installDom();
+  test("a hidden tab is the one thing that does stop it", () => {
+    // Not an interface state -- nobody is looking at the page at all.
+    const dom = installDom({ hidden: true });
     try {
       const engine = createEngine(dom.canvas, dom.host, {
         effect: effectById("jellyfish"),
         intensity: intensityById("medium"),
       });
-      dom.flush();
-
-      document.documentElement.dataset.modalOpen = "";
-      dom.mutate([{ attributeName: "data-modal-open" }]);
-      assert.equal(dom.flush(), 0, "the loop did not stop");
-
-      dom.mutate([{ attributeName: "data-theme" }]);
-      assert.equal(dom.flush(), 0, "a retint restarted a loop the dialog had stopped");
-
+      assert.equal(dom.flush(), 0, "a hidden tab is painting frames nobody sees");
       engine.destroy();
     } finally {
       dom.restore();
@@ -819,31 +811,6 @@ describe("the chat glass material", () => {
       .filter((rule) => /backdrop-filter/.test(rule.body))
       .map((rule) => rule.selector);
     assert.deepEqual(filtered, ["[data-chat-bg] .settings-dialog"]);
-  });
-
-  test("every dialog that covers the field says so, however it was built", () => {
-    // The whole fix rests on the field knowing it is covered, and `Modal` is not
-    // the only way a dialog gets on screen: four settings pages hand-roll their
-    // own backdrop, so `registerModal` never reaches them and the field would
-    // keep painting under exactly the panels that are glass. Whoever adds the
-    // fifth should hear it here rather than from a hover that takes a second.
-    const src = new URL("../src/", import.meta.url);
-    const unregistered = readdirSync(src)
-      .filter((name) => name.endsWith(".jsx"))
-      .filter((name) => {
-        const text = readFileSync(new URL(name, src), "utf8");
-        return text.includes("modal-backdrop") && !/register(Cover|Modal)/.test(text);
-      });
-    assert.deepEqual(unregistered, [], "these dialogs cover the field without stopping it");
-  });
-
-  test("the wash parks under a dialog instead of drifting behind the glass", () => {
-    // The other half of what the engine does with `data-modal-open`: stopping
-    // the marks and leaving the wash moving would keep the pane re-blurring a
-    // backdrop nobody can see. Paused rather than removed, so it holds its
-    // position instead of snapping back every time a dialog opens.
-    const parked = ruleFor("[data-modal-open] .chat-bg-layer.has-wash::before");
-    assert.match(parked, /animation-play-state:\s*paused/);
   });
 
   test("the diffusion buffer paints under the marks, not over them", () => {
@@ -1286,5 +1253,179 @@ describe("the chat glass material", () => {
     for (const { selector, body } of rulesMentioning(".neo-main")) {
       assert.doesNotMatch(body, trapping, `${selector} would trap the composer`);
     }
+  });
+});
+
+/**
+ * Shooting stars, which are the part of the star field anyone actually watches
+ * for, and which the intensity control used to have no opinion about at all.
+ *
+ * Three meteors on a two-to-seven-second gap, whatever the setting said -- so
+ * Subtle, Medium and Vivid drew the same ~33 passes a minute and the control
+ * moved only the dots behind them. Both halves are tied to intensity now.
+ *
+ * Measured by running the effect for ten minutes of frames and counting how
+ * often a meteor's trail goes from absent to drawn. Seeded, so the numbers are
+ * the same on every run, and generous in their bounds: the point is the shape
+ * of the change, not a pixel-exact rate that would fail on any tuning.
+ */
+describe("how often something falls", () => {
+  //: What all three settings produced before meteors knew about intensity, so
+  //: "more than it was" is a number rather than a memory.
+  const BEFORE_PER_MINUTE = 33;
+
+  function launchesPerMinute(intensityId, seconds = 600) {
+    const palette = {
+      accent: [57, 255, 20], bg: [10, 10, 10], ink: [255, 255, 255],
+      isLight: false, glowMode: "lighter", rgba,
+    };
+    const nothing = () => ({ addColorStop() {} });
+    let trails = 0;
+    const ctx = {
+      beginPath() {}, arc() {}, fill() {}, moveTo() {}, lineTo() {},
+      stroke() { trails += 1; },
+      createLinearGradient: nothing, createRadialGradient: nothing,
+      fillStyle: "", strokeStyle: "", lineWidth: 0, lineCap: "",
+      globalCompositeOperation: "", globalAlpha: 1,
+    };
+
+    const realRandom = Math.random;
+    Math.random = seeded(20260911);
+    let launches = 0;
+    try {
+      const effect = effectById("stars");
+      const instance = effect.create({
+        width: 1600, height: 1000, palette, intensity: intensityById(intensityId),
+      });
+      const dt = 1 / 60;
+      let flying = 0;
+      for (let frame = 0; frame < seconds / dt; frame += 1) {
+        trails = 0;
+        instance.frame(ctx, dt, frame * dt);
+        //: A trail per meteor per frame, so a rise in the count is one more
+        //: that has just left its wait behind.
+        if (trails > flying) launches += trails - flying;
+        flying = trails;
+      }
+    } finally {
+      Math.random = realRandom;
+    }
+    return launches / (seconds / 60);
+  }
+
+  const rates = {
+    subtle: launchesPerMinute("subtle"),
+    medium: launchesPerMinute("medium"),
+    vivid: launchesPerMinute("vivid"),
+  };
+
+  test("every setting shows more of them than any setting used to", () => {
+    for (const [id, rate] of Object.entries(rates)) {
+      assert.ok(
+        rate > BEFORE_PER_MINUTE * 1.35,
+        `${id} fell back to ${rate.toFixed(1)}/min, barely above the old ${BEFORE_PER_MINUTE}`,
+      );
+    }
+  });
+
+  test("the intensity control moves them, which it never used to", () => {
+    // The regression that hid here for as long as the effect existed: these
+    // three were identical, and nothing said so.
+    assert.ok(rates.subtle < rates.medium, "Subtle and Medium fall at the same rate");
+    assert.ok(rates.medium < rates.vivid, "Medium and Vivid fall at the same rate");
+  });
+
+  test("Subtle stays the restrained one", () => {
+    // It is allowed to be busier than it was; it is not allowed to stop being
+    // the setting somebody picks to be left alone.
+    assert.ok(rates.subtle < rates.vivid * 0.6, "Subtle is keeping pace with Vivid");
+  });
+
+  test("the field behind them is still nearly still", () => {
+    // The stillness is what makes a meteor read as fast, so the star count must
+    // not have been dragged along by any of this.
+    const stars = effectById("stars");
+    assert.equal(stars.bloom, 10, "the diffusion gain moved with the meteors");
+  });
+});
+
+/**
+ * The diffusion pass, which is what the glass blurs and what the field's glow
+ * is made of -- and which no test reached until it produced a visible artifact.
+ *
+ * The buffer is a twelfth of the field, so a meteor is a thin bright diagonal
+ * across a coarse grid: it lights a staircase of single cells, and bilinear
+ * upscaling at twelve times magnification keeps that staircase legible instead
+ * of smoothing it away. It read as grain trailing every shooting star. One blur
+ * at buffer resolution turns the staircase back into a glow.
+ *
+ * The order is the part worth pinning. Blurring after the gain would spread
+ * blocks that had already been amplified to clipping, which smears the artifact
+ * rather than removing it; and blurring the amplification passes, each of which
+ * is the buffer drawn onto itself, would compound one blur per doubling into a
+ * wash.
+ */
+describe("the diffusion buffer", () => {
+  function recordingBloom({ supportsFilter = true } = {}) {
+    const ops = [];
+    const target = { filter: supportsFilter ? "none" : undefined, globalAlpha: 1 };
+    const ctx = new Proxy(target, {
+      get(store, prop) {
+        if (typeof prop === "symbol") return undefined;
+        if (prop === "drawImage") return () => ops.push(`draw@${store.filter}`);
+        if (prop === "clearRect") return () => ops.push("clear");
+        if (prop in store) return store[prop];
+        return () => {};
+      },
+      set(store, prop, value) {
+        store[prop] = value;
+        if (prop === "filter") ops.push(`filter:${value}`);
+        return true;
+      },
+    });
+    return { canvas: { width: 0, height: 0, getContext: () => ctx }, ops };
+  }
+
+  function run(options = {}) {
+    const dom = installDom();
+    const bloom = recordingBloom(options);
+    try {
+      const engine = createEngine(dom.canvas, dom.host, {
+        effect: effectById("stars"),
+        intensity: intensityById("medium"),
+        bloom: bloom.canvas,
+      });
+      dom.flush();
+      engine.destroy();
+    } finally {
+      dom.restore();
+    }
+    return bloom.ops;
+  }
+
+  test("the reduction is blurred and the amplification is not", () => {
+    const ops = run();
+    const draws = ops.filter((op) => op.startsWith("draw@"));
+    assert.ok(draws.length > 1, "the buffer was never amplified");
+    assert.match(draws[0], /^draw@blur\(/, "the reduction went in sharp, so the grid survives it");
+    for (const draw of draws.slice(1)) {
+      assert.equal(draw, "draw@none", "an amplification pass was blurred; the spread compounds");
+    }
+  });
+
+  test("the blur is measured in buffer pixels, around one cell", () => {
+    // Twelve field pixels. Much less and the grid shows through; much more and
+    // the field stops tracking the animation, which is all the layer is for.
+    const applied = run().find((op) => op.startsWith("filter:blur"));
+    const radius = Number(applied.match(/blur\(([\d.]+)px\)/)[1]);
+    assert.ok(radius > 0 && radius <= 2, `blur of ${radius} buffer pixels`);
+  });
+
+  test("a browser with no Canvas2D filter still gets its buffer", () => {
+    // Safari only grew `ctx.filter` in 17. Without it the field is the faceted
+    // version it always was, which is worse-looking and not broken.
+    const ops = run({ supportsFilter: false });
+    assert.ok(ops.some((op) => op.startsWith("draw@")), "the reduction stopped happening");
+    assert.ok(!ops.some((op) => op.startsWith("filter:")), "a filter was set on a context without one");
   });
 });

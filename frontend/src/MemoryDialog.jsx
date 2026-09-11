@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api.js";
-import { registerCover } from "./modalStack.js";
 
 const SORT_OPTIONS = [
   ["newest", "Newest First"],
@@ -256,11 +255,6 @@ function ManualMemory({ refresh, reportError, projects, field, onClose }) {
 export default function MemoryDialog({
   onClose,
 }) {
-  //: The field behind is stopped while this panel is up. It is glass, and a
-  //: `backdrop-filter` over a canvas that repaints every frame is a blur pass
-  //: every frame. Coverage only -- Escape still does not close this dialog.
-  useEffect(() => registerCover(), []);
-
   const [records, setRecords] = useState([]);
   const [projects, setProjects] = useState([]);
   const [activeTab, setActiveTab] = useState("profile");

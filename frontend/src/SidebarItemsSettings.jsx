@@ -61,7 +61,7 @@ export default function SidebarItemsSettings({ hidden, onHiddenChange, onClose, 
     <Modal title="Sidebar items" onClose={onClose} backLabel={backLabel} onBack={onBack}>
       <p className="dialog-caption">
         Everything Neo can take you to from the sidebar's SYSTEM section. Turning one off
-        hides it from the list — it does not delete anything, and the screen stays reachable
+        hides it from the list. It does not delete anything, and the screen stays reachable
         from Settings and from search.
       </p>
       {error ? <div className="appearance-error" role="alert">{error}</div> : null}

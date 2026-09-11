@@ -10,10 +10,20 @@
  */
 
 const STARS = 70;
-//: Three is enough that two can overlap occasionally without the sky ever
-//: looking busy. They are pooled rather than allocated so a long session does
-//: not churn objects once a second.
-const METEORS = 3;
+//: The pool, before intensity has its say. It was three, with a gap of two to
+//: seven seconds each, which left the sky empty more than half the time -- the
+//: field is meant to be the still thing that makes a meteor read as fast, and
+//: it was doing that to an audience of nobody. Six, and a shorter gap, keeps
+//: the stillness between passes while making the passes the thing you stay for.
+//: They are pooled rather than allocated so a long session does not churn
+//: objects once a second.
+const METEORS = 6;
+
+//: Seconds between one meteor finishing and the same one starting again. The
+//: floor matters more than the spread: it is what stops two of the six going
+//: off together often enough to read as a shower.
+const WAIT_FLOOR = 1.4;
+const WAIT_SPREAD = 2.6;
 
 function spawnStar(width, height) {
   return {
@@ -28,8 +38,10 @@ function spawnStar(width, height) {
   };
 }
 
-function arm(meteor, width, height, immediate) {
-  meteor.wait = immediate ? Math.random() * 1.5 : 2 + Math.random() * 5;
+function arm(meteor, width, height, immediate, pace = 1) {
+  meteor.wait = immediate
+    ? Math.random() * 1.2 * pace
+    : (WAIT_FLOOR + Math.random() * WAIT_SPREAD) * pace;
   meteor.life = 0;
   //: Down and to the right, from somewhere above the left two-thirds. Starting
   //: off the top edge means the streak is already at full length when it
@@ -61,9 +73,24 @@ export default {
     const alpha = intensity.alpha;
     const count = Math.max(12, Math.round(STARS * intensity.density));
     const field = Array.from({ length: count }, () => spawnStar(w, h));
-    const meteors = Array.from({ length: METEORS }, () => {
+
+    //: Meteors follow the intensity the star count always has, which they never
+    //: used to: all three settings ran the same three meteors on the same gap,
+    //: so the control moved the dots and said nothing about the part of this
+    //: effect anyone watches for.
+    //:
+    //: Both halves move, because count alone is coarse at these numbers and gap
+    //: alone leaves the sky able to hold only so many at once. The pace is the
+    //: reciprocal, so denser means a shorter wait, and it is clamped: pushing
+    //: Subtle out to a 1/0.6 gap would have made it quieter than it was before
+    //: this change, which is not what "more shooting stars" asked for. Every
+    //: setting ends up above where it started -- roughly half again at Subtle,
+    //: three times at Medium, four and a half at Vivid.
+    const meteorCount = Math.max(3, Math.round(METEORS * intensity.density));
+    const pace = Math.min(1.25, Math.max(0.85, 1 / intensity.density));
+    const meteors = Array.from({ length: meteorCount }, () => {
       const meteor = {};
-      arm(meteor, w, h, true);
+      arm(meteor, w, h, true, pace);
       return meteor;
     });
 
@@ -118,7 +145,7 @@ export default {
           //: so one does not blink into existence in the middle of the panel.
           const progress = meteor.life / meteor.span;
           if (progress >= 1 || meteor.y - meteor.length > h || meteor.x - meteor.length > w) {
-            arm(meteor, w, h, false);
+            arm(meteor, w, h, false, pace);
             continue;
           }
           const strength = Math.sin(Math.PI * progress) * lift;
