@@ -174,10 +174,15 @@ GPU_BANDWIDTH_GBPS: tuple[tuple[str, float], ...] = (
 #   rocm   - the same reasoning.
 #   cpu    - dual-channel DDR4-3200 is 2 x 3200 x 8 = 51.2 GB/s theoretical, and real
 #            throughput is below that.
+#   vulkan - integrated graphics reading system memory over the same bus the CPU uses, so
+#   sycl     bounded by DDR rather than by the GPU; above the CPU figure only because the
+#            shader cores keep more requests in flight.
 FALLBACK_BANDWIDTH_GBPS: dict[str, float] = {
     "metal": 100.0,
     "cuda": 200.0,
     "rocm": 200.0,
+    "vulkan": 60.0,
+    "sycl": 60.0,
     "cpu": 50.0,
 }
 

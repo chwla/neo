@@ -19,6 +19,7 @@ import LocalModels, {
   TIER_LABEL,
   groupByHowTheyRun,
   shouldAskFirst,
+  specsOf,
 } from "../src/LocalModels.jsx";
 
 function item(id, tier, overrides = {}) {
@@ -116,6 +117,64 @@ describe("verdict wording", () => {
         assert.ok(!label.toLowerCase().includes(term), `${term} leaked into "${label}"`);
       }
     }
+  });
+});
+
+describe("the specifications beside the verdict", () => {
+  const apple = {
+    cpu_name: "Apple M5",
+    gpu_name: "Apple M5",
+    unified_memory: true,
+    total_memory_gb: 32,
+    usable_memory_gb: 25,
+  };
+
+  test("a shared-memory machine is not told its chip twice", () => {
+    const labels = specsOf(apple).map((spec) => spec.label);
+
+    assert.deepEqual(labels, ["Processor", "Memory", "Available for AI"]);
+  });
+
+  test("a discrete card is named, since the verdict above does not name it", () => {
+    const specs = specsOf({
+      cpu_name: "AMD Ryzen 9 7950X",
+      gpu_name: "NVIDIA GeForce RTX 4090",
+      unified_memory: false,
+      total_memory_gb: 64,
+      usable_memory_gb: 24,
+    });
+
+    assert.deepEqual(
+      specs.find((spec) => spec.label === "Graphics"),
+      { label: "Graphics", value: "NVIDIA GeForce RTX 4090" },
+    );
+  });
+
+  test("nothing that was never established is printed", () => {
+    // Neo in a container with the engine on a host it cannot reach: there is no
+    // processor name and no memory figure, and "0 GB" beside an empty label reads as a
+    // broken screen rather than as the unanswered question it is.
+    const specs = specsOf({
+      cpu_name: "",
+      gpu_name: "",
+      unified_memory: false,
+      total_memory_gb: 0,
+      usable_memory_gb: 0,
+    });
+
+    assert.deepEqual(specs, []);
+  });
+
+  test("a figure that is known is still shown when its neighbour is not", () => {
+    const specs = specsOf({
+      cpu_name: "",
+      gpu_name: "NVIDIA GeForce RTX 4090",
+      unified_memory: false,
+      total_memory_gb: 0,
+      usable_memory_gb: 24,
+    });
+
+    assert.deepEqual(specs.map((spec) => spec.label), ["Graphics", "Available for AI"]);
   });
 });
 

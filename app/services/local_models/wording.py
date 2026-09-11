@@ -158,7 +158,13 @@ def describe_machine(machine: Machine) -> str:
 
     if machine.unified_memory and machine.gpu_name:
         chip = machine.gpu_name
-        opening = f"You have {_article(chip)} {chip} with {memory} GB of memory"
+        # On a shared-memory design the budget is always a fraction of the total, so the
+        # two being equal means the total was never established and the budget stood in
+        # for it. Naming it as the machine's memory would then understate the computer.
+        if memory > usable:
+            opening = f"You have {_article(chip)} {chip} with {memory} GB of memory"
+        else:
+            opening = f"You have {_article(chip)} {chip}"
     elif machine.has_gpu:
         opening = f"You have {_article(machine.gpu_name)} {machine.gpu_name}"
     else:
@@ -186,10 +192,19 @@ def _capacity_verdict(usable_gb: float) -> str:
     return "That is enough for compact models -- quick, if less knowledgeable."
 
 
-def _article(phrase: str) -> str:
-    """ "a" or "an". Chip names begin with letters, not vowel-sound exceptions."""
+# Letters whose *names* open on a vowel sound. An initialism is read out letter by
+# letter, so "NVIDIA" takes "an" while "Nvidia" would take "a" -- and graphics cards are
+# named in initialisms almost without exception.
+_VOWEL_SOUND_LETTERS = frozenset("AEFHILMNORSX")
 
-    return "an" if phrase[:1].lower() in "aeiou" else "a"
+
+def _article(phrase: str) -> str:
+    """ "a" or "an", by how the name is said rather than how it is spelled."""
+
+    word = phrase.strip().split(" ")[0] if phrase.strip() else ""
+    if len(word) >= 2 and word[:2].isupper() and word[:2].isalpha():
+        return "an" if word[0] in _VOWEL_SOUND_LETTERS else "a"
+    return "an" if word[:1].lower() in "aeiou" else "a"
 
 
 def plain(model: dict[str, Any], fit: Fit) -> dict[str, str]:

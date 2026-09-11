@@ -22,7 +22,20 @@ GOALS: tuple[str, ...] = ("chat", "writing", "coding", "reasoning", "images", "o
 FitTier = Literal["comfortable", "good", "tight", "too_big"]
 FIT_TIERS: tuple[str, ...] = ("comfortable", "good", "tight", "too_big")
 
-Accelerator = Literal["metal", "cuda", "rocm", "cpu"]
+# How a model is computed here. "vulkan" and "sycl" are the integrated-graphics paths
+# Ollama can use on Intel and on AMD APUs; they are slower than a discrete card but real,
+# and collapsing them into "cpu" would tell someone their graphics cannot be used when it
+# can.
+Accelerator = Literal["metal", "cuda", "rocm", "vulkan", "sycl", "cpu"]
+ACCELERATORS: tuple[str, ...] = ("metal", "cuda", "rocm", "vulkan", "sycl", "cpu")
+
+# Whose hardware a ``Machine`` describes. Neo's supported deployment runs it in a
+# container and the engine on the host, so these are routinely different computers, and a
+# caller that cannot tell them apart will present a container's limits as the user's.
+#   local        this process's own machine, measured directly
+#   engine_host  the machine running the engine, as the engine itself reported it
+#   unknown      nothing could be established; the figures are absent, not low
+MachineSource = Literal["local", "engine_host", "unknown"]
 
 Severity = Literal["info", "warning", "error"]
 
@@ -34,9 +47,21 @@ class Gpu:
     index: int
     name: str
     memory_gb: float
+    # Integrated graphics take their memory from the system pool rather than having their
+    # own, so a budget drawn from them competes with everything else running.
+    integrated: bool = False
+    # Set when the card was found but its size could not be read -- a real card with an
+    # unknown capacity, which is not the same as a card with none.
+    memory_unknown: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {"index": self.index, "name": self.name, "memory_gb": round(self.memory_gb, 2)}
+        return {
+            "index": self.index,
+            "name": self.name,
+            "memory_gb": round(self.memory_gb, 2),
+            "integrated": self.integrated,
+            "memory_unknown": self.memory_unknown,
+        }
 
 
 @dataclass(frozen=True)
@@ -70,6 +95,11 @@ class Machine:
     gpus: tuple[Gpu, ...] = ()
     unified_memory: bool = False
     containerized: bool = False
+    # Whose machine this describes, and how it was established. A container's own limits
+    # must never be presented as the user's computer when the engine runs elsewhere.
+    source: MachineSource = "local"
+    # Where the engine is, when it is not this process's machine. Display only.
+    engine_host: str = ""
     # What a model may actually occupy here, after the operating system, the display and
     # whatever else is running take their share. Every fit decision divides by this.
     usable_memory_gb: float = 0.0
@@ -97,6 +127,8 @@ class Machine:
             "gpu_name": self.gpu_name,
             "unified_memory": self.unified_memory,
             "containerized": self.containerized,
+            "source": self.source,
+            "engine_host": self.engine_host,
             "usable_memory_gb": round(self.usable_memory_gb, 1),
             "probe_notes": [note.as_dict() for note in self.probe_notes],
         }

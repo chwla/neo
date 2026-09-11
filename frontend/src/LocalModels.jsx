@@ -177,6 +177,28 @@ function ModelRow({ item, expanded, onToggle, installState, onInstall, onCancelI
   );
 }
 
+// The specifications worth showing, and only the ones that were actually established.
+// A scan that could not see the machine -- Neo in a container with the engine on the
+// host it cannot reach -- has no processor name and no memory figure, and printing
+// "0 GB" beside an empty label reads as a broken screen rather than as an unanswered
+// question. The note underneath is what explains it.
+export function specsOf(machine) {
+  const specs = [];
+  if (machine.cpu_name) specs.push({ label: "Processor", value: machine.cpu_name });
+  // Named here because the summary above only mentions it on a shared-memory machine,
+  // and someone with a discrete card wants to see which one Neo found.
+  if (machine.gpu_name && !machine.unified_memory) {
+    specs.push({ label: "Graphics", value: machine.gpu_name });
+  }
+  if (machine.total_memory_gb > 0) {
+    specs.push({ label: "Memory", value: `${machine.total_memory_gb} GB` });
+  }
+  if (machine.usable_memory_gb > 0) {
+    specs.push({ label: "Available for AI", value: `${machine.usable_memory_gb} GB` });
+  }
+  return specs;
+}
+
 export default function LocalModels() {
   const [goals, setGoals] = useState([]);
   const [goal, setGoal] = useState(() => readRememberedGoal());
@@ -365,18 +387,12 @@ export default function LocalModels() {
             <p className="lm-verdict">{machine.summary}</p>
             <div className="lm-scan-foot">
               <dl className="lm-specs">
-                <div>
-                  <dt>Processor</dt>
-                  <dd>{machine.cpu_name}</dd>
-                </div>
-                <div>
-                  <dt>Memory</dt>
-                  <dd>{machine.total_memory_gb} GB</dd>
-                </div>
-                <div>
-                  <dt>Available for AI</dt>
-                  <dd>{machine.usable_memory_gb} GB</dd>
-                </div>
+                {specsOf(machine).map((spec) => (
+                  <div key={spec.label}>
+                    <dt>{spec.label}</dt>
+                    <dd>{spec.value}</dd>
+                  </div>
+                ))}
               </dl>
               <button
                 type="button"
