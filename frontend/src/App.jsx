@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { api } from "./api.js";
+import { useStableActions } from "./useStableActions.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
 import { ContextWindowIndicator } from "./ContextWindowIndicator.jsx";
@@ -1086,6 +1087,7 @@ function previousUserMessage(messages, message) {
 export function ChatMessage({
   message,
   messages,
+  previousUser: suppliedPreviousUser,
   editingMessageId,
   editingValue,
   onCancelEdit,
@@ -1115,7 +1117,8 @@ export function ChatMessage({
   const isUser = message.role === "user";
   const hasThinking = Boolean(message.thinking?.trim());
   const isEditing = isUser && editingMessageId === message.id;
-  const previousUser = isUser ? null : previousUserMessage(messages, message);
+  const previousUser = isUser ? null : (suppliedPreviousUser === undefined
+    ? previousUserMessage(messages, message) : suppliedPreviousUser);
 
   // An agent turn is an assistant turn that did some work first. The work is
   // drawn above the bubble; the bubble itself holds the answer, exactly as it
@@ -1327,7 +1330,70 @@ export function ChatMessage({
   );
 }
 
-export function PendingAssistantMessage({ generation, elapsedMs }) {
+const MemoChatMessage = memo(ChatMessage);
+
+export const ChatTranscript = memo(function ChatTranscript({
+  messages, contextWindowIndex, sessionTokensUsed, editingMessageId, editingValue,
+  openThinkingMessageId, agentRuns, agentBusy, agentPatch, agentPatchSessionId, actions,
+}) {
+  let previousUser = null;
+  return messages.map((message) => {
+    const preceding = previousUser;
+    if (message.role === "user") previousUser = message;
+    const editing = editingMessageId === message.id;
+    const run = agentRuns[message.id];
+    return (
+      <MemoChatMessage
+        key={message.id}
+        message={message}
+        previousUser={preceding}
+        contextWindowIndex={contextWindowIndex}
+        sessionTokensUsed={sessionTokensUsed}
+        editingMessageId={editing ? editingMessageId : null}
+        editingValue={editing ? editingValue : ""}
+        thinkingOpen={openThinkingMessageId === message.id}
+        agentRun={run}
+        agentEntries={run?.liveEntries}
+        agentBusy={run ? agentBusy : false}
+        agentPatch={run?.session?.id === agentPatchSessionId ? agentPatch : ""}
+        agentPatchSessionId={run?.session?.id === agentPatchSessionId ? agentPatchSessionId : null}
+        {...actions}
+      />
+    );
+  });
+});
+
+/**
+ * The "Neo is generating" clock, and the reason it is its own component.
+ *
+ * It ticks ten times a second, and it used to do that by setting state on `App`
+ * -- which is a five-thousand-line component holding well over a hundred pieces
+ * of state, with no memoised children beneath it. So a running generation was
+ * re-rendering the entire application, including every message in the
+ * transcript, ten times a second, to move one number by a tenth of a second.
+ *
+ * Owning the interval here costs the same timer and re-renders one `<span>`.
+ * The reset comes free as well: the clock is keyed on when the turn started, so
+ * a new turn starts a new count without anyone having to zero it.
+ */
+function GenerationTimer({ startedAt }) {
+  const [elapsedMs, setElapsedMs] = useState(() => (startedAt ? Date.now() - startedAt : 0));
+
+  useEffect(() => {
+    if (!startedAt) {
+      return undefined;
+    }
+    const update = () => setElapsedMs(Date.now() - startedAt);
+    update();
+    //: Tenths, because that is what the label shows for the first ten seconds.
+    const timer = window.setInterval(update, 100);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+
+  return <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>;
+}
+
+export function PendingAssistantMessage({ generation, startedAt }) {
   const hasThinking = Boolean(generation?.thinking);
   const hasContent = Boolean(generation?.content);
 
@@ -1338,7 +1404,7 @@ export function PendingAssistantMessage({ generation, elapsedMs }) {
         <div className="message-bubble pending-message-bubble">
         <div className="pending-message-header">
           <span>Neo is generating</span>
-          <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>
+          <GenerationTimer startedAt={startedAt} />
         </div>
         <div className="thinking-panel live-thinking-panel">
           {hasThinking ? generation.thinking : (generation?.statusDetail || "Waiting for response...")}
@@ -1810,9 +1876,11 @@ export function ChatComposer({
     const boundedMin = Number.isFinite(minHeight) ? minHeight : 42;
 
     textarea.style.height = "auto";
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, boundedMin), boundedMax);
+    textarea.style.overflowY = "hidden";
+    const contentHeight = textarea.scrollHeight;
+    const nextHeight = Math.min(Math.max(contentHeight, boundedMin), boundedMax);
     textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
+    textarea.style.overflowY = contentHeight > nextHeight ? "auto" : "hidden";
   }, []);
 
   useLayoutEffect(() => {
@@ -2289,11 +2357,7 @@ export function ChatComposer({
             <textarea
               ref={textareaRef}
               value={value}
-              onChange={(event) => {
-                onChange(event.target.value);
-                requestAnimationFrame(resizeComposer);
-              }}
-              onInput={resizeComposer}
+              onChange={(event) => onChange(event.target.value)}
               placeholder={
                 steering
                   ? "Steer the agent …"
@@ -3499,7 +3563,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [openThinkingMessageId, setOpenThinkingMessageId] = useState(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
   const [statusError, setStatusError] = useState("");
   const [llms, setLlms] = useState([]);
   const [selectedLlmId, setSelectedLlmId] = useState("");
@@ -4162,16 +4225,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   }, [closeWorkspaces, loadChat]);
 
   useEffect(() => {
-    if (!generationStartedAt) {
-      return undefined;
-    }
-    const updateElapsed = () => setElapsedMs(Date.now() - generationStartedAt);
-    updateElapsed();
-    const intervalId = window.setInterval(updateElapsed, 100);
-    return () => window.clearInterval(intervalId);
-  }, [generationStartedAt]);
-
-  useEffect(() => {
     visibleChatIdRef.current = showProjects || showTasks || showCalendar || showNotes || showResearch ? null : activeChat?.id ?? null;
   }, [activeChat?.id, showCalendar, showNotes, showProjects, showResearch, showTasks]);
 
@@ -4384,7 +4437,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         startedAt: parseNeoTimestamp(result.generation.created_at) || Date.now(),
         stopping: false,
       });
-      setElapsedMs(0);
     } catch (error) {
       setStatusError(errorMessage(error));
     }
@@ -4416,7 +4468,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 
     setStatusError("");
     setChatAgentMessage("");
-    setElapsedMs(0);
     const pendingId = `pending-${Date.now()}`;
     const optimisticMessage = {
       id: pendingId,
@@ -4769,14 +4820,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   // The run each agent turn is, keyed by the row that holds its place, with
   // whatever is currently streaming laid over the top: the thread payload is a
   // snapshot from when the chat was loaded, and a run moves on from there.
+  const agentLive = live.kind === "agent" ? live : IDLE;
   const agentRuns = useMemo(() => {
     const byMessage = {};
     for (const message of messages) {
       if (!message.agent) continue;
-      byMessage[message.id] = mergeLiveRun(message.agent, live, message.id);
+      byMessage[message.id] = mergeLiveRun(message.agent, agentLive, message.id);
     }
     return byMessage;
-  }, [messages, live]);
+  }, [messages, agentLive]);
   const pendingApprovalRun = useMemo(
     () => Object.values(agentRuns).find((run) => run?.pending_approval) || null,
     [agentRuns],
@@ -4980,6 +5032,30 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     "chat.openFolder": () => { handleOpenFolder(); },
   });
 
+  // Saved messages do not change as the composer or pending answer updates.
+  // Stable event wrappers keep the memo boundary effective without stale actions.
+  const transcriptActions = useStableActions({
+    onCancelEdit: () => { setEditingMessageId(null); setEditingValue(""); },
+    onCopy: copyText,
+    onEdit: handleEditMessage,
+    onOpenGalleryItem: (itemId) => { setInitialGalleryItemId(itemId); setShowGallery(true); },
+    onRerun: (prompt) => sendPrompt(prompt),
+    onSaveEdit: handleSaveEditedMessage,
+    onSetEditingValue: setEditingValue,
+    onToggleThinking: (messageId) => setOpenThinkingMessageId((current) => current === messageId ? null : messageId),
+    onOpenCalendar: () => {
+      setInitialCalendarEventId(null);
+      setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
+      setShowCalendar(true);
+    },
+    onProposalResolved: handleProposalResolved,
+    onAgentDecide: handleAgentDecide,
+    onAgentDeliver: handleAgentDeliver,
+    onAgentUndo: handleAgentUndo,
+    onAgentFork: handleAgentFork,
+    onCloseAgentPatch: () => { setAgentPatch(""); setAgentPatchSessionId(null); },
+  });
+
   return (
     <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
@@ -5104,56 +5180,22 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
             </div>
           )}
 
-          {messages.map((message) => (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              messages={messages}
-              contextWindowIndex={contextWindowIndex}
-              sessionTokensUsed={sessionTokensUsed}
-              editingMessageId={editingMessageId}
-              editingValue={editingValue}
-              onCancelEdit={() => {
-                setEditingMessageId(null);
-                setEditingValue("");
-              }}
-              onCopy={copyText}
-              onEdit={handleEditMessage}
-              onOpenGalleryItem={(itemId) => {
-                setInitialGalleryItemId(itemId);
-                setShowGallery(true);
-              }}
-              onRerun={(prompt) => sendPrompt(prompt)}
-              onSaveEdit={handleSaveEditedMessage}
-              onSetEditingValue={setEditingValue}
-              onToggleThinking={(messageId) =>
-                setOpenThinkingMessageId((current) => (current === messageId ? null : messageId))
-              }
-              thinkingOpen={openThinkingMessageId === message.id}
-              onOpenCalendar={() => {
-                setInitialCalendarEventId(null);
-                setShowResearch(false); setShowNotes(false); setShowProjects(false); setShowTasks(false); setShowFiles(false); setShowRepos(false);
-                setShowCalendar(true);
-              }}
-              onProposalResolved={handleProposalResolved}
-              agentRun={agentRuns[message.id]}
-              agentEntries={agentRuns[message.id]?.liveEntries}
-              agentBusy={agentBusy}
-              agentPatch={agentPatch}
-              agentPatchSessionId={agentPatchSessionId}
-              onAgentDecide={handleAgentDecide}
-              onAgentDeliver={handleAgentDeliver}
-              onAgentUndo={handleAgentUndo}
-              onAgentFork={handleAgentFork}
-              onCloseAgentPatch={() => {
-                setAgentPatch("");
-                setAgentPatchSessionId(null);
-              }}
-            />
-          ))}
+          <ChatTranscript
+            messages={messages}
+            contextWindowIndex={contextWindowIndex}
+            sessionTokensUsed={sessionTokensUsed}
+            editingMessageId={editingMessageId}
+            editingValue={editingValue}
+            openThinkingMessageId={openThinkingMessageId}
+            agentRuns={agentRuns}
+            agentBusy={agentBusy}
+            agentPatch={agentPatch}
+            agentPatchSessionId={agentPatchSessionId}
+            actions={transcriptActions}
+          />
 
           {streamingAssistant && (
-            <PendingAssistantMessage generation={streamingAssistant} elapsedMs={elapsedMs} />
+            <PendingAssistantMessage generation={streamingAssistant} startedAt={generationStartedAt} />
           )}
 
           {statusError && <div className="neo-error">{statusError}</div>}

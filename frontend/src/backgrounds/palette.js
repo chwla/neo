@@ -62,6 +62,39 @@ export function rgba([r, g, b], alpha) {
 }
 
 /**
+ * A reusable `rgba()` string for one colour at a varying alpha.
+ *
+ * The effects assign `strokeStyle` and `fillStyle` from a freshly built string
+ * per mark per frame -- two hundred and one of them a frame in Gradient, ninety
+ * odd in Stars. Each one is a template literal assembled, handed to the context
+ * and dropped, which is both an allocation and a colour parse for a value that
+ * was almost certainly used a frame ago.
+ *
+ * Almost, because the alpha is driven by a sine and never lands on quite the
+ * same float twice -- so a cache keyed on the exact number would grow without
+ * bound and never hit. Keyed on thousandths it does both: the space is a
+ * thousand entries wide, and every mark in a field lands on one of them.
+ *
+ * A thousandth is chosen to be invisible rather than merely small. Eight-bit
+ * alpha resolves about one part in 255, so the error here is a fifth of the
+ * smallest difference the display can show -- which is what makes this a cache
+ * rather than a quantisation anyone could see. Coarser buckets would be cheaper
+ * still and would show, as stepping in the twinkle.
+ */
+export function colourCache(colour) {
+  const cache = new Map();
+  return (alpha) => {
+    const key = Math.round(Math.max(0, Math.min(1, alpha)) * 1000);
+    let value = cache.get(key);
+    if (value === undefined) {
+      value = rgba(colour, key / 1000);
+      cache.set(key, value);
+    }
+    return value;
+  };
+}
+
+/**
  * Read the anchors off the document.
  *
  * Called once when an effect starts and again whenever `data-theme` changes,

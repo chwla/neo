@@ -47,6 +47,7 @@ function arm(meteor, width, height, immediate, pace = 1) {
   //: off the top edge means the streak is already at full length when it
   //: arrives rather than growing out of a point at the boundary.
   const angle = (20 + Math.random() * 14) * (Math.PI / 180);
+  meteor.angle = angle;
   meteor.dirX = Math.cos(angle);
   meteor.dirY = Math.sin(angle);
   meteor.speed = 380 + Math.random() * 260;
@@ -94,6 +95,24 @@ export default {
       return meteor;
     });
 
+    // Keep colour parsing and gradient creation out of the drawing loop.
+    // Numeric globalAlpha supplies the twinkle/fade without changing styles.
+    let starColour = null;
+    let trail = null;
+    let head = null;
+
+    function tint(ctx) {
+      const { accent, rgba } = colours;
+      starColour = rgba(accent, 1);
+      const clear = rgba(accent, 0);
+      trail = ctx.createLinearGradient(0, 0, -1, 0);
+      trail.addColorStop(0, starColour);
+      trail.addColorStop(1, clear);
+      head = ctx.createRadialGradient(0, 0, 0, 0, 0, 5);
+      head.addColorStop(0, starColour);
+      head.addColorStop(1, clear);
+    }
+
     return {
       resize(nextWidth, nextHeight) {
         const scaleX = nextWidth / (w || nextWidth);
@@ -108,11 +127,14 @@ export default {
 
       retint(next) {
         colours = next;
+        starColour = null;
       },
 
       frame(ctx, dt, t) {
-        const { accent, isLight, rgba, glowMode } = colours;
+        const { isLight, glowMode } = colours;
+        if (!starColour) tint(ctx);
         const lift = (isLight ? 1.4 : 1) * alpha;
+        ctx.fillStyle = starColour;
 
         for (const star of field) {
           //: Barely moving -- a few pixels a second at the very front. Enough
@@ -127,9 +149,10 @@ export default {
           const shine = (0.18 + 0.46 * twinkle) * star.depth * lift;
           ctx.beginPath();
           ctx.arc(star.x, star.y, star.radius * star.depth, 0, Math.PI * 2);
-          ctx.fillStyle = rgba(accent, shine);
+          ctx.globalAlpha = Math.min(1, shine);
           ctx.fill();
         }
+        ctx.globalAlpha = 1;
 
         for (const meteor of meteors) {
           if (meteor.wait > 0) {
@@ -150,30 +173,31 @@ export default {
           }
           const strength = Math.sin(Math.PI * progress) * lift;
 
-          const tailX = meteor.x - meteor.dirX * meteor.length;
-          const tailY = meteor.y - meteor.dirY * meteor.length;
-          const trail = ctx.createLinearGradient(meteor.x, meteor.y, tailX, tailY);
-          trail.addColorStop(0, rgba(accent, 0.75 * strength));
-          trail.addColorStop(1, rgba(accent, 0));
-
+          ctx.save();
+          ctx.translate(meteor.x, meteor.y);
+          ctx.rotate(meteor.angle);
+          ctx.scale(meteor.length, meteor.length);
           ctx.globalCompositeOperation = glowMode;
+          ctx.globalAlpha = Math.min(1, 0.75 * strength);
           ctx.beginPath();
-          ctx.moveTo(meteor.x, meteor.y);
-          ctx.lineTo(tailX, tailY);
+          ctx.moveTo(0, 0);
+          ctx.lineTo(-1, 0);
           ctx.strokeStyle = trail;
-          ctx.lineWidth = 1.7;
+          ctx.lineWidth = 1.7 / meteor.length;
           ctx.lineCap = "round";
           ctx.stroke();
 
-          const head = ctx.createRadialGradient(meteor.x, meteor.y, 0, meteor.x, meteor.y, 5);
-          head.addColorStop(0, rgba(accent, 0.9 * strength));
-          head.addColorStop(1, rgba(accent, 0));
+          ctx.scale(1 / meteor.length, 1 / meteor.length);
+          ctx.globalAlpha = Math.min(1, 0.9 * strength);
           ctx.beginPath();
-          ctx.arc(meteor.x, meteor.y, 5, 0, Math.PI * 2);
+          ctx.arc(0, 0, 5, 0, Math.PI * 2);
           ctx.fillStyle = head;
           ctx.fill();
-          ctx.globalCompositeOperation = "source-over";
+          ctx.restore();
         }
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+        ctx.lineCap = "butt";
       },
     };
   },

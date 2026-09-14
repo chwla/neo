@@ -4,6 +4,12 @@ import { entryFromEvent } from "./AgentTurn.jsx";
 
 const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.cancelled"]);
 
+//: How long a batch may wait when there are no frames to ride on -- a hidden
+//: tab, where `requestAnimationFrame` stops. Short enough that a turn finishing
+//: out of sight still reloads its transcript promptly, long enough that a
+//: backgrounded reply is not paying a render per quarter second either.
+const BACKSTOP_MS = 250;
+
 /**
  * The live state of whichever turn a chat is currently producing.
  *
@@ -162,6 +168,56 @@ export function useChatStreams({ onTurnEnd } = {}) {
     let cancelled = false;
     const controller = new AbortController();
 
+    /* Events are applied a frame at a time rather than one at a time.
+     *
+     * A streaming reply arrives as a token per event, and every one of them used
+     * to be its own `setStreams`. That is a React render each, and this hook is
+     * consumed at the top of the application -- so a fast model was asking for
+     * several dozen full renders a second, on top of everything else the turn was
+     * already doing. The text cannot be shown faster than the screen is drawn, so
+     * the renders past the first in any given frame bought nothing and were
+     * competing for the main thread with the animation, the transcript and the
+     * composer.
+     *
+     * So the events are collected and applied together on the next frame. Nothing
+     * is dropped and nothing is reordered: the same reducer runs over the same
+     * events in the same order, once, and what changes is only how often React is
+     * asked to look at the result.
+     *
+     * The timer beside the frame request is not redundancy for its own sake.
+     * `requestAnimationFrame` does not fire in a hidden tab, and a turn does not
+     * stop because nobody is watching it -- so without a second way to flush, a
+     * background chat would bank every event of a long reply in this array and
+     * hold the terminal callbacks that reload its transcript until the tab came
+     * back. Whichever fires first flushes and cancels the other.
+     */
+    let queue = [];
+    let frame = 0;
+    let backstop = 0;
+
+    function flush() {
+      if (frame) cancelAnimationFrame(frame);
+      if (backstop) clearTimeout(backstop);
+      frame = 0;
+      backstop = 0;
+      if (cancelled || !queue.length) return;
+      const batch = queue;
+      queue = [];
+      setStreams((current) => batch.reduce(applyEvent, current));
+      for (const event of batch) {
+        if (TERMINAL_EVENTS.has(event.type) && event.chat_id) {
+          // The caller decides when to drop the buffer: a background chat's text
+          // has to survive until its transcript has been reloaded, or switching
+          // to it would show an empty pane for a turn that just finished.
+          //
+          // After the batch is applied rather than as the event arrives, so the
+          // text a turn ended with is in the map before anything is told the turn
+          // is over.
+          endRef.current?.(event.chat_id, event);
+        }
+      }
+    }
+
     function apply(event) {
       if (event.type === "cursor") {
         cursorRef.current = event.seq ?? 0;
@@ -169,13 +225,9 @@ export function useChatStreams({ onTurnEnd } = {}) {
       }
       cursorRef.current = Math.max(cursorRef.current ?? 0, event.seq || 0);
       if (event.type === "idle") return;
-      setStreams((current) => applyEvent(current, event));
-      if (TERMINAL_EVENTS.has(event.type) && event.chat_id) {
-        // The caller decides when to drop the buffer: a background chat's text
-        // has to survive until its transcript has been reloaded, or switching
-        // to it would show an empty pane for a turn that just finished.
-        endRef.current?.(event.chat_id, event);
-      }
+      queue.push(event);
+      if (!frame) frame = requestAnimationFrame(flush);
+      if (!backstop) backstop = setTimeout(flush, BACKSTOP_MS);
     }
 
     async function connect() {
@@ -198,6 +250,8 @@ export function useChatStreams({ onTurnEnd } = {}) {
     return () => {
       cancelled = true;
       controller.abort();
+      if (frame) cancelAnimationFrame(frame);
+      if (backstop) clearTimeout(backstop);
     };
   }, []);
 

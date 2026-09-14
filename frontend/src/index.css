@@ -5818,23 +5818,28 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .chat-bg-layer.has-wash::before {
   content: "";
   position: absolute;
-  /* Overscanned, so the drift never brings an edge into the window. */
-  inset: -25%;
+  /* Four percent covers the full translation and scale range. The gradients
+     retain their former 150%-of-viewport size, but the promoted texture crops
+     their unused outer region instead of rasterising 2.25 viewport areas. */
+  inset: -4%;
   background:
     radial-gradient(38% 42% at 22% 26%, color-mix(in srgb, var(--neo-accent) 9%, transparent) 0%, transparent 68%),
     radial-gradient(32% 36% at 76% 60%, color-mix(in srgb, var(--neo-accent) 7%, transparent) 0%, transparent 66%),
     radial-gradient(44% 30% at 48% 92%, color-mix(in srgb, var(--neo-accent) 5%, transparent) 0%, transparent 70%);
-  animation: neo-field-drift 52s ease-in-out infinite alternate;
-}
-@keyframes neo-field-drift {
-  from { transform: translate3d(-2%, 1%, 0) scale(1.04); }
-  to { transform: translate3d(3%, -2%, 0) scale(1.12); }
-}
-/* Stilled, not removed -- same as the engine does with the marks. The wash is
-   what the glass is made of; taking it away would leave the panels flat for
-   anyone who asked for less movement. */
-@media (prefers-reduced-motion: reduce) {
-  .chat-bg-layer.has-wash::before { animation: none; }
+  background-size: 138.888889% 138.888889%;
+  background-position: center;
+  background-repeat: no-repeat;
+  /* The engine advances this only with a painted frame. An independent CSS
+     animation would keep invalidating every glass backdrop at 120 Hz even
+     while the canvas is capped, paused, or adapting to a slower machine. */
+  transform: var(--bg-wash-transform, translate3d(-2.777778%, 1.388889%, 0) scale(1.04));
+  /* Promoted once, then only transformed. The drift scales as well as
+     translates, and a scaling transform on a painted layer is an invitation to
+     re-rasterise it at each new scale -- which on this element means three
+     radial gradients over a box larger than the window. Saying so up front lets the
+     compositor raster it a single time and move the result, which is all this
+     animation ever needed. */
+  will-change: transform;
 }
 
 .chat-bg-layer {
@@ -5854,6 +5859,15 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
      conversation. */
   pointer-events: none;
   overflow: hidden;
+  /* Nothing inside this layer can affect the layout of anything outside it, and
+     the canvases repaint every frame -- so the browser is told not to look.
+     Safe here in a way it would not be one level up: the note at the top of this
+     section forbids `contain` on `.neo-main` and `.neo-shell` because either
+     would become the containing block for the fixed composer, and this layer is
+     neither of those and holds no fixed descendant of its own. Its two canvases
+     are absolute, and it was already their containing block by virtue of being
+     positioned. */
+  contain: paint;
 }
 /* Both canvases fill the layer and overlap; document order puts the diffusion
    buffer under the marks. Absolute rather than stacked in flow, and no z-index
@@ -5961,19 +5975,11 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
     14px 0 36px -20px var(--neo-shadow-a55);
 }
 
-/* 2. The composer strip: the weakest of the three, and the only one that has to
-   vanish rather than end. A `backdrop-filter` is uniform across its element and
-   this strip is the full width of the window, so putting one on the strip itself
-   draws a horizontal seam across the field where the blur begins. The material
-   moves to a masked pseudo-element instead: the mask fades tint and blur in
-   together, and because it is on the pseudo rather than the strip, the card
-   inside keeps its own edges. Sits at z-index -1 within the strip, which is
-   already a stacking context at 20, so it cannot escape behind the field.
-
-   The one surface with no `brightness`, and that is the gradation rather than an
-   omission: lifting the backdrop is what parts a pane from the field, and this
-   is the pane that has to belong to it. Tint, blur and saturation it shares with
-   the other two; separation is the property it declines. */
+/* 2. The composer strip fades a light tint into the field. Keep it unfiltered:
+   the card overlaps this full-width strip, so filtering both makes the browser
+   materialise one moving backdrop before the next can sample it. The card's
+   single pass supplies the diffusion and saturation where they are visible.
+   Its tint already starts transparent, so no separate alpha mask is needed. */
 [data-chat-bg] .chat-input-wrap { background: none; }
 [data-chat-bg] .chat-input-wrap::before {
   content: "";
@@ -5984,25 +5990,16 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
     var(--neo-scrim-a00) 0%,
     color-mix(in srgb, var(--neo-bg) 3%, transparent) 46%,
     color-mix(in srgb, var(--neo-bg) 6%, transparent) 100%);
-  -webkit-backdrop-filter: blur(5px) saturate(var(--glass-sat));
-  backdrop-filter: blur(5px) saturate(var(--glass-sat));
-  /* The one literal colour in the material, and it is not a colour: a mask is
-     an alpha stencil, so `#000` here means "opaque" and carries no palette. */
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 40%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 40%);
 }
 
-/* 3. The composer card: medium strength, and the one pane that reads as an
-   object. Its backdrop is the strip's output, so the two filters compose --
-   which is where the card's stronger local separation comes from rather than
-   from a heavier tint. The accent border stays: it is the composer's identity
-   and it already is the 1px boundary this material wants. The inset highlight
-   is the new part, and it is most of why a translucent panel reads as glass
-   rather than as a faded box. */
+/* 3. The composer card supplies one filter pass. The former 5px then 14px
+   Gaussian blurs combine to about 15px; multiplying their saturation gains
+   likewise retains the card's colour without filtering the full strip first.
+   The existing tint, accent edge and inset highlight keep its separation. */
 [data-chat-bg] .chat-input-shell {
   background: color-mix(in srgb, var(--neo-bg) 10%, transparent);
-  -webkit-backdrop-filter: blur(14px) saturate(var(--glass-sat)) brightness(var(--glass-lift));
-  backdrop-filter: blur(14px) saturate(var(--glass-sat)) brightness(var(--glass-lift));
+  -webkit-backdrop-filter: blur(15px) saturate(calc(var(--glass-sat) * var(--glass-sat))) brightness(var(--glass-lift));
+  backdrop-filter: blur(15px) saturate(calc(var(--glass-sat) * var(--glass-sat))) brightness(var(--glass-lift));
   box-shadow:
     0 18px 44px -10px var(--neo-shadow-a55),
     0 0 34px var(--neo-accent-a05),

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-theme="obsidian">
+  <head>
+    <meta charset="utf-8" />
+    <title>Neo background benchmark</title>
+  </head>
+  <body>
+    <div class="neo-app">
+      <aside class="neo-sidebar"><div id="bench-sidebar"></div></aside>
+      <main class="neo-main">
+        <div class="chat-bg-layer has-wash" id="bench-layer" aria-hidden="true">
+          <canvas class="chat-bg-diffusion" id="bench-diffusion"></canvas>
+          <canvas class="chat-bg-marks" id="bench-marks"></canvas>
+        </div>
+        <section class="neo-shell" id="bench-shell"></section>
+      </main>
+      <div class="chat-input-wrap chatbot-mode">
+        <div class="chat-input-shell">
+          <form class="chat-input-form" onsubmit="return false">
+            <div class="composer-head"><textarea id="bench-composer" rows="1" placeholder="Message Neo …"></textarea></div>
+            <div class="composer-foot"><span>Chat · Neo</span><button type="button">Send</button></div>
+          </form>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./bench.js"></script>
+  </body>
+</html>

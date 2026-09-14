@@ -15,6 +15,19 @@
  */
 
 import { readPalette } from "./palette.js";
+import { backgroundDpr, createRenderBudget } from "./renderBudget.js";
+
+//: Vite substitutes an object literal for `import.meta.env` when it builds, so
+//: in production this folds to `false` and every branch guarded by it is
+//: dropped. The ternary rather than a bare read because the tests run this file
+//: under Node, where `import.meta.env` does not exist -- and rather than `?.`,
+//: which defeats the constant folding and leaves the diagnostics in the bundle.
+//:
+//: The diagnostic state is reached through `globalThis` rather than by importing
+//: the module that defines it. An import would survive the folding as a module
+//: reference and ship its strings for nothing; a property read on a global lives
+//: entirely inside the branch that disappears.
+const DEV = import.meta.env ? import.meta.env.DEV : false;
 
 //: Past this, a frame is not a frame -- it is the tab coming back, a breakpoint
 //: resuming or a long GC pause. Effects integrate velocity against dt, so an
@@ -22,10 +35,8 @@ import { readPalette } from "./palette.js";
 //: field has to repopulate from nothing.
 const MAX_FRAME_MS = 50;
 
-//: Two device pixels per CSS pixel is the point where more stops being visible
-//: on this kind of art and starts being four times the fill rate. A 3x phone
-//: screen would otherwise quadruple the cost of a full-panel gradient.
-const MAX_DPR = 2;
+// Allow a little jitter without accidentally halving a nominal 60Hz display.
+const FRAME_SLACK_MS = 1.5;
 
 /**
  * The diffusion pass, and why the glass needs one.
@@ -82,8 +93,7 @@ const MAX_BLOOM_GAIN = 16;
 //: a row of blocks trailing the streak, and worse once there were four times as
 //: many meteors to notice it on.
 //:
-//: One Gaussian at buffer resolution fixes it, and costs nothing worth
-//: measuring: the buffer is around 130x80, not 1600x1000. Before the gain
+//: One Gaussian at buffer resolution softens the grid. Before the gain
 //: rather than after, so a block is never amplified to clipping and then
 //: spread -- the spreading has to happen while there is still a gradient to
 //: spread. Total light is unchanged; a blur conserves it. What changes is that
@@ -119,8 +129,7 @@ export function createEngine(canvas, host, options) {
   const bloomRemainder = bloomGain > 1 ? bloomGain / 2 ** bloomDoublings - 1 : 0;
   let bloomWidth = 0;
   let bloomHeight = 0;
-  //: Whether this browser's 2D context has `filter`. Safari only grew it in 17,
-  //: and the layer has to keep working without it.
+  //: Canvas2D filters are not universal; the field must work without them.
   let bloomBlurs = false;
 
   const motionQuery =
@@ -131,7 +140,12 @@ export function createEngine(canvas, host, options) {
   let width = 0;
   let height = 0;
   let frameHandle = 0;
-  let lastMs = 0;
+  let lastMs = null;
+  let lastRefresh = null;
+  let nextPaintMs = 0;
+  let resizePending = false;
+  let dpr = 0;
+  const budget = createRenderBudget();
   let elapsed = 0;
   let running = false;
   let destroyed = false;
@@ -161,6 +175,8 @@ export function createEngine(canvas, host, options) {
     //: Feature-detected rather than assumed: a browser without Canvas2D filters
     //: gets the reduction it always got, which is the faceted version rather
     //: than a broken one.
+    // Keep reduction and blur in one draw. A separate reduced scratch canvas
+    // added a copy; keeping this direct reduced measured diffusion time 12–28%.
     if (bloomBlurs) bloomCtx.filter = `blur(${BLOOM_BLUR}px)`;
     bloomCtx.drawImage(canvas, 0, 0, bloomWidth, bloomHeight);
     if (bloomBlurs) bloomCtx.filter = "none";
@@ -181,23 +197,77 @@ export function createEngine(canvas, host, options) {
   }
 
   function paint(dt) {
+    if (bloomGain > 1 && host.style) {
+      // The wash shares the canvas clock, including its cap and all pauses.
+      // A separate CSS animation would keep invalidating the glass at 120Hz.
+      const cycle = (elapsed / 52) % 2;
+      const progress = cycle <= 1 ? cycle : 2 - cycle;
+      const eased = (1 - Math.cos(Math.PI * progress)) / 2;
+      host.style.setProperty("--bg-wash-transform",
+        `translate3d(${(-2 + 5 * eased) * 1.5 / 1.08}%, ${(1 - 3 * eased) * 1.5 / 1.08}%, 0) scale(${1.04 + 0.08 * eased})`);
+    }
     //: Reset the state an effect is allowed to change, so a module that leaves
     //: the context in "lighter" cannot tint the one that replaces it -- the
     //: canvas outlives the effect when the picker switches.
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, width, height);
+
+    //: Taking the frame apart, in development only. Two halves of the paint can
+    //: each be switched off and each be timed, because "the background is slow"
+    //: is not an actionable statement until it says which half.
+    if (DEV) {
+      const bag = globalThis.__neoBg;
+      const clock = bag && bag.timing ? performance : null;
+      const started = clock ? clock.now() : 0;
+      if (!bag || bag.layers.marks !== false) instance.frame(ctx, dt, elapsed);
+      const marked = clock ? clock.now() : 0;
+      if (!bag || bag.layers.diffusion !== false) diffuse();
+      if (clock) {
+        const done = clock.now();
+        bag.record({ frame: done - started, marks: marked - started, diffusion: done - marked });
+      }
+      return;
+    }
+
     instance.frame(ctx, dt, elapsed);
     diffuse();
   }
 
   function tick(now) {
     if (!running || destroyed || !instance) return;
-    const dt = Math.min(now - lastMs, MAX_FRAME_MS) / 1000;
+    //: Rescheduled before the budget is consulted rather than after the paint,
+    //: because a refused refresh is still a running loop. What counts a loop
+    //: from the outside is how many callbacks are pending -- that is how the
+    //: tests tell one engine from two after a remount -- and a tick that
+    //: returned without rescheduling would read as a loop that had stopped.
+    frameHandle = requestAnimationFrame(tick);
+    //: The first tick anchors the clock, rather than `start` doing it. Both ends
+    //: of this subtraction then sit on the timebase rAF actually reports, which
+    //: `performance.now()` is only guaranteed to match in a plain browser
+    //: document -- an embedder is free to hand the callback a different origin,
+    //: and a mismatch here reads as one enormous delta on the first frame.
+    if (lastRefresh !== null) budget.refresh(now - lastRefresh);
+    lastRefresh = now;
+    const since = lastMs === null ? 0 : now - lastMs;
+    const period = 1000 / budget.fps;
+    if (lastMs !== null && now < nextPaintMs - FRAME_SLACK_MS) return;
+    // Carry the deadline remainder so 144Hz does not collapse to 48fps.
+    nextPaintMs = lastMs === null ? now + period : nextPaintMs + period;
+    if (nextPaintMs < now) nextPaintMs = now + period;
+    if (resizePending) {
+      sizeCanvas();
+      resizePending = false;
+    }
+    const dt = Math.min(since, MAX_FRAME_MS) / 1000;
     lastMs = now;
     elapsed += dt;
+    const started = performance.now();
     paint(dt);
-    frameHandle = requestAnimationFrame(tick);
+    if (budget.record(now, performance.now() - started)) {
+      resizePending = true;
+      nextPaintMs = now + 1000 / budget.fps;
+    }
   }
 
   function stop() {
@@ -213,7 +283,7 @@ export function createEngine(canvas, host, options) {
    */
   function paintStill() {
     stop();
-    if (destroyed || !instance || !width || !height) return;
+    if (destroyed || !instance || !width || !height || document.hidden) return;
     paint(0);
   }
 
@@ -232,29 +302,23 @@ export function createEngine(canvas, host, options) {
     //: hidden tab is otherwise a delta measured from whenever it was hidden,
     //: and while the clamp above would cap it, restarting the clock is what
     //: makes the resumed motion continuous rather than a jump of one capped
-    //: frame.
-    lastMs = performance.now();
+    //: frame. Cleared rather than set: the next tick is what anchors it, on the
+    //: clock rAF reports instead of on this one.
+    lastMs = lastRefresh = null;
+    budget.reset();
     frameHandle = requestAnimationFrame(tick);
   }
 
-  function measure() {
-    if (destroyed) return;
-    const rect = host.getBoundingClientRect();
-    const nextWidth = Math.max(1, Math.round(rect.width));
-    const nextHeight = Math.max(1, Math.round(rect.height));
-    if (nextWidth === width && nextHeight === height) return;
-
-    width = nextWidth;
-    height = nextHeight;
-    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+  function sizeCanvas() {
+    dpr = backgroundDpr(width, height, window.devicePixelRatio, budget.level);
     //: Assigning width/height resets the whole 2D state, transform included,
     //: so the scale has to go on afterwards or every effect draws at 1x in the
     //: corner of a 2x buffer.
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
+    canvas.width = Math.max(1, Math.floor(width * dpr));
+    canvas.height = Math.max(1, Math.floor(height * dpr));
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
 
     //: Deliberately not scaled by the device pixel ratio: this buffer is meant
     //: to be coarse, and it is stretched back over the field by the compositor.
@@ -272,11 +336,32 @@ export function createEngine(canvas, host, options) {
       //: Re-checked here for the same reason the smoothing is: assigning the
       //: size resets the context, and a stub context in a test has neither.
       bloomBlurs = typeof bloomCtx.filter === "string";
-    }
 
-    if (instance) {
+    }
+  }
+
+  function measure() {
+    if (destroyed) return;
+    const rect = host.getBoundingClientRect();
+    const nextWidth = Math.max(0, Math.round(rect.width));
+    const nextHeight = Math.max(0, Math.round(rect.height));
+    if (!nextWidth || !nextHeight) {
+      width = height = 0;
+      stop();
+      return;
+    }
+    const nextDpr = backgroundDpr(nextWidth, nextHeight, window.devicePixelRatio, budget.level);
+    if (nextWidth === width && nextHeight === height && nextDpr === dpr) return;
+    const resized = nextWidth !== width || nextHeight !== height;
+    width = nextWidth;
+    height = nextHeight;
+    sizeCanvas();
+    resizePending = false;
+    budget.reset();
+
+    if (instance && resized) {
       instance.resize(width, height);
-    } else {
+    } else if (!instance) {
       instance = effect.create({ width, height, palette, intensity });
     }
 
@@ -289,6 +374,8 @@ export function createEngine(canvas, host, options) {
   //: would never hear about it and would leave the canvas stretched.
   const resizeObserver = new ResizeObserver(measure);
   resizeObserver.observe(host);
+  // Moving between displays can change DPR without changing CSS dimensions.
+  window.addEventListener?.("resize", measure);
 
   //: Canvas cannot inherit a custom property, so a theme change has to be
   //: pushed in. Watching the attribute rather than taking a React prop keeps
@@ -319,14 +406,24 @@ export function createEngine(canvas, host, options) {
   measure();
 
   return {
+    getStats() {
+      return { quality: budget.level, fps: budget.fps, dpr, pixels: canvas.width * canvas.height };
+    },
     destroy() {
+      if (destroyed) return;
       destroyed = true;
       stop();
       resizeObserver.disconnect();
+      window.removeEventListener?.("resize", measure);
       themeObserver.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
       if (motionQuery) motionQuery.removeEventListener("change", onMotionPreferenceChange);
+      instance?.destroy?.();
       instance = null;
+      // Release GPU backing stores even if a detached DOM node is retained.
+      canvas.width = canvas.height = 0;
+      if (bloom) bloom.width = bloom.height = 0;
+      host.style?.removeProperty("--bg-wash-transform");
     },
   };
 }

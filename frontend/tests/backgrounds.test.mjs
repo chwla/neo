@@ -237,6 +237,7 @@ function installDom({ reduceMotion = false, hidden = false } = {}) {
     frames: new Map(),
     nextHandle: 1,
     now: 0,
+    workMs: 0,
     draws: 0,
     resizeObservers: 0,
     mutationObservers: 0,
@@ -267,7 +268,10 @@ function installDom({ reduceMotion = false, hidden = false } = {}) {
   );
 
   const canvas = { style: {}, width: 0, height: 0, getContext: () => context };
-  const host = { getBoundingClientRect: () => ({ width: 800, height: 600 }) };
+  const host = {
+    style: { setProperty(name, value) { this[name] = value; }, removeProperty(name) { delete this[name]; } },
+    getBoundingClientRect: () => ({ width: 800, height: 600 }),
+  };
 
   const saved = {};
   const define = (name, value) => {
@@ -275,9 +279,12 @@ function installDom({ reduceMotion = false, hidden = false } = {}) {
     globalThis[name] = value;
   };
 
+  define("performance", { now: () => state.workMs });
+
   define("ResizeObserver", class {
     constructor(callback) {
       this.callback = callback;
+      state.resize = callback;
       state.resizeObservers += 1;
     }
     observe() {}
@@ -328,17 +335,24 @@ function installDom({ reduceMotion = false, hidden = false } = {}) {
     },
   }));
 
-  define("window", { devicePixelRatio: 3 });
+  define("window", {
+    devicePixelRatio: 3,
+    addEventListener(name, callback) { state[name] = callback; },
+    removeEventListener(name) { delete state[name]; },
+  });
 
   define("document", {
     get hidden() {
       return state.hidden;
     },
     documentElement: { dataset: {} },
-    addEventListener() {
+    createElement() { return { width: 0, height: 0, getContext: () => context }; },
+    addEventListener(name, callback) {
+      state[name] = callback;
       state.visibilityListeners += 1;
     },
-    removeEventListener() {
+    removeEventListener(name) {
+      delete state[name];
       state.visibilityListeners -= 1;
     },
   });
@@ -347,10 +361,14 @@ function installDom({ reduceMotion = false, hidden = false } = {}) {
   state.host = host;
   //: Runs one frame's worth of scheduled callbacks. A running engine reschedules
   //: itself, so the count that comes back is how many loops are alive.
-  state.flush = () => {
+  //: The step is a parameter because the frame budget is now a real condition
+  //: rather than a formality: a test that wants to prove a 120Hz display is
+  //: halved has to be able to deliver refreshes 8ms apart. Defaulting to 16
+  //: keeps every existing caller meaning what it meant.
+  state.flush = (stepMs = 16) => {
     const pending = [...state.frames.entries()];
     state.frames.clear();
-    state.now += 16;
+    state.now += stepMs;
     for (const [, callback] of pending) callback(state.now);
     return pending.length;
   };
@@ -526,9 +544,23 @@ describe("the engine's lifecycle", () => {
     }
   });
 
-  test("the device pixel ratio is capped at two", () => {
-    // The fake reports 3, which on a full-panel gradient is more than twice the
-    // fill rate of 2 for no visible gain.
+  test("the device pixel ratio is capped at one and a half", () => {
+    // The fake reports 3. The cap was 2 and is now 1.5, and the change is
+    // deliberate rather than a loosened assertion -- so this checks the new
+    // number exactly, the same way it checked the old one.
+    //
+    // Why it moved: the marks canvas is the full viewport, so the ratio sets a
+    // flat cost that is paid before any mark is drawn and does not move with the
+    // intensity multipliers. At 2 on a 3024x1964 display that was 5.9 million
+    // device pixels repainted and recomposited every frame, which is what made
+    // the field lag at Subtle as readily as at Vivid. The resolution was buying
+    // very little in return: these effects are glows and hairlines, and the
+    // diffusion buffer downsamples twelve-to-one regardless.
+    //
+    // 1.5 rather than 1 because Rain's half-pixel hairlines and Stars'
+    // radius-one dots are the marks that would visibly soften first, and they
+    // still hold at this ratio. If this number is ever lowered again, those two
+    // effects are what to look at.
     const dom = installDom();
     try {
       const engine = createEngine(dom.canvas, dom.host, {
@@ -536,9 +568,75 @@ describe("the engine's lifecycle", () => {
         intensity: intensityById("medium"),
       });
 
-      assert.equal(dom.canvas.width, 1600, "800 CSS px at 2x, not 3x");
-      assert.equal(dom.canvas.height, 1200);
+      assert.equal(dom.canvas.width, 1200, "800 CSS px at 1.5x, not 3x");
+      assert.equal(dom.canvas.height, 900);
+      // The CSS size is unchanged by the ratio: the canvas still covers the
+      // same 800x600 field, at fewer device pixels.
       assert.equal(dom.canvas.style.width, "800px");
+      assert.equal(dom.canvas.style.height, "600px");
+      engine.destroy();
+    } finally {
+      dom.restore();
+    }
+  });
+
+  test("a 120Hz display is drawn at 60, not at 120", () => {
+    /* The reason the field lagged on hardware that should not have struggled
+       with it. rAF follows the display, so a ProMotion panel asked for 120
+       frames a second -- a full-viewport canvas repainted, and every
+       `backdrop-filter` above it re-run, twice as often as anyone can see.
+
+       Effects integrate against `dt`, so refusing half the refreshes costs the
+       motion nothing. What it must not do is refuse them on a 60Hz panel, which
+       is the other half of this test. */
+    const dom = installDom();
+    try {
+      const engine = createEngine(dom.canvas, dom.host, {
+        effect: effectById("rain"),
+        intensity: intensityById("medium"),
+      });
+
+      //: The first tick anchors the clock and paints, so the count starts after
+      //: it rather than from zero.
+      dom.flush(1000 / 120);
+      const anchored = dom.draws;
+
+      //: Eight refreshes at 120Hz. Four
+      //: of them should be frames and four should be refused.
+      let painted = 0;
+      for (let i = 0; i < 8; i += 1) {
+        const before = dom.draws;
+        assert.equal(dom.flush(1000 / 120), 1, "the loop stopped rescheduling itself");
+        if (dom.draws > before) painted += 1;
+      }
+      assert.equal(painted, 4, `120Hz should paint four of eight refreshes, painted ${painted}`);
+      assert.ok(dom.draws > anchored, "nothing was drawn at all");
+
+      engine.destroy();
+    } finally {
+      dom.restore();
+    }
+  });
+
+  test("a 60Hz display keeps every frame", () => {
+    /* The trap the budget's slack exists to avoid. A budget set at exactly
+       16.67ms rejects the refresh that arrives a hair early, and a 60Hz panel
+       whose frames are a shade under period would be halved to 30 -- turning a
+       ceiling on 120 into a tax on everyone else. */
+    const dom = installDom();
+    try {
+      const engine = createEngine(dom.canvas, dom.host, {
+        effect: effectById("rain"),
+        intensity: intensityById("medium"),
+      });
+
+      dom.flush(1000 / 60);
+      for (let i = 0; i < 120; i += 1) {
+        const before = dom.draws;
+        dom.flush(1000 / 60 + (i % 2 ? 0.3 : -0.3));
+        assert.ok(dom.draws > before, `a 60Hz refresh was refused on frame ${i + 1}`);
+      }
+
       engine.destroy();
     } finally {
       dom.restore();
@@ -634,21 +732,64 @@ function fieldEnergy(effect, intensity, seed = 1, width = 2000, height = 1200) {
   };
 
   let path = [];
+  /* The current transform, and a stack for `save`/`restore`.
+
+     These used to be no-ops, which quietly made the model wrong for anything
+     that draws in its own local space: Jellyfish has always translated and
+     rotated to each bell, so every one of them was measured as though it sat at
+     the origin. That went unnoticed while the only question asked of this
+     rasteriser was how much total light an effect emits, which a transform does
+     not change -- but it is not a detail the measurement can keep ignoring once
+     an effect places its marks by transform rather than by coordinate, because
+     then *where* the light lands is wrong too, and where it lands is exactly
+     what the coverage assertions read.
+
+     Stored as the usual six-value affine [a, b, c, d, e, f]. */
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  //: How much the transform scales a length. The geometric mean of the two axes,
+  //: which is what a line's width follows under a non-uniform scale.
+  const scaleOf = ([a, b, c, d]) => Math.sqrt(Math.abs(a * d - b * c)) || 1;
+  const at = (x, y) => [ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]];
+  const concat = (m) => {
+    const [a, b, c, d, e, f] = ctm;
+    ctm = [
+      a * m[0] + c * m[1], b * m[0] + d * m[1],
+      a * m[2] + c * m[3], b * m[2] + d * m[3],
+      a * m[4] + c * m[5] + e, b * m[4] + d * m[5] + f,
+    ];
+  };
   const gradient = () => ({ __stops: [], addColorStop(_, colour) { this.__stops.push(colour); } });
   const ctx = {
     lineWidth: 1, lineCap: "butt", strokeStyle: "", fillStyle: "",
     globalAlpha: 1, globalCompositeOperation: "source-over",
     createLinearGradient: gradient, createRadialGradient: gradient,
     beginPath() { path = []; }, closePath() {},
-    moveTo(x, y) { path.push([x, y]); }, lineTo(x, y) { path.push([x, y]); },
-    bezierCurveTo(a, b, c, d, x, y) { path.push([a, b], [c, d], [x, y]); },
-    quadraticCurveTo(a, b, x, y) { path.push([a, b], [x, y]); },
-    arc(x, y, r) { path.push([x - r, y - r], [x + r, y + r]); },
-    save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
-    clearRect() {}, setTransform() {},
+    moveTo(x, y) { path.push(at(x, y)); }, lineTo(x, y) { path.push(at(x, y)); },
+    bezierCurveTo(a, b, c, d, x, y) { path.push(at(a, b), at(c, d), at(x, y)); },
+    quadraticCurveTo(a, b, x, y) { path.push(at(a, b), at(x, y)); },
+    arc(x, y, r) {
+      const spread = r * scaleOf(ctm);
+      const [cx, cy] = at(x, y);
+      path.push([cx - spread, cy - spread], [cx + spread, cy + spread]);
+    },
+    save() { stack.push(ctm.slice()); },
+    restore() { if (stack.length) ctm = stack.pop(); },
+    translate(x, y) { concat([1, 0, 0, 1, x, y]); },
+    rotate(angle) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      concat([cos, sin, -sin, cos, 0, 0]);
+    },
+    scale(x, y) { concat([x, 0, 0, y, 0, 0]); },
+    clearRect() {}, setTransform(a, b, c, d, e, f) { ctm = [a, b, c, d, e, f]; },
     fillRect(x, y, w, h) { box(x, y, w, h, alphaOf(this.fillStyle) * this.globalAlpha); },
     stroke() {
       const alpha = alphaOf(this.strokeStyle) * this.globalAlpha;
+      //: The path is already in field coordinates, but the width is not: a
+      //: stroke drawn under a scale comes out that much wider, so an effect that
+      //: shrinks its line width to compensate has to be measured the same way.
+      const lineWidth = this.lineWidth * scaleOf(ctm);
       for (let i = 1; i < path.length; i += 1) {
         const [x0, y0] = path[i - 1];
         const [x1, y1] = path[i];
@@ -657,7 +798,7 @@ function fieldEnergy(effect, intensity, seed = 1, width = 2000, height = 1200) {
         for (let step = 0; step < steps; step += 1) {
           const along = (step + 0.5) / steps;
           deposit(x0 + (x1 - x0) * along, y0 + (y1 - y0) * along,
-            (alpha * this.lineWidth * length) / steps);
+            (alpha * lineWidth * length) / steps);
         }
       }
     },
@@ -885,10 +1026,32 @@ describe("the chat glass material", () => {
   });
 
   test("the marks stay the brighter half of what a sparse field paints", () => {
-    // Where "rain must still read as rain" lives. The diffusion is a glow under
-    // the strokes, so the typical cell it lights has to stay well below the
-    // alpha the strokes themselves carry -- lift it until the median cell is as
-    // bright as a drop and the drops are wearing halos.
+    /* Where "rain must still read as rain" lives. The diffusion is a glow under
+       the strokes, so the typical cell it lights has to stay well below the
+       alpha the strokes themselves carry -- lift it until the median cell is as
+       bright as a drop and the drops are wearing halos.
+
+       The bound was 0.12 and is now 0.13, and the reason is the instrument
+       rather than the effects: `fieldEnergy` used to treat `translate`, `rotate`
+       and `scale` as no-ops, so Jellyfish -- which places every bell by
+       transform -- was measured with all eight of them stacked at the origin.
+       Nothing about how it draws has changed; it was being measured in the wrong
+       place. With the transform modelled, the measured medians at Vivid are:
+
+         rain       0.050 - 0.053   across seeds 1-5
+         stars      0.021 - 0.027
+         jellyfish  0.068 - 0.122
+
+       Rain and Stars are tight because they are ninety-odd small marks, so where
+       any one of them falls barely moves the median. Jellyfish has eight bodies,
+       so a seed that clusters them reads much brighter than one that spreads
+       them -- 0.122 at seed 3 against 0.068 at seed 2 is that spread, not a
+       trend. The bound sits just above the top of it.
+
+       This is worth knowing rather than worth hiding: Jellyfish at Vivid is the
+       one effect that comes near this limit, and if its `bloom` gain is ever
+       raised it will cross. That is a decision about how Jellyfish should look,
+       and it belongs to whoever makes it deliberately. */
     for (const id of EFFECT_IDS) {
       const effect = effectById(id);
       if (!(effect.bloom > 1)) continue;
@@ -896,7 +1059,7 @@ describe("the chat glass material", () => {
         const alphas = fieldEnergy(effect, intensityById("vivid"), seed).alphas(effect.bloom);
         const median = alphas[Math.floor(alphas.length / 2)];
         assert.ok(
-          median <= 0.12,
+          median <= 0.13,
           `${id} lights its median cell to alpha ${median.toFixed(3)} (seed ${seed}), a glow cloud`,
         );
       }
@@ -917,23 +1080,29 @@ describe("the chat glass material", () => {
       // Additive light under the marks, not a scrim over them.
       assert.ok(pct <= 12, `a wash gradient at ${pct}% accent is a tint on the field, not light in it`);
     }
-    assert.match(wash, /animation:\s*neo-field-drift/, "a still wash cannot interact with anything");
+    assert.match(wash, /transform:\s*var\(--bg-wash-transform,/, "the engine must own the wash clock");
+    assert.doesNotMatch(wash, /animation:/, "an independent animation bypasses the engine frame budget");
     assert.doesNotMatch(wash, /#[0-9a-f]{3}|rgba?\(/i);
   });
 
-  test("the wash stills for reduced motion instead of vanishing", () => {
-    // Same contract the engine keeps with the marks: standing still, not gone.
-    // Removing it would leave every panel flat for anyone who asked for less
-    // movement, which is the one setting that must not cost the interface its
-    // material.
-    const stilled = washRules().filter(({ body }) => /animation:\s*none/.test(body));
-    assert.equal(stilled.length, 1, "the wash does not still under reduced motion");
-    const preamble = CSS.slice(0, CSS.indexOf("animation: none"));
-    assert.match(preamble.slice(-240), /prefers-reduced-motion: reduce/);
-    // And it must not be hidden outright.
+  test("the wash has no independent animation and retains a still fallback", () => {
+    // Reduced motion and hidden-tab pauses share the engine's clock with the
+    // marks. The CSS fallback keeps the field visible before the first paint.
+    assert.match(washRule(), /transform:\s*var\(--bg-wash-transform,\s*translate3d\(/);
     for (const { body } of washRules()) {
-      assert.doesNotMatch(body, /display:\s*none|opacity:\s*0/);
+      assert.doesNotMatch(body, /animation:|display:\s*none|opacity:\s*0/);
     }
+  });
+
+  test("the wash crops unused raster without changing its gradient geometry", () => {
+    const wash = washRule();
+    const overscan = -Number(wash.match(/inset:\s*(-?[\d.]+)%/)[1]);
+    const imageScale = Number(wash.match(/background-size:\s*([\d.]+)%/)[1]) / 100;
+    const elementScale = 1 + 2 * overscan / 100;
+    assert.ok(elementScale * elementScale <= 1.2, "the wash raster is needlessly larger than the viewport");
+    assert.ok(Math.abs(elementScale * imageScale - 1.5) < 0.00001, "cropping changed the gradient size");
+    assert.match(wash, /background-position:\s*center/);
+    assert.match(wash, /background-repeat:\s*no-repeat/);
   });
 
   test("a pane carrying text deepens its backdrop; a pane that is an object lifts", () => {
@@ -959,17 +1128,19 @@ describe("the chat glass material", () => {
   test("the material is one substance, not three unrelated boxes", () => {
     // Shared tokens are what make the three read as the same glass. A surface
     // that hard-codes its own saturation has left the system.
-    for (const { name, selector } of GLASS) {
+    for (const { name, selector } of GLASS.filter(({ name }) => name !== "strip")) {
       const rule = ruleFor(selector);
-      assert.match(rule, /saturate\(var\(--glass-sat\)\)/, `${name} saturates on its own terms`);
+      assert.match(rule, /saturate\([^;]*var\(--glass-sat\)/, `${name} saturates on its own terms`);
     }
     for (const token of ["--glass-sat", "--glass-lift", "--glass-lift-quiet", "--glass-edge", "--glass-inner", "--glass-inner-lit"]) {
       assert.match(ruleFor("[data-chat-bg]"), new RegExp(`${token}:`), `${token} is undeclared`);
     }
   });
 
-  test("backdrop filtering is configured, both prefixed and not", () => {
-    for (const { name, selector } of GLASS) {
+  test("the panes configure filters in both forms without a nested composer pass", () => {
+    assert.doesNotMatch(ruleFor("[data-chat-bg] .chat-input-wrap::before"), /backdrop-filter:/);
+    assert.doesNotMatch(ruleFor("[data-chat-bg] .chat-input-wrap"), /backdrop-filter:/);
+    for (const { name, selector } of GLASS.filter(({ name }) => name !== "strip")) {
       const rule = ruleFor(selector);
       assert.match(rule, /-webkit-backdrop-filter:\s*blur\(/, `${name} has no prefixed filter`);
       assert.match(rule, /(?<!-webkit-)backdrop-filter:\s*blur\(/, `${name} has no filter`);
@@ -991,15 +1162,12 @@ describe("the chat glass material", () => {
     }
   });
 
-  test("the strip's material fades in rather than ending in a seam", () => {
+  test("the strip fades its tint without a blur or mask surface", () => {
     const strip = ruleFor("[data-chat-bg] .chat-input-wrap::before");
-    assert.match(strip, /-webkit-mask-image:\s*linear-gradient/);
-    assert.match(strip, /(?<!-webkit-)mask-image:\s*linear-gradient/);
-    // On the pseudo-element, or the mask takes the card's edges with it.
+    assert.match(strip, /background:\s*linear-gradient\(180deg,\s*var\(--neo-scrim-a00\) 0%/);
+    assert.doesNotMatch(strip, /backdrop-filter:|mask-image:/);
     assert.doesNotMatch(ruleFor("[data-chat-bg] .chat-input-wrap"), /mask-image:/);
-    // And the strip is the weakest of the three, by blur and by tint.
     const blurOf = (selector) => Number(ruleFor(selector).match(/(?<!-webkit-)backdrop-filter:[^;]*blur\((\d+)px\)/)[1]);
-    assert.ok(blurOf(GLASS[1].selector) < blurOf(GLASS[2].selector), "the strip should diffuse less than the card");
     assert.ok(blurOf(GLASS[2].selector) < blurOf(GLASS[0].selector), "the card should diffuse less than the sidebar");
   });
 
@@ -1283,6 +1451,7 @@ describe("how often something falls", () => {
     let trails = 0;
     const ctx = {
       beginPath() {}, arc() {}, fill() {}, moveTo() {}, lineTo() {},
+      save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
       stroke() { trails += 1; },
       createLinearGradient: nothing, createRadialGradient: nothing,
       fillStyle: "", strokeStyle: "", lineWidth: 0, lineCap: "",
@@ -1428,4 +1597,92 @@ describe("the diffusion buffer", () => {
     assert.ok(ops.some((op) => op.startsWith("draw@")), "the reduction stopped happening");
     assert.ok(!ops.some((op) => op.startsWith("filter:")), "a filter was set on a context without one");
   });
+});
+
+
+describe("adaptive background runtime", () => {
+  test("144Hz keeps approximately 60 paints per second without slowing motion", () => {
+    const dom = installDom();
+    let paints = 0;
+    let simulated = 0;
+    const effect = { create: () => ({ frame(ctx, dt) { paints++; simulated += dt; }, resize() {}, retint() {} }) };
+    try {
+      const engine = createEngine(dom.canvas, dom.host, { effect, intensity: intensityById("vivid") });
+      for (let i = 0; i < 1441; i++) dom.flush(1000 / 144);
+      assert.ok(paints >= 600 && paints <= 602, `${paints} paints over ten seconds`);
+      assert.ok(Math.abs(simulated - 10) < 0.02);
+      engine.destroy();
+    } finally { dom.restore(); }
+  });
+
+  test("sustained pressure resizes without recreating or blanking the effect", () => {
+    const dom = installDom();
+    let creations = 0;
+    let resized = 0;
+    let paintedWidth = 0;
+    const effect = { create() {
+      creations++;
+      return { frame() { dom.workMs += 12; paintedWidth = dom.canvas.width; }, resize() { resized++; }, retint() {} };
+    } };
+    try {
+      const engine = createEngine(dom.canvas, dom.host, { effect, intensity: intensityById("vivid") });
+      const originalWidth = dom.canvas.width;
+      for (let i = 0; i < 200; i++) {
+        dom.flush(1000 / 60);
+        assert.equal(dom.canvas.width, paintedWidth, "buffer must not be cleared after paint");
+      }
+      assert.ok(dom.canvas.width < originalWidth);
+      assert.ok(engine.getStats().quality > 0);
+      assert.equal(creations, 1);
+      assert.equal(resized, 0, "resolution changes must preserve particle positions");
+      engine.destroy();
+      assert.equal(dom.canvas.width, 0, "teardown releases backing pixels");
+      engine.destroy();
+      assert.equal(dom.resizeObservers, 0, "teardown is idempotent");
+    } finally { dom.restore(); }
+  });
+
+  test("zero-sized views stop work and DPR-only display changes resize the buffer", () => {
+    const dom = installDom();
+    let visible = false;
+    dom.host.getBoundingClientRect = () => ({ width: visible ? 800 : 0, height: visible ? 600 : 0 });
+    try {
+      const engine = createEngine(dom.canvas, dom.host, { effect: effectById("rain"), intensity: intensityById("medium") });
+      assert.equal(dom.flush(), 0);
+      visible = true;
+      dom.resize();
+      assert.equal(dom.flush(), 1);
+      assert.equal(dom.canvas.width, 1200);
+      window.devicePixelRatio = 1;
+      dom.resize();
+      assert.equal(dom.canvas.width, 800);
+      visible = false;
+      dom.resize();
+      assert.equal(dom.flush(), 0);
+      engine.destroy();
+    } finally { dom.restore(); }
+  });
+
+  test("the wash pauses with the canvas while hidden and resumes continuously", () => {
+    const dom = installDom();
+    try {
+      const engine = createEngine(dom.canvas, dom.host, { effect: effectById("rain"), intensity: intensityById("medium") });
+      dom.flush(1000 / 60);
+      dom.flush(1000 / 60);
+      const before = dom.host.style["--bg-wash-transform"];
+      dom.hidden = true;
+      dom.visibilitychange();
+      assert.equal(dom.flush(5000), 0);
+      assert.equal(dom.host.style["--bg-wash-transform"], before);
+      dom.hidden = false;
+      dom.visibilitychange();
+      dom.flush(1000 / 60);
+      assert.equal(dom.host.style["--bg-wash-transform"], before);
+      dom.flush(1000 / 60);
+      assert.notEqual(dom.host.style["--bg-wash-transform"], before);
+      engine.destroy();
+    } finally { dom.restore(); }
+  });
+
+
 });

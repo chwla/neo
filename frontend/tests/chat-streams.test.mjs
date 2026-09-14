@@ -21,6 +21,67 @@ import { createSendGuard } from "../src/sendGuard.js";
 
 const fold = (events, start = new Map()) => events.reduce(applyEvent, start);
 
+describe("applying a frame's events together", () => {
+  /* The reader batches: events that arrive within one frame are collected and
+     folded in a single `setStreams` rather than one apiece, because a token per
+     render was asking the whole application to re-render dozens of times a
+     second to show text that cannot appear sooner than the next paint.
+
+     What these pin is the part of that which could actually break -- that
+     folding a batch is indistinguishable from folding its events one at a time.
+     The scheduling itself (a frame request, with a timer behind it for the
+     hidden tab where frames stop) lives in an effect and is not exercised here;
+     what is exercised is that however the events are grouped, the state they
+     produce and the turn-endings they report are the same. */
+
+  test("a batch folds to exactly what one-at-a-time folding produced", () => {
+    const events = [
+      { chat_id: 1, type: "chunk", content: "one ", generation_id: "g1", seq: 1 },
+      { chat_id: 2, type: "chunk", content: "two ", generation_id: "g2", seq: 2 },
+      { chat_id: 1, type: "thinking", content: "hmm", generation_id: "g1", seq: 3 },
+      { chat_id: 1, type: "chunk", content: "more", generation_id: "g1", seq: 4 },
+      { chat_id: 2, type: "chunk", content: "also", generation_id: "g2", seq: 5 },
+    ];
+
+    //: One at a time, the way every event used to arrive.
+    let separately = new Map();
+    for (const event of events) separately = applyEvent(separately, event);
+
+    //: And all together, the way a frame's worth arrives now.
+    const batched = events.reduce(applyEvent, new Map());
+
+    assert.deepEqual([...batched.keys()].sort(), [...separately.keys()].sort());
+    for (const chatId of separately.keys()) {
+      assert.deepEqual(batched.get(chatId), separately.get(chatId), `chat ${chatId} differs`);
+    }
+  });
+
+  test("a turn that ends inside a batch still ends, and after its own text", () => {
+    /* The ordering that matters. A terminal event tells the application to
+       reload that chat's transcript and drop the live buffer, so it has to be
+       acted on only once the text the turn finished with is already in the map.
+       Batching is what makes that an ordering question at all: the callback now
+       runs after the fold rather than between two of them. */
+    const events = [
+      { chat_id: 1, type: "chunk", content: "the last word", generation_id: "g1", seq: 1 },
+      { chat_id: 1, type: "run.completed", generation_id: "g1", seq: 2 },
+      { chat_id: 2, type: "chunk", content: "still going", generation_id: "g2", seq: 3 },
+    ];
+    const streams = events.reduce(applyEvent, new Map());
+
+    //: The finished chat's text survives the terminal event in the same batch.
+    assert.match(streams.get(1)?.text ?? "", /the last word/);
+    //: And a chat that did not finish is untouched by one that did.
+    assert.equal(streams.get(2).text, "still going");
+
+    //: Every terminal event in the batch is still a turn ending, in order.
+    const ended = events
+      .filter((event) => ["run.completed", "run.failed", "run.cancelled"].includes(event.type))
+      .map((event) => event.chat_id);
+    assert.deepEqual(ended, [1]);
+  });
+});
+
 describe("demultiplexing one tail into many chats", () => {
   test("two chats' records interleave without touching each other", () => {
     const streams = fold([

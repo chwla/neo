@@ -27,13 +27,13 @@
  * observers, no loop.
  */
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 
 import { effectById } from "./backgrounds/effects.js";
 import { intensityById } from "./backgrounds/index.js";
 import { createEngine } from "./backgrounds/engine.js";
 
-export default function ChatBackground({ background, intensity }) {
+function ChatBackground({ background, intensity }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
   const bloomRef = useRef(null);
@@ -83,3 +83,7 @@ export default function ChatBackground({ background, intensity }) {
     </div>
   );
 }
+
+// Streaming changes the surrounding chat much more often than either setting.
+// The engine owns its canvas; reconciling these elements cannot advance it.
+export default memo(ChatBackground);

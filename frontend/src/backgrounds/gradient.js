@@ -24,6 +24,8 @@
  * rather than sliding them off an edge.
  */
 
+import { rgba } from "./palette.js";
+
 //: Lines per ribbon at Medium. The moire that reads as a surface needs the
 //: spacing to be fine relative to how far the family spreads -- much below
 //: thirty and it stops being a ribbon and becomes a handful of curves.
@@ -45,6 +47,11 @@ const RIBBONS = 3;
 //: smallest is the detail on it. Hoisted because the loop that reads them runs
 //: a few thousand times a frame and this array never changes.
 const WEIGHTS = [1, 0.44, 0.19];
+
+// Maximum deviation from the continuous guide, in CSS pixels. Cubic Hermite
+// segments preserve its slope as well as its position, so far fewer canvas
+// commands are needed than a polyline with the same accuracy.
+const CURVE_ERROR = 0.15;
 
 /** Toward the ink by `k`, which is how one accent becomes a related family. */
 function toward([r, g, b], [ir, ig, ib], k) {
@@ -90,6 +97,8 @@ export default {
     let xs = new Float64Array(0);
     let guideA = new Float64Array(0);
     let guideB = new Float64Array(0);
+    let slopeA = new Float64Array(0);
+    let slopeB = new Float64Array(0);
 
     function layout() {
       //: Fine enough that a pinch stays smooth and the polyline corners of
@@ -101,6 +110,8 @@ export default {
         xs = new Float64Array(samples);
         guideA = new Float64Array(samples);
         guideB = new Float64Array(samples);
+        slopeA = new Float64Array(samples);
+        slopeB = new Float64Array(samples);
       }
       for (let s = 0; s < samples; s += 1) xs[s] = Math.min(s * step, w);
     }
@@ -109,6 +120,32 @@ export default {
     const alpha = intensity.alpha;
     const lines = Math.max(24, Math.round(LINES * intensity.density));
     const count = Math.max(2, Math.min(RIBBONS, Math.round(3 * intensity.density)));
+
+    /**
+     * Where each line sits in its family, and how bright it is -- worked out
+     * once, because neither answer can change.
+     *
+     * Both are functions of the line's index and the number of lines, and the
+     * number of lines is fixed for the life of the instance. They were being
+     * recomputed inside the drawing loop, which at Vivid is sixty-seven lines
+     * across three ribbons: four hundred recomputations a frame of two hundred
+     * constants.
+     */
+    const eased = new Float64Array(lines);
+    const edge = new Float64Array(lines);
+    for (let i = 0; i < lines; i += 1) {
+      const blend = lines === 1 ? 0 : i / (lines - 1);
+      //: Eased toward the family's two edges, which is what makes it read as a
+      //: surface seen edge-on rather than as a printed gradient. Half strength,
+      //: though: at full strength the crowding it puts at the edges comes out of
+      //: the middle, and the middle is where the gaps between lines were showing
+      //: as strands in the first place.
+      const cubic = blend * blend * (3 - 2 * blend);
+      eased[i] = blend + (cubic - blend) * 0.5;
+      //: Faintest in the middle of the family, so the two edges of the ribbon
+      //: stay legible as edges even where it fans wide open.
+      edge[i] = 0.55 + 0.45 * Math.abs(blend * 2 - 1);
+    }
 
     //: Fixed per ribbon, so a resize and a retint leave the composition alone.
     //: The two guides differ in where they sit, how far they swing and how fast
@@ -145,6 +182,10 @@ export default {
           [0.65 + i * 0.15, 1.7 + i * 0.25, 3.1 + i * 0.4],
           [0.8 - i * 0.1, 2.1 + i * 0.3, 3.7 + i * 0.35],
         ],
+        //: Filled by `tune`, which is the only thing that may write here.
+        waves: [new Float64Array(3), new Float64Array(3)],
+        spatial: [null, null],
+        stride: 1,
         //: Faster than the field effects that came before this one, because the
         //: shape is the point here rather than the texture: at a tenth of a
         //: radian a second the waist barely travels within a glance.
@@ -166,19 +207,69 @@ export default {
       };
     });
 
+    /**
+     * The wave numbers, which are the only part of a guide that depends on how
+     * wide the panel is.
+     *
+     * `(2 * PI * cycles) / w` was being evaluated in the innermost loop of the
+     * guide pass -- three terms, two guides, three ribbons, once per sample --
+     * which at a typical width is seventeen hundred divisions a frame to arrive
+     * at the same eighteen numbers. They change when the panel resizes and at no
+     * other time, so they are computed there instead.
+     */
+    function tune() {
+      for (const ribbon of ribbons) {
+        let fourthDerivative = 0;
+        for (let g = 0; g < 2; g += 1) {
+          const cycles = ribbon.cycles[g];
+          const waves = ribbon.waves[g];
+          const spatial = new Float64Array(samples * 6);
+          let bound = 0;
+          for (let term = 0; term < 3; term += 1) {
+            waves[term] = (Math.PI * 2 * cycles[term]) / Math.max(1, w);
+            bound += ribbon.guides[g].swing * h * WEIGHTS[term] * waves[term] ** 4;
+            for (let s = 0; s < samples; s += 1) {
+              const angle = xs[s] * waves[term];
+              spatial[s * 6 + term * 2] = Math.sin(angle);
+              spatial[s * 6 + term * 2 + 1] = Math.cos(angle);
+            }
+          }
+          ribbon.spatial[g] = spatial;
+          fourthDerivative = Math.max(fourthDerivative, bound);
+        }
+        // Hermite's error is bounded by max(|f''''|) * dx^4 / 384.
+        // A blend of the two guides obeys the same bound, for every hairline.
+        ribbon.stride = Math.max(1, Math.floor((384 * CURVE_ERROR / fourthDerivative) ** 0.25 / step));
+      }
+    }
+
+    tune();
+
+    //: One per ribbon, since each works in its own place in the accent-to-ink
+    //: family. Dropped on retint, when the family itself changes.
+    let shades = null;
+
     return {
       resize(nextWidth, nextHeight) {
         w = nextWidth;
         h = nextHeight;
         layout();
+        tune();
       },
 
       retint(next) {
         colours = next;
+        shades = null;
       },
 
       frame(ctx, dt, t) {
-        const { accent, ink, isLight, rgba, glowMode } = colours;
+        const { accent, ink, isLight, glowMode } = colours;
+        //: One cache per ribbon, built the first frame after a retint. `toward`
+        //: was allocating a fresh colour array per ribbon per frame to arrive at
+        //: three values that only move when the theme does.
+        if (!shades) {
+          shades = ribbons.map((ribbon) => rgba(toward(accent, ink, ribbon.hue), 1));
+        }
         //: Paper needs more to show at all, the correction every effect makes.
         const lift = (isLight ? 1.8 : 1) * alpha;
         //: Additive, so overlapping lines sum into the bright core. On Paper
@@ -187,29 +278,57 @@ export default {
         ctx.globalCompositeOperation = glowMode;
         ctx.lineCap = "round";
 
-        for (const ribbon of ribbons) {
+        for (let r = 0; r < ribbons.length; r += 1) {
+          const ribbon = ribbons[r];
           //: One lean for the whole family. It shifts both guides together, so
           //: the ribbon tilts rather than shearing.
           const lean = Math.sin(t * ribbon.leanRate + ribbon.leanPhase);
-          const colour = toward(accent, ink, ribbon.hue);
+          const shade = shades[r];
+          ctx.strokeStyle = shade;
 
           //: Both guides across the whole width, once. Summed in canvas units
           //: so the shape is the same at every window size.
           for (let g = 0; g < 2; g += 1) {
             const { home, swing } = ribbon.guides[g];
-            const cycles = ribbon.cycles[g];
+            const waves = ribbon.waves[g];
             const speeds = ribbon.speeds[g];
             const phases = ribbon.phases[g];
             const into = g === 0 ? guideA : guideB;
+            const slope = g === 0 ? slopeA : slopeB;
+            const spatial = ribbon.spatial[g];
             const base = (home + lean * 0.06) * h;
+            //: Each term's phase is the same for every sample along the guide
+            //: -- only `x` moves inside the loop -- so the three of them are
+            //: resolved once here rather than once per sample.
+            const phase0 = t * speeds[0] + phases[0];
+            const phase1 = t * speeds[1] + phases[1];
+            const phase2 = t * speeds[2] + phases[2];
+            const wave0 = waves[0];
+            const wave1 = waves[1];
+            const wave2 = waves[2];
+            const reach = swing * h;
+            // sin(x + phase) = sin(x) cos(phase) + cos(x) sin(phase).
+            // The spatial half only changes on resize: 36 trig calls per
+            // frame replace roughly 1,800, including exact curve derivatives.
+            const sin0 = Math.sin(phase0) * WEIGHTS[0] * reach;
+            const cos0 = Math.cos(phase0) * WEIGHTS[0] * reach;
+            const sin1 = Math.sin(phase1) * WEIGHTS[1] * reach;
+            const cos1 = Math.cos(phase1) * WEIGHTS[1] * reach;
+            const sin2 = Math.sin(phase2) * WEIGHTS[2] * reach;
+            const cos2 = Math.cos(phase2) * WEIGHTS[2] * reach;
             for (let s = 0; s < samples; s += 1) {
-              const x = xs[s];
-              let offset = 0;
-              for (let term = 0; term < 3; term += 1) {
-                const k = (Math.PI * 2 * cycles[term]) / Math.max(1, w);
-                offset += Math.sin(x * k + t * speeds[term] + phases[term]) * WEIGHTS[term];
+              const at = s * 6;
+              into[s] = base +
+                spatial[at] * cos0 + spatial[at + 1] * sin0 +
+                spatial[at + 2] * cos1 + spatial[at + 3] * sin1 +
+                spatial[at + 4] * cos2 + spatial[at + 5] * sin2;
+              // Only the endpoints of a cubic need a derivative.
+              if (s % ribbon.stride === 0 || s >= samples - 2) {
+                slope[s] =
+                  (spatial[at + 1] * cos0 - spatial[at] * sin0) * wave0 +
+                  (spatial[at + 3] * cos1 - spatial[at + 2] * sin1) * wave1 +
+                  (spatial[at + 5] * cos2 - spatial[at + 4] * sin2) * wave2;
               }
-              into[s] = base + offset * swing * h;
             }
           }
 
@@ -245,24 +364,24 @@ export default {
           const perLine = 0.05 * lift * (1.1 / width);
 
           for (let i = 0; i < lines; i += 1) {
-            const blend = i / (lines - 1);
-            //: Eased toward the family's two edges, which is what makes it read
-            //: as a surface seen edge-on rather than as a printed gradient. Half
-            //: strength, though: at full strength the crowding it puts at the
-            //: edges comes out of the middle, and the middle is where the gaps
-            //: between lines were showing as strands in the first place.
-            const cubic = blend * blend * (3 - 2 * blend);
-            const eased = blend + (cubic - blend) * 0.5;
+            const across = eased[i];
 
             ctx.beginPath();
-            ctx.moveTo(xs[0], guideA[0] + (guideB[0] - guideA[0]) * eased);
-            for (let s = 1; s < samples; s += 1) {
-              ctx.lineTo(xs[s], guideA[s] + (guideB[s] - guideA[s]) * eased);
+            ctx.moveTo(xs[0], guideA[0] + (guideB[0] - guideA[0]) * across);
+            for (let s = 0; s < samples - 1;) {
+              const next = Math.min(s + ribbon.stride, samples - 1);
+              const third = (xs[next] - xs[s]) / 3;
+              if (third > 0) {
+                const from = guideA[s] + (guideB[s] - guideA[s]) * across;
+                const to = guideA[next] + (guideB[next] - guideA[next]) * across;
+                const fromSlope = slopeA[s] + (slopeB[s] - slopeA[s]) * across;
+                const toSlope = slopeA[next] + (slopeB[next] - slopeA[next]) * across;
+                ctx.bezierCurveTo(xs[s] + third, from + fromSlope * third,
+                  xs[next] - third, to - toSlope * third, xs[next], to);
+              }
+              s = next;
             }
-            //: Faintest in the middle of the family, so the two edges of the
-            //: ribbon stay legible as edges even where it fans wide open.
-            const edge = 0.55 + 0.45 * Math.abs(blend * 2 - 1);
-            ctx.strokeStyle = rgba(colour, perLine * edge);
+            ctx.globalAlpha = Math.min(1, perLine * edge[i]);
             ctx.stroke();
           }
         }
@@ -270,6 +389,7 @@ export default {
         //: Left as the engine expects to find it, so the next effect to use this
         //: canvas inherits neither the composite mode nor the line cap.
         ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
         ctx.lineCap = "butt";
       },
     };
