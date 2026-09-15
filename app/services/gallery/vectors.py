@@ -18,6 +18,8 @@ import heapq
 import math
 import struct
 
+import numpy as np
+
 from app.core.config import get_settings
 from app.services.embeddings import (
     EmbeddingValidationError,
@@ -125,24 +127,36 @@ class GalleryVectorIndex:
         results.
         """
 
-        if not query.strip():
+        if not query.strip() or limit <= 0:
             return {}
         try:
             embedded = self._provider.embed(query[:_MAX_EMBED_CHARS])
         except EmbeddingValidationError:
             return {}
+        # float64 preserves the precision of the previous Python float sums.
+        # Decode float32 storage directly, without allocating a Python float for
+        # every dimension of every image, and normalize the query only once.
+        query_vector = np.asarray(embedded, dtype=np.float64)
+        query_norm = float(np.linalg.norm(query_vector))
+        if not query_norm or not math.isfinite(query_norm):
+            return {}
         scored: list[tuple[float, str]] = []
-        for row in store.all_vectors():
+        for row in store.iter_vectors():
             dimension = int(row["dimension"])
             if dimension != len(embedded):
                 # A model change leaves old vectors behind. Skip rather than
                 # compare across spaces; the next index pass rewrites them.
                 continue
             try:
-                candidate = _unpack(row["vector_blob"], dimension)
-            except struct.error:
+                candidate = np.frombuffer(row["vector_blob"], dtype="<f4").astype(np.float64)
+            except (TypeError, ValueError):
                 continue
-            score = _cosine(embedded, candidate)
+            if candidate.size != dimension:
+                continue
+            norm = float(np.linalg.norm(candidate))
+            if not norm or not math.isfinite(norm):
+                continue
+            score = max(0.0, min(1.0, float(query_vector @ candidate) / (query_norm * norm)))
             if score > 0:
                 heapq.heappush(scored, (score, row["item_id"]))
                 if len(scored) > limit:

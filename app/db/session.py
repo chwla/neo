@@ -72,10 +72,14 @@ def initialize_database(database_url: str | None = None) -> None:
     import app.models  # noqa: F401
 
     target_engine = engine if database_url is None else build_engine(database_url)
-    Base.metadata.create_all(bind=target_engine)
-    ensure_chat_message_metadata_columns(target_engine)
-    ensure_chat_generation_columns(target_engine)
-    ensure_chat_columns(target_engine)
+    try:
+        Base.metadata.create_all(bind=target_engine)
+        ensure_chat_message_metadata_columns(target_engine)
+        ensure_chat_generation_columns(target_engine)
+        ensure_chat_columns(target_engine)
+    finally:
+        if target_engine is not engine:
+            target_engine.dispose()
 
 
 def ensure_chat_columns(target_engine=engine) -> None:

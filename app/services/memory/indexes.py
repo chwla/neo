@@ -388,9 +388,13 @@ class SqliteMemoryVectorIndex:
             )
             for row in rows:
                 score = _score_row(row, vector, query)
+                memory_id = UUID(row.memory_id)
+                rank = (score, -memory_id.int)
+                if len(best) >= bounded_limit and not rank > best[0][:2]:
+                    continue
                 candidate = VectorCandidate(
                     owner_id=UUID(row.owner_id),
-                    memory_id=UUID(row.memory_id),
+                    memory_id=memory_id,
                     content_hash=row.content_hash,
                     canonical_revision=row.canonical_revision,
                     score=score,

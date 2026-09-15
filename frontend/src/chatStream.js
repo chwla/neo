@@ -126,11 +126,18 @@ function reduce(state, event) {
  * render.
  */
 export function applyEvent(streams, event) {
-  const chatId = event?.chat_id;
-  // `cursor` and `idle` are about the connection, not about any conversation.
-  if (!chatId || event.type === "cursor" || event.type === "idle") return streams;
-  const next = new Map(streams);
-  next.set(chatId, reduce(streams.get(chatId) ?? IDLE, event));
+  return applyEvents(streams, [event]);
+}
+
+export function applyEvents(streams, events) {
+  let next = streams;
+  for (const event of events) {
+    const chatId = event?.chat_id;
+    if (!chatId || event.type === "cursor" || event.type === "idle") continue;
+    // Clone once per frame, even when reconnecting replays hundreds of events.
+    if (next === streams) next = new Map(streams);
+    next.set(chatId, reduce(next.get(chatId) ?? IDLE, event));
+  }
   return next;
 }
 
@@ -203,7 +210,7 @@ export function useChatStreams({ onTurnEnd } = {}) {
       if (cancelled || !queue.length) return;
       const batch = queue;
       queue = [];
-      setStreams((current) => batch.reduce(applyEvent, current));
+      setStreams((current) => applyEvents(current, batch));
       for (const event of batch) {
         if (TERMINAL_EVENTS.has(event.type) && event.chat_id) {
           // The caller decides when to drop the buffer: a background chat's text

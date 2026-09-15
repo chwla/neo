@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 
 from app.core.config import get_settings
 
@@ -15,6 +16,26 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def write_batch():
+    """One short transaction for a file's symbols, dependencies and summary."""
+    conn = _connect()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def _write_connection(connection):
+    if connection is not None:
+        yield connection
+    else:
+        with write_batch() as conn:
+            yield conn
 
 
 def clear_repo_index(repo_id: str) -> None:
@@ -110,9 +131,8 @@ def mark_stale(repo_id: str, reason: str, updated_at: str) -> None:
         conn.close()
 
 
-def insert_symbol(item: dict) -> dict:
-    conn = _connect()
-    try:
+def insert_symbol(item: dict, *, connection: sqlite3.Connection | None = None) -> dict:
+    with _write_connection(connection) as conn:
         conn.execute(
             """INSERT INTO workspace_code_symbols (
                 id, repo_id, repo_file_id, file_id, relative_path, name, qualified_name,
@@ -139,15 +159,17 @@ def insert_symbol(item: dict) -> dict:
                 item["updated_at"],
             ),
         )
-        conn.commit()
-        return get_symbol(item["id"]) or item
-    finally:
-        conn.close()
+        if connection is not None:
+            return item
+        return _row(
+            conn.execute(
+                "SELECT * FROM workspace_code_symbols WHERE id = ?", (item["id"],)
+            ).fetchone()
+        )
 
 
-def insert_dependency(item: dict) -> dict:
-    conn = _connect()
-    try:
+def insert_dependency(item: dict, *, connection: sqlite3.Connection | None = None) -> dict:
+    with _write_connection(connection) as conn:
         conn.execute(
             """INSERT INTO workspace_code_dependencies (
                 id, repo_id, source_repo_file_id, target_repo_file_id,
@@ -168,15 +190,13 @@ def insert_dependency(item: dict) -> dict:
                 item["created_at"],
             ),
         )
-        conn.commit()
+        if connection is not None:
+            return item
         return item
-    finally:
-        conn.close()
 
 
-def insert_summary(item: dict) -> dict:
-    conn = _connect()
-    try:
+def insert_summary(item: dict, *, connection: sqlite3.Connection | None = None) -> dict:
+    with _write_connection(connection) as conn:
         conn.execute(
             """INSERT INTO workspace_code_file_summaries (
                 id, repo_id, repo_file_id, file_id, relative_path, language, summary,
@@ -197,10 +217,14 @@ def insert_summary(item: dict) -> dict:
                 item["updated_at"],
             ),
         )
-        conn.commit()
-        return get_summary(item["repo_file_id"]) or item
-    finally:
-        conn.close()
+        if connection is not None:
+            return item
+        return _row(
+            conn.execute(
+                "SELECT * FROM workspace_code_file_summaries WHERE id = ?", (item["id"],)
+            ).fetchone(),
+            key_symbols=True,
+        )
 
 
 def list_symbols(

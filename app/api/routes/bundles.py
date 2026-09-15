@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from app.services.bundles import BundleExporter, BundleImporter, store
+from app.services.bundles.importer import MAX_SIZE
 from app.services.bundles.types import BundleExportRequest
 
 router = APIRouter(prefix="/bundles", tags=["bundles"])
@@ -40,18 +43,26 @@ def download_export(bundle_id: str) -> Response:
     if not path:
         raise HTTPException(404, "Bundle archive is unavailable.")
     try:
-        data = __import__("pathlib").Path(path).read_bytes()
+        archive = Path(path)
+        if not archive.is_file():
+            raise OSError("Archive is not a file")
+        archive_stat = archive.stat()
     except OSError as exc:
         raise HTTPException(404, "Bundle archive is unavailable.") from exc
-    return Response(
-        data,
+    return FileResponse(
+        archive,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{item["file_name"]}"'},
+        filename=item["file_name"],
+        stat_result=archive_stat,
     )
 
 
 async def _bytes(file: UploadFile) -> bytes:
-    data = await file.read()
+    if file.size is not None and file.size > MAX_SIZE:
+        raise HTTPException(400, "Bundle exceeds the 50 MiB size limit.")
+    data = await file.read(MAX_SIZE + 1)
+    if len(data) > MAX_SIZE:
+        raise HTTPException(400, "Bundle exceeds the 50 MiB size limit.")
     if not data:
         raise HTTPException(400, "A non-empty bundle file is required.")
     return data

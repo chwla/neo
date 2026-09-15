@@ -12,7 +12,7 @@ import { describe, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { IDLE, applyEvent, reduce } from "../src/chatStream.js";
+import { IDLE, applyEvent, applyEvents, reduce } from "../src/chatStream.js";
 import BackgroundTurnToast, {
   notificationsEnabled,
   shouldNotify,
@@ -48,7 +48,7 @@ describe("applying a frame's events together", () => {
     for (const event of events) separately = applyEvent(separately, event);
 
     //: And all together, the way a frame's worth arrives now.
-    const batched = events.reduce(applyEvent, new Map());
+    const batched = applyEvents(new Map(), events);
 
     assert.deepEqual([...batched.keys()].sort(), [...separately.keys()].sort());
     for (const chatId of separately.keys()) {
@@ -386,4 +386,23 @@ describe("the stream connection", () => {
     cursor = Math.max(cursor, 12);
     assert.equal(cursor, 50);
   });
+});
+
+
+test("a replay batch preserves untouched chats and the previous snapshot", () => {
+  const untouched = { ...IDLE, text: "saved" };
+  const start = new Map([[9, untouched]]);
+  const events = Array.from({ length: 500 }, (_, index) => ({
+    chat_id: index % 2 + 1, generation_id: `g${index % 2}`,
+    type: "chunk", content: String(index) + ",",
+  }));
+  const expected = new Map(start);
+  for (const event of events) {
+    expected.set(event.chat_id, reduce(expected.get(event.chat_id) ?? IDLE, event));
+  }
+  const result = applyEvents(start, events);
+  assert.deepEqual(result, expected);
+  assert.equal(result.get(9), untouched);
+  assert.equal(start.size, 1);
+  assert.equal(applyEvents(start, [{ type: "idle" }, null]), start);
 });

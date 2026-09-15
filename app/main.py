@@ -5,12 +5,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.routes.accounts import router as accounts_router
 from app.api.routes.accounts import session_for
 from app.api.routes.agent_framework import router as agent_framework_router
 from app.api.routes.agent_sessions import router as agent_sessions_router
+from app.api.routes.appearance import router as appearance_router
 from app.api.routes.bundles import router as bundles_router
 from app.api.routes.calendar import router as calendar_router
 from app.api.routes.chat import router as chat_router
@@ -27,7 +29,6 @@ from app.api.routes.github import router as github_router
 from app.api.routes.health import router as health_router
 from app.api.routes.integration import router as integration_router
 from app.api.routes.integrations import router as integrations_router
-from app.api.routes.appearance import router as appearance_router
 from app.api.routes.keybindings import router as keybindings_router
 from app.api.routes.llm_registry import router as llm_registry_router
 from app.api.routes.llms import router as llms_router
@@ -62,6 +63,7 @@ from app.services.agent_core.store import (
     recover_interrupted_sessions,
 )
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
+from app.services.appearance import initialize_appearance_tables
 from app.services.bundles import initialize_bundle_tables
 from app.services.calendar import initialize_calendar_tables, start_reminder_sweep
 from app.services.chat_prefs import initialize_chat_preference_tables
@@ -74,8 +76,6 @@ from app.services.gallery.store import initialize_gallery_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.integrations.store import initialize_integration_tables
-from app.services.appearance import initialize_appearance_tables
-from app.services.sidebar_nav import initialize_sidebar_nav_tables
 from app.services.keybindings import initialize_keybinding_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
@@ -92,6 +92,7 @@ from app.services.provider_runtime import initialize_provider_runtime_tables
 from app.services.research.store import initialize_research_tables
 from app.services.research_mode import initialize_research_mode_tables
 from app.services.rules.store import initialize_rule_tables
+from app.services.sidebar_nav import initialize_sidebar_nav_tables
 from app.services.skills.store import initialize_skill_tables
 from app.services.tasks.store import initialize_task_tables
 from app.services.test_runner.store import initialize_test_runner_tables
@@ -129,9 +130,12 @@ class ProfileSessionMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         # A CORS preflight carries no cookies; CORSMiddleware answers it.
-        if request.method == "OPTIONS":
+        # Public static assets and the SPA shell need no registry lookup.
+        if request.method == "OPTIONS" or not _within(request.url.path, PROTECTED_PREFIXES):
             return await call_next(request)
-        session = session_for(request)
+        # Session resolution may migrate a profile on its first request. Keep
+        # disk I/O and SQLite waits off the event loop shared by every client.
+        session = await run_in_threadpool(session_for, request)
         if session is None:
             if requires_authenticated_profile(request.url.path):
                 return JSONResponse(

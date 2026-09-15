@@ -17,12 +17,7 @@ import { registerModal } from "./modalStack.js";
 import { visibleSystemNav } from "./systemNav.js";
 import { replaceRange } from "./voice/insertion.js";
 import { useDictation } from "./voice/useDictation.js";
-import CommandPalette from "./CommandPalette.jsx";
-import AppearanceSettings from "./AppearanceSettings.jsx";
-import BackgroundSettings from "./BackgroundSettings.jsx";
 import ChatBackground from "./ChatBackground.jsx";
-import KeyboardSettings from "./KeyboardSettings.jsx";
-import VoiceSettings from "./VoiceSettings.jsx";
 import { DEFAULT_THEME_ID, applyTheme } from "./themes.js";
 import {
   DEFAULT_BACKGROUND_ID,
@@ -33,44 +28,12 @@ import { COMMANDS } from "./keys/commands.js";
 import { detectPlatform } from "./keys/engine.js";
 import { buildKeymap } from "./keys/keymap.js";
 import { useCommandHandlers, useKeyboardEngine, useScopes } from "./keys/useCommands.js";
-import OpenFolderDialog from "./OpenFolderDialog.jsx";
-import ChatToolsPanel from "./ChatToolsPanel.jsx";
-import UsagePanel from "./UsagePanel.jsx";
-import SkillsPanel from "./SkillsPanel.jsx";
-import ExternalAgents from "./ExternalAgents.jsx";
-import Integrations from "./Integrations.jsx";
-import CompareModels from "./CompareModels.jsx";
-import LocalModels from "./LocalModels.jsx";
-import Notes from "./Notes.jsx";
 import WorkspaceIcon from "./WorkspaceIcon.jsx";
-import Projects from "./Projects.jsx";
-import Research from "./Research.jsx";
-import Tasks from "./Tasks.jsx";
-import Calendar from "./Calendar.jsx";
 import CalendarProposalCard from "./CalendarProposalCard.jsx";
 import ReminderToast from "./ReminderToast.jsx";
-import Files from "./Files.jsx";
-import Gallery from "./Gallery.jsx";
 import GalleryImages from "./GalleryImages.jsx";
 import ImageLightbox from "./ImageLightbox.jsx";
-import Repos from "./Repos.jsx";
-import RulesProfiles from "./RulesProfiles.jsx";
-import SidebarItemsSettings from "./SidebarItemsSettings.jsx";
-import AgentSettings from "./AgentSettings.jsx";
-import Bundles from "./Bundles.jsx";
-import GitHub from "./GitHub.jsx";
-import ContextMemory from "./ContextMemory.jsx";
-import CommandSandbox from "./CommandSandbox.jsx";
-import LspPanel from "./LspPanel.jsx";
-import WebSearch from "./WebSearch.jsx";
-import MemoryRetrieval from "./MemoryRetrieval.jsx";
-import ProviderRuntime from "./ProviderRuntime.jsx";
-import EvaluationHarness from "./EvaluationHarness.jsx";
-import WorkspaceOrchestration from "./WorkspaceOrchestration.jsx";
-import Continuity from "./Continuity.jsx";
-import AccountSettings from "./AccountSettings.jsx";
 import ProfilePicker from "./ProfilePicker.jsx";
-import MemoryDialog from "./MemoryDialog.jsx";
 import {
   formatDuration,
   formatMessageTime,
@@ -82,6 +45,46 @@ import {
   splitGeneratedText,
   sumTotalTokens,
 } from "./chatPresentation.js";
+
+import { lazyPanel } from "./lazyPanel.jsx";
+
+const CommandPalette = lazyPanel(() => import("./CommandPalette.jsx"));
+const AppearanceSettings = lazyPanel(() => import("./AppearanceSettings.jsx"));
+const BackgroundSettings = lazyPanel(() => import("./BackgroundSettings.jsx"));
+const KeyboardSettings = lazyPanel(() => import("./KeyboardSettings.jsx"));
+const VoiceSettings = lazyPanel(() => import("./VoiceSettings.jsx"));
+const OpenFolderDialog = lazyPanel(() => import("./OpenFolderDialog.jsx"));
+const ChatToolsPanel = lazyPanel(() => import("./ChatToolsPanel.jsx"));
+const UsagePanel = lazyPanel(() => import("./UsagePanel.jsx"));
+const SkillsPanel = lazyPanel(() => import("./SkillsPanel.jsx"));
+const ExternalAgents = lazyPanel(() => import("./ExternalAgents.jsx"));
+const Integrations = lazyPanel(() => import("./Integrations.jsx"));
+const CompareModels = lazyPanel(() => import("./CompareModels.jsx"));
+const LocalModels = lazyPanel(() => import("./LocalModels.jsx"));
+const Notes = lazyPanel(() => import("./Notes.jsx"));
+const Projects = lazyPanel(() => import("./Projects.jsx"));
+const Research = lazyPanel(() => import("./Research.jsx"));
+const Tasks = lazyPanel(() => import("./Tasks.jsx"));
+const Calendar = lazyPanel(() => import("./Calendar.jsx"));
+const Files = lazyPanel(() => import("./Files.jsx"));
+const Gallery = lazyPanel(() => import("./Gallery.jsx"));
+const Repos = lazyPanel(() => import("./Repos.jsx"));
+const RulesProfiles = lazyPanel(() => import("./RulesProfiles.jsx"));
+const SidebarItemsSettings = lazyPanel(() => import("./SidebarItemsSettings.jsx"));
+const AgentSettings = lazyPanel(() => import("./AgentSettings.jsx"));
+const Bundles = lazyPanel(() => import("./Bundles.jsx"));
+const GitHub = lazyPanel(() => import("./GitHub.jsx"));
+const ContextMemory = lazyPanel(() => import("./ContextMemory.jsx"));
+const CommandSandbox = lazyPanel(() => import("./CommandSandbox.jsx"));
+const LspPanel = lazyPanel(() => import("./LspPanel.jsx"));
+const WebSearch = lazyPanel(() => import("./WebSearch.jsx"));
+const MemoryRetrieval = lazyPanel(() => import("./MemoryRetrieval.jsx"));
+const ProviderRuntime = lazyPanel(() => import("./ProviderRuntime.jsx"));
+const EvaluationHarness = lazyPanel(() => import("./EvaluationHarness.jsx"));
+const WorkspaceOrchestration = lazyPanel(() => import("./WorkspaceOrchestration.jsx"));
+const Continuity = lazyPanel(() => import("./Continuity.jsx"));
+const AccountSettings = lazyPanel(() => import("./AccountSettings.jsx"));
+const MemoryDialog = lazyPanel(() => import("./MemoryDialog.jsx"));
 
 // The guard key for a send that is creating its chat as it goes: there is no id
 // to key by yet, and two such sends are the double-click the guard exists for.
@@ -1383,11 +1386,23 @@ function GenerationTimer({ startedAt }) {
     if (!startedAt) {
       return undefined;
     }
-    const update = () => setElapsedMs(Date.now() - startedAt);
+    let timer;
+    const update = () => {
+      window.clearTimeout(timer);
+      if (document.hidden) return;
+      const elapsed = Math.max(0, Date.now() - startedAt);
+      setElapsedMs(elapsed);
+      // Match the label's rounding boundaries. After ten seconds it only
+      // displays whole seconds, so nine out of ten old ticks did no useful work.
+      const step = elapsed < 10_000 ? 100 : 1000;
+      timer = window.setTimeout(update, Math.max(1, step - ((elapsed + step / 2) % step)));
+    };
     update();
-    //: Tenths, because that is what the label shows for the first ten seconds.
-    const timer = window.setInterval(update, 100);
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", update);
+    };
   }, [startedAt]);
 
   return <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>;
@@ -1396,6 +1411,10 @@ function GenerationTimer({ startedAt }) {
 export function PendingAssistantMessage({ generation, startedAt }) {
   const hasThinking = Boolean(generation?.thinking);
   const hasContent = Boolean(generation?.content);
+  const contentHtml = useMemo(
+    () => renderMessageHtml(generation?.content || ""),
+    [generation?.content],
+  );
 
   return (
     <article className="neo-chat-message assistant thinking">
@@ -1414,7 +1433,7 @@ export function PendingAssistantMessage({ generation, startedAt }) {
           // closing fence arrives. Escaped by renderMessageHtml.
           <div
             className="chat-content live-answer"
-            dangerouslySetInnerHTML={{ __html: renderMessageHtml(generation.content) }}
+            dangerouslySetInnerHTML={{ __html: contentHtml }}
           />
         )}
         </div>

@@ -11,8 +11,11 @@ def resolve_dependencies(
     source_path: str,
     dependencies: list[ExtractedDependency],
     repo_files: list[dict],
+    *,
+    by_path: dict | None = None,
 ) -> list[dict]:
-    by_path = {item["relative_path"]: item for item in repo_files}
+    if by_path is None:
+        by_path = {item["relative_path"]: item for item in repo_files}
     return [_resolve(source_path, dependency, by_path) for dependency in dependencies]
 
 

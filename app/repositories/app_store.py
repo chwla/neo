@@ -199,18 +199,26 @@ class AppStore:
         if not chats:
             return []
 
-        # One query for every hit rather than one per chat, then keep the earliest
-        # matching message for each.
-        matches: dict[int, ChatMessage] = {}
-        for message in self.db.scalars(
-            select(ChatMessage)
+        # Select only the first matching row per chat in SQLite. Loading every
+        # matching message can materialize an entire history for a common word.
+        first_match_id = (
+            select(ChatMessage.id)
             .where(
-                ChatMessage.chat_id.in_([chat.id for chat in chats]),
+                ChatMessage.chat_id == Chat.id,
                 ChatMessage.content.ilike(pattern, escape="\\"),
             )
-            .order_by(ChatMessage.chat_id, ChatMessage.created_at, ChatMessage.id)
-        ):
-            matches.setdefault(message.chat_id, message)
+            .order_by(ChatMessage.created_at, ChatMessage.id)
+            .limit(1)
+            .correlate(Chat)
+            .scalar_subquery()
+        )
+        matches = dict(
+            self.db.execute(
+                select(Chat.id, ChatMessage.content)
+                .join(ChatMessage, ChatMessage.id == first_match_id)
+                .where(Chat.id.in_([chat.id for chat in chats]))
+            ).all()
+        )
 
         results = []
         for chat in chats:
@@ -218,7 +226,7 @@ class AppStore:
             results.append(
                 {
                     "chat": chat,
-                    "snippet": _snippet(message.content, cleaned) if message else None,
+                    "snippet": _snippet(message, cleaned) if message else None,
                     "matched_title": cleaned.lower() in chat.title.lower(),
                 }
             )

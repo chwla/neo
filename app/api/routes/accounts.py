@@ -54,14 +54,18 @@ class ProfileUpdateRequest(BaseModel):
 
 
 def session_for(request: Request) -> dict | None:
+    if hasattr(request.state, "neo_profile_session"):
+        return request.state.neo_profile_session
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
     with _session_lock:
         guest = _sessions.get(token)
-    if guest is not None:
-        return guest
-    return profile_for_session(token)
+    session = guest if guest is not None else profile_for_session(token)
+    # Reused only within this request. Every new request still checks durable
+    # revocation and sees profile updates immediately.
+    request.state.neo_profile_session = session
+    return session
 
 
 def _start_session(response: Response, profile: dict) -> None:

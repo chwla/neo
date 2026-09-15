@@ -45,13 +45,16 @@ class CodeIndexService:
         store.clear_repo_index(repo_id)
         indexed = symbol_count = dependency_count = route_count = 0
         errors: list[dict] = []
+        by_path = {item["relative_path"]: item for item in repo_files}
         for mapping in repo_files:
             try:
-                result, dependencies = index_repo_file(mapping, repo_files)
+                result, dependencies = index_repo_file(mapping, repo_files, by_path=by_path)
+                symbols = []
+                dependency_rows = []
                 parent_ids: dict[str, str] = {}
                 for symbol in result.symbols:
                     symbol_id = str(uuid.uuid4())
-                    store.insert_symbol(
+                    symbols.append(
                         {
                             "id": symbol_id,
                             "repo_id": repo_id,
@@ -73,10 +76,8 @@ class CodeIndexService:
                         }
                     )
                     parent_ids.setdefault(symbol.name, symbol_id)
-                    symbol_count += 1
-                    route_count += symbol.symbol_type == "api_route"
                 for dependency in dependencies:
-                    store.insert_dependency(
+                    dependency_rows.append(
                         {
                             "id": str(uuid.uuid4()),
                             "repo_id": repo_id,
@@ -86,9 +87,8 @@ class CodeIndexService:
                             "created_at": now,
                         }
                     )
-                    dependency_count += 1
                 summary, purpose, keys = summarize_file(mapping["relative_path"], result)
-                store.insert_summary(
+                summary_row = (
                     {
                         "id": str(uuid.uuid4()),
                         "repo_id": repo_id,
@@ -104,6 +104,15 @@ class CodeIndexService:
                         "updated_at": now,
                     }
                 )
+                with store.write_batch() as connection:
+                    for item in symbols:
+                        store.insert_symbol(item, connection=connection)
+                    for item in dependency_rows:
+                        store.insert_dependency(item, connection=connection)
+                    store.insert_summary(summary_row, connection=connection)
+                symbol_count += len(symbols)
+                dependency_count += len(dependency_rows)
+                route_count += sum(item["symbol_type"] == "api_route" for item in symbols)
                 indexed += 1
             except Exception as exc:
                 errors.append({"relative_path": mapping["relative_path"], "error": str(exc)})

@@ -36,9 +36,11 @@ file Neo cannot parse is not evidence of anything.
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import os
+import stat
 import threading
 import time
 from datetime import UTC, datetime
@@ -307,12 +309,22 @@ _CODEX_TAIL_BYTES = 512 * 1024
 
 
 def _codex_rollouts(sessions: Path) -> list[Path]:
+    def candidates():
+        for path in sessions.rglob("rollout-*.jsonl"):
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                yield info.st_mtime, path
+
     try:
-        found = [path for path in sessions.rglob("rollout-*.jsonl") if path.is_file()]
+        # Retain only the newest 25 paths and stat each candidate once. A long
+        # history should not require sorting or retaining every past session.
+        newest = heapq.nlargest(_CODEX_ROLLOUT_SCAN, candidates(), key=lambda item: item[0])
     except OSError:
         return []
-    found.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0.0, reverse=True)
-    return found[:_CODEX_ROLLOUT_SCAN]
+    return [path for _, path in newest]
 
 
 def _codex_rate_limits(path: Path) -> tuple[dict[str, Any], str] | None:

@@ -83,7 +83,7 @@ class VoiceWorker:
 
         def run() -> T | None:
             with self._lock:
-                if self._pending.get(key, generation) != generation:
+                if self._pending.get(key) != generation:
                     return None
             return job()
 

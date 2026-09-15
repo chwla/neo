@@ -2294,28 +2294,29 @@ def stream_all_chat_events(request: Request, after: int | None = None) -> Stream
             yield json.dumps({"type": "cursor", "seq": cursor}) + "\n"
         idle_since = time.monotonic()
         last_pump = 0.0
-        while True:
-            batch = chat_events.list_all_events(after=cursor)
-            for event in batch:
-                cursor = event["seq"]
-                yield json.dumps(event, default=str) + "\n"
-            if batch:
-                idle_since = time.monotonic()
-                continue
-            # Unlike the per-chat tail, this one closes on neither a terminal
-            # event nor an idle profile.  A terminal event belongs to one chat
-            # and the others are still going.  And closing the moment nothing is
-            # active would spin: the client reconnects 400ms later, so an idle
-            # profile would reopen this connection twice a second forever.  The
-            # idle timeout alone ends it, which is one reconnect every 90s.
-            if time.monotonic() - idle_since > CHAT_STREAM_IDLE_TIMEOUT:
-                yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
-                return
-            now = time.monotonic()
-            if profile is not None and now - last_pump > QUEUE_PUMP_INTERVAL:
-                last_pump = now
-                _pump_turn_queue(profile)
-            time.sleep(CHAT_STREAM_POLL_INTERVAL)
+        with chat_events.event_reader() as read_events:
+            while True:
+                batch = read_events(after=cursor)
+                for event in batch:
+                    cursor = event["seq"]
+                    yield json.dumps(event, default=str) + "\n"
+                if batch:
+                    idle_since = time.monotonic()
+                    continue
+                # Unlike the per-chat tail, this one closes on neither a terminal
+                # event nor an idle profile.  A terminal event belongs to one chat
+                # and the others are still going.  And closing the moment nothing is
+                # active would spin: the client reconnects 400ms later, so an idle
+                # profile would reopen this connection twice a second forever.  The
+                # idle timeout alone ends it, which is one reconnect every 90s.
+                if time.monotonic() - idle_since > CHAT_STREAM_IDLE_TIMEOUT:
+                    yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
+                    return
+                now = time.monotonic()
+                if profile is not None and now - last_pump > QUEUE_PUMP_INTERVAL:
+                    last_pump = now
+                    _pump_turn_queue(profile)
+                time.sleep(CHAT_STREAM_POLL_INTERVAL)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
@@ -2695,7 +2696,9 @@ _COMPACT_SUMMARY_SYSTEM_PROMPT = (
 
 
 @router.post("/chats/{chat_id}/compact", response_model=ChatCompactResponse)
-def compact_chat(chat_id: int, request: ChatCompactRequest, store: StoreDependency) -> ChatCompactResponse:
+def compact_chat(
+    chat_id: int, request: ChatCompactRequest, store: StoreDependency
+) -> ChatCompactResponse:
     """Fold the older part of a conversation into one summary message.
 
     The most recent ``COMPACT_KEEP_RECENT`` messages, and any message that
@@ -2720,7 +2723,9 @@ def compact_chat(chat_id: int, request: ChatCompactRequest, store: StoreDependen
 
     sessions = agent_store.sessions_for_chat(chat_id)
     if any(row["status"] in _ACTIVE_AGENT_STATUSES for row in sessions):
-        raise HTTPException(status_code=409, detail="An agent run is still in progress for this chat.")
+        raise HTTPException(
+            status_code=409, detail="An agent run is still in progress for this chat."
+        )
 
     messages = store.list_chat_messages(chat_id)
 
@@ -2746,14 +2751,18 @@ def compact_chat(chat_id: int, request: ChatCompactRequest, store: StoreDependen
     if not to_summarize:
         return _no_op()
 
-    transcript = "\n\n".join(f"{message.role.upper()}: {message.content}" for message in to_summarize)
+    transcript = "\n\n".join(
+        f"{message.role.upper()}: {message.content}" for message in to_summarize
+    )
     transcript = transcript[-120_000:]
     try:
         client = get_llm_client(request.llm_id, num_predict=900, timeout=180, route_name="chat")
         result = client.chat_with_metadata(
             [
                 LLMMessage(role="system", content=_COMPACT_SUMMARY_SYSTEM_PROMPT),
-                LLMMessage(role="user", content=f"{transcript}\n\nSummarize the conversation above."),
+                LLMMessage(
+                    role="user", content=f"{transcript}\n\nSummarize the conversation above."
+                ),
             ],
             temperature=0.2,
             num_predict=900,

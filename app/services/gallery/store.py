@@ -610,6 +610,12 @@ def get_vector(item_id: str) -> dict | None:
 def all_vectors() -> list[dict]:
     """Every stored vector, for the brute-force cosine pass."""
 
+    return list(iter_vectors())
+
+
+def iter_vectors():
+    """Stream the same bounded search population without buffering every blob."""
+
     conn = _connect()
     try:
         rows = conn.execute(
@@ -617,8 +623,9 @@ def all_vectors() -> list[dict]:
             "JOIN gallery_items i ON i.id = v.item_id AND i.deleted = 0 "
             "LIMIT ?",
             (SEARCH_SCAN_LIMIT,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        for row in rows:
+            yield dict(row)
     finally:
         conn.close()
 

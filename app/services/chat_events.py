@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,8 +32,8 @@ def _db_path() -> str:
     return url.replace("sqlite:///", "", 1) if url.startswith("sqlite:///") else "neo_memory.db"
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path(), timeout=30)
+def _connect(*, check_same_thread: bool = True) -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path(), timeout=30, check_same_thread=check_same_thread)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -163,6 +164,32 @@ def list_all_events(after: int = 0, limit: int = 500) -> list[dict]:
     return [_project(row) for row in rows]
 
 
+@contextmanager
+def event_reader():
+    """Reuse one connection while tailing a profile's log.
+
+    Starlette may advance the same sync generator on different worker threads;
+    it never advances it concurrently. Each SELECT is fully consumed before
+    yielding, so no read transaction prevents WAL checkpoints between polls.
+    The path is captured on entry and cannot follow a later profile switch.
+    """
+    conn = _connect(check_same_thread=False)
+    try:
+        def read(after: int = 0, limit: int = 500) -> list[dict]:
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM chat_events WHERE seq > ? ORDER BY seq LIMIT ?",
+                    (after, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+            return [_project(row) for row in rows]
+
+        yield read
+    finally:
+        conn.close()
+
+
 def first_seq_for(
     chat_id: int,
     *,
@@ -256,6 +283,7 @@ def any_active_turn() -> bool:
             "SELECT 1 FROM chat_generations WHERE status IN ('queued', 'running') LIMIT 1"
         ).fetchone()
         if generation:
+            conn.close()
             return True
     except sqlite3.OperationalError:
         pass
