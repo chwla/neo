@@ -241,9 +241,7 @@ def search(request: GallerySearchRequest) -> dict:
             {
                 "item": GalleryItem.model_validate(entry["item"]),
                 "score": entry["score"],
-                "appearances": [
-                    GalleryAppearance.model_validate(a) for a in entry["appearances"]
-                ],
+                "appearances": [GalleryAppearance.model_validate(a) for a in entry["appearances"]],
                 **(
                     {"score_breakdown": entry["score_breakdown"]}
                     if request.include_score_breakdown

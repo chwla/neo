@@ -1,4 +1,4 @@
-"""Research job orchestrator: runs the full research pipeline in a background thread."""
+"""Research jobs: run the shared research engine in a background thread and persist it."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.db.session import build_engine
 from app.repositories.memory import MemoryRepository
-from app.services.llm import get_llm_client
 from app.services.memory.prompt import (
     RecallPromptOrchestrator,
     repository_usage_recorder,
@@ -25,28 +24,27 @@ from app.services.memory.recall import CanonicalRecallService
 from app.services.memory.runtime import build_memory_recall_dependencies
 from app.services.memory.settings import MemorySettings
 from app.services.profile_accounts import database_url_for, profile_database
-from app.services.research.evidence import (
-    extract_entity_terms,
-    extract_evidence,
-    filter_irrelevant_sources,
-    identify_gaps,
-)
+from app.services.research.engine import ProgressUpdate, default_dependencies, run_research
 from app.services.research.memory_scope import (
     ResearchMemoryRecallResult,
     retrieve_scoped_memory_result,
 )
-from app.services.research.planner import generate_followup_queries, generate_plan
-from app.services.research.product_intent import TOPIC_PRODUCT_COMPARISON, normalize_user_query
-from app.services.research.searcher import ResearchSearcher
-from app.services.research.store import load_job, save_job, update_job_status
-from app.services.research.synthesizer import synthesize_report
-from app.services.research.topic_intent import TOPIC_AI_CODING_TOOLS, classify_topic_intent
+from app.services.research.policy import POLICIES
+from app.services.research.report import lead_answer
+from app.services.research.store import (
+    load_job,
+    mark_interrupted_jobs,
+    save_job,
+    update_job_status,
+)
 from app.services.research.types import (
-    DEPTH_CONFIG,
+    CompletionStatus,
     DepthMode,
     JobStatus,
     ProgressEvent,
     ResearchJob,
+    ResearchOutcome,
+    StopReason,
 )
 from app.services.rules.resolver import RuleResolver
 from app.services.rules.types import RuleResolveRequest
@@ -60,6 +58,17 @@ ResearchMemoryProvider = Callable[
     [dict[str, Any]], tuple[RecallPromptOrchestrator, MemoryQueryContext]
 ]
 _memory_research_provider: ResearchMemoryProvider | None = None
+
+_STAGE_STATUS = {
+    "planning": JobStatus.PLANNING,
+    "searching": JobStatus.SEARCHING,
+    "fetching": JobStatus.FETCHING,
+    "judging": JobStatus.EXTRACTING,
+    "coverage": JobStatus.EXTRACTING,
+    "synthesizing": JobStatus.SYNTHESIZING,
+    "verifying": JobStatus.SYNTHESIZING,
+    "reporting": JobStatus.SYNTHESIZING,
+}
 
 
 @dataclass
@@ -209,8 +218,6 @@ def _canonical_research_memory(
 def create_job(
     user_query: str,
     depth: DepthMode = DepthMode.STANDARD,
-    max_sources: int | None = None,
-    max_rounds: int | None = None,
     project_id: str | None = None,
     task_id: str | None = None,
     repo_id: str | None = None,
@@ -221,7 +228,7 @@ def create_job(
     memory_enabled: bool = True,
     incognito: bool = False,
 ) -> ResearchJob:
-    config = DEPTH_CONFIG[depth]
+    ceilings = POLICIES[depth].ceilings
     now = datetime.now(UTC).isoformat()
     rule_result = RuleResolver().resolve(
         RuleResolveRequest(
@@ -235,8 +242,8 @@ def create_job(
         id=uuid.uuid4().hex[:12],
         user_query=user_query,
         depth=depth,
-        max_sources=max_sources or config["max_sources"],
-        max_rounds=max_rounds or config["max_rounds"],
+        max_sources=ceilings.reads,
+        max_rounds=ceilings.steps,
         status=JobStatus.QUEUED,
         created_at=now,
         updated_at=now,
@@ -260,7 +267,7 @@ def create_job(
             "rule_warnings": rule_result["warnings"],
         },
     )
-    save_job(job.model_dump())
+    save_job(job.model_dump(mode="json"))
     return job
 
 
@@ -306,11 +313,13 @@ def _run_research_pipeline_bound(
 
 def cancel_job(job_id: str) -> bool:
     with _lock:
+        # Setting the flag and writing the status together means a run finishing at the same
+        # moment either sees the flag or is overwritten by this write, never the reverse.
         cancel_event = _active_jobs.get(job_id)
-    if cancel_event:
-        cancel_event.set()
-        update_job_status(job_id, JobStatus.CANCELLED.value, current_step="Cancelled by user")
-        return True
+        if cancel_event:
+            cancel_event.set()
+            update_job_status(job_id, JobStatus.CANCELLED.value, current_step="Cancelled by user")
+            return True
     job_data = load_job(job_id)
     if job_data and job_data["status"] in ("queued",):
         update_job_status(job_id, JobStatus.CANCELLED.value, current_step="Cancelled by user")
@@ -326,10 +335,6 @@ def get_job(job_id: str) -> ResearchJob | None:
 
 
 def _dict_to_job(data: dict) -> ResearchJob:
-    if isinstance(data.get("depth"), str):
-        data["depth"] = DepthMode(data["depth"])
-    if isinstance(data.get("status"), str):
-        data["status"] = JobStatus(data["status"])
     metadata = data.get("metadata") or {}
     data.setdefault("owner_id", metadata.get("memory_owner_id"))
     data.setdefault("database_identity", metadata.get("memory_database_identity"))
@@ -338,270 +343,97 @@ def _dict_to_job(data: dict) -> ResearchJob:
     return ResearchJob(**data)
 
 
-def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
-    """Execute the full multi-step research pipeline."""
-    try:
-        _update(job_id, JobStatus.PLANNING, 5, "Planning research", "Generating research plan...")
-        if cancel.is_set():
-            return _mark_cancelled(job_id)
+def _research_context(job_data: dict[str, Any], user_query: str) -> tuple[str, list[str]]:
+    """Rules and scoped memory as untrusted planning context, plus the memory ids used."""
+    settings = get_settings()
+    metadata = dict(job_data.get("metadata") or {})
+    memory_allowed = bool(
+        settings.memory_enabled
+        and not settings.memory_incognito
+        and metadata.get("memory_enabled", True)
+        and not metadata.get("incognito", False)
+    )
+    memory_result = (
+        _canonical_research_memory(job_data, user_query)
+        if memory_allowed
+        else retrieve_scoped_memory_result(user_query)
+    )
+    metadata["memory_recall_diagnostic"] = memory_result.diagnostic
+    job_data["metadata"] = metadata
+    save_job(job_data)
 
+    rule_result = {
+        "resolved_rules": metadata.get("resolved_rules", {}),
+        "applied_profiles": metadata.get("applied_profiles", []),
+        "warnings": metadata.get("rule_warnings", []),
+    }
+    parts: list[str] = []
+    rule_context = RuleResolver.research_context(rule_result)
+    if rule_context:
+        parts.append(f"Research rules (guidance only):\n{rule_context}")
+    if memory_allowed and memory_result.context_text:
+        parts.append(f"Remembered context about the user:\n{memory_result.context_text}")
+    return "\n\n".join(parts), list(memory_result.canonical_ids)
+
+
+def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
+    try:
+        _update(job_id, JobStatus.PLANNING, 2, "Starting", "Preparing research")
         job_data = load_job(job_id)
         if not job_data:
             return
-        depth = DepthMode(job_data["depth"])
         user_query = job_data["user_query"]
-        max_sources = job_data["max_sources"]
-        max_rounds = job_data["max_rounds"]
-
-        query_norm = normalize_user_query(user_query)
-        effective_query = query_norm.effective_query
-
-        # --- SCOPED MEMORY ---
-        settings = get_settings()
-        metadata = dict(job_data.get("metadata") or {})
-        research = bool(
-            settings.memory_enabled
-            and not settings.memory_incognito
-            and metadata.get("memory_enabled", True)
-            and not metadata.get("incognito", False)
+        depth = DepthMode(job_data["depth"])
+        context, memory_keys = _research_context(job_data, user_query)
+        metadata = job_data.get("metadata") or {}
+        route_name = RuleResolver.route_name(
+            {
+                "resolved_rules": metadata.get("resolved_rules", {}),
+                "applied_profiles": metadata.get("applied_profiles", []),
+                "warnings": metadata.get("rule_warnings", []),
+            },
+            "research",
+            "research",
         )
-        if research:
-            memory_result = _canonical_research_memory(job_data, user_query)
-        else:
-            memory_result = retrieve_scoped_memory_result(user_query)
-        memory_context = memory_result.context_text
-        memory_keys = list(memory_result.canonical_ids)
-        metadata["memory_recall_diagnostic"] = memory_result.diagnostic
-        job_data["metadata"] = metadata
-        save_job(job_data)
-        if memory_context:
+
+        def on_progress(update: ProgressUpdate) -> None:
+            fields: dict[str, Any] = {}
+            if update.plan is not None:
+                fields["plan_json"] = update.plan.model_dump(mode="json")
+            if update.sources is not None:
+                fields["sources_json"] = [s.model_dump(mode="json") for s in update.sources]
+            if update.evidence is not None:
+                fields["evidence_json"] = [e.model_dump(mode="json") for e in update.evidence]
+            if update.queries is not None:
+                fields["generated_queries_json"] = update.queries
             _update(
                 job_id,
-                JobStatus.PLANNING,
-                7,
-                "Memory loaded",
-                f"Loaded memory context: {', '.join(memory_keys)}",
+                _STAGE_STATUS.get(update.stage, JobStatus.SEARCHING),
+                update.percent,
+                update.step,
+                update.message,
+                progress=update,
+                **fields,
             )
 
-        rule_result = {
-            "resolved_rules": job_data.get("metadata", {}).get("resolved_rules", {}),
-            "applied_profiles": job_data.get("metadata", {}).get("applied_profiles", []),
-            "warnings": job_data.get("metadata", {}).get("rule_warnings", []),
-        }
-        route_name = RuleResolver.route_name(rule_result, "research", "research")
-        rule_context = RuleResolver.research_context(rule_result)
-        untrusted_memory_context = memory_context if research else ""
-        if rule_context and not research:
-            memory_context = (
-                f"{memory_context}\n\nResearch rules (guidance only):\n{rule_context}"
-            ).strip()
-        elif research:
-            memory_context = rule_context
-        ollama = get_llm_client(num_predict=512, route_name=route_name)
-
-        intent = classify_topic_intent(effective_query, original_query=user_query)
-        plan = generate_plan(
-            effective_query,
-            depth,
-            memory_context=memory_context,
-            ollama=ollama,
-            topic_intent=intent,
-            original_query=user_query,
-            untrusted_memory_context=untrusted_memory_context,
-        )
-        _save_plan(job_id, plan)
-        _update(
-            job_id,
-            JobStatus.PLANNING,
-            10,
-            "Plan ready",
-            f"Generated {len(plan.queries)} search queries, {len(plan.subquestions)} sub-questions",
-        )
-
-        if cancel.is_set():
-            return _mark_cancelled(job_id)
-
-        # --- SEARCH ---
-        searcher = ResearchSearcher(max_sources=max_sources)
-        all_queries = list(plan.queries)
-        current_round = 0
-
-        def on_query_done(done: int, total: int, query: str) -> None:
-            pct = 15 + int((done / total) * 25)
-            _update(
-                job_id, JobStatus.SEARCHING, pct, f"Searching {done}/{total}", f"Searched: {query}"
-            )
-
-        _update(
-            job_id,
-            JobStatus.SEARCHING,
-            15,
-            "Searching web",
-            f"Running {len(plan.queries)} queries...",
-        )
-        search_results = searcher.search_multiple(
-            plan.queries,
-            on_query_done=on_query_done,
-            cancelled=cancel.is_set,
-        )
-        if cancel.is_set():
-            return _mark_cancelled(job_id)
-
-        _update(
-            job_id,
-            JobStatus.FETCHING,
-            42,
-            "Fetching sources",
-            f"Fetching top {min(max_sources, len(search_results))} sources...",
-        )
-        sources = searcher.fetch_sources(
-            search_results,
-            max_pages=max_sources,
-            cancelled=cancel.is_set,
-        )
-        _save_sources(job_id, sources, all_queries)
-        if cancel.is_set():
-            return _mark_cancelled(job_id)
-
-        entity_terms = extract_entity_terms(effective_query, plan)
-        intent_filtered_topics = (TOPIC_AI_CODING_TOOLS, TOPIC_PRODUCT_COMPARISON)
-        if entity_terms or plan.topic_intent in intent_filtered_topics:
-            sources = filter_irrelevant_sources(
-                sources,
-                entity_terms,
-                plan=plan,
-                user_query=effective_query,
-            )
-
-        fetched_count = sum(1 for s in sources if s.fetched)
-        rejected_count = sum(1 for s in sources if s.fetch_status == "rejected")
-        failed_count = sum(1 for s in sources if s.fetch_status == "failed")
-        _update(
-            job_id,
-            JobStatus.EXTRACTING,
-            55,
-            "Extracting evidence",
-            (
-                f"Fetched {fetched_count} pages ({failed_count} failed, "
-                f"{rejected_count} rejected), extracting evidence..."
-            ),
-        )
-
-        evidence = extract_evidence(
-            sources, plan, entity_terms=entity_terms, user_query=effective_query
-        )
-
-        for src in sources:
-            src.evidence_count = sum(1 for e in evidence if e.source_id == src.id)
-
-        _save_evidence(job_id, evidence)
-        _save_sources(job_id, sources, all_queries)
-
-        _update(
-            job_id,
-            JobStatus.EXTRACTING,
-            60,
-            "Checking gaps",
-            f"Extracted {len(evidence)} evidence chunks, checking for gaps...",
-        )
-        gaps = identify_gaps(plan, evidence, user_query=effective_query)
-
-        # --- FOLLOW-UP ROUNDS ---
-        while current_round < max_rounds - 1 and gaps and not cancel.is_set():
-            current_round += 1
-            followup_queries = generate_followup_queries(effective_query, plan, gaps, ollama=ollama)
-            if not followup_queries:
-                break
-
-            all_queries.extend(followup_queries)
-            _update(
-                job_id,
-                JobStatus.SEARCHING,
-                62 + current_round * 5,
-                f"Follow-up round {current_round}",
-                f"Running {len(followup_queries)} follow-up queries...",
-            )
-
-            new_results = searcher.search_multiple(
-                followup_queries,
-                cancelled=cancel.is_set,
-            )
-            if cancel.is_set():
-                return _mark_cancelled(job_id)
-
-            if new_results:
-                remaining_pages = max_sources - fetched_count
-                if remaining_pages <= 0:
-                    gaps = []
-                    break
-                new_sources = searcher.fetch_sources(
-                    new_results,
-                    max_pages=min(5, remaining_pages),
-                    cancelled=cancel.is_set,
-                )
-                next_id = max((s.id for s in sources), default=0) + 1
-                for s in new_sources:
-                    s.id = next_id
-                    next_id += 1
-                sources.extend(new_sources)
-                fetched_count = sum(1 for s in sources if s.fetched)
-
-                if entity_terms or plan.topic_intent in intent_filtered_topics:
-                    filter_irrelevant_sources(
-                        new_sources,
-                        entity_terms,
-                        plan=plan,
-                        user_query=effective_query,
-                    )
-                evidence = extract_evidence(
-                    sources,
-                    plan,
-                    entity_terms=entity_terms,
-                    user_query=effective_query,
-                )
-                for src in sources:
-                    src.evidence_count = sum(1 for e in evidence if e.source_id == src.id)
-                _save_sources(job_id, sources, all_queries)
-                _save_evidence(job_id, evidence)
-                gaps = identify_gaps(plan, evidence, user_query=effective_query)
-
-        if cancel.is_set():
-            return _mark_cancelled(job_id)
-
-        # --- SYNTHESIS ---
-        _update(
-            job_id,
-            JobStatus.SYNTHESIZING,
-            75,
-            "Synthesizing report",
-            f"Writing report from {len(evidence)} evidence chunks, {fetched_count} sources...",
-        )
-
-        report = synthesize_report(
+        outcome = run_research(
             user_query,
-            plan,
-            evidence,
-            sources,
-            gaps,
-            ollama=get_llm_client(num_predict=800, timeout=300, route_name=route_name),
-            depth=depth,
+            depth,
+            deps=default_dependencies(route_name),
+            progress=on_progress,
+            cancelled=cancel.is_set,
+            context=context,
+            run_id=job_id,
         )
-
-        _save_final(job_id, report, sources, evidence, all_queries, plan, gaps, memory_keys)
-        _update(
-            job_id,
-            JobStatus.COMPLETED,
-            100,
-            "Research complete",
-            f"Report ready: {len(evidence)} evidence chunks from {fetched_count} sources",
-        )
-
+        if cancel.is_set() or outcome.stop_reason == StopReason.USER_CANCELLED:
+            return _mark_cancelled(job_id)
+        _save_final(job_id, outcome, memory_keys, cancel)
     except Exception as exc:
         logger.exception("Research pipeline failed for job %s", job_id)
         update_job_status(
             job_id,
             JobStatus.FAILED.value,
-            error=str(exc),
+            error=str(exc)[:500],
             current_step="Pipeline failed",
             progress_percent=0,
         )
@@ -610,98 +442,97 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             _active_jobs.pop(job_id, None)
 
 
-def _update(job_id: str, status: JobStatus, pct: int, step: str, message: str) -> None:
-    now = datetime.now(UTC).isoformat()
+def _update(
+    job_id: str,
+    status: JobStatus,
+    pct: int,
+    step: str,
+    message: str,
+    progress: ProgressUpdate | None = None,
+    **fields: Any,
+) -> None:
     job_data = load_job(job_id)
-    if not job_data:
+    if not job_data or job_data.get("status") == JobStatus.CANCELLED.value:
         return
-    if job_data.get("status") == JobStatus.CANCELLED.value:
-        return
-    log = job_data.get("progress_log", [])
+    log = [item for item in job_data.get("progress_log", []) if isinstance(item, dict)]
+    metrics = progress.metrics if progress is not None else None
     log.append(
         ProgressEvent(
             status=status.value,
             progress_percent=pct,
             current_step=step,
             message=message,
-            timestamp=now,
+            timestamp=datetime.now(UTC).isoformat(),
+            phase=progress.phase if progress is not None else "",
+            core_established=progress.core_established if progress is not None else 0,
+            core_targets=progress.core_targets if progress is not None else 0,
+            elapsed_seconds=progress.elapsed_seconds if progress is not None else 0,
+            ceiling_seconds=progress.ceiling_seconds if progress is not None else 0,
+            searches_run=metrics.searches_run if metrics else 0,
+            sources_reviewed=metrics.sources_reviewed if metrics else 0,
+            sources_used=metrics.sources_used if metrics else 0,
+            evidence_accepted=metrics.evidence_accepted if metrics else 0,
+            open_gaps=metrics.open_gaps if metrics else 0,
         ).model_dump()
     )
-
     update_job_status(
         job_id,
         status.value,
         progress_percent=pct,
         current_step=step,
-        progress_log_json=log,
+        progress_log_json=log[-200:],
+        **fields,
     )
 
 
-def _save_plan(job_id: str, plan) -> None:
-    update_job_status(
-        job_id,
-        JobStatus.PLANNING.value,
-        plan_json=plan.model_dump(),
-        generated_queries_json=plan.queries,
-    )
-
-
-def _save_sources(job_id: str, sources, queries) -> None:
-    update_job_status(
-        job_id,
-        JobStatus.FETCHING.value,
-        sources_json=[s.model_dump() for s in sources],
-        generated_queries_json=queries,
-    )
-
-
-def _save_evidence(job_id: str, evidence) -> None:
-    update_job_status(
-        job_id,
-        JobStatus.EXTRACTING.value,
-        evidence_json=[e.model_dump() for e in evidence],
-    )
-
-
-def _save_final(job_id, report, sources, evidence, queries, plan, gaps, memory_keys) -> None:
+def _save_final(
+    job_id: str,
+    outcome: ResearchOutcome,
+    memory_keys: list[str],
+    cancel: threading.Event | None = None,
+) -> None:
     data = load_job(job_id)
-    if data:
-        fetched = [s for s in sources if s.fetched]
-        failed = [s for s in sources if s.fetch_status == "failed"]
-        data["report"] = report
-        data["sources"] = [s.model_dump() for s in sources]
-        data["evidence_chunks"] = [e.model_dump() for e in evidence]
-        data["generated_queries"] = queries
-        data["plan"] = plan.model_dump()
-        data["metadata"] = {
-            "total_sources": len(sources),
-            "fetched_sources": len(fetched),
-            "failed_sources": len(failed),
-            "evidence_chunks": len(evidence),
-            "queries_run": len(queries),
-            "gaps": gaps or [],
+    if not data:
+        return
+    failed = outcome.completion_status == CompletionStatus.FAILED
+    data["report"] = outcome.report
+    data["plan"] = outcome.plan.model_dump(mode="json") if outcome.plan else None
+    data["sources"] = [source.model_dump(mode="json") for source in outcome.sources]
+    data["evidence"] = [item.model_dump(mode="json") for item in outcome.evidence]
+    data["claims"] = [claim.model_dump(mode="json") for claim in outcome.claims]
+    data["trace"] = outcome.trace.model_dump(mode="json")
+    data["generated_queries"] = [action.query for action in outcome.trace.actions if action.query]
+    metadata = dict(data.get("metadata") or {})
+    metadata.update(
+        {
+            "stop_reason": outcome.stop_reason.value,
+            "completion_status": outcome.completion_status.value,
+            "stop_detail": outcome.stop_detail,
+            "confidence": outcome.confidence.value,
+            "confidence_reasons": outcome.confidence_reasons,
+            "answer": lead_answer(outcome.trace.report_sentences),
+            "report_type": outcome.report_type,
+            "report_sections": outcome.report_sections,
+            "metrics": outcome.metrics.model_dump(),
             "memory_used": memory_keys,
-            "topic_intent": plan.topic_intent,
-            "normalized_entities": plan.normalized_entities,
-            "comparison_tools": plan.comparison_tools,
-            "original_query": plan.original_query,
-            "normalized_query": plan.normalized_query,
-            "normalization_reason": plan.normalization_reason,
-            "domain_hint": plan.domain_hint,
-            "qualifiers": plan.qualifiers,
-            "ai_workload_focus": plan.ai_workload_focus,
-            "product_pair": plan.product_pair,
-            "fetch_summary": {
-                "success": len(fetched),
-                "failed": len(failed),
-                "skipped": len(sources) - len(fetched) - len(failed),
-                "failure_reasons": list({s.fetch_error for s in failed if s.fetch_error})[:5],
-            },
         }
-        data["status"] = JobStatus.COMPLETED.value
-        data["progress_percent"] = 100
-        data["current_step"] = "Research complete"
+    )
+    data["metadata"] = metadata
+    data["status"] = JobStatus.FAILED.value if failed else JobStatus.COMPLETED.value
+    data["error"] = outcome.stop_detail if failed else None
+    data["progress_percent"] = 100
+    data["current_step"] = "Research failed" if failed else "Research complete"
+    with _lock:
+        if cancel is not None and cancel.is_set():
+            return
         save_job(data)
+
+
+def recover_interrupted_jobs() -> int:
+    """Fail jobs a previous process left running; jobs running in this process are kept."""
+    with _lock:
+        active = set(_active_jobs)
+    return mark_interrupted_jobs(active)
 
 
 def _mark_cancelled(job_id: str) -> None:

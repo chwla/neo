@@ -235,9 +235,8 @@ def run_process(
     else:
         outcome.outcome = "failed"
         tail = _tail(stderr_text)
-        outcome.error = (
-            f"{os.path.basename(argv[0])} exited with code {process.returncode}"
-            + (f": {tail}" if tail else "")
+        outcome.error = f"{os.path.basename(argv[0])} exited with code {process.returncode}" + (
+            f": {tail}" if tail else ""
         )
     return outcome
 

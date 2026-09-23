@@ -57,9 +57,7 @@ class RepoWorkspaceService:
         original_path: str,
         access: str = store.MANAGED,
         allow_empty: bool = False,
-        empty_message: str = (
-            "No supported text files were found in the selected repository."
-        ),
+        empty_message: str = ("No supported text files were found in the selected repository."),
     ) -> dict:
         scan = scan_repo(
             source,

@@ -211,6 +211,8 @@ def _hedged_before_assertion(text: str) -> bool:
         return False
     assertion = _DURABLE_ASSERTION.search(text)
     return assertion is None or hedge.start() < assertion.start()
+
+
 _THIRD_PARTY = re.compile(
     r"^(?:My friend|My colleague|My partner|He|She|They)\b",
     re.IGNORECASE,
@@ -231,15 +233,15 @@ _IDENTITY_ATTRIBUTE_TARGETS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^(?:my\s+)?(?:full\s+)?name$", re.IGNORECASE), "name"),
     (re.compile(r"^(?:my\s+)?age$|^how\s+old\s+I\s+am$", re.IGNORECASE), "age"),
     (
-        re.compile(r"^(?:my\s+)?(?:hometown|origin)$|^where\s+I(?:'m|\s+am)\s+from$",
-                   re.IGNORECASE),
+        re.compile(
+            r"^(?:my\s+)?(?:hometown|origin)$|^where\s+I(?:'m|\s+am)\s+from$", re.IGNORECASE
+        ),
         "origin",
     ),
     (re.compile(r"^(?:my\s+)?(?:employer|company)$", re.IGNORECASE), "employer"),
     (re.compile(r"^(?:my\s+)?(?:job|occupation|profession)$", re.IGNORECASE), "occupation"),
     (
-        re.compile(r"^(?:my\s+)?(?:city|location|address)$|^where\s+I\s+live$",
-                   re.IGNORECASE),
+        re.compile(r"^(?:my\s+)?(?:city|location|address)$|^where\s+I\s+live$", re.IGNORECASE),
         "current_location",
     ),
 )
@@ -253,8 +255,6 @@ def _identity_attribute_slot(value: str) -> str | None:
         if pattern.fullmatch(cleaned):
             return slot
     return None
-
-
 
 
 def _clean(value: str) -> str:
@@ -881,9 +881,7 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
         return PreparseResult(
             kind=PreparseKind.EXPLICIT_LIFECYCLE,
             reason="grounded_goal_retraction",
-            retractions=(
-                _span(request, goal_retraction, "old", memory_type=MemoryType.GOAL),
-            ),
+            retractions=(_span(request, goal_retraction, "old", memory_type=MemoryType.GOAL),),
             lifecycle_hint=LifecycleHint.ARCHIVE,
             explicit_memory_intent=True,
             deterministic=True,

@@ -317,9 +317,7 @@ def _todo_items(arguments: dict[str, Any]) -> list[dict[str, str]]:
         if not title:
             continue
         status = str(entry.get("status") or "pending")
-        items.append(
-            {"title": title[:200], "status": status if status in allowed else "pending"}
-        )
+        items.append({"title": title[:200], "status": status if status in allowed else "pending"})
     return items
 
 

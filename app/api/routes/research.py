@@ -16,7 +16,6 @@ from app.services.notes import Note, NotesService
 from app.services.notes.service import NotesValidationError
 from app.services.profile_accounts import database_identity_for_profile
 from app.services.research import (
-    DEPTH_CONFIG,
     JobStatus,
     StartResearchRequest,
     cancel_job,
@@ -26,98 +25,29 @@ from app.services.research import (
     list_jobs,
     start_job,
 )
-from app.services.research_mode import ResearchModeService, ResearchPlanRequest, ResearchRunRequest
-from app.services.research_mode import store as research_mode_store
+from app.services.research.engine import plan_preview
+from app.services.research.llm_json import ResearchModelUnavailable
+from app.services.research.planner import PlanningFailed
+from app.services.research.types import DepthMode
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research", tags=["research"])
 
 
-def _mode_service() -> ResearchModeService:
-    return ResearchModeService()
+class PlanPreviewRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    depth: DepthMode = DepthMode.STANDARD
 
 
-# Enterprise Research Mode. These routes intentionally coexist with the legacy
-# asynchronous research job API below so existing sessions remain readable.
 @router.post("/plan")
-def research_mode_plan(payload: ResearchPlanRequest):
-    return _mode_service().plan(payload)
-
-
-@router.post("/run")
-def research_mode_run(payload: ResearchRunRequest):
-    return _mode_service().run(payload)
-
-
-@router.get("/runs")
-def research_mode_runs(limit: int = 100):
-    return {"runs": research_mode_store.list_runs(limit=min(limit, 200))}
-
-
-@router.get("/runs/{run_id}")
-def research_mode_detail(run_id: str):
+def research_plan_preview(payload: PlanPreviewRequest):
+    """The plan a run in this mode would start from, without researching anything."""
     try:
-        return _mode_service().detail(run_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-@router.get("/runs/{run_id}/evidence")
-def research_mode_evidence(run_id: str):
-    detail = research_mode_detail(run_id)
-    return {"evidence": detail["evidence"]}
-
-
-@router.get("/runs/{run_id}/claims")
-def research_mode_claims(run_id: str):
-    detail = research_mode_detail(run_id)
-    return {"claims": detail["claims"]}
-
-
-@router.get("/runs/{run_id}/conflicts")
-def research_mode_conflicts(run_id: str):
-    detail = research_mode_detail(run_id)
-    return {"conflicts": detail["conflicts"]}
-
-
-@router.get("/runs/{run_id}/report")
-def research_mode_report(run_id: str):
-    detail = research_mode_detail(run_id)
-    if not detail["report"]:
-        raise HTTPException(409, "Research report is not ready.")
-    return detail["report"]
-
-
-@router.post("/runs/{run_id}/continue")
-def research_mode_continue(run_id: str):
-    try:
-        return _mode_service().continue_run(run_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-@router.post("/runs/{run_id}/refresh")
-def research_mode_refresh(run_id: str):
-    try:
-        return _mode_service().refresh(run_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-@router.post("/runs/{run_id}/validate-citations")
-def research_mode_validate(run_id: str):
-    try:
-        return _mode_service().validate_citations(run_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-@router.delete("/runs/{run_id}")
-def research_mode_delete(run_id: str):
-    if not research_mode_store.get_run(run_id):
-        raise HTTPException(404, "Research run not found.")
-    research_mode_store.delete_run(run_id)
-    return {"deleted": True, "id": run_id}
+        return plan_preview(payload.question, payload.depth).model_dump(mode="json")
+    except ResearchModelUnavailable as exc:
+        raise HTTPException(503, f"The research model is unavailable ({exc}).") from exc
+    except PlanningFailed as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 class StartResponse(BaseModel):
@@ -130,10 +60,11 @@ class StatusResponse(BaseModel):
     status: str
     progress_percent: int
     current_step: str
-    queries_done: int = 0
-    sources_found: int = 0
-    sources_fetched: int = 0
-    evidence_chunks: int = 0
+    searches_run: int = 0
+    sources_reviewed: int = 0
+    sources_used: int = 0
+    evidence_accepted: int = 0
+    open_gaps: int = 0
 
 
 class CancelResponse(BaseModel):
@@ -156,9 +87,6 @@ def start_research(req: StartResearchRequest, request: Request):
     if not req.query or not req.query.strip():
         raise HTTPException(400, "Query cannot be empty.")
 
-    config = DEPTH_CONFIG[req.depth]
-    max_sources = req.max_sources or config["max_sources"]
-    max_rounds = req.max_rounds or config["max_rounds"]
     profile = session_for(request)
     settings = get_settings()
     use_memory = bool(
@@ -175,8 +103,6 @@ def start_research(req: StartResearchRequest, request: Request):
     job = create_job(
         user_query=req.query.strip(),
         depth=req.depth,
-        max_sources=max_sources,
-        max_rounds=max_rounds,
         project_id=req.project_id,
         task_id=req.task_id,
         repo_id=req.repo_id,
@@ -207,17 +133,25 @@ def list_research_jobs(limit: int = 20, offset: int = 0):
             {
                 "id": j["id"],
                 "user_query": j["user_query"],
-                "depth": j.get("depth", "standard"),
+                "depth": _mode_label(j.get("depth")),
                 "status": j.get("status", "unknown"),
                 "progress_percent": j.get("progress_percent", 0),
                 "current_step": j.get("current_step", ""),
                 "created_at": j.get("created_at", ""),
-                "has_report": bool(j.get("report")),
+                "has_report": bool(j.get("has_report")),
             }
             for j in jobs
         ],
         "total": len(jobs),
     }
+
+
+def _mode_label(value: str | None) -> str:
+    """The mode a stored run belongs to today; runs saved under retired modes map onto one."""
+    try:
+        return DepthMode(value or "standard").value
+    except ValueError:
+        return str(value)
 
 
 @router.delete("/clear")
@@ -245,10 +179,11 @@ def get_research_status(job_id: str):
         status=progress.status,
         progress_percent=progress.progress_percent,
         current_step=progress.current_step,
-        queries_done=progress.queries_done,
-        sources_found=progress.sources_found,
-        sources_fetched=progress.sources_fetched,
-        evidence_chunks=progress.evidence_chunks,
+        searches_run=progress.searches_run,
+        sources_reviewed=progress.sources_reviewed,
+        sources_used=progress.sources_used,
+        evidence_accepted=progress.evidence_accepted,
+        open_gaps=progress.open_gaps,
     )
 
 
@@ -263,8 +198,8 @@ def get_research_report(job_id: str):
         "job_id": job_id,
         "query": job.user_query,
         "report": job.report,
-        "sources_count": sum(1 for s in job.sources if s.fetched),
-        "evidence_count": len(job.evidence_chunks),
+        "sources_count": sum(1 for s in job.sources if s.used),
+        "evidence_count": sum(1 for e in job.evidence if e.status == "accepted"),
         "metadata": job.metadata,
     }
 

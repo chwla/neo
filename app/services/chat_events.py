@@ -175,6 +175,7 @@ def event_reader():
     """
     conn = _connect(check_same_thread=False)
     try:
+
         def read(after: int = 0, limit: int = 500) -> list[dict]:
             try:
                 rows = conn.execute(

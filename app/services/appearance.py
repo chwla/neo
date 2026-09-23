@@ -114,9 +114,7 @@ def initialize_appearance_tables() -> None:
 
 
 def _read(conn: sqlite3.Connection, key: str) -> str | None:
-    row = conn.execute(
-        "SELECT value FROM appearance_preferences WHERE key = ?", (key,)
-    ).fetchone()
+    row = conn.execute("SELECT value FROM appearance_preferences WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
 
 

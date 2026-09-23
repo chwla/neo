@@ -79,7 +79,7 @@ class MemorySettings:
             # uninstalled built-in default and every model-backed extraction
             # failed with "model not found".
             extraction_model=settings.memory_extraction_model or settings.default_model,
-        two_stage_extraction_enabled=settings.memory_extraction_two_stage,
+            two_stage_extraction_enabled=settings.memory_extraction_two_stage,
             extraction_connect_timeout_seconds=settings.memory_extraction_connect_timeout_seconds,
             extraction_response_timeout_seconds=settings.memory_extraction_response_timeout_seconds,
             extraction_warmup_timeout_seconds=settings.memory_extraction_warmup_timeout_seconds,

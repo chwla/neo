@@ -75,6 +75,7 @@ Thumbs.db
 !/scripts/manual_memory_v2_phase6.py
 !/scripts/memory_v2_index_worker.py
 !/scripts/setup_searxng.py
+!/scripts/benchmark_optimizations.py
 # Profile storage. Every account's own SQLite database, uploaded files, gallery
 # thumbnails and -- once connected accounts ship -- its sealed OAuth tokens live
 # here. The *.db rules above already cover the databases, but not the files

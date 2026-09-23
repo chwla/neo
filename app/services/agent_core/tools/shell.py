@@ -147,9 +147,7 @@ TOOLS = [
         risk="command",
         requires_repo=True,
         handler=run_command,
-        summary=lambda a: (
-            f"Run `{_render_argv(a)}`"
-        ),
+        summary=lambda a: f"Run `{_render_argv(a)}`",
     ),
     AgentTool(
         name="run_tests",
@@ -174,8 +172,6 @@ TOOLS = [
         risk="command",
         requires_repo=True,
         handler=run_tests,
-        summary=lambda a: (
-            f"Run tests: `{_render_argv(a)}`"
-        ),
+        summary=lambda a: f"Run tests: `{_render_argv(a)}`",
     ),
 ]

@@ -92,9 +92,7 @@ def _llm_client(
     config_id: str | None = None, route_name: str = "chat", *, effort: str = "high"
 ) -> LLMClient:
     try:
-        return get_llm_client(
-            config_id, route_name=route_name, disable_thinking=effort == "low"
-        )
+        return get_llm_client(config_id, route_name=route_name, disable_thinking=effort == "low")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -620,9 +618,7 @@ def _stream_cursor(store: AppStore, chat_id: int, active: dict[str, object] | No
     """
 
     if active is not None:
-        first = chat_events.first_seq_for(
-            chat_id, agent_session_id=str(active["session"]["id"])
-        )
+        first = chat_events.first_seq_for(chat_id, agent_session_id=str(active["session"]["id"]))
         if first:
             return first - 1
     generation = store.db.scalar(
@@ -936,9 +932,7 @@ def _chat_id_for_generation(db, generation_id: str) -> int | None:
     """Read a generation's chat without trusting an ORM instance to still be bound."""
 
     try:
-        return db.scalar(
-            select(ChatGeneration.chat_id).where(ChatGeneration.id == generation_id)
-        )
+        return db.scalar(select(ChatGeneration.chat_id).where(ChatGeneration.id == generation_id))
     except Exception:  # pragma: no cover - the session is already failing
         return None
 
@@ -1696,9 +1690,7 @@ def _rank(status: str) -> int:
 
 
 @router.post("/chats", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
-def create_chat(
-    request: ChatCreateRequest, response: Response, store: StoreDependency
-) -> ChatRead:
+def create_chat(request: ChatCreateRequest, response: Response, store: StoreDependency) -> ChatRead:
     """Hand back a thread with nothing in it yet.
 
     Clicking New chat twice is one intent, not two conversations -- so an empty

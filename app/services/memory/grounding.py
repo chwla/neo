@@ -128,10 +128,47 @@ def value_supported(value: str | None, evidence: str, cited: str) -> bool:
 # would reject a paraphrase purely for choosing a different article or auxiliary.
 _GROUNDING_STOPWORDS = frozenset(
     {
-        "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "as",
-        "for", "with", "by", "from", "is", "am", "are", "was", "were", "be",
-        "been", "being", "do", "doe", "did", "have", "ha", "had", "i", "my",
-        "me", "mine", "user", "it", "that", "this", "there", "here", "currently",
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "as",
+        "for",
+        "with",
+        "by",
+        "from",
+        "is",
+        "am",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "doe",
+        "did",
+        "have",
+        "ha",
+        "had",
+        "i",
+        "my",
+        "me",
+        "mine",
+        "user",
+        "it",
+        "that",
+        "this",
+        "there",
+        "here",
+        "currently",
     }
 )
 
@@ -220,8 +257,7 @@ def ground_assertion(
     # Fall back to content-word containment so a rephrasing of what the user said
     # still grounds, while anything introducing a word they never wrote does not.
     contained = _content_supported(proposal.display_hint, evidence, cited) or (
-        bool(groundable)
-        and all(_content_supported(item, evidence, cited) for item in groundable)
+        bool(groundable) and all(_content_supported(item, evidence, cited) for item in groundable)
     )
     if not exact and not contained:
         return GroundingDecision(

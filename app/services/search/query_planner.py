@@ -386,9 +386,7 @@ class QueryPlanner:
         return result
 
     @staticmethod
-    def _request_plan(
-        query: str, llm: LLMClient, hint: str | None
-    ) -> dict[str, object] | None:
+    def _request_plan(query: str, llm: LLMClient, hint: str | None) -> dict[str, object] | None:
         user_content = query if not hint or hint == query else f"{query}\n\n(topic: {hint})"
         try:
             raw = llm.chat(
@@ -455,8 +453,6 @@ class QueryPlanner:
 _PLANNER = QueryPlanner()
 
 
-def plan_query(
-    query: str, *, llm: LLMClient | None = None, hint: str | None = None
-) -> SearchPlan:
+def plan_query(query: str, *, llm: LLMClient | None = None, hint: str | None = None) -> SearchPlan:
     """Plan ``query`` using the process-wide planner (and its cache)."""
     return _PLANNER.plan(query, llm=llm, hint=hint)

@@ -231,8 +231,7 @@ def _stale_checksum_revisions(applied: dict[str, str]) -> tuple[str, ...]:
     return tuple(
         revision
         for revision in ALL_MEMORY_REVISIONS
-        if applied.get(revision) is not None
-        and applied[revision] != _revision_checksum(revision)
+        if applied.get(revision) is not None and applied[revision] != _revision_checksum(revision)
     )
 
 
@@ -516,9 +515,7 @@ def _upgrade_memory_in_transaction(connection, *, owner_id: str, database_identi
         # end at the same schema, so add it only when it is genuinely absent.
         existing = {
             row[1]
-            for row in connection.execute(
-                text("PRAGMA table_info(memory_vector_points)")
-            ).all()
+            for row in connection.execute(text("PRAGMA table_info(memory_vector_points)")).all()
         }
         if "vector_blob" not in existing:
             connection.execute(text(_VECTOR_BLOB_COLUMN_SQL))

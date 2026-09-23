@@ -8,6 +8,20 @@ from datetime import UTC, datetime
 
 from app.core.config import get_settings
 
+_JSON_COLUMNS = {
+    "plan_json": "plan",
+    "generated_queries_json": "generated_queries",
+    "sources_json": "sources",
+    "evidence_json": "evidence",
+    "claims_json": "claims",
+    "trace_json": "trace",
+    "metadata_json": "metadata",
+    "progress_log_json": "progress_log",
+}
+_LIST_FIELDS = {"generated_queries", "sources", "evidence", "claims", "progress_log"}
+_NULLABLE_FIELDS = {"plan", "trace"}
+_ADDED_COLUMNS = {"claims_json": "TEXT", "trace_json": "TEXT"}
+
 
 def _db_path() -> str:
     url = get_settings().database_url
@@ -47,9 +61,15 @@ def initialize_research_tables() -> None:
                 report TEXT NOT NULL DEFAULT '',
                 error TEXT,
                 metadata_json TEXT,
-                progress_log_json TEXT
+                progress_log_json TEXT,
+                claims_json TEXT,
+                trace_json TEXT
             )
         """)
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(research_jobs)")}
+        for column, column_type in _ADDED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE research_jobs ADD COLUMN {column} {column_type}")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_research_jobs_status
             ON research_jobs(status)
@@ -74,14 +94,14 @@ def save_job(job_dict: dict) -> None:
                 status, created_at, updated_at,
                 progress_percent, current_step,
                 plan_json, generated_queries_json, sources_json,
-                evidence_json, report, error,
+                evidence_json, claims_json, trace_json, report, error,
                 metadata_json, progress_log_json
             ) VALUES (
                 :id, :user_query, :depth, :max_sources, :max_rounds,
                 :status, :created_at, :updated_at,
                 :progress_percent, :current_step,
                 :plan_json, :generated_queries_json, :sources_json,
-                :evidence_json, :report, :error,
+                :evidence_json, :claims_json, :trace_json, :report, :error,
                 :metadata_json, :progress_log_json
             )
             ON CONFLICT(id) DO UPDATE SET
@@ -98,6 +118,8 @@ def save_job(job_dict: dict) -> None:
                 generated_queries_json = excluded.generated_queries_json,
                 sources_json = excluded.sources_json,
                 evidence_json = excluded.evidence_json,
+                claims_json = excluded.claims_json,
+                trace_json = excluded.trace_json,
                 report = excluded.report,
                 error = excluded.error,
                 metadata_json = excluded.metadata_json,
@@ -117,7 +139,9 @@ def save_job(job_dict: dict) -> None:
                 "plan_json": json.dumps(job_dict.get("plan")) if job_dict.get("plan") else None,
                 "generated_queries_json": json.dumps(job_dict.get("generated_queries", [])),
                 "sources_json": json.dumps(job_dict.get("sources", [])),
-                "evidence_json": json.dumps(job_dict.get("evidence_chunks", [])),
+                "evidence_json": json.dumps(job_dict.get("evidence", [])),
+                "claims_json": json.dumps(job_dict.get("claims", [])),
+                "trace_json": json.dumps(job_dict.get("trace")) if job_dict.get("trace") else None,
                 "report": job_dict.get("report", ""),
                 "error": job_dict.get("error"),
                 "metadata_json": json.dumps(job_dict.get("metadata", {})),
@@ -141,13 +165,18 @@ def load_job(job_id: str) -> dict | None:
 
 
 def list_jobs(limit: int = 20, offset: int = 0) -> list[dict]:
+    """History rows without the heavy JSON payloads."""
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT * FROM research_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            """
+            SELECT id, user_query, depth, status, progress_percent, current_step, created_at,
+                   length(report) > 0 AS has_report
+            FROM research_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?
+            """,
             (limit, offset),
         ).fetchall()
-        return [_row_to_dict(row) for row in rows]
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
@@ -162,12 +191,60 @@ def update_job_status(job_id: str, status: str, **kwargs) -> None:
             if key in ("progress_percent", "current_step", "report", "error"):
                 sets.append(f"{key} = ?")
                 vals.append(val)
-            elif key.endswith("_json"):
+            elif key in _JSON_COLUMNS:
                 sets.append(f"{key} = ?")
                 vals.append(json.dumps(val) if val is not None else None)
         vals.append(job_id)
         conn.execute(f"UPDATE research_jobs SET {', '.join(sets)} WHERE id = ?", vals)
         conn.commit()
+    finally:
+        conn.close()
+
+
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+#: A queued job this recent may be about to start in this process, so it is left alone.
+_QUEUED_GRACE_SECONDS = 60
+
+
+def mark_interrupted_jobs(active_ids: set[str]) -> int:
+    """Fail jobs left mid-run by a process that is no longer running them.
+
+    Research runs on in-process threads, so a restart leaves rows in a running state that
+    nothing will ever finish; without this the UI polls them forever. ``active_ids`` are the
+    jobs this process is running right now, which are never touched.
+    """
+    conn = _connect()
+    try:
+        now = datetime.now(UTC)
+        rows = conn.execute(
+            "SELECT id, status, updated_at FROM research_jobs WHERE status NOT IN (?, ?, ?)",
+            _TERMINAL_STATUSES,
+        ).fetchall()
+        stale = []
+        for row in rows:
+            if row["id"] in active_ids:
+                continue
+            if row["status"] == "queued":
+                try:
+                    updated = datetime.fromisoformat(row["updated_at"])
+                except (TypeError, ValueError):
+                    updated = None
+                if updated is not None and (now - updated).total_seconds() < _QUEUED_GRACE_SECONDS:
+                    continue
+            stale.append(row["id"])
+        for job_id in stale:
+            conn.execute(
+                "UPDATE research_jobs SET status = 'failed', error = ?, current_step = ?, "
+                "updated_at = ? WHERE id = ?",
+                (
+                    "Research was interrupted because Neo restarted before it finished.",
+                    "Research interrupted",
+                    now.isoformat(),
+                    job_id,
+                ),
+            )
+        conn.commit()
+        return len(stale)
     finally:
         conn.close()
 
@@ -183,28 +260,15 @@ def clear_all_jobs() -> int:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
-    d = dict(row)
-    for json_col in (
-        "plan_json",
-        "generated_queries_json",
-        "sources_json",
-        "evidence_json",
-        "metadata_json",
-        "progress_log_json",
-    ):
-        base = json_col.replace("_json", "")
-        raw = d.pop(json_col, None)
-        d[base] = (
-            json.loads(raw)
-            if raw
-            else (
-                []
-                if base in ("generated_queries", "sources", "evidence_chunks", "progress_log")
-                else None
-                if base == "plan"
-                else {}
-            )
-        )
-    if "evidence" in d:
-        d["evidence_chunks"] = d.pop("evidence")
-    return d
+    data = dict(row)
+    for column, field in _JSON_COLUMNS.items():
+        raw = data.pop(column, None)
+        if raw:
+            data[field] = json.loads(raw)
+        elif field in _LIST_FIELDS:
+            data[field] = []
+        elif field in _NULLABLE_FIELDS:
+            data[field] = None
+        else:
+            data[field] = {}
+    return data

@@ -58,18 +58,14 @@ JUDGE_SYSTEM = (
 #: What the judge weighs when the user has not said. Deliberately plain and short: a
 #: long default rubric would quietly become the thing being measured.
 DEFAULT_RUBRIC = (
-    "Judge these answers on:\n"
-    "1. Factual correctness\n"
-    "2. Completeness\n"
-    "3. Clarity\n"
-    "4. Conciseness"
+    "Judge these answers on:\n1. Factual correctness\n2. Completeness\n3. Clarity\n4. Conciseness"
 )
 
 #: The shape the reply has to come back in. Appended to whichever rubric is in force,
 #: because it is a protocol rather than a criterion and a user rubric must not have to
 #: restate it.
 JUDGE_FORMAT = (
-    'Rate each answer from 0 to 10. Reply with only a JSON object of the form '
+    "Rate each answer from 0 to 10. Reply with only a JSON object of the form "
     '{"ratings": {"A": 7, "B": 4}, "why": "one short sentence"}.'
 )
 

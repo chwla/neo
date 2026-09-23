@@ -217,9 +217,7 @@ def plan_delivery(repo_id: str) -> DeliveryPlan:
                 original_text=original_text,
             )
         )
-    plan.changes.extend(
-        _untracked_changes(root, {record["relative_path"] for record in records})
-    )
+    plan.changes.extend(_untracked_changes(root, {record["relative_path"] for record in records}))
     plan.changes.sort(key=lambda change: change.relative_path)
     return plan
 
@@ -273,9 +271,7 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
         # The last line of defence: a direct API call, a stale plan or a future
         # caller must not reach a filesystem write for a workspace that has no
         # copy to write out of.
-        raise WorkspaceError(
-            "This workspace is your own folder; its changes are already written."
-        )
+        raise WorkspaceError("This workspace is your own folder; its changes are already written.")
     selected = _select(plan, only)
     original_root = Path(plan.original_root)
     written: list[str] = []

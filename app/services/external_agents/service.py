@@ -270,8 +270,7 @@ def run_step(
             # integration is broken" from "this machine's config pins a model
             # the account cannot use".
             model=(
-                models.chosen(session.external_models, executor)
-                or models.env_override(executor)
+                models.chosen(session.external_models, executor) or models.env_override(executor)
             ),
             effort=models.chosen(session.external_efforts, executor),
             unsafe=unsafe,
@@ -330,9 +329,9 @@ def run_step(
 
     outcome.final_text = collected["final"] or outcome.final_text or ""
     outcome.meta = collected["meta"]
-    outcome.external_session_id = (
-        (store.get_session(session_id) or {}).get("external_session_id") or resume_id
-    )
+    outcome.external_session_id = (store.get_session(session_id) or {}).get(
+        "external_session_id"
+    ) or resume_id
 
     try:
         changed = snapshot.record(session_id, session.repo_id or "", root, before)
@@ -358,9 +357,7 @@ def run_step(
     return outcome
 
 
-def _apply(
-    session_id: str, executor: str, event: ExternalEvent, collected: dict[str, Any]
-) -> None:
+def _apply(session_id: str, executor: str, event: ExternalEvent, collected: dict[str, Any]) -> None:
     """Persist one translated event and fold its side-channel facts in."""
 
     if event.type:

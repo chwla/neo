@@ -41,13 +41,9 @@ def _pinned_getaddrinfo(host, port=None, family=0, type=0, proto=0, flags=0):  #
         if family not in (0, socket.AF_UNSPEC) and family != af:
             continue
         sockaddr = (
-            (str(address), port or 0)
-            if af == socket.AF_INET
-            else (str(address), port or 0, 0, 0)
+            (str(address), port or 0) if af == socket.AF_INET else (str(address), port or 0, 0, 0)
         )
-        results.append(
-            (af, type or socket.SOCK_STREAM, proto or socket.IPPROTO_TCP, "", sockaddr)
-        )
+        results.append((af, type or socket.SOCK_STREAM, proto or socket.IPPROTO_TCP, "", sockaddr))
     if not results:
         raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
     return results

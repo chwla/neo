@@ -48,8 +48,13 @@ class MockClient(BaseLLMClient):
 
 
 def build_client(
-    provider: dict, model: dict, *, timeout=None, num_predict=None,
-    num_ctx=None, disable_thinking=False,
+    provider: dict,
+    model: dict,
+    *,
+    timeout=None,
+    num_predict=None,
+    num_ctx=None,
+    disable_thinking=False,
 ):
     if not provider.get("enabled") or not model.get("enabled"):
         return DisabledClient(model.get("model_name") or "disabled")

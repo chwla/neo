@@ -88,22 +88,20 @@ class CodeIndexService:
                         }
                     )
                 summary, purpose, keys = summarize_file(mapping["relative_path"], result)
-                summary_row = (
-                    {
-                        "id": str(uuid.uuid4()),
-                        "repo_id": repo_id,
-                        "repo_file_id": mapping["id"],
-                        "file_id": mapping["file_id"],
-                        "relative_path": mapping["relative_path"],
-                        "language": result.language,
-                        "summary": summary,
-                        "purpose": purpose,
-                        "key_symbols": keys,
-                        "metadata": {"source_sha256": mapping.get("sha256")},
-                        "created_at": now,
-                        "updated_at": now,
-                    }
-                )
+                summary_row = {
+                    "id": str(uuid.uuid4()),
+                    "repo_id": repo_id,
+                    "repo_file_id": mapping["id"],
+                    "file_id": mapping["file_id"],
+                    "relative_path": mapping["relative_path"],
+                    "language": result.language,
+                    "summary": summary,
+                    "purpose": purpose,
+                    "key_symbols": keys,
+                    "metadata": {"source_sha256": mapping.get("sha256")},
+                    "created_at": now,
+                    "updated_at": now,
+                }
                 with store.write_batch() as connection:
                     for item in symbols:
                         store.insert_symbol(item, connection=connection)

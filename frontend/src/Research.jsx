@@ -4,22 +4,76 @@ import { api } from "./api.js";
 import { renderMarkdown } from "./markdown.js";
 import Icon from "./WorkspaceIcon.jsx";
 
-const MODES = [
-  ["technical", "Technical"],
-  ["general", "General"],
-  ["business", "Business"],
-  ["market", "Market"],
-  ["academic", "Academic"],
-  ["coding", "Coding"],
-];
-
+/* Depth changes how thoroughly Neo investigates, not how long the report is. */
 const DEPTHS = [
-  ["quick", "Quick", "3–5 queries · 5 sources"],
-  ["standard", "Standard", "5–8 queries · 10 sources"],
-  ["deep", "Deep", "8–12 queries · 20 sources"],
+  ["quick", "Quick", "Core answer from the strongest sources; stops as soon as it's established"],
+  ["standard", "Standard", "Every major aspect, cross-checked"],
+  ["deep", "Deep", "Broader context, conflicts investigated, strictest verification"],
 ];
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+/* How a run ended, in the reader's terms. One chip, read from the run's completion status. */
+const COMPLETION = {
+  completed: ["Complete", ""],
+  completed_with_gaps: ["Complete, with open questions", "warn"],
+  ceiling_reached: ["Stopped at this depth's limit", "warn"],
+  blocked: ["Search unavailable", "warn"],
+  cancelled: ["Cancelled", ""],
+  failed: ["Failed", "bad"],
+};
+/* Older runs stored only why the loop stopped; they are shown the same way. */
+const LEGACY_COMPLETION = {
+  coverage_sufficient: "completed",
+  insufficient_evidence: "completed_with_gaps",
+  budget_exhausted: "ceiling_reached",
+  search_unavailable: "blocked",
+  user_cancelled: "cancelled",
+  failed: "failed",
+};
+
+/* What the run is doing now. The engine names the phase; this is how it reads. */
+const PHASES = {
+  planning: "Working out what to establish",
+  finding_primary_evidence: "Looking for original sources",
+  investigating: "Investigating",
+  checking_conflicts: "Checking where sources disagree",
+  expanding: "Following up what the evidence raised",
+  verifying: "Checking every claim against its evidence",
+  writing: "Writing the report",
+};
+
+const SUFFICIENCY = {
+  established: ["Established", ""],
+  hedged: ["Reported, not established", "warn"],
+  insufficient: ["Not established", "warn"],
+};
+const BASIS = {
+  decisive: "by the original record",
+  convergent: "by independent sources that agree",
+  reports: "by individual reports",
+};
+/* What became of the search for an original record, when it is worth saying. */
+const ORIGIN = {
+  sought_not_found: "no original record was found",
+  located_unreadable: "the original record was found but could not be read",
+};
+const PROVENANCE = {
+  A: ["verified publisher", ""],
+  B: ["self-identified", ""],
+  C: ["unverified", ""],
+  D: ["weak", "warn"],
+};
+const CLAIM_FIT = {
+  establishes: "establishes",
+  supports: "supports",
+  context: "context only",
+  insufficient: "cannot support a finding",
+};
+
+function words(value) {
+  return String(value || "").replaceAll("_", " ");
+}
 
 function statusTone(status) {
   if (status === "completed") return "ok";
@@ -39,7 +93,7 @@ function shortDate(iso) {
   if (!iso) return "";
   const value = new Date(iso);
   if (Number.isNaN(value.getTime())) return "";
-  return value.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return value.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function relativeTime(iso) {
@@ -53,25 +107,86 @@ function relativeTime(iso) {
   return shortDate(iso);
 }
 
+function isReviewed(source) {
+  return source.fetch_outcome === "fetched" || source.fetch_outcome === "cached";
+}
+
+/** How a run ended, as one chip: its completion status, or what an older run recorded. */
+export function completionOf(run) {
+  const status = run?.metadata?.completion_status
+    || LEGACY_COMPLETION[run?.metadata?.stop_reason]
+    || (run?.status === "cancelled" ? "cancelled" : null);
+  return status ? COMPLETION[status] : null;
+}
+
+/** What the run is doing now, in the reader's terms. */
+export function phaseOf(run) {
+  const log = run?.progress_log || [];
+  const latest = log.length ? log[log.length - 1] : null;
+  return [PHASES[latest?.phase] || run?.current_step || "Queued", latest];
+}
+
+/**
+ * Where the answer stands, from the same target states the report is written from.
+ *
+ * Counted over the questions the plan asked, not the per-subject parts they were researched
+ * through, so "3 of 4" means what a reader would count.
+ */
+export function standingOf(run, metrics, states) {
+  const top = (states || []).filter((state) => !plannedChild(run?.plan, state.target_id));
+  const core = top.filter((state) => state.tier === "core");
+  const contested = (targetId) => (states || []).some((state) => {
+    const target = (run?.plan?.targets || []).find((item) => item.id === state.target_id);
+    return (state.target_id === targetId || target?.parent_id === targetId)
+      && (state.needs || []).some((need) => need.material && need.kind === "conflict_material");
+  });
+  const established = core.filter((state) => state.sufficiency === "established" && !contested(state.target_id));
+  const decisive = established.filter((state) => state.basis === "decisive").length;
+  const open = Math.max(metrics?.open_gaps ?? 0, core.length - established.length);
+  const parts = [];
+  if (core.length) {
+    parts.push(`${established.length} of ${core.length} core question${core.length === 1 ? "" : "s"} established`);
+    if (established.length) {
+      parts.push(`${decisive} by the original record, ${established.length - decisive} by independent sources`);
+    }
+  }
+  if (metrics?.sources_used) {
+    parts.push(`${metrics.sources_used} sources cited (${metrics.independent_domains} independent)`);
+  }
+  if (open) parts.push(`${open} open question${open === 1 ? "" : "s"}`);
+  return parts;
+}
+
+export function confidenceReasonsOf(run) {
+  // The standing line already counts settled questions, including material disagreements.
+  return (run?.metadata?.confidence_reasons || [])
+    .filter((reason) => !/^\d+ of \d+ core questions are established\.$/.test(reason));
+}
+
+export function minutes(seconds) {
+  const value = Math.max(0, Math.round((seconds || 0) / 60));
+  return value < 1 ? "under a minute" : `${value} min`;
+}
+
+/** Whether a target is one subject's share of a question asked of several. */
+export function plannedChild(plan, targetId) {
+  const target = (plan?.targets || []).find((item) => item.id === targetId);
+  return Boolean(target?.parent_id);
+}
+
 /**
  * Evidence-grounded research.
  *
- * The run is watched, not waited on. The old screen awaited the whole job
- * inside the click handler, so a deep run -- minutes of work -- left every
- * control disabled and no way to stop it. Here the poll lives in an effect
- * keyed on the open run, which means the run can be cancelled, the history
- * browsed and a second question composed while the first is still fetching.
- *
- * What comes back is shown as what it is: the report as Markdown, evidence
- * grouped under the sub-question it answers, and sources with the domain,
- * date and relevance the ranker already computed and the old screen dropped.
+ * The run is watched, not waited on: the poll lives in an effect keyed on the open run, so
+ * a long deep run can be cancelled while history stays browsable. What comes back is shown
+ * as what it is: the verified report, the evidence its claims actually cite, the sources
+ * that were used or set aside (with the reason), and the plan with how well each research
+ * question ended up covered.
  */
 export default function Research({ onOpenNote, memoryEnabled, memoryIncognito }) {
   const [question, setQuestion] = useState("");
-  const [mode, setMode] = useState("technical");
   const [depth, setDepth] = useState("standard");
-  const [fresh, setFresh] = useState(true);
-  const [plan, setPlan] = useState(null);
+  const [preview, setPreview] = useState(null);
   const [planning, setPlanning] = useState(false);
 
   const [runs, setRuns] = useState([]);
@@ -97,7 +212,6 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     loadRuns();
   }, [loadRuns]);
 
-  /* Watch the open run instead of blocking on it. */
   useEffect(() => {
     if (!activeId) return undefined;
     let alive = true;
@@ -107,7 +221,6 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
         const job = await api.researchJob(activeId);
         if (!alive) return;
         setRun(job);
-        if (job.plan) setPlan(job.plan);
         if (TERMINAL.has(job.status)) {
           loadRuns();
           return;
@@ -116,7 +229,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
         if (alive) setError(err.message);
         return;
       }
-      handle = setTimeout(tick, 1000);
+      handle = setTimeout(tick, 1500);
     }
     tick();
     return () => {
@@ -127,53 +240,36 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
 
   const live = Boolean(run && !TERMINAL.has(run.status));
   const sources = useMemo(() => run?.sources || [], [run]);
-  const evidence = useMemo(() => run?.evidence_chunks || [], [run]);
+  const evidence = useMemo(() => run?.evidence || [], [run]);
+  const claims = useMemo(() => run?.claims || [], [run]);
+  const trace = run?.trace || null;
+  const metrics = run?.metadata?.metrics || null;
+  const legacy = Boolean(run?.legacy && Object.keys(run.legacy).length);
 
-  const fetched = sources.filter((source) => source.fetched);
+  const accepted = useMemo(() => evidence.filter((item) => item.status === "accepted"), [evidence]);
+  const reviewed = useMemo(() => sources.filter(isReviewed), [sources]);
+  const targetStates = useMemo(() => trace?.target_states || [], [trace]);
+  const openQuestions = metrics?.open_gaps ?? 0;
+
+  const [phaseLabel, latest] = useMemo(() => phaseOf(run), [run]);
+  const completion = useMemo(() => completionOf(run), [run]);
+  const standing = useMemo(() => standingOf(run, metrics, targetStates), [run, metrics, targetStates]);
+
   const stats = [
-    ["Queries", (run?.generated_queries || []).length],
-    ["Sources", sources.length],
-    ["Fetched", fetched.length],
-    ["Evidence", evidence.length],
+    ["Searches", (run?.generated_queries || []).length],
+    ["Read", reviewed.length],
+    ["Evidence", accepted.length],
+    ["Open questions", openQuestions],
   ];
-
-  /* Evidence answers a sub-question; showing it grouped is showing the answer. */
-  const grouped = useMemo(() => {
-    const buckets = new Map();
-    for (const chunk of evidence) {
-      const heading = chunk.supports_subquestion || "General findings";
-      if (!buckets.has(heading)) buckets.set(heading, []);
-      buckets.get(heading).push(chunk);
-    }
-    for (const list of buckets.values()) {
-      list.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
-    }
-    return [...buckets.entries()];
-  }, [evidence]);
-
-  const rankedSources = useMemo(
-    () =>
-      [...sources].sort(
-        (a, b) =>
-          (b.relevance_score || 0) + (b.quality_score || 0) -
-          ((a.relevance_score || 0) + (a.quality_score || 0)),
-      ),
-    [sources],
-  );
 
   const reportHtml = useMemo(() => (run?.report ? renderMarkdown(run.report) : ""), [run?.report]);
 
-  async function preview() {
+  async function previewPlan() {
     if (!question.trim()) return;
     setPlanning(true);
     setError("");
     try {
-      setPlan(await api.researchModePlan({
-        question,
-        mode,
-        freshness_required: fresh,
-        depth,
-      }));
+      setPreview(await api.researchPlan({ question, depth }));
     } catch (err) {
       setError(err.message || "Could not create a research plan.");
     } finally {
@@ -226,11 +322,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     if (!run) return;
     setError("");
     try {
-      const data = await api.researchSaveToNote(run.id, {
-        title: run.user_query,
-        tags: ["research"],
-      });
-      setSavedNote(data);
+      setSavedNote(await api.researchSaveToNote(run.id, { title: run.user_query, tags: ["research"] }));
     } catch (err) {
       setError(err.message || "Could not save this report as a note.");
     }
@@ -253,17 +345,22 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     setComposing(true);
     setActiveId(null);
     setRun(null);
-    setPlan(null);
+    setPreview(null);
     setSavedNote(null);
     setError("");
     window.requestAnimationFrame(() => questionRef.current?.focus());
   }
 
+  const linkedEvidence = useMemo(() => {
+    const ids = new Set(claims.flatMap((claim) => claim.evidence_ids || []));
+    return accepted.filter((item) => ids.has(item.id));
+  }, [claims, accepted]);
+
   const tabs = [
-    ["report", "Report", run?.report ? 1 : 0],
-    ["evidence", "Evidence", evidence.length],
-    ["sources", "Sources", sources.length],
-    ["plan", "Plan", (plan?.subquestions || []).length],
+    ["report", "Report", 0],
+    ["evidence", "Evidence", linkedEvidence.length],
+    ["sources", "Sources", reviewed.length],
+    ["plan", "Plan", (run?.plan?.targets || []).filter((t) => !t.parent_id).length],
   ];
 
   return (
@@ -271,12 +368,6 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
       <section className="rs-main">
         <header className="rs-bar">
           <span className="rs-bar-title">Research</span>
-          {run && !composing && (
-            <span className={`rs-status ${statusTone(run.status)}`}>
-              {live && <span className="rs-pulse" />}
-              {run.status}
-            </span>
-          )}
           <div className="rs-bar-actions">
             {live && (
               <button className="rs-btn danger" type="button" onClick={cancel}>
@@ -284,7 +375,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                 Stop
               </button>
             )}
-            {run?.report && !live && (
+            {run?.report && run.status === "completed" && (
               <button className="rs-btn" type="button" onClick={saveToNote}>
                 <Icon name="note" />
                 Save as note
@@ -325,7 +416,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
             <div className="rs-composer">
               <div className="rs-composer-head">
                 <h1>What do you want answered?</h1>
-                <p>Neo searches, fetches and reads sources, then writes a report grounded in what it found. Preview the plan first if you want to see the sub-questions before anything runs.</p>
+                <p>Neo works out what needs to be established, searches and reads sources, keeps only evidence that answers the question, and reports what it could and could not verify. Preview the plan to see the research questions first.</p>
               </div>
 
               <textarea
@@ -336,7 +427,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                 onKeyDown={(event) => {
                   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") start();
                 }}
-                placeholder="e.g. How do the current serverless Postgres providers compare on cold start and pricing?"
+                placeholder="Ask anything worth researching: a comparison, a decision, how something works, what the evidence says."
                 aria-label="Research question"
                 rows={4}
               />
@@ -358,25 +449,8 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
               </div>
 
               <div className="rs-options">
-                <label className="rs-option">
-                  <span>Lens</span>
-                  <select value={mode} onChange={(event) => setMode(event.target.value)}>
-                    {MODES.map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className={`rs-toggle ${fresh ? "on" : ""}`.trim()}
-                  aria-pressed={fresh}
-                  onClick={() => setFresh((value) => !value)}
-                >
-                  <Icon name="clock" />
-                  Current sources only
-                </button>
                 <div className="rs-composer-actions">
-                  <button className="rs-btn" type="button" disabled={planning || !question.trim()} onClick={preview}>
+                  <button className="rs-btn" type="button" disabled={planning || !question.trim()} onClick={previewPlan}>
                     <Icon name="layers" />
                     {planning ? "Planning…" : "Preview plan"}
                   </button>
@@ -388,29 +462,44 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                 </div>
               </div>
 
-              {plan && <PlanView plan={plan} />}
+              {preview && <PlanView plan={preview} />}
             </div>
           ) : (
             <article className="rs-run">
               <h1 className="rs-question-title">{run.user_query}</h1>
               <div className="rs-run-facts">
-                <span className={`rs-status ${statusTone(run.status)}`}>
-                  {live && <span className="rs-pulse" />}
-                  {run.status}
-                </span>
-                <span>{run.depth} depth</span>
+                <span className="rs-chip">{words(run.depth)}</span>
                 <span>{relativeTime(run.created_at)}</span>
+                {completion && !live && (
+                  <span className={`rs-chip ${completion[1]}`.trim()}>{completion[0]}</span>
+                )}
+                {run.metadata?.confidence && !live && (
+                  <span className={`rs-chip ${run.metadata.confidence === "low" ? "warn" : ""}`.trim()}>
+                    {run.metadata.confidence} confidence
+                  </span>
+                )}
               </div>
+              {!live && run.metadata?.answer && <p className="rs-run-answer">{run.metadata.answer}</p>}
+              {!live && standing.length > 0 && <p className="rs-run-standing">{standing.join(" · ")}</p>}
+              {!live && (run.metadata?.confidence_reasons || []).length > 0 && (
+                <p className="rs-run-standing">{confidenceReasonsOf(run).join(" ")}</p>
+              )}
 
               {(live || run.status === "failed") && (
                 <div className="rs-progress-card">
                   <div className="rs-progress-top">
-                    <span className="rs-step">{run.current_step || "Queued"}</span>
-                    <span className="rs-pct">{run.progress_percent || 0}%</span>
+                    <span className="rs-step">{phaseLabel}</span>
+                    {latest?.ceiling_seconds > 0 && (
+                      <span className="rs-pct">
+                        {minutes(latest.elapsed_seconds)} of up to {minutes(latest.ceiling_seconds)}
+                      </span>
+                    )}
                   </div>
-                  <div className="rs-progress" role="progressbar" aria-valuenow={run.progress_percent || 0} aria-valuemin={0} aria-valuemax={100}>
-                    <span style={{ width: `${Math.min(100, Math.max(0, run.progress_percent || 0))}%` }} />
-                  </div>
+                  <p className="rs-progress-note">
+                    {latest?.core_targets
+                      ? `${latest.core_established} of ${latest.core_targets} core questions established`
+                      : run.current_step || "Queued"}
+                  </p>
                   <div className="rs-stats">
                     {stats.map(([label, value]) => (
                       <div className="rs-stat" key={label}>
@@ -432,7 +521,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                     onClick={() => setTab(value)}
                   >
                     {label}
-                    {count > 0 && value !== "report" && <em>{count}</em>}
+                    {count > 0 && <em>{count}</em>}
                   </button>
                 ))}
               </nav>
@@ -445,98 +534,33 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                     dangerouslySetInnerHTML={{ __html: reportHtml }}
                   />
                 ) : (
-                  <div className="rs-placeholder">
-                    <Icon name={live ? "refresh" : "book"} />
-                    <p>{live ? "The report is written once the evidence is in. Evidence and sources fill in as they arrive." : "No report was produced for this run."}</p>
-                  </div>
+                  <Placeholder icon={live ? "refresh" : "book"}>
+                    {live ? "The report is written once claims are verified. Evidence and sources fill in as they arrive." : "No report was produced for this run."}
+                  </Placeholder>
                 )
               )}
 
               {tab === "evidence" && (
-                grouped.length ? (
-                  <div className="rs-groups">
-                    {grouped.map(([heading, chunks]) => (
-                      <section className="rs-group" key={heading}>
-                        <h2>
-                          {heading}
-                          <em>{chunks.length}</em>
-                        </h2>
-                        {chunks.map((chunk, position) => (
-                          <figure className="rs-evidence" key={`${chunk.source_id}-${position}`}>
-                            <blockquote>{chunk.text || "(empty excerpt)"}</blockquote>
-                            <figcaption>
-                              {chunk.source_url ? (
-                                <a href={chunk.source_url} target="_blank" rel="noreferrer">
-                                  <Icon name="globe" />
-                                  {chunk.source_title || hostOf(chunk.source_url) || "Source"}
-                                </a>
-                              ) : (
-                                <span>{chunk.source_title || "Source"}</span>
-                              )}
-                              {chunk.evidence_category && chunk.evidence_category !== "general" && (
-                                <span className="rs-chip">{chunk.evidence_category}</span>
-                              )}
-                              {chunk.claim_type && chunk.claim_type !== "general" && (
-                                <span className="rs-chip">{chunk.claim_type}</span>
-                              )}
-                              <Meter value={chunk.relevance_score} label="relevance" />
-                            </figcaption>
-                          </figure>
-                        ))}
-                      </section>
-                    ))}
-                  </div>
+                legacy ? (
+                  <Placeholder icon="quote">This run was recorded before structured evidence existed; only its report is available.</Placeholder>
                 ) : (
-                  <div className="rs-placeholder">
-                    <Icon name="quote" />
-                    <p>{live ? "Nothing extracted yet." : "No evidence was recorded for this run."}</p>
-                  </div>
+                  <EvidenceView plan={run.plan} evidence={accepted} linked={linkedEvidence} claims={claims} sources={sources} live={live} states={targetStates} />
                 )
               )}
 
               {tab === "sources" && (
-                rankedSources.length ? (
-                  <div className="rs-sources">
-                    {rankedSources.map((source, position) => (
-                      <a
-                        className={`rs-source ${source.fetched ? "" : "unread"}`.trim()}
-                        key={source.id ?? position}
-                        href={source.url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <span className="rs-source-rank">{position + 1}</span>
-                        <span className="rs-source-body">
-                          <strong>{source.title || hostOf(source.url) || source.url}</strong>
-                          <span className="rs-source-meta">
-                            <span className="rs-source-host">{source.domain || hostOf(source.url)}</span>
-                            {source.published_date && <span>{shortDate(source.published_date)}</span>}
-                            {source.evidence_count > 0 && <span>{source.evidence_count} excerpt{source.evidence_count === 1 ? "" : "s"}</span>}
-                            {!source.fetched && <span className="rs-chip warn">{source.fetch_status || "not fetched"}</span>}
-                          </span>
-                          <span className="rs-source-scores">
-                            <Meter value={source.relevance_score} label="relevance" />
-                            <Meter value={source.quality_score} label="quality" />
-                          </span>
-                        </span>
-                        <Icon name="external" />
-                      </a>
-                    ))}
-                  </div>
+                legacy ? (
+                  <Placeholder icon="globe">This run was recorded before source classification existed.</Placeholder>
                 ) : (
-                  <div className="rs-placeholder">
-                    <Icon name="globe" />
-                    <p>{live ? "Still searching." : "No sources were recorded for this run."}</p>
-                  </div>
+                  <SourcesView sources={sources} live={live} />
                 )
               )}
 
               {tab === "plan" && (
-                plan ? <PlanView plan={plan} queries={run.generated_queries} /> : (
-                  <div className="rs-placeholder">
-                    <Icon name="layers" />
-                    <p>No plan was stored for this run.</p>
-                  </div>
+                run.plan ? (
+                  <PlanView plan={run.plan} trace={trace} completion={completion} stopDetail={run.metadata?.stop_detail} />
+                ) : (
+                  <Placeholder icon="layers">{live ? "Planning…" : "No structured plan was stored for this run."}</Placeholder>
                 )
               )}
             </article>
@@ -574,7 +598,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
               </span>
               <span className="rs-histrow-meta">
                 <span>{relativeTime(item.created_at)}</span>
-                <span>{item.depth}</span>
+                <span>{words(item.depth)}</span>
                 {!TERMINAL.has(item.status) && <span>{item.progress_percent || 0}%</span>}
                 {item.has_report && <Icon name="book" />}
               </span>
@@ -588,55 +612,285 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
   );
 }
 
-/** A 0–1 score as a bar, because a bare "0.72" says nothing at a glance. */
-function Meter({ value, label }) {
-  const score = Math.min(1, Math.max(0, Number(value) || 0));
-  if (!score) return null;
+function Placeholder({ icon, children }) {
   return (
-    <span className="rs-meter" title={`${label} ${score.toFixed(2)}`}>
-      <span className="rs-meter-track">
-        <span className="rs-meter-fill" style={{ width: `${score * 100}%` }} />
-      </span>
-      <span className="rs-meter-label">{label}</span>
-    </span>
+    <div className="rs-placeholder">
+      <Icon name={icon} />
+      <p>{children}</p>
+    </div>
   );
 }
 
-function PlanView({ plan, queries }) {
+/** Evidence the verified claims cite, grouped by the question it answers. */
+function EvidenceView({ plan, evidence, linked, claims, sources, live, states }) {
+  const [showAll, setShowAll] = useState(false);
+  const items = showAll ? evidence : linked;
+  const sourcesById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
+  const stateById = useMemo(
+    () => new Map((states || []).map((state) => [state.target_id, state])),
+    [states],
+  );
+  const claimsByEvidence = useMemo(() => {
+    const map = new Map();
+    for (const claim of claims) {
+      for (const id of claim.evidence_ids || []) {
+        if (!map.has(id)) map.set(id, []);
+        map.get(id).push(claim);
+      }
+    }
+    return map;
+  }, [claims]);
+
+  const groups = useMemo(() => {
+    const targets = plan?.targets || [];
+    const known = new Set(targets.map((target) => target.id));
+    const result = targets
+      .map((target) => [target, items.filter((item) => item.question_id === target.id)])
+      .filter(([, list]) => list.length);
+    const other = items.filter((item) => !known.has(item.question_id));
+    if (other.length) result.push([{ id: "other", text: "Other evidence" }, other]);
+    return result;
+  }, [plan, items]);
+
+  if (!evidence.length) {
+    return <Placeholder icon="quote">{live ? "Nothing accepted yet." : "No evidence passed the relevance and grounding checks."}</Placeholder>;
+  }
+
+  return (
+    <div className="rs-groups">
+      {linked.length !== evidence.length && (
+        <button type="button" className="rs-btn" onClick={() => setShowAll((value) => !value)}>
+          {showAll ? `Show only evidence cited by claims (${linked.length})` : `Show all accepted evidence (${evidence.length})`}
+        </button>
+      )}
+      {!groups.length && <Placeholder icon="quote">No claim cites accepted evidence yet.</Placeholder>}
+      {groups.map(([target, list]) => {
+        const state = stateById.get(target.id);
+        const standing = state ? SUFFICIENCY[state.sufficiency] : null;
+        return (
+          <section className="rs-group" key={target.id}>
+            <h2>
+              {target.text}
+              <em>{list.length}</em>
+            </h2>
+            {standing && (
+              <p className="rs-group-note">
+                <span className={`rs-chip ${standing[1]}`.trim()}>{standing[0]}</span>
+                {BASIS[state.basis] ? ` ${BASIS[state.basis]}` : ""}
+                {ORIGIN[state.origin_status] ? ` · ${ORIGIN[state.origin_status]}` : ""}
+                {(state.reasons || []).length ? ` · ${state.reasons.join("; ")}` : ""}
+              </p>
+            )}
+            {list.map((item) => {
+              const source = sourcesById.get(item.source_id);
+              const citing = claimsByEvidence.get(item.id) || [];
+              const provenance = PROVENANCE[source?.assessment?.provenance] || null;
+              return (
+                <figure className="rs-evidence" key={item.id}>
+                  <blockquote>{item.excerpt}</blockquote>
+                  {citing.length > 0 && (
+                    <p className="rs-evidence-claims">Supports: {citing.map((claim) => claim.text).join(" · ")}</p>
+                  )}
+                  <figcaption>
+                    {source?.url ? (
+                      <a href={source.url} target="_blank" rel="noreferrer">
+                        <Icon name="globe" />
+                        {source.title || source.host || hostOf(source.url)}
+                      </a>
+                    ) : (
+                      <span>{source?.title || "Source"}</span>
+                    )}
+                    {provenance && <span className={`rs-chip ${provenance[1]}`.trim()}>{provenance[0]}</span>}
+                    {CLAIM_FIT[item.claim_fit] && <span className="rs-chip">{CLAIM_FIT[item.claim_fit]}</span>}
+                    {(item.freshness_fit === "stale" || item.freshness_fit === "aging") && (
+                      <span className="rs-chip warn">{item.freshness_fit}</span>
+                    )}
+                    {item.superseded_by && <span className="rs-chip warn">replaced by a newer statement</span>}
+                    {item.contradiction_group && <span className="rs-chip warn">conflicting</span>}
+                  </figcaption>
+                </figure>
+              );
+            })}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Sources split by what happened to them, with the reason for anything set aside. */
+function SourcesView({ sources, live }) {
+  const used = sources.filter((source) => source.used);
+  const reviewedOnly = sources.filter((source) => !source.used && isReviewed(source) && !source.rejection_reason && !source.duplicate_of);
+  const setAside = sources.filter((source) => !source.used && (source.rejection_reason || source.duplicate_of || !isReviewed(source)));
+
+  if (!sources.length) {
+    return <Placeholder icon="globe">{live ? "Still searching." : "No sources were read for this run."}</Placeholder>;
+  }
+
+  const sections = [
+    ["Cited in the report", used],
+    ["Read, not cited", reviewedOnly],
+    ["Set aside", setAside],
+  ].filter(([, list]) => list.length);
+
+  return (
+    <div className="rs-groups">
+      {sections.map(([heading, list]) => (
+        <section className="rs-group" key={heading}>
+          <h2>
+            {heading}
+            <em>{list.length}</em>
+          </h2>
+          <div className="rs-sources">
+            {list.map((source) => (
+              <a
+                className={`rs-source ${isReviewed(source) ? "" : "unread"}`.trim()}
+                key={source.id}
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span className="rs-source-body">
+                  <strong>{source.title || source.host || source.url}</strong>
+                  <span className="rs-source-meta">
+                    <span className="rs-source-host">{source.host || hostOf(source.url)}</span>
+                    {source.assessment?.role && <span className="rs-chip">{words(source.assessment.role)}</span>}
+                    {PROVENANCE[source.assessment?.provenance] && (
+                      <span className={`rs-chip ${PROVENANCE[source.assessment.provenance][1]}`.trim()}>
+                        {PROVENANCE[source.assessment.provenance][0]}
+                      </span>
+                    )}
+                    {source.published_date && <span>{shortDate(source.published_date)}</span>}
+                    {source.duplicate_of && <span className="rs-chip warn">copy of another source</span>}
+                    {source.rejection_reason && <span className="rs-chip warn">{words(source.rejection_reason)}</span>}
+                    {source.http_status && !isReviewed(source) && <span className="rs-chip warn">HTTP {source.http_status}</span>}
+                  </span>
+                </span>
+                <Icon name="external" />
+              </a>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/** The plan: what has to be established for each aspect, and what research did about it. */
+function PlanView({ plan, trace, completion, stopDetail }) {
+  const understanding = plan?.understanding;
+  const decomposition = plan?.decomposition;
+  if (!understanding || !decomposition) {
+    return <Placeholder icon="layers">This run predates structured research plans.</Placeholder>;
+  }
+  const entities = new Map(understanding.entities.map((entity) => [entity.id, entity.name]));
+  const targets = plan.targets || [];
+  const states = new Map((trace?.target_states || []).map((state) => [state.target_id, state]));
+  const actions = trace?.actions || [];
+  const steps = [...new Set(actions.map((action) => action.step))].sort((a, b) => a - b);
+
+  function standingOf(target) {
+    const state = states.get(target.id);
+    if (!state) return null;
+    const label = SUFFICIENCY[state.sufficiency];
+    return label ? [label, state] : null;
+  }
+
   return (
     <section className="rs-plan">
-      {plan.objective && (
-        <div className="rs-plan-objective">
-          <h2>Objective</h2>
-          <p>{plan.objective}</p>
-        </div>
-      )}
-      {(plan.subquestions || []).length > 0 && (
+      <div className="rs-plan-objective">
+        <h2>Task</h2>
+        <p>
+          {words(understanding.task_type)}
+          {understanding.answer_shape ? ` · ${understanding.answer_shape}` : ""}
+        </p>
+        {completion && <p>{completion[0]}{stopDetail ? ` (${stopDetail})` : ""}</p>}
+      </div>
+
+      {understanding.entities.length > 0 && (
         <div className="rs-plan-block">
-          <h2>Sub-questions</h2>
-          <ol className="rs-plan-list">
-            {plan.subquestions.map((item) => <li key={item}>{item}</li>)}
-          </ol>
-        </div>
-      )}
-      {(queries || plan.queries || []).length > 0 && (
-        <div className="rs-plan-block">
-          <h2>Searches</h2>
-          <div className="rs-plan-queries">
-            {(queries || plan.queries).map((item) => (
-              <code key={item}>{item}</code>
-            ))}
-          </div>
-        </div>
-      )}
-      {(plan.required_sources || plan.source_preferences || []).length > 0 && (
-        <div className="rs-plan-block">
-          <h2>Preferred sources</h2>
+          <h2>Subjects</h2>
           <div className="rs-chiprow">
-            {(plan.required_sources || plan.source_preferences).map((item) => (
-              <span className="rs-chip" key={item}>{item}</span>
+            {understanding.entities.map((entity) => (
+              <span className="rs-chip" key={entity.id}>{entity.name}{entity.type ? ` · ${entity.type}` : ""}</span>
             ))}
           </div>
+        </div>
+      )}
+
+      {(understanding.constraints.length > 0 || understanding.decision_criteria.length > 0) && (
+        <div className="rs-plan-block">
+          <h2>Constraints and criteria</h2>
+          <ul className="rs-plan-list">
+            {understanding.constraints.map((item) => <li key={item.id}>{item.text}</li>)}
+            {understanding.decision_criteria.map((item) => <li key={item.id}>Decide on: {item.text}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {decomposition.dimensions.map((dimension) => {
+        const own = targets.filter((target) => target.dimension_id === dimension.id && !target.parent_id);
+        if (!own.length) return null;
+        return (
+          <div className="rs-plan-block" key={dimension.id}>
+            <h2>{dimension.name}</h2>
+            <ol className="rs-plan-list">
+              {own.map((target) => {
+                const standing = standingOf(target);
+                const children = targets.filter((item) => item.parent_id === target.id);
+                return (
+                  <li key={target.id}>
+                    {target.text}
+                    <span className="rs-chiprow">
+                      <span className="rs-chip">{target.tier}</span>
+                      <span className="rs-chip">{words(target.profile?.authority_kind)} evidence</span>
+                      {target.profile?.recency?.kind && target.profile.recency.kind !== "timeless" && (
+                        <span className="rs-chip">{words(target.profile.recency.kind)}</span>
+                      )}
+                      {standing && (
+                        <span className={`rs-chip ${standing[0][1]}`.trim()}>
+                          {standing[0][0]}
+                          {BASIS[standing[1].basis] ? ` ${BASIS[standing[1].basis]}` : ""}
+                        </span>
+                      )}
+                      {children.map((child) => {
+                        const childStanding = standingOf(child);
+                        const name = entities.get(child.subject_ids?.[0]) || child.subject_ids?.[0];
+                        if (!childStanding) return null;
+                        return (
+                          <span
+                            key={child.id}
+                            className={`rs-chip ${childStanding[0][1]}`.trim()}
+                          >
+                            {name}: {childStanding[0][0].toLowerCase()}
+                          </span>
+                        );
+                      })}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        );
+      })}
+
+      {actions.length > 0 && (
+        <div className="rs-plan-block">
+          <h2>What research did</h2>
+          {steps.map((step) => (
+            <div className="rs-plan-queries" key={step}>
+              {steps.length > 1 && <span className="rs-chip">step {step}</span>}
+              {actions.filter((action) => action.step === step).map((action) => (
+                <code key={action.id}>
+                  {action.query || "read a record the evidence cited"}
+                  {` · ${words(action.intent)}`}
+                  {action.vertical && action.vertical !== "web" ? ` · ${action.vertical}` : ""}
+                </code>
+              ))}
+            </div>
+          ))}
         </div>
       )}
     </section>

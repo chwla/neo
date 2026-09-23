@@ -52,8 +52,7 @@ def todo_write(arguments: dict, context: ToolContext) -> str:
 
     done = sum(1 for item in items if item.status == "completed")
     return f"Checklist updated: {done}/{len(items)} complete.\n" + "\n".join(
-        f"[{_mark(item.status)}] {item.title}"
-        for item in items
+        f"[{_mark(item.status)}] {item.title}" for item in items
     )
 
 

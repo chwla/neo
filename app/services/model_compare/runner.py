@@ -147,9 +147,7 @@ def resident_models(base_url: str) -> set[str]:
     """
 
     try:
-        response = requests.get(
-            f"{base_url.rstrip('/')}/api/ps", timeout=RESIDENCY_TIMEOUT_SECONDS
-        )
+        response = requests.get(f"{base_url.rstrip('/')}/api/ps", timeout=RESIDENCY_TIMEOUT_SECONDS)
         response.raise_for_status()
         return {
             str(item.get("name") or item.get("model") or "")
@@ -159,9 +157,7 @@ def resident_models(base_url: str) -> set[str]:
         return set()
 
 
-def build_client(
-    config: LLMConfig, *, max_tokens: int, timeout: int, allow_thinking: bool = False
-):
+def build_client(config: LLMConfig, *, max_tokens: int, timeout: int, allow_thinking: bool = False):
     """A client bound to one registry entry, tuned for a benchmark rather than a chat.
 
     Two departures from the ordinary chat path.
@@ -295,8 +291,12 @@ def run_task(
                 done = event
     except requests.Timeout:
         return _failed(
-            contender.id, task.id, "timed_out", started,
-            f"No answer within {TASK_DEADLINE_SECONDS} seconds.", started_at=stamp,
+            contender.id,
+            task.id,
+            "timed_out",
+            started,
+            f"No answer within {TASK_DEADLINE_SECONDS} seconds.",
+            started_at=stamp,
         )
     except (json.JSONDecodeError, ValueError, KeyError) as exc:
         # The provider answered, but not in a shape the client could read. Reported as
@@ -304,18 +304,30 @@ def run_task(
         # someone to different places.
         _LOG.debug("Malformed stream from %s on %s: %s", contender.id, task.id, exc)
         return _failed(
-            contender.id, task.id, "failed", started,
-            "This model sent a reply Neo could not read.", started_at=stamp,
+            contender.id,
+            task.id,
+            "failed",
+            started,
+            "This model sent a reply Neo could not read.",
+            started_at=stamp,
         )
     except requests.ConnectionError:
         return _failed(
-            contender.id, task.id, "failed", started,
-            "The connection to this model dropped part way through.", started_at=stamp,
+            contender.id,
+            task.id,
+            "failed",
+            started,
+            "The connection to this model dropped part way through.",
+            started_at=stamp,
         )
     except Exception as exc:
         _LOG.debug("Task %s failed on %s: %s", task.id, contender.id, exc)
         return _failed(
-            contender.id, task.id, "failed", started, "This model did not answer.",
+            contender.id,
+            task.id,
+            "failed",
+            started,
+            "This model did not answer.",
             started_at=stamp,
         )
 
@@ -502,12 +514,7 @@ def summarise(
             for item in answered
             if item.time_to_first_token_ms is not None
         ]
-        applied = [
-            check
-            for item in answered
-            for check in item.checks
-            if check.status != "skipped"
-        ]
+        applied = [check for item in answered for check in item.checks if check.status != "skipped"]
         summaries.append(
             ContenderSummary(
                 contender=contender,
@@ -684,9 +691,7 @@ def run(
             yield from finalize(comparison, stop)
 
         comparison.cancelled = stop.is_set()
-        comparison.summaries = summarise(
-            contenders, comparison.outcomes, warmups, errors, warm_ids
-        )
+        comparison.summaries = summarise(contenders, comparison.outcomes, warmups, errors, warm_ids)
         comparison.completed_at = now()
         comparison.total_duration_ms = int((time.perf_counter() - wall) * 1000)
         # Exactly one of these is ever emitted, and it is always the last event on the

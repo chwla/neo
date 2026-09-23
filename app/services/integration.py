@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import get_settings
 from app.services.evaluation import EvaluationService
@@ -59,8 +61,8 @@ ENTITY_SPECS: dict[str, EntitySpec] = {
     ),
     "research_run": EntitySpec(
         "research_run",
-        "workspace_research_runs",
-        detail_url="/api/research/runs/{id}",
+        "research_jobs",
+        detail_url="/api/research/{id}",
         label="Research run",
     ),
     "web_search_run": EntitySpec(
@@ -388,12 +390,14 @@ def _web_evidence_results() -> list[dict[str, Any]]:
 
 
 def _research_evidence_results() -> list[dict[str, Any]]:
+    """Every cited evidence item of a research run points at a source that run recorded."""
     conn = _connect()
     try:
         rows = conn.execute(
             """
-            SELECT id, research_run_id, source_type, source_id, citation_label
-            FROM workspace_research_evidence
+            SELECT id, sources_json, evidence_json, claims_json
+            FROM research_jobs
+            WHERE status = 'completed'
             ORDER BY created_at
             """
         ).fetchall()
@@ -402,44 +406,45 @@ def _research_evidence_results() -> list[dict[str, Any]]:
     finally:
         conn.close()
     results = []
-    mapping = {"web": "web_source", "memory": "memory_item"}
     for row in rows:
-        target_type = mapping.get(row["source_type"])
-        if not target_type:
+        try:
+            sources = {item.get("id") for item in json.loads(row["sources_json"] or "[]")}
+            evidence = {item.get("id"): item for item in json.loads(row["evidence_json"] or "[]")}
+            claims = json.loads(row["claims_json"] or "[]")
+        except (TypeError, ValueError, AttributeError):
             results.append(
                 {
                     "category": "research_evidence",
-                    "source": {"entity_type": "research_run", "entity_id": row["research_run_id"]},
-                    "target": {
-                        "entity_type": row["source_type"],
-                        "entity_id": row["source_id"],
-                    },
+                    "source": {"entity_type": "research_run", "entity_id": row["id"]},
+                    "target": {"entity_type": "research_source", "entity_id": ""},
                     "status": "warning",
                     "severity": "warning",
-                    "title": "Research evidence uses unsupported legacy source type",
-                    "details": f"{row['source_type']}:{row['source_id']}",
-                    "warning": "Unsupported legacy record preserved with degraded validation.",
+                    "title": "Research run has unreadable evidence records",
+                    "details": row["id"],
+                    "warning": "Legacy or damaged record preserved with degraded validation.",
                     "resolved": False,
                 }
             )
             continue
-        resolution = resolve_entity(target_type, str(row["source_id"] or ""))
-        results.append(
-            {
-                "category": "research_evidence",
-                "source": {"entity_type": "research_run", "entity_id": row["research_run_id"]},
-                "target": {
-                    "entity_type": target_type,
-                    "entity_id": str(row["source_id"] or ""),
-                    "detail_url": resolution.get("detail_url", ""),
-                },
-                "status": resolution["status"],
-                "severity": "critical" if resolution["status"] == "failed" else "info",
-                "title": f"Research evidence citation {row['citation_label'] or row['id']}",
-                "details": f"{target_type}:{row['source_id']}",
-                "resolved": resolution.get("exists", False),
-            }
-        )
+        for claim in claims if isinstance(claims, list) else []:
+            for evidence_id in claim.get("evidence_ids") or []:
+                item = evidence.get(evidence_id)
+                resolved = item is not None and item.get("source_id") in sources
+                results.append(
+                    {
+                        "category": "research_evidence",
+                        "source": {"entity_type": "research_run", "entity_id": row["id"]},
+                        "target": {
+                            "entity_type": "research_source",
+                            "entity_id": str((item or {}).get("source_id") or evidence_id),
+                        },
+                        "status": "passed" if resolved else "failed",
+                        "severity": "info" if resolved else "critical",
+                        "title": f"Research citation {evidence_id}",
+                        "details": f"claim {claim.get('id')}",
+                        "resolved": resolved,
+                    }
+                )
     return results
 
 
@@ -766,7 +771,7 @@ def smoke() -> dict[str, Any]:
     from app.services.github import store as github_store
     from app.services.memory_retrieval import store as memory_store
     from app.services.provider_runtime import store as provider_store
-    from app.services.research_mode import store as research_store
+    from app.services.research import store as research_store
     from app.services.web_search import store as web_store
 
     provider_request = provider_store.create_request(
@@ -818,26 +823,33 @@ def smoke() -> dict[str, Any]:
             "metadata": {},
         },
     )
-    research_run = research_store.create_run(
+    research_run = {"id": f"fixture{uuid4().hex[:6]}"}
+    research_store.save_job(
         {
-            "question": "How do systems connect?",
-            "mode": "general",
-            "created_by": "integration_smoke",
-        },
-        {"steps": ["search", "synthesize"]},
-    )
-    research_store.add_evidence(
-        research_run["id"],
-        {
-            "source_type": "web",
-            "source_id": web_source["id"],
-            "citation_label": "[R1]",
-            "evidence_text": "Research evidence from web source.",
-            "extracted_claim": "Systems connect through workspace links.",
-            "confidence": 0.9,
-            "quality_score": 0.9,
-            "metadata": {},
-        },
+            "id": research_run["id"],
+            "user_query": "How do systems connect?",
+            "depth": "standard",
+            "status": "completed",
+            "report": "# How do systems connect?\n\nSystems connect through workspace links. [1]\n",
+            "sources": [{"id": "s1", "url": "https://example.invalid/fixture", "used": True}],
+            "evidence": [
+                {
+                    "id": "ev1",
+                    "source_id": "s1",
+                    "claim": "Systems connect through workspace links.",
+                    "excerpt": "Research evidence from web source.",
+                    "status": "accepted",
+                }
+            ],
+            "claims": [
+                {
+                    "id": "c1",
+                    "text": "Systems connect through workspace links.",
+                    "evidence_ids": ["ev1"],
+                }
+            ],
+            "metadata": {"created_by": "integration_smoke"},
+        }
     )
     memory_item = memory_store.upsert_item(
         {

@@ -68,9 +68,7 @@ class ComparisonRequest(BaseModel):
     deterministic: bool = True
     temperature: float = Field(default=0.0, ge=0, le=MAX_TEMPERATURE)
     #: A run-wide ceiling. Unset, each task keeps the cap it was written with.
-    max_output_tokens: int | None = Field(
-        default=None, ge=MIN_OUTPUT_TOKENS, le=MAX_OUTPUT_TOKENS
-    )
+    max_output_tokens: int | None = Field(default=None, ge=MIN_OUTPUT_TOKENS, le=MAX_OUTPUT_TOKENS)
     #: Let models reason out loud before answering. Off by default: under a per-task
     #: token cap a reasoning model spends the budget thinking and answers with nothing.
     allow_thinking: bool = False

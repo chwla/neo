@@ -122,6 +122,19 @@ class ValidatedMemoryEmbeddingProvider:
         self.cooldown_until = self.clock() + self.cooldown_seconds
 
 
+def configured_embedder() -> EmbeddingProvider | None:
+    """The embedding provider on Neo's configured embedding route, or None if unusable.
+
+    Callers that only want "whatever Neo embeds with" go through this rather than naming a
+    provider class, so repointing the embedding route is all it takes to change it.
+    """
+    try:
+        provider = OllamaEmbeddingProvider()
+        return provider if provider.health() else None
+    except Exception:
+        return None
+
+
 class OllamaEmbeddingProvider:
     provider_name = "ollama"
 

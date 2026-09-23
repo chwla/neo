@@ -29,7 +29,11 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-from app.services.search.providers import WebSearchProvider, _results_response
+from app.services.search.providers import (
+    SEARXNG_CATEGORIES,
+    WebSearchProvider,
+    _results_response,
+)
 from app.services.search.types import WebSearchResponse
 
 logger = logging.getLogger(__name__)
@@ -178,12 +182,17 @@ def reset_for_tests() -> None:
 
 class EmbeddedSearXNGProvider(WebSearchProvider):
     name = "searxng"
+    verticals = frozenset(SEARXNG_CATEGORIES)
 
     def __init__(self, max_results: int | None = None) -> None:
         del max_results  # accepted for symmetry with the other providers
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         app = _boot()
         if app is None:
@@ -203,6 +212,8 @@ class EmbeddedSearXNGProvider(WebSearchProvider):
             # SearXNG's news engines are too sparse at a one-day window to be
             # worth asking for; a week is the narrowest range that still answers.
             params["time_range"] = "week" if time_filter == "day" else time_filter
+        if vertical in SEARXNG_CATEGORIES:
+            params["categories"] = SEARXNG_CATEGORIES[vertical]
 
         try:
             from werkzeug.test import Client  # noqa: PLC0415 -- ships with flask

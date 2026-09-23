@@ -81,9 +81,7 @@ def create_skill(request: SkillCreate):
 def install_folder(request: SkillInstallFolder):
     try:
         return _created(
-            library.install_from_folder(
-                request.path, enabled_by_default=request.enabled_by_default
-            )
+            library.install_from_folder(request.path, enabled_by_default=request.enabled_by_default)
         )
     except SkillError as exc:
         raise HTTPException(400, str(exc)) from exc

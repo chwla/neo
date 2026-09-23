@@ -81,15 +81,12 @@ def build_prompt(
     if not resuming and history:
         lines = history_lines(history)
         if lines:
-            sections.append(
-                "Earlier in this conversation:\n" + "\n".join(lines)
-            )
+            sections.append("Earlier in this conversation:\n" + "\n".join(lines))
 
     if previous_answer:
         who = previous_executor_name or "The previous agent"
         sections.append(
-            f"{who} worked on this before you and reported:\n"
-            f"{_clip(previous_answer, 4000)}"
+            f"{who} worked on this before you and reported:\n{_clip(previous_answer, 4000)}"
         )
 
     if change_summary:

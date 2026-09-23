@@ -26,12 +26,24 @@ PROVIDER_INFO = {
 }
 
 
+#: Kinds of result a search can be narrowed to. ``web`` is the default for every provider.
+SEARCH_VERTICALS = ("web", "news", "scholarly")
+#: SearXNG groups its engines into categories; these are the ones each vertical asks for.
+SEARXNG_CATEGORIES = {"web": "general", "news": "news", "scholarly": "science"}
+
+
 class WebSearchProvider(ABC):
     name: str
+    #: Verticals this provider can actually narrow to. Others are ignored and searched as web.
+    verticals: frozenset[str] = frozenset({"web"})
 
     @abstractmethod
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         raise NotImplementedError
 
@@ -207,6 +219,7 @@ def provider_available(provider: str) -> bool:
 
 class SearXNGSearchProvider(WebSearchProvider):
     name = "searxng"
+    verticals = frozenset(SEARXNG_CATEGORIES)
 
     def __init__(
         self,
@@ -222,7 +235,11 @@ class SearXNGSearchProvider(WebSearchProvider):
         self.name = provider_name or self.name
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         try:
             instance = normalize_searxng_instance(self.instance_url)
@@ -237,6 +254,8 @@ class SearXNGSearchProvider(WebSearchProvider):
         }
         if time_filter in {"day", "week", "month", "year"}:
             params["time_range"] = "week" if time_filter == "day" else time_filter
+        if vertical in SEARXNG_CATEGORIES:
+            params["categories"] = SEARXNG_CATEGORIES[vertical]
         try:
             response = requests.get(
                 f"{instance}/search",
@@ -289,7 +308,11 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
         self.user_agent = user_agent or settings.web_search_user_agent
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         try:
             response = requests.get(
@@ -319,7 +342,11 @@ class BingHTMLSearchProvider(WebSearchProvider):
         self.user_agent = user_agent or settings.web_search_user_agent
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         try:
             response = requests.get(
@@ -356,7 +383,11 @@ class BraveSearchProvider(WebSearchProvider):
         self.user_agent = user_agent or settings.web_search_user_agent
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         if not self.api_key:
             return WebSearchResponse(
@@ -397,6 +428,7 @@ class BraveSearchProvider(WebSearchProvider):
 
 class TavilySearchProvider(WebSearchProvider):
     name = "tavily"
+    verticals = frozenset({"web", "news"})
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -404,7 +436,11 @@ class TavilySearchProvider(WebSearchProvider):
         self.timeout_seconds = settings.web_fetch_timeout_seconds
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         if not self.api_key:
             return WebSearchResponse(
@@ -417,6 +453,8 @@ class TavilySearchProvider(WebSearchProvider):
         }
         if time_filter in {"day", "week", "month", "year"}:
             payload["days"] = {"day": 1, "week": 7, "month": 30, "year": 365}[time_filter]
+        if vertical == "news":
+            payload["topic"] = "news"
         try:
             response = requests.post(
                 "https://api.tavily.com/search",
@@ -465,7 +503,11 @@ class SerperSearchProvider(WebSearchProvider):
         self.timeout_seconds = settings.web_fetch_timeout_seconds
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         if not self.api_key:
             return WebSearchResponse(
@@ -503,7 +545,11 @@ class DisabledSearchProvider(WebSearchProvider):
     name = "disabled"
 
     def search(
-        self, query: str, max_results: int, time_filter: str | None = None
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
     ) -> WebSearchResponse:
         return WebSearchResponse(
             query=query,

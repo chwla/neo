@@ -31,6 +31,18 @@ from app.services.provider_runtime.usage import summary
 _LOG = logging.getLogger("neo.provider_runtime")
 
 
+def _sampling(metadata: dict[str, Any]) -> dict[str, float]:
+    """Sampling options a caller asked for, passed to the provider client.
+
+    Callers put ``temperature`` in the request metadata; without this the provider client
+    fell back to its own default and a caller asking for near-deterministic output never got it.
+    """
+    value = metadata.get("temperature")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return {}
+    return {"temperature": min(2.0, max(0.0, float(value)))}
+
+
 class ProviderRuntimeService:
     def __init__(self, *, initialize: bool = True, disable_thinking: bool = False) -> None:
         if initialize:
@@ -205,7 +217,10 @@ class ProviderRuntimeService:
                     model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
                 )
                 client = build_client(
-                    provider, model, num_predict=max_tokens, num_ctx=num_ctx,
+                    provider,
+                    model,
+                    num_predict=max_tokens,
+                    num_ctx=num_ctx,
                     disable_thinking=self.disable_thinking,
                 )
                 tool_calls: list[dict[str, Any]] = []
@@ -215,7 +230,9 @@ class ProviderRuntimeService:
                     stream_usage: dict[str, int | None] = {}
                     finish_reason: str | None = None
                     store.update_request(request["id"], status="streaming")
-                    for event in client.chat_stream(messages, num_predict=max_tokens):
+                    for event in client.chat_stream(
+                        messages, num_predict=max_tokens, **_sampling(metadata)
+                    ):
                         if cancelled and cancelled.is_set():
                             return self._finish(
                                 request["id"],
@@ -247,7 +264,7 @@ class ProviderRuntimeService:
                     )
                 else:
                     result = client.chat_with_metadata(
-                        messages, num_predict=max_tokens, tools=tools
+                        messages, num_predict=max_tokens, tools=tools, **_sampling(metadata)
                     )
                     result_content = result.content
                     tool_calls = result.tool_calls
@@ -299,11 +316,14 @@ class ProviderRuntimeService:
                     attempts += 1
                     try:
                         client = build_client(
-                            provider, model, num_predict=max_tokens, num_ctx=num_ctx,
+                            provider,
+                            model,
+                            num_predict=max_tokens,
+                            num_ctx=num_ctx,
                             disable_thinking=self.disable_thinking,
                         )
                         result = client.chat_with_metadata(
-                            messages, num_predict=max_tokens, tools=tools
+                            messages, num_predict=max_tokens, tools=tools, **_sampling(metadata)
                         )
                         return self._finish(
                             request["id"],

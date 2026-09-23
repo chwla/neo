@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import Any
 
 from app.cli.client import ApiError, ApiUnavailableError, NeoApiClient
@@ -82,9 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
     agent_start = agent_sub.add_parser("start")
     agent_start.add_argument("--objective", required=True)
-    agent_start.add_argument(
-        "--mode", choices=["plan", "normal", "auto"], default="normal"
-    )
+    agent_start.add_argument("--mode", choices=["plan", "normal", "auto"], default="normal")
     agent_start.add_argument("--project", dest="project_id")
     agent_start.add_argument("--task", dest="task_id")
     agent_start.add_argument("--repo", dest="repo_id")
@@ -196,29 +195,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     research = sub.add_parser("research")
     research_sub = research.add_subparsers(dest="research_command", required=True)
+    research_depths = ["quick", "standard", "deep"]
     research_plan = research_sub.add_parser("plan")
     research_plan.add_argument("question")
-    research_plan.add_argument("--mode", default="general")
-    research_plan.add_argument("--fresh", action="store_true")
-    research_plan.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard")
+    research_plan.add_argument("--depth", choices=research_depths, default="standard")
     research_run = research_sub.add_parser("run")
     research_run.add_argument("question")
-    research_run.add_argument("--mode", default="general")
-    research_run.add_argument("--fresh", action="store_true")
-    research_run.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard")
+    research_run.add_argument("--depth", choices=research_depths, default="standard")
+    research_run.add_argument(
+        "--memory", action="store_true", help="let the run read remembered context"
+    )
+    research_run.add_argument(
+        "--no-wait", action="store_true", help="return the started job instead of waiting"
+    )
     research_sub.add_parser("list")
-    for command in (
-        "show",
-        "evidence",
-        "claims",
-        "conflicts",
-        "report",
-        "validate-citations",
-        "continue",
-        "refresh",
-    ):
+    for command in ("show", "evidence", "claims", "conflicts", "report", "cancel", "refresh"):
         item = research_sub.add_parser(command)
-        item.add_argument("run_id")
+        item.add_argument("job_id")
 
     memory = sub.add_parser("memory")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -353,7 +346,15 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--snapshot", action="store_true")
     tui.add_argument(
         "--view",
-        choices=["dashboard", "tasks", "agent-sessions", "agents", "commands", "context", "settings"],
+        choices=[
+            "dashboard",
+            "tasks",
+            "agent-sessions",
+            "agents",
+            "commands",
+            "context",
+            "settings",
+        ],
         default="dashboard",
     )
     return parser
@@ -603,40 +604,48 @@ def handle_integration(args, client: NeoApiClient) -> Any:
     return client.post(f"/api/integration/{command}", {})
 
 
+_RESEARCH_TERMINAL = {"completed", "failed", "cancelled"}
+
+
 def handle_research(args, client: NeoApiClient) -> Any:
-    if args.research_command == "plan":
-        return client.post(
-            "/api/research/plan",
-            {
-                "question": args.question,
-                "mode": args.mode,
-                "freshness_required": args.fresh,
-                "depth": args.depth,
-            },
-        )
-    if args.research_command == "run":
-        return client.post(
-            "/api/research/run",
-            {
-                "question": args.question,
-                "mode": args.mode,
-                "freshness_required": args.fresh,
-                "depth": args.depth,
-                "max_search_runs": 4 if args.depth == "deep" else 2,
-                "max_sources": 20 if args.depth == "deep" else 12,
-                "include_memory": True,
-                "include_conflict_analysis": True,
-                "created_by": "cli",
-            },
-        )
-    if args.research_command == "list":
-        return client.get("/api/research/runs")
-    if args.research_command in {"validate-citations", "continue", "refresh"}:
-        return client.post(f"/api/research/runs/{args.run_id}/{args.research_command}")
-    return client.get(
-        f"/api/research/runs/{args.run_id}"
-        + ("" if args.research_command == "show" else f"/{args.research_command}")
+    command = args.research_command
+    if command == "plan":
+        return client.post("/api/research/plan", {"question": args.question, "depth": args.depth})
+    if command == "run":
+        return _start_research(client, args.question, args.depth, args.memory, not args.no_wait)
+    if command == "list":
+        return client.get("/api/research/list")
+    if command == "cancel":
+        return client.post(f"/api/research/{args.job_id}/cancel")
+    if command == "report":
+        return client.get(f"/api/research/{args.job_id}/report")
+    job = client.get(f"/api/research/{args.job_id}")
+    if command == "refresh":
+        return _start_research(client, job["user_query"], job["depth"], False, True)
+    if command == "evidence":
+        return {"evidence": job.get("evidence", [])}
+    if command == "claims":
+        return {"claims": job.get("claims", [])}
+    if command == "conflicts":
+        return {"conflicts": (job.get("trace") or {}).get("contradiction_groups", [])}
+    return job
+
+
+def _start_research(
+    client: NeoApiClient, question: str, depth: str, memory: bool, wait: bool
+) -> Any:
+    started = client.post(
+        "/api/research/start",
+        {"query": question, "depth": depth, "memory_enabled": memory},
     )
+    if not wait:
+        return started
+    job_id = started["job_id"]
+    while True:
+        job = client.get(f"/api/research/{job_id}")
+        if job.get("status") in _RESEARCH_TERMINAL:
+            return job
+        time.sleep(3)
 
 
 def _memory_scope(value: str) -> tuple[str | None, str | None]:
@@ -737,9 +746,7 @@ def handle_git(args, client: NeoApiClient) -> Any:
 
 def handle_export(args, client: NeoApiClient) -> dict[str, str]:
     kind, entity_id = (
-        ("agent_session", args.run_id)
-        if args.export_command == "run"
-        else ("task", args.task_id)
+        ("agent_session", args.run_id) if args.export_command == "run" else ("task", args.task_id)
     )
     created = client.post(
         "/api/bundles/export",

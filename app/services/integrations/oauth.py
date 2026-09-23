@@ -71,9 +71,7 @@ class IntegrationOAuthError(ValueError):
 
 def session_binding(raw_session_token: str | None) -> str:
     if not raw_session_token:
-        raise IntegrationOAuthError(
-            "Connecting an account requires an active profile session."
-        )
+        raise IntegrationOAuthError("Connecting an account requires an active profile session.")
     return hashlib.sha256(raw_session_token.encode("utf-8")).hexdigest()
 
 
@@ -149,9 +147,7 @@ def start_oauth(
     requested = capability_vocabulary.validate(capability_ids)
     unsupported = sorted(set(requested) - set(provider.supported_capabilities))
     if unsupported:
-        raise IntegrationOAuthError(
-            f"{provider.display_name} does not offer '{unsupported[0]}'."
-        )
+        raise IntegrationOAuthError(f"{provider.display_name} does not offer '{unsupported[0]}'.")
     _validate_redirect_uri(redirect_uri)
     if not is_allowed_return_origin(return_origin, self_origin=self_origin):
         # Where a browser goes next, chosen by the caller: an allowlist is the

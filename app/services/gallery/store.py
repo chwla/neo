@@ -266,9 +266,7 @@ def get_preference(key: str) -> str | None:
 
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT value FROM gallery_preferences WHERE key = ?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value FROM gallery_preferences WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
     finally:
         conn.close()
@@ -599,9 +597,7 @@ def upsert_vector(entry: dict[str, Any]) -> None:
 def get_vector(item_id: str) -> dict | None:
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT * FROM gallery_vectors WHERE item_id = ?", (item_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM gallery_vectors WHERE item_id = ?", (item_id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

@@ -268,9 +268,7 @@ def ollama_supports_tools(base_url: str, model: str, timeout: int = 5) -> bool:
         return _TOOL_SUPPORT_CACHE[key]
     supported = False
     try:
-        response = requests.post(
-            f"{key[0]}/api/show", json={"model": model}, timeout=timeout
-        )
+        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
         capabilities = payload.get("capabilities") or []
@@ -419,9 +417,7 @@ class OllamaClient(BaseLLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
-        body: dict[str, Any] = self._body(
-            messages, temperature, num_predict, stream=False
-        )
+        body: dict[str, Any] = self._body(messages, temperature, num_predict, stream=False)
         if tools:
             body["tools"] = tools
         response = requests.post(

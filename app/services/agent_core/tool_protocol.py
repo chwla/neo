@@ -26,12 +26,8 @@ _FENCE = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL | re.IGNORECASE)
 # the model's point of view; it simply never reaches the tool-call field, so the
 # loop sees "no tools requested" and treats real work as a finished answer.
 # Recognising the two common formats turns that dropped turn into a real call.
-_XML_FUNCTION = re.compile(
-    r"<function=([A-Za-z0-9_.\-]+)\s*>(.*?)(?:</function>|\Z)", re.DOTALL
-)
-_XML_PARAMETER = re.compile(
-    r"<parameter=([A-Za-z0-9_.\-]+)\s*>(.*?)(?:</parameter>|\Z)", re.DOTALL
-)
+_XML_FUNCTION = re.compile(r"<function=([A-Za-z0-9_.\-]+)\s*>(.*?)(?:</function>|\Z)", re.DOTALL)
+_XML_PARAMETER = re.compile(r"<parameter=([A-Za-z0-9_.\-]+)\s*>(.*?)(?:</parameter>|\Z)", re.DOTALL)
 _HERMES_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>|\Z)", re.DOTALL)
 _SALVAGE_LEFTOVERS = re.compile(
     r"<function=.*?(?:</function>|\Z)|<tool_call>.*?(?:</tool_call>|\Z)|</tool_call>",
@@ -192,9 +188,7 @@ def salvage_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
     for name, body in _XML_FUNCTION.findall(text):
         if name not in allowed:
             continue
-        arguments = {
-            key: _coerce_argument(value) for key, value in _XML_PARAMETER.findall(body)
-        }
+        arguments = {key: _coerce_argument(value) for key, value in _XML_PARAMETER.findall(body)}
         if arguments:
             calls.append(
                 ToolCall(id=f"call_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)

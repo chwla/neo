@@ -263,9 +263,7 @@ def set_client(provider_id: str, payload: OAuthClientRequest, request: Request) 
 @router.delete("/providers/{provider_id}/client")
 def clear_client(provider_id: str, request: Request) -> dict:
     try:
-        return service.clear_oauth_client(
-            provider_id=provider_id, session=session_for(request)
-        )
+        return service.clear_oauth_client(provider_id=provider_id, session=session_for(request))
     except Exception as exc:
         raise _handle(exc) from None
 

@@ -60,9 +60,7 @@ def get_sidebar_project(project_id: str | int) -> dict | None:
         return None
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT id, name FROM projects WHERE id = ?", (identifier,)
-        ).fetchone()
+        row = conn.execute("SELECT id, name FROM projects WHERE id = ?", (identifier,)).fetchone()
     except sqlite3.OperationalError:
         return None
     finally:
@@ -243,9 +241,7 @@ def initialize_agent_core_tables() -> None:
             if name not in existing:
                 conn.execute(f"ALTER TABLE workspace_agent_sessions ADD COLUMN {name} INTEGER")
         if "disabled_tools_json" not in existing:
-            conn.execute(
-                "ALTER TABLE workspace_agent_sessions ADD COLUMN disabled_tools_json TEXT"
-            )
+            conn.execute("ALTER TABLE workspace_agent_sessions ADD COLUMN disabled_tools_json TEXT")
         if "skills_json" not in existing:
             conn.execute("ALTER TABLE workspace_agent_sessions ADD COLUMN skills_json TEXT")
         # The external-executor columns, added the same way and for the same

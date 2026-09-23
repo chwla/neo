@@ -974,8 +974,7 @@ class MemoryExtractionCoordinator:
                     for key in mine
                 )
                 narrower = any(
-                    theirs[key][0] < mine[key][0] or mine[key][1] < theirs[key][1]
-                    for key in mine
+                    theirs[key][0] < mine[key][0] or mine[key][1] < theirs[key][1] for key in mine
                 )
                 if inside and narrower:
                     nested = True

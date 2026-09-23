@@ -19,9 +19,7 @@ _QUESTION_WORD = re.compile(r"\b(?:who|what|when|where|why|how|which)\b", re.IGN
 # prefix, so a message like "Remember this for future chats: I want to improve
 # at home coffee brewing... water temperature..." fell through to weather-signal
 # matching on the word "temperature" instead of being treated as memory.
-_EXPLICIT_REMEMBER_COMMAND = re.compile(
-    r"^\s*(?:please\s+)?remember\b", re.IGNORECASE
-)
+_EXPLICIT_REMEMBER_COMMAND = re.compile(r"^\s*(?:please\s+)?remember\b", re.IGNORECASE)
 _EXPLICIT_LOOKUP = re.compile(
     r"(?:^\s*(?:please\s+)?(?:search|find|google)\b|"
     r"\b(?:look\s+up|lookup|verify|fact[- ]?check|check online)\b)",
@@ -627,14 +625,16 @@ class SearchIntentResolver:
 
         location: str | None = None
         matched_pattern_index: int | None = None
-        for index, pattern in enumerate((
-            r"\b(?:weather|forecast|temperature)\s+(?:in|for|at)\s+"
-            r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
-            r"^(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)\s+"
-            r"(?:weather|forecast|temperature)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
-            r"\bi\s+(?:live|am based|am located)\s+in\s+"
-            r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:[,;]|$)",
-        )):
+        for index, pattern in enumerate(
+            (
+                r"\b(?:weather|forecast|temperature)\s+(?:in|for|at)\s+"
+                r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
+                r"^(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)\s+"
+                r"(?:weather|forecast|temperature)(?:\s+(?:today|now|tomorrow))?[?.!]*$",
+                r"\bi\s+(?:live|am based|am located)\s+in\s+"
+                r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:[,;]|$)",
+            )
+        ):
             match = re.search(pattern, query, re.IGNORECASE)
             if match:
                 location = match.group("location").strip(" .,?!")

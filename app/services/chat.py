@@ -124,15 +124,11 @@ _APPROVED_CALENDAR_OFFER_PLACEHOLDER = (
 )
 
 _CALENDAR_EXECUTION_STATEMENT: dict[str, str] = {
-    "none": (
-        "No calendar event was created, updated, or deleted during this turn."
-    ),
+    "none": ("No calendar event was created, updated, or deleted during this turn."),
     "create": "A calendar event was created during this turn.",
     "update": "A calendar event was updated during this turn.",
     "delete": "A calendar event was deleted during this turn.",
-    "failed": (
-        "A calendar change was attempted during this turn and did not succeed."
-    ),
+    "failed": ("A calendar change was attempted during this turn and did not succeed."),
 }
 
 #: The whole answer for a turn whose authoritative execution state is
@@ -234,6 +230,7 @@ _PROMPT_AUTHORITY = (
     "happened. An earlier offer to change the calendar is not evidence that the "
     "change was carried out.\n\n"
 )
+
 
 class NeoChatService:
     """Connects memory context, Ollama generation, archiving, and extraction."""
@@ -2111,8 +2108,7 @@ class NeoChatService:
                     )
                 except Exception:
                     _ROUTING_LOG.exception(
-                        "memory_extraction_failure_status_write_failed "
-                        "chat_id=%s message_id=%s",
+                        "memory_extraction_failure_status_write_failed chat_id=%s message_id=%s",
                         chat_id,
                         message_id,
                     )
@@ -2243,8 +2239,7 @@ class NeoChatService:
 
         decisions = tuple(getattr(result, "decisions", ()) or ())
         saved = sum(
-            getattr(decision, "outcome", None) in _MEMORY_SAVE_OUTCOMES
-            for decision in decisions
+            getattr(decision, "outcome", None) in _MEMORY_SAVE_OUTCOMES for decision in decisions
         )
         factory = sessionmaker(bind=database, autoflush=False, expire_on_commit=False, future=True)
         with factory.begin() as database_session:
@@ -2966,9 +2961,7 @@ class NeoChatService:
             calendar_execution=self.calendar_execution,
         )
         result = self._generate_complete(messages, num_predict=self._num_predict(prompt, context))
-        if web_context.citations and not self._has_web_citation_marker(
-            result.content, web_context
-        ):
+        if web_context.citations and not self._has_web_citation_marker(result.content, web_context):
             reply = self._web_generation_fallback(
                 prompt,
                 web_context,
@@ -3280,18 +3273,14 @@ class NeoChatService:
             min(words * NeoChatService._TOKENS_PER_WORD, NeoChatService._MAX_REQUESTED_PREDICT)
         )
 
-    def _generate_complete(
-        self, messages: list[LLMMessage], *, num_predict: int
-    ) -> LLMChatResult:
+    def _generate_complete(self, messages: list[LLMMessage], *, num_predict: int) -> LLMChatResult:
         """Generate, continuing when the model stops because it hit the output limit.
 
         The streaming path already does this. Without it here a long answer comes back
         silently truncated mid-word, because the caller has no way to tell a finished
         answer from one that ran out of room.
         """
-        result = self.ollama.chat_with_metadata(
-            messages, temperature=0.2, num_predict=num_predict
-        )
+        result = self.ollama.chat_with_metadata(messages, temperature=0.2, num_predict=num_predict)
         content = result.content
         prompt_tokens = result.prompt_tokens or 0
         completion_tokens = result.completion_tokens or 0

@@ -189,9 +189,7 @@ def _normalize_by_weekday(value: object) -> list[int] | None:
 _WEEKDAY_NAMES = {index: name for name, index in _WEEKDAY_INDEX.items()}
 
 
-def _series_start_date(
-    expression: object, recurrence: object, *, now: datetime
-) -> date:
+def _series_start_date(expression: object, recurrence: object, *, now: datetime) -> date:
     """The date a draft starts on, deriving it from the recurrence if needed.
 
     A series repeating on several weekdays has no single weekday in its
@@ -219,9 +217,7 @@ def _series_start_date(
     return resolve_calendar_date_expression(expression, now=now)
 
 
-def _resolve_recurrence(
-    recurrence: dict, *, now: datetime, start_date: date | None
-) -> dict:
+def _resolve_recurrence(recurrence: dict, *, now: datetime, start_date: date | None) -> dict:
     """Normalize a recurrence rule into the shape storage validates.
 
     Raises ``CalendarDateResolutionError`` so the caller drops the whole
@@ -238,8 +234,7 @@ def _resolve_recurrence(
     if expression is not None:
         if resolved.get("until") is not None:
             raise CalendarDateResolutionError(
-                "A recurrence may express its end once, not as both until and "
-                "until_expression."
+                "A recurrence may express its end once, not as both until and until_expression."
             )
         anchor = start_date or now.date()
         until = resolve_recurrence_until_expression(expression, anchor=anchor)
@@ -324,8 +319,7 @@ def _resolve_draft_dates(draft: dict, *, now: datetime) -> dict | None:
         resolved = {
             key: value
             for key, value in draft.items()
-            if key
-            not in ("date_expression", "time_of_day", "end_time_of_day", "duration_minutes")
+            if key not in ("date_expression", "time_of_day", "end_time_of_day", "duration_minutes")
         }
         if "date_expression" in draft:
             resolved_date = _series_start_date(
@@ -355,17 +349,13 @@ def _resolve_draft_dates(draft: dict, *, now: datetime) -> dict | None:
             raw_start = resolved.get("start_at")
             if isinstance(raw_start, str) and raw_start:
                 start_date = datetime.fromisoformat(raw_start).date()
-            resolved["recurrence"] = _resolve_recurrence(
-                recurrence, now=now, start_date=start_date
-            )
+            resolved["recurrence"] = _resolve_recurrence(recurrence, now=now, start_date=start_date)
     except (CalendarDateResolutionError, TypeError, ValueError):
         return None
     return resolved
 
 
-def merge_modification_into_draft(
-    draft: dict, changes: dict, *, now: datetime
-) -> dict | None:
+def merge_modification_into_draft(draft: dict, changes: dict, *, now: datetime) -> dict | None:
     """Apply an explicitly-requested change set on top of a validated draft.
 
     The already-validated pending draft is the baseline and the sole source
@@ -744,16 +734,52 @@ _TEMPORAL_EXPRESSION = re.compile(
 #: the cost of being wrong there is a change the user did not approve.
 _SOCIAL_PLEASANTRIES = frozenset(
     {
-        "hi", "hii", "hiya", "hello", "hey", "yo", "howdy", "sup",
-        "hi there", "hello there", "hey there",
-        "good morning", "good afternoon", "good evening", "good night",
-        "thanks", "thank you", "thanks a lot", "thank you so much", "ty", "cheers",
-        "bye", "goodbye", "see you", "see ya", "later",
-        "how are you", "how are you doing", "hows it going", "how's it going",
-        "whats up", "what's up",
-        "nice", "cool", "great", "awesome", "perfect", "lovely",
-        "no worries", "youre welcome", "you're welcome", "np", "yw",
-        "sorry", "my bad", "please",
+        "hi",
+        "hii",
+        "hiya",
+        "hello",
+        "hey",
+        "yo",
+        "howdy",
+        "sup",
+        "hi there",
+        "hello there",
+        "hey there",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "good night",
+        "thanks",
+        "thank you",
+        "thanks a lot",
+        "thank you so much",
+        "ty",
+        "cheers",
+        "bye",
+        "goodbye",
+        "see you",
+        "see ya",
+        "later",
+        "how are you",
+        "how are you doing",
+        "hows it going",
+        "how's it going",
+        "whats up",
+        "what's up",
+        "nice",
+        "cool",
+        "great",
+        "awesome",
+        "perfect",
+        "lovely",
+        "no worries",
+        "youre welcome",
+        "you're welcome",
+        "np",
+        "yw",
+        "sorry",
+        "my bad",
+        "please",
     }
 )
 
@@ -975,9 +1001,7 @@ class CalendarIntentClassifier:
             return None
         title = baseline_title or baseline_draft.get("title") or "that event"
         start_at = baseline_draft.get("start_at")
-        baseline = f'{baseline_action} "{title}"' + (
-            f" starting {start_at}" if start_at else ""
-        )
+        baseline = f'{baseline_action} "{title}"' + (f" starting {start_at}" if start_at else "")
         try:
             raw = llm.chat(
                 [

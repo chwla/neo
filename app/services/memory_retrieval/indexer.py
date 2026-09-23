@@ -176,9 +176,7 @@ class MemoryIndexer:
 
     def index_run(self, source_type: str, source_id: str) -> list[dict]:
         """Read already-persisted run metadata; missing optional tables degrade to no items."""
-        table = (
-"workspace_agent_sessions"
-        )
+        table = "workspace_agent_sessions"
         try:
             conn = store._connect()
             row = conn.execute(f"SELECT * FROM {table} WHERE id=?", (source_id,)).fetchone()

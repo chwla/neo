@@ -86,9 +86,7 @@ class BundleExporter:
             )
         }
         if kind == "agent_session":
-            result["agent_sessions"] = rows(
-                conn, "workspace_agent_sessions", "id=?", [entity_id]
-            )
+            result["agent_sessions"] = rows(conn, "workspace_agent_sessions", "id=?", [entity_id])
             session = result["agent_sessions"][0] if result["agent_sessions"] else {}
             agent_ids = [entity_id]
             task_ids = [session.get("task_id")] if session.get("task_id") else []
@@ -133,9 +131,7 @@ class BundleExporter:
             )
         # Tests and checkpoints a session produced are linked by agent_run_id.
         for agent_id in set(filter(None, agent_ids)):
-            result["test_runs"] += rows(
-                conn, "workspace_test_runs", "agent_run_id=?", [agent_id]
-            )
+            result["test_runs"] += rows(conn, "workspace_test_runs", "agent_run_id=?", [agent_id])
             result["git_checkpoints"] += rows(
                 conn, "workspace_git_checkpoints", "agent_run_id=?", [agent_id]
             )

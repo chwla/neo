@@ -215,8 +215,9 @@ CODING: tuple[Task, ...] = (
             "slice, reversed(), or list.reverse()."
         ),
         checks=(
-            IsPython(label="Real Python that parses", function="reverse_words", arity=1,
-                     weight=3.0),
+            IsPython(
+                label="Real Python that parses", function="reverse_words", arity=1, weight=3.0
+            ),
             Contains(label="Splits the text into words", needles=("split",), weight=1.5),
             Contains(label="Joins them back together", needles=("join",), weight=1.5),
             # Every real idiom for reversing, not only the one that came to mind first.
@@ -227,8 +228,9 @@ CODING: tuple[Task, ...] = (
                 any_of=True,
                 weight=2.0,
             ),
-            Excludes(label="No commentary around it",
-                     needles=("Here is", "Here's", "This function")),
+            Excludes(
+                label="No commentary around it", needles=("Here is", "Here's", "This function")
+            ),
         ),
     ),
     Task(
@@ -247,14 +249,14 @@ CODING: tuple[Task, ...] = (
             "is zero. An explicit test, a truthiness test and try/except all count."
         ),
         checks=(
-            IsPython(label="Real Python that parses", function="safe_divide", arity=2,
-                     weight=3.0),
+            IsPython(label="Real Python that parses", function="safe_divide", arity=2, weight=3.0),
             # Returning None is the guard. Checking *how* it guarded fails `if b else
             # None`, which is both idiomatic and correct.
             Contains(label="Returns None for zero", needles=("None",), weight=2.0),
             Contains(label="Actually divides", needles=("/",), weight=1.0),
-            Excludes(label="No commentary around it",
-                     needles=("Here is", "Here's", "This function")),
+            Excludes(
+                label="No commentary around it", needles=("Here is", "Here's", "This function")
+            ),
         ),
     ),
     Task(
@@ -280,9 +282,12 @@ CODING: tuple[Task, ...] = (
             Contains(label="Totals each customer's orders", needles=("group by",), weight=2.0),
             Contains(label="Sorts highest first", needles=("order by",), weight=1.5),
             Contains(label="Sorts descending", needles=("desc",), weight=1.0),
-            Contains(label="Returns three rows",
-                     needles=("limit 3", "top 3", "top(3)", "fetch first 3"),
-                     any_of=True, weight=1.5),
+            Contains(
+                label="Returns three rows",
+                needles=("limit 3", "top 3", "top(3)", "fetch first 3"),
+                any_of=True,
+                weight=1.5,
+            ),
         ),
     ),
     Task(
@@ -347,8 +352,9 @@ CODING: tuple[Task, ...] = (
         rubric="git reset --soft HEAD~1. HEAD^ and HEAD~ are the same reference.",
         checks=(
             Contains(label="Got git reset --soft", needles=("reset --soft",), weight=3.0),
-            Contains(label="Points at the last commit", needles=("head~1", "head^", "head~"),
-                     any_of=True),
+            Contains(
+                label="Points at the last commit", needles=("head~1", "head^", "head~"), any_of=True
+            ),
             Terse(label="Answered with just the command", max_words=10),
         ),
     ),
@@ -379,9 +385,17 @@ CODING: tuple[Task, ...] = (
             Contains(
                 label="Names the faulty starting value or its effect",
                 needles=(
-                    "negative", "below zero", "less than zero",
-                    "initial", "initialis", "initializ", "starts at 0", "starting at 0",
-                    "first element", "-inf", "empty",
+                    "negative",
+                    "below zero",
+                    "less than zero",
+                    "initial",
+                    "initialis",
+                    "initializ",
+                    "starts at 0",
+                    "starting at 0",
+                    "first element",
+                    "-inf",
+                    "empty",
                 ),
                 any_of=True,
                 weight=3.0,
@@ -417,14 +431,14 @@ STRUCTURED: tuple[Task, ...] = (
         use_case="structured",
         label="Pulling fields out of a sentence",
         prompt=(
-            'From this sentence, return a JSON object with the keys name, city and age: '
+            "From this sentence, return a JSON object with the keys name, city and age: "
             '"Priya Raman is 34 and lives in Chennai." Reply with only the JSON.'
         ),
         system=TERSE_SYSTEM,
         max_tokens=250,
         rank=0,
         rubric=(
-            'Valid JSON with name, city and age. City must be Chennai and age 34; the age '
+            "Valid JSON with name, city and age. City must be Chennai and age 34; the age "
             "may be a number or a string."
         ),
         checks=(
@@ -463,8 +477,12 @@ STRUCTURED: tuple[Task, ...] = (
         rank=2,
         rubric="A header row then three rows, one per item. A space after the comma is fine.",
         checks=(
-            Contains(label="Has the header asked for", needles=("item,price", "item, price"),
-                     any_of=True, weight=2.0),
+            Contains(
+                label="Has the header asked for",
+                needles=("item,price", "item, price"),
+                any_of=True,
+                weight=2.0,
+            ),
             LinesAtLeast(label="One row per item", minimum=4, weight=2.0),
             Contains(label="Carries every item", needles=("pen", "book", "lamp"), weight=1.5),
             Excludes(label="No commentary around it", needles=("here", "csv:", "```")),
@@ -502,8 +520,9 @@ STRUCTURED: tuple[Task, ...] = (
         rubric='Valid JSON shaped {"order": {"id": 7, "items": ["pen", "book"]}}.',
         checks=(
             IsJson(label="Valid JSON with the right shape", keys=("order",), weight=2.0),
-            Contains(label="Carries the values asked for", needles=("pen", "book", "7"),
-                     weight=2.0),
+            Contains(
+                label="Carries the values asked for", needles=("pen", "book", "7"), weight=2.0
+            ),
         ),
     ),
     Task(
@@ -522,8 +541,7 @@ STRUCTURED: tuple[Task, ...] = (
         # rather than graded loosely. The task was never about the trivia.
         rubric="1,2,3,4,5 on one line, with no markdown and nothing else.",
         checks=(
-            Contains(label="Has all five numbers", needles=("1", "2", "3", "4", "5"),
-                     weight=2.0),
+            Contains(label="Has all five numbers", needles=("1", "2", "3", "4", "5"), weight=2.0),
             Excludes(label="No markdown", needles=("*", "#", "- ", "```")),
             Terse(label="Kept to one line", max_words=8),
         ),
@@ -550,8 +568,12 @@ WRITING: tuple[Task, ...] = (
         checks=(
             AtMostWords(label="Stayed within 20 words", limit=20, weight=2.0),
             SentencesAtMost(label="Kept it to one sentence", limit=1, weight=2.0),
-            Contains(label="Kept the point", needles=("tram", "line", "extension"), any_of=True,
-                     weight=2.0),
+            Contains(
+                label="Kept the point",
+                needles=("tram", "line", "extension"),
+                any_of=True,
+                weight=2.0,
+            ),
         ),
     ),
     Task(
@@ -567,19 +589,31 @@ WRITING: tuple[Task, ...] = (
         max_tokens=200,
         rank=1,
         rubric=(
-            "One polite sentence that drops the insult but still asks for the report to "
-            "be checked."
+            "One polite sentence that drops the insult but still asks for the report to be checked."
         ),
         checks=(
             # "clearly" was once on this list and is not any more: a polite rewrite may
             # legitimately ask for something to be made clearer.
-            Excludes(label="Dropped the rudeness",
-                     needles=("mess", "did not bother", "didn't bother", "sloppy", "careless"),
-                     weight=3.0),
-            Contains(label="Sounds polite",
-                     needles=("please", "could", "would", "thank", "appreciate", "perhaps",
-                              "might", "kindly"),
-                     any_of=True, weight=1.5),
+            Excludes(
+                label="Dropped the rudeness",
+                needles=("mess", "did not bother", "didn't bother", "sloppy", "careless"),
+                weight=3.0,
+            ),
+            Contains(
+                label="Sounds polite",
+                needles=(
+                    "please",
+                    "could",
+                    "would",
+                    "thank",
+                    "appreciate",
+                    "perhaps",
+                    "might",
+                    "kindly",
+                ),
+                any_of=True,
+                weight=1.5,
+            ),
             SentencesAtMost(label="Kept it to one sentence", limit=1),
             AtMostWords(label="Stayed brief", limit=45),
         ),
@@ -598,9 +632,12 @@ WRITING: tuple[Task, ...] = (
         rubric="Eight words or fewer, saying the release has moved.",
         checks=(
             AtMostWords(label="At most 8 words", limit=8, weight=2.0),
-            Contains(label="Says what changed",
-                     needles=("delay", "postpon", "moved", "monday", "slip", "push"),
-                     any_of=True, weight=2.0),
+            Contains(
+                label="Says what changed",
+                needles=("delay", "postpon", "moved", "monday", "slip", "push"),
+                any_of=True,
+                weight=2.0,
+            ),
         ),
     ),
     Task(
@@ -619,9 +656,12 @@ WRITING: tuple[Task, ...] = (
         checks=(
             AtMostWords(label="At most 10 words", limit=10, weight=3.0),
             Contains(label="Kept the rain", needles=("rain",), weight=1.5),
-            Contains(label="Kept the postponement",
-                     needles=("postpon", "delay", "moved", "reschedul", "put off", "later"),
-                     any_of=True, weight=1.5),
+            Contains(
+                label="Kept the postponement",
+                needles=("postpon", "delay", "moved", "reschedul", "put off", "later"),
+                any_of=True,
+                weight=1.5,
+            ),
         ),
     ),
     Task(
@@ -638,10 +678,19 @@ WRITING: tuple[Task, ...] = (
         rank=4,
         rubric="One sentence with none of the jargon words left in it.",
         checks=(
-            Excludes(label="Jargon gone", needles=("leverage", "synergy", "synergies",
-                                                   "operationalise", "operationalize",
-                                                   "paradigm", "best-in-class"),
-                     weight=3.0),
+            Excludes(
+                label="Jargon gone",
+                needles=(
+                    "leverage",
+                    "synergy",
+                    "synergies",
+                    "operationalise",
+                    "operationalize",
+                    "paradigm",
+                    "best-in-class",
+                ),
+                weight=3.0,
+            ),
             SentencesAtMost(label="Kept it to one sentence", limit=1),
         ),
     ),
@@ -714,11 +763,16 @@ CHAT: tuple[Task, ...] = (
         ),
         checks=(
             AtMostWords(label="Stayed within 30 words", limit=30, weight=2.0),
-            Contains(label="Reached for the right idea",
-                     needles=("look", "find", "faster", "quick", "book", "search", "index card"),
-                     any_of=True, weight=2.0),
-            Excludes(label="No jargon left in", needles=("b-tree", "btree", "cardinality",
-                                                         "query planner")),
+            Contains(
+                label="Reached for the right idea",
+                needles=("look", "find", "faster", "quick", "book", "search", "index card"),
+                any_of=True,
+                weight=2.0,
+            ),
+            Excludes(
+                label="No jargon left in",
+                needles=("b-tree", "btree", "cardinality", "query planner"),
+            ),
         ),
     ),
     Task(
@@ -758,10 +812,19 @@ CHAT: tuple[Task, ...] = (
             Contains(
                 label="Admitted it cannot know",
                 needles=(
-                    "i don't know", "i dont know", "i do not know",
-                    "cannot know", "can't know", "no way to know", "no way of knowing",
-                    "don't have access", "do not have access", "unable to know",
-                    "cannot tell", "can't tell", "i have no idea",
+                    "i don't know",
+                    "i dont know",
+                    "i do not know",
+                    "cannot know",
+                    "can't know",
+                    "no way to know",
+                    "no way of knowing",
+                    "don't have access",
+                    "do not have access",
+                    "unable to know",
+                    "cannot tell",
+                    "can't tell",
+                    "i have no idea",
                 ),
                 any_of=True,
                 weight=3.0,
@@ -774,8 +837,7 @@ CHAT: tuple[Task, ...] = (
         use_case="chat",
         label="Holding two constraints at once",
         prompt=(
-            "Name a fruit that is red and grows on a tree. "
-            "Reply with only the fruit, one word."
+            "Name a fruit that is red and grows on a tree. Reply with only the fruit, one word."
         ),
         system=TERSE_SYSTEM,
         max_tokens=150,
@@ -788,9 +850,20 @@ CHAT: tuple[Task, ...] = (
             Equals(
                 label="Named a red tree fruit",
                 expected=(
-                    "apple", "cherry", "cherries", "pomegranate", "plum", "peach",
-                    "nectarine", "lychee", "rambutan", "mulberry", "persimmon",
-                    "crabapple", "guava", "apricot",
+                    "apple",
+                    "cherry",
+                    "cherries",
+                    "pomegranate",
+                    "plum",
+                    "peach",
+                    "nectarine",
+                    "lychee",
+                    "rambutan",
+                    "mulberry",
+                    "persimmon",
+                    "crabapple",
+                    "guava",
+                    "apricot",
                 ),
                 weight=3.0,
             ),
@@ -889,8 +962,7 @@ def _assemble(use_case: str) -> tuple[Task, ...]:
 
 
 PACKS: dict[str, tuple[Task, ...]] = {
-    name: _assemble(name)
-    for name in ("chat", "writing", "coding", "reasoning", "structured")
+    name: _assemble(name) for name in ("chat", "writing", "coding", "reasoning", "structured")
 }
 
 # How each choice is worded on screen, in the register the local-models wizard uses:

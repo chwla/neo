@@ -129,8 +129,8 @@ class NotesService:
             "confidence": job.metadata.get("confidence") if job.metadata else None,
             "report_type": job.metadata.get("report_type") if job.metadata else None,
             "generated_at": job.updated_at or job.created_at,
-            "sources_count": sum(1 for source in job.sources if source.fetched),
-            "evidence_count": len(job.evidence_chunks),
+            "sources_count": sum(1 for source in job.sources if source.used),
+            "evidence_count": sum(1 for item in job.evidence if item.status == "accepted"),
         }
         note = self.create_note(
             NoteCreate(
@@ -207,8 +207,4 @@ def _preview(body: str) -> str:
 
 
 def _research_title(job: ResearchJob) -> str:
-    if job.plan and job.plan.normalized_query:
-        return job.plan.normalized_query[:MAX_TITLE_LENGTH]
-    if job.plan and job.plan.objective:
-        return job.plan.objective[:MAX_TITLE_LENGTH]
     return job.user_query[:MAX_TITLE_LENGTH]

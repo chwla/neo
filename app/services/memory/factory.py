@@ -303,7 +303,6 @@ def _start_background_probe(settings: MemorySettings, key: tuple[str, str]) -> N
     Thread(target=run, name="neo-ollama-capability-probe", daemon=True).start()
 
 
-
 def _ensure_memory_schema(database_url: str, owner_id: str, database_identity: str) -> None:
     """Run the memory migration check once per process for each profile database.
 

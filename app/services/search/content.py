@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import re
+import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from html import unescape
@@ -9,12 +12,15 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 import requests
+from dateutil import parser as date_parser
 
 from app.core.config import get_settings
 from app.services.search.security import public_http_addresses
 from app.services.search.types import (
     EvidenceChunk,
     FetchedPage,
+    PageBlock,
+    PageLink,
     QueryRelevanceProfile,
     SearchResult,
 )
@@ -71,6 +77,59 @@ _CONTENT_CLASSES = re.compile(
 )
 
 
+_BLOCK_KINDS = {
+    "h1": ("heading", 1),
+    "h2": ("heading", 2),
+    "h3": ("heading", 3),
+    "h4": ("heading", 4),
+    "h5": ("heading", 5),
+    "h6": ("heading", 6),
+    "li": ("list_item", 0),
+    "dt": ("list_item", 0),
+    "dd": ("list_item", 0),
+    "tr": ("table_row", 0),
+}
+_BLOCK_BOUNDARY_TAGS = frozenset(
+    {
+        *_BLOCK_KINDS,
+        "p",
+        "div",
+        "section",
+        "article",
+        "main",
+        "blockquote",
+        "pre",
+        "figcaption",
+        "caption",
+        "table",
+        "ul",
+        "ol",
+        "dl",
+    }
+)
+_MAX_BLOCKS = 4_000
+_MAX_LINKS = 500
+_NON_NAVIGABLE_HREF = re.compile(r"^\s*(?:#|javascript:|mailto:|tel:|data:)", re.IGNORECASE)
+_PUBLISHED_META = frozenset(
+    {
+        "article:published_time",
+        "og:published_time",
+        "datepublished",
+        "publish-date",
+        "publish_date",
+        "pubdate",
+        "date",
+        "dc.date",
+        "dc.date.issued",
+        "citation_publication_date",
+        "citation_date",
+    }
+)
+_MODIFIED_META = frozenset({"article:modified_time", "og:updated_time", "datemodified"})
+_AUTHOR_META = frozenset({"author", "article:author", "citation_author", "dc.creator"})
+_SITE_NAME_META = frozenset({"og:site_name", "application-name"})
+
+
 class _ReadableHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -89,13 +148,45 @@ class _ReadableHTMLParser(HTMLParser):
         self._junk_tag_stack: list[str] = []
         self._skip_tag_stack: list[str] = []
         self._content_tag_stack: list[str] = []
+        # Structure and metadata, collected alongside the flattened text.
+        self.canonical_href: str | None = None
+        self.site_name: str | None = None
+        self.published: str | None = None
+        self.modified: str | None = None
+        self.author: str | None = None
+        self.lang: str | None = None
+        self.citation_meta: dict[str, str] = {}
+        self.time_values: list[str] = []
+        self.jsonld_sources: list[str] = []
+        self._jsonld_active = False
+        self._jsonld_parts: list[str] = []
+        self._raw_blocks: list[dict] = []
+        self._block_parts: list[str] = []
+        self._block_kind = "paragraph"
+        self._block_level = 0
+        self._block_link_chars = 0
+        self._link_depth = 0
+        self._headings: list[tuple[int, str]] = []
+        # Links in readable content: the anchor being read, and the ones in the current block.
+        self._raw_links: list[dict] = []
+        self._open_link: dict | None = None
+        self._block_link_ids: list[int] = []
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attr_dict = dict(attrs) if attrs else {}
 
+        if tag == "html" and attr_dict.get("lang"):
+            self.lang = str(attr_dict.get("lang"))[:20]
+        if tag == "link" and "canonical" in (attr_dict.get("rel") or "").lower().split():
+            self.canonical_href = attr_dict.get("href") or self.canonical_href
+            return
+        if tag == "time" and attr_dict.get("datetime"):
+            self.time_values.append(str(attr_dict.get("datetime")))
+
         if tag == "meta":
             name = (attr_dict.get("name") or "").lower()
             prop = (attr_dict.get("property") or "").lower()
+            itemprop = (attr_dict.get("itemprop") or "").lower()
             content = attr_dict.get("content", "")
             if name == "description" and content:
                 self.meta_description = content
@@ -103,7 +194,13 @@ class _ReadableHTMLParser(HTMLParser):
                 self.og_title = content
             if prop == "og:description" and content:
                 self.og_description = content
+            if content:
+                self._record_meta({name, prop, itemprop} - {""}, content)
             return
+
+        if tag == "script" and "ld+json" in (attr_dict.get("type") or "").lower():
+            self._jsonld_active = True
+            self._jsonld_parts = []
 
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
@@ -122,6 +219,8 @@ class _ReadableHTMLParser(HTMLParser):
             in {"navigation", "site navigation", "main navigation", "footer", "sidebar"}
         )
         if is_junk:
+            if not self._junk_depth:
+                self._flush_block()
             self._junk_depth += 1
             self._junk_tag_stack.append(tag)
             return
@@ -136,6 +235,17 @@ class _ReadableHTMLParser(HTMLParser):
 
         if tag == "title":
             self._in_title = True
+        if not self._junk_depth and not self._skip_depth:
+            if tag == "a":
+                self._link_depth += 1
+                href = attr_dict.get("href") or ""
+                if href and not _NON_NAVIGABLE_HREF.match(href) and self._open_link is None:
+                    self._open_link = {"href": href.strip(), "text": []}
+            if tag in _BLOCK_BOUNDARY_TAGS:
+                self._flush_block()
+                self._block_kind, self._block_level = _BLOCK_KINDS.get(tag, ("paragraph", 0))
+            elif tag in {"td", "th"} and self._block_parts:
+                self._block_parts.append("|")
         if tag in {
             "article",
             "br",
@@ -158,6 +268,11 @@ class _ReadableHTMLParser(HTMLParser):
             target.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._jsonld_active:
+            self._jsonld_active = False
+            if len(self.jsonld_sources) < 10:
+                self.jsonld_sources.append("".join(self._jsonld_parts)[:200_000])
+            self._jsonld_parts = []
         if self._skip_depth and self._skip_tag_stack and self._skip_tag_stack[-1] == tag:
             self._skip_depth -= 1
             self._skip_tag_stack.pop()
@@ -169,6 +284,12 @@ class _ReadableHTMLParser(HTMLParser):
             self._junk_depth -= 1
             self._junk_tag_stack.pop()
             return
+        if not self._junk_depth and not self._skip_depth:
+            if tag == "a" and self._link_depth:
+                self._link_depth -= 1
+                self._close_link()
+            if tag in _BLOCK_BOUNDARY_TAGS:
+                self._flush_block()
         if self._content_depth and self._content_tag_stack and self._content_tag_stack[-1] == tag:
             self._content_depth -= 1
             self._content_tag_stack.pop()
@@ -181,6 +302,9 @@ class _ReadableHTMLParser(HTMLParser):
             self._infobox_depth -= 1
 
     def handle_data(self, data: str) -> None:
+        if self._jsonld_active:
+            self._jsonld_parts.append(data)
+            return
         if self._skip_depth or self._junk_depth:
             return
         cleaned = " ".join(data.split())
@@ -188,10 +312,79 @@ class _ReadableHTMLParser(HTMLParser):
             return
         if self._in_title:
             self.title_parts.append(cleaned)
+            return_title_only = True
+        else:
+            return_title_only = False
         target = self._active_list()
         target.append(cleaned)
         if self._infobox_depth:
             self._infobox_parts.append(cleaned)
+        if not return_title_only:
+            self._block_parts.append(cleaned)
+            if self._link_depth:
+                self._block_link_chars += len(cleaned) + 1
+            if self._open_link is not None:
+                self._open_link["text"].append(cleaned)
+
+    def close(self) -> None:
+        super().close()
+        self._flush_block()
+
+    def _record_meta(self, keys: set[str], content: str) -> None:
+        value = normalize_text(content)[:500]
+        if not value:
+            return
+        for key in keys:
+            if key in _SITE_NAME_META and not self.site_name:
+                self.site_name = value
+            elif key in _PUBLISHED_META and not self.published:
+                self.published = value
+            elif key in _MODIFIED_META and not self.modified:
+                self.modified = value
+            elif key in _AUTHOR_META and not self.author:
+                self.author = value
+            if key.startswith("citation_") and key not in self.citation_meta:
+                self.citation_meta[key] = value
+
+    def _close_link(self) -> None:
+        link, self._open_link = self._open_link, None
+        if link is None or len(self._raw_links) >= _MAX_LINKS:
+            return
+        self._raw_links.append(
+            {"href": link["href"], "text": normalize_text(" ".join(link["text"]))[:200]}
+        )
+        self._block_link_ids.append(len(self._raw_links) - 1)
+
+    def _flush_block(self) -> None:
+        link_ids, self._block_link_ids = self._block_link_ids, []
+        if not self._block_parts:
+            return
+        text = normalize_text(" ".join(self._block_parts))
+        link_chars = self._block_link_chars
+        self._block_parts = []
+        self._block_link_chars = 0
+        kind, level = self._block_kind, self._block_level
+        self._block_kind, self._block_level = "paragraph", 0
+        if not text or len(self._raw_blocks) >= _MAX_BLOCKS:
+            return
+        for link_id in link_ids:
+            self._raw_links[link_id]["ordinal"] = len(self._raw_blocks)
+        if kind == "heading":
+            self._headings = [item for item in self._headings if item[0] < level]
+            path = [item[1] for item in self._headings]
+            self._headings.append((level, text[:200]))
+        else:
+            path = [item[1] for item in self._headings]
+        self._raw_blocks.append(
+            {
+                "kind": kind,
+                "text": text,
+                "level": level,
+                "heading_path": path,
+                "link_chars": min(link_chars, len(text)),
+                "in_content": bool(self._content_depth),
+            }
+        )
 
     def _active_list(self) -> list[str]:
         if self._content_depth:
@@ -223,6 +416,110 @@ class _ReadableHTMLParser(HTMLParser):
             if desc:
                 return desc
         return None
+
+    def _chosen_ordinals(self) -> list[int]:
+        """Raw blocks kept as the page's blocks: the content region when it has substance."""
+        content = [i for i, block in enumerate(self._raw_blocks) if block["in_content"]]
+        if sum(len(self._raw_blocks[i]["text"]) for i in content) >= 200:
+            return content
+        return list(range(len(self._raw_blocks)))
+
+    def links(self, base_url: str) -> list[PageLink]:
+        position = {ordinal: index for index, ordinal in enumerate(self._chosen_ordinals())}
+        links: list[PageLink] = []
+        seen: set[tuple[str, int | None]] = set()
+        for raw in self._raw_links:
+            href = urljoin(base_url, raw["href"])
+            if urlparse(href).scheme not in {"http", "https"}:
+                continue
+            block_index = position.get(raw.get("ordinal"))
+            if (href, block_index) in seen:
+                continue
+            seen.add((href, block_index))
+            links.append(PageLink(href=href, text=raw["text"], block_index=block_index))
+        return links
+
+    @property
+    def blocks(self) -> list[PageBlock]:
+        chosen = [self._raw_blocks[i] for i in self._chosen_ordinals()]
+        return [
+            PageBlock(
+                kind=block["kind"],
+                text=block["text"],
+                level=block["level"],
+                heading_path=block["heading_path"],
+                link_chars=block["link_chars"],
+            )
+            for block in chosen
+        ]
+
+    def structured_metadata(self) -> dict:
+        """Schema.org JSON-LD facts: types, organization/site names, dates, author."""
+        types: list[str] = []
+        organizations: list[str] = []
+        found: dict[str, str] = {}
+
+        def text_of(value) -> str | None:
+            if isinstance(value, str):
+                return normalize_text(value)[:300] or None
+            if isinstance(value, dict) and isinstance(value.get("name"), str):
+                return normalize_text(value["name"])[:300] or None
+            if isinstance(value, list) and value:
+                return text_of(value[0])
+            return None
+
+        def walk(node, depth: int = 0) -> None:
+            if depth > 6:
+                return
+            if isinstance(node, list):
+                for item in node[:50]:
+                    walk(item, depth + 1)
+                return
+            if not isinstance(node, dict):
+                return
+            raw_type = node.get("@type")
+            names = [item for item in (raw_type if isinstance(raw_type, list) else [raw_type])]
+            names = [str(item) for item in names if isinstance(item, str)]
+            types.extend(names)
+            if any("Organization" in item or item == "WebSite" for item in names):
+                name = text_of(node.get("name"))
+                if name:
+                    organizations.append(name)
+            publisher = text_of(node.get("publisher"))
+            if publisher:
+                organizations.append(publisher)
+            for key in ("datePublished", "dateModified", "author"):
+                value = text_of(node.get(key))
+                if value and key not in found:
+                    found[key] = value
+            for key in ("@graph", "mainEntity", "isPartOf", "hasPart"):
+                if key in node:
+                    walk(node[key], depth + 1)
+
+        for source in self.jsonld_sources:
+            try:
+                walk(json.loads(source.strip()))
+            except (ValueError, TypeError, RecursionError):
+                continue
+        return {
+            "types": list(dict.fromkeys(types))[:20],
+            "organizations": list(dict.fromkeys(organizations))[:10],
+            "published": found.get("datePublished"),
+            "modified": found.get("dateModified"),
+            "author": found.get("author"),
+        }
+
+
+def _normalize_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = date_parser.parse(value, fuzzy=False)
+    except (ValueError, OverflowError, TypeError):
+        return None
+    if parsed.year < 1000 or parsed.year > datetime.now().year + 1:
+        return None
+    return parsed.date().isoformat()
 
 
 def normalize_text(value: str) -> str:
@@ -296,6 +593,119 @@ def _apply_source_cleanup(text: str, page: FetchedPage) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Documents
+# ---------------------------------------------------------------------------
+
+PDF_CONTENT_TYPE = "application/pdf"
+_OCTET_STREAM = frozenset({"application/octet-stream", "binary/octet-stream"})
+_PDF_DATE = re.compile(r"D:(\d{4})(\d{2})?(\d{2})?")
+_PAGE_NUMBER_LINE = re.compile(r"^\W*\d{1,4}\W*$")
+
+
+def parse_pdf_document(
+    url: str,
+    data: bytes,
+    *,
+    max_pages: int = 60,
+    max_seconds: float = 20.0,
+    http_status: int | None = None,
+) -> FetchedPage:
+    """Readable text of a PDF as page blocks, with its metadata and link annotations.
+
+    Lines that repeat on several pages are running headers or footers and are dropped, as are
+    bare page numbers. Reading stops at ``max_pages`` or ``max_seconds``; the page records
+    that it was cut short. A PDF with no text layer (a scan) is reported as unreadable.
+    """
+    from pypdf import PdfReader
+
+    domain = urlparse(url).netloc or "unknown"
+    base = {"url": url, "domain": domain, "content_type": PDF_CONTENT_TYPE, "document_kind": "pdf"}
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            reader.decrypt("")
+        pages = list(reader.pages)
+    except Exception as exc:  # malformed or protected documents are one page's problem
+        return FetchedPage(**base, error=f"Unreadable PDF ({exc.__class__.__name__}).")
+
+    started = time.monotonic()
+    page_lines: list[list[str]] = []
+    links: list[PageLink] = []
+    truncated = len(pages) > max_pages
+    for page in pages[:max_pages]:
+        if time.monotonic() - started > max_seconds:
+            truncated = True
+            break
+        try:
+            raw = page.extract_text() or ""
+        except Exception:
+            raw = ""
+        raw = re.sub(r"(\w)-\n(\w)", r"\1\2", raw)
+        page_lines.append([normalize_text(line) for line in raw.split("\n") if line.strip()])
+        links.extend(_pdf_links(page))
+
+    repeated = Counter(line for lines in page_lines for line in set(lines) if len(line) < 120)
+    running = {line for line, count in repeated.items() if count >= 3}
+    blocks: list[PageBlock] = []
+    for lines in page_lines:
+        kept = [line for line in lines if line not in running and not _PAGE_NUMBER_LINE.match(line)]
+        text = normalize_text(" ".join(kept))
+        if text:
+            blocks.append(PageBlock(kind="paragraph", text=text))
+
+    metadata = _pdf_metadata(reader)
+    first_line = next((line for lines in page_lines for line in lines if len(line) > 8), "")
+    text = "\n".join(block.text for block in blocks)
+    return FetchedPage(
+        **base,
+        title=metadata.get("title") or first_line[:200] or url,
+        text=text,
+        fetched=bool(text),
+        error=None if text else "No extractable text in PDF (it may be a scanned image).",
+        http_status=http_status,
+        blocks=blocks,
+        author=metadata.get("author"),
+        published_date=metadata.get("created"),
+        modified_date=metadata.get("modified"),
+        links=links[:_MAX_LINKS],
+        truncated=truncated,
+    )
+
+
+def _pdf_metadata(reader) -> dict[str, str]:
+    try:
+        info = reader.metadata or {}
+    except Exception:
+        return {}
+    found: dict[str, str] = {}
+    for key, name in (("/Title", "title"), ("/Author", "author")):
+        value = normalize_text(str(info.get(key) or ""))[:300]
+        if value:
+            found[name] = value
+    for key, name in (("/CreationDate", "created"), ("/ModDate", "modified")):
+        match = _PDF_DATE.match(str(info.get(key) or ""))
+        if match:
+            year, month, day = match.group(1), match.group(2) or "01", match.group(3) or "01"
+            if (date := _normalize_date(f"{year}-{month}-{day}")) is not None:
+                found[name] = date
+    return found
+
+
+def _pdf_links(page) -> list[PageLink]:
+    links: list[PageLink] = []
+    try:
+        annotations = page.get("/Annots") or []
+        for annotation in annotations:
+            action = (annotation.get_object() or {}).get("/A") or {}
+            uri = action.get("/URI") if hasattr(action, "get") else None
+            if isinstance(uri, str) and urlparse(uri).scheme in {"http", "https"}:
+                links.append(PageLink(href=uri))
+    except Exception:
+        return links
+    return links
+
+
+# ---------------------------------------------------------------------------
 # Page fetcher
 # ---------------------------------------------------------------------------
 
@@ -306,11 +716,23 @@ class WebPageFetcher:
         timeout_seconds: float | None = None,
         max_bytes: int | None = None,
         user_agent: str | None = None,
+        *,
+        read_documents: bool = False,
+        max_document_bytes: int = 20_000_000,
+        max_document_pages: int = 60,
+        truncate_oversized: bool = False,
     ) -> None:
         settings = get_settings()
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
         self.max_bytes = max_bytes or settings.web_fetch_max_bytes
         self.user_agent = user_agent or settings.web_search_user_agent
+        #: Read PDFs as well as web pages. Research needs this: original papers, filings,
+        #: statutes and datasheets are often published only as PDFs.
+        self.read_documents = read_documents
+        self.max_document_bytes = max_document_bytes
+        self.max_document_pages = max_document_pages
+        #: Keep the beginning of an over-long page instead of discarding the whole page.
+        self.truncate_oversized = truncate_oversized
 
     def fetch(self, url: str) -> FetchedPage:
         parsed = urlparse(url)
@@ -342,6 +764,7 @@ class WebPageFetcher:
                             "User-Agent": self.user_agent,
                             "Accept": (
                                 "text/html,application/xhtml+xml,text/plain,application/json"
+                                + (",application/pdf" if self.read_documents else "")
                             ),
                         },
                         stream=True,
@@ -369,12 +792,20 @@ class WebPageFetcher:
                 url=current, domain=urlparse(current).netloc or domain, error="Fetch timed out."
             )
         except requests.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
             return FetchedPage(
-                url=current, domain=urlparse(current).netloc or domain, error=f"Fetch failed: {exc}"
+                url=current,
+                domain=urlparse(current).netloc or domain,
+                error=f"Fetch failed: {exc}",
+                http_status=status if isinstance(status, int) else None,
             )
 
         content_type = (response.headers.get("content-type") or "").split(";", 1)[0].lower()
-        if content_type and content_type not in SUPPORTED_CONTENT_TYPES:
+        is_pdf = self.read_documents and (
+            content_type == PDF_CONTENT_TYPE
+            or (content_type in _OCTET_STREAM and urlparse(current).path.lower().endswith(".pdf"))
+        )
+        if content_type and content_type not in SUPPORTED_CONTENT_TYPES and not is_pdf:
             response.close()
             return FetchedPage(
                 url=current,
@@ -384,20 +815,35 @@ class WebPageFetcher:
             )
 
         body = bytearray()
+        truncated = False
+        limit = self.max_document_bytes if is_pdf else self.max_bytes
         try:
             for chunk in response.iter_content(chunk_size=16_384):
                 if not chunk:
                     continue
                 body.extend(chunk)
-                if len(body) > self.max_bytes:
-                    return FetchedPage(
-                        url=current,
-                        domain=urlparse(current).netloc or domain,
-                        content_type=content_type,
-                        error="Page exceeded configured maximum size.",
-                    )
+                if len(body) > limit:
+                    # A cut-off PDF cannot be parsed; a cut-off web page still reads fine.
+                    if is_pdf or not self.truncate_oversized:
+                        return FetchedPage(
+                            url=current,
+                            domain=urlparse(current).netloc or domain,
+                            content_type=content_type,
+                            error="Page exceeded configured maximum size.",
+                        )
+                    del body[limit:]
+                    truncated = True
+                    break
         finally:
             response.close()
+
+        if is_pdf:
+            return parse_pdf_document(
+                current,
+                bytes(body),
+                max_pages=self.max_document_pages,
+                http_status=getattr(response, "status_code", None),
+            )
 
         encoding = response.encoding or "utf-8"
         raw = bytes(body).decode(encoding, errors="replace")
@@ -413,25 +859,13 @@ class WebPageFetcher:
                 error=None if text else "No readable text found.",
             )
 
-        parser = _ReadableHTMLParser()
-        parser.feed(raw)
-        text = parser.text
-        page = FetchedPage(
-            url=current,
-            title=parser.title or current,
-            domain=urlparse(current).netloc or domain,
-            text=text,
-            fetched=bool(text),
+        page = parse_html_page(
+            current,
+            raw,
             content_type=content_type or "text/html",
-            error=None if text else "No readable text found.",
+            http_status=getattr(response, "status_code", None),
         )
-        if text:
-            cleaned = _apply_source_cleanup(text, page)
-            if cleaned:
-                page = page.model_copy(update={"text": cleaned})
-            if parser.description:
-                page = page.model_copy(update={"text": f"META: {parser.description}\n{page.text}"})
-        return page
+        return page.model_copy(update={"truncated": True}) if truncated else page
 
     def _allowed_url(self, url: str) -> bool:
         return self._approved_addresses(url) is not None
@@ -450,6 +884,59 @@ class WebPageFetcher:
         if path.endswith(UNSUPPORTED_EXTENSIONS):
             return None
         return public_http_addresses(url)
+
+
+def parse_html_page(
+    url: str,
+    raw: str,
+    *,
+    content_type: str = "text/html",
+    http_status: int | None = None,
+) -> FetchedPage:
+    """Build a page from HTML already fetched: flattened text plus structure and metadata."""
+    domain = urlparse(url).netloc or "unknown"
+    parser = _ReadableHTMLParser()
+    parser.feed(raw)
+    parser.close()
+    text = parser.text
+    structured = parser.structured_metadata()
+    canonical = urljoin(url, parser.canonical_href) if parser.canonical_href else None
+    page = FetchedPage(
+        url=url,
+        title=parser.title or url,
+        domain=domain,
+        text=text,
+        fetched=bool(text),
+        content_type=content_type,
+        error=None if text else "No readable text found.",
+        http_status=http_status,
+        blocks=parser.blocks,
+        canonical_url=canonical,
+        site_name=parser.site_name,
+        organization_names=structured["organizations"],
+        schema_types=structured["types"],
+        scholarly=bool(parser.citation_meta)
+        or any("ScholarlyArticle" in item for item in structured["types"]),
+        published_date=_normalize_date(
+            parser.published
+            or structured["published"]
+            or (parser.time_values[0] if parser.time_values else None)
+        ),
+        modified_date=_normalize_date(parser.modified or structured["modified"]),
+        author=parser.author or structured["author"],
+        lang=parser.lang,
+        links=parser.links(url),
+        citation_meta={
+            key.removeprefix("citation_"): value for key, value in parser.citation_meta.items()
+        },
+    )
+    if text:
+        cleaned = _apply_source_cleanup(text, page)
+        if cleaned:
+            page = page.model_copy(update={"text": cleaned})
+        if parser.description:
+            page = page.model_copy(update={"text": f"META: {parser.description}\n{page.text}"})
+    return page
 
 
 def fetch_pages(results: list[SearchResult], max_pages: int) -> list[FetchedPage]:

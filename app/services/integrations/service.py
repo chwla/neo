@@ -187,9 +187,7 @@ def complete_connection(
 ) -> dict:
     ensure_not_guest(session)
     connection = oauth.finish_oauth(state=state, code=code, session_token=session_token)
-    return store.public_connection(
-        connection, expires_at=store.credential_expiry(connection["id"])
-    )
+    return store.public_connection(connection, expires_at=store.credential_expiry(connection["id"]))
 
 
 def disconnect(connection_id: str) -> None:

@@ -62,9 +62,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "name": "Build → Review",
         "steps": [
             HandoffStep(executor="codex", mode="auto", role="Build", instructions=_BUILD),
-            HandoffStep(
-                executor="claude_code", mode="plan", role="Review", instructions=_REVIEW
-            ),
+            HandoffStep(executor="claude_code", mode="plan", role="Review", instructions=_REVIEW),
         ],
     },
     "second_opinion": {

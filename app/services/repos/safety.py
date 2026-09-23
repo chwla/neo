@@ -22,6 +22,7 @@ __all__ = [
     "validate_repo_root",
 ]
 
+
 def validate_repo_root(raw_path: str) -> Path:
     """The rules for any folder Neo will index, on every platform.
 

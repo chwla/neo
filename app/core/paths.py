@@ -197,9 +197,25 @@ def system_roots(windows: bool = IS_WINDOWS) -> set[Path]:
         return {
             Path(name)
             for name in (
-                "/System", "/Library", "/usr", "/etc", "/var", "/bin", "/sbin",
-                "/opt", "/Applications", "/proc", "/sys", "/dev", "/boot",
-                "/lib", "/lib64", "/run", "/root", "/srv", "/snap",
+                "/System",
+                "/Library",
+                "/usr",
+                "/etc",
+                "/var",
+                "/bin",
+                "/sbin",
+                "/opt",
+                "/Applications",
+                "/proc",
+                "/sys",
+                "/dev",
+                "/boot",
+                "/lib",
+                "/lib64",
+                "/run",
+                "/root",
+                "/srv",
+                "/snap",
             )
         }
     roots = set()

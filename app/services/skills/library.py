@@ -308,8 +308,7 @@ def parse_github_url(url: str) -> tuple[str, str, str | None, str]:
             (match.group("path") or "").strip("/"),
         )
     raise SkillError(
-        "Paste a GitHub folder URL, such as "
-        "https://github.com/owner/repo/tree/main/skills/my-skill"
+        "Paste a GitHub folder URL, such as https://github.com/owner/repo/tree/main/skills/my-skill"
     )
 
 
@@ -335,9 +334,7 @@ def _github_get(url: str, *, params: dict[str, Any] | None = None) -> Any:
         raise SkillError("GitHub returned something that is not a folder listing.") from exc
 
 
-def _github_files(
-    owner: str, repo: str, ref: str | None, path: str
-) -> dict[str, str]:
+def _github_files(owner: str, repo: str, ref: str | None, path: str) -> dict[str, str]:
     """``{relative path: download url}`` for a skill folder, subdirectories included.
 
     Recursive because a skill is often a ``SKILL.md`` plus a ``references/`` or

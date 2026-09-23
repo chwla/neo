@@ -172,9 +172,7 @@ def undo(session_id: str, repo_id: str) -> dict:
         existed = bool(record["existed_before"])
         before = record["before_text"]
         if existed and before is None:
-            skipped.append(
-                {"path": relative, "reason": "This file was too large to snapshot."}
-            )
+            skipped.append({"path": relative, "reason": "This file was too large to snapshot."})
             continue
 
         # Drift: if the file no longer holds what the run left, someone has

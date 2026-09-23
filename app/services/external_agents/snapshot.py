@@ -219,9 +219,7 @@ def record(session_id: str, repo_id: str, root: Path, before: RepoState) -> list
             )
             recorded.append(relative)
         except Exception:  # pragma: no cover - the run is done; this is bookkeeping
-            _LOG.warning(
-                "external_agent_snapshot_failed session=%s path=%s", session_id, relative
-            )
+            _LOG.warning("external_agent_snapshot_failed session=%s path=%s", session_id, relative)
     return recorded
 
 
@@ -238,9 +236,8 @@ def summarize(root: Path, before: RepoState, *, limit: int = 40) -> str:
     shown = paths[:limit]
     more = len(paths) - len(shown)
     lines = "\n".join(f"- {path}" for path in shown)
-    return (
-        f"{len(paths)} file(s) changed:\n{lines}"
-        + (f"\n- ... and {more} more" if more > 0 else "")
+    return f"{len(paths)} file(s) changed:\n{lines}" + (
+        f"\n- ... and {more} more" if more > 0 else ""
     )
 
 

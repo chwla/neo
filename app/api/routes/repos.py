@@ -102,11 +102,7 @@ def _live_repos_by_path() -> dict[str, str]:
     """Live repositories keyed by the folder they were opened from."""
 
     repos, _total = store.list_repos(limit=200)
-    return {
-        repo["original_path"]: repo["id"]
-        for repo in repos
-        if repo.get("access") == store.LIVE
-    }
+    return {repo["original_path"]: repo["id"] for repo in repos if repo.get("access") == store.LIVE}
 
 
 def _host_mount() -> tuple[str, str] | None:

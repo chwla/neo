@@ -84,9 +84,7 @@ def initialize_sidebar_nav_tables() -> None:
 
 
 def _read(conn: sqlite3.Connection, key: str) -> str | None:
-    row = conn.execute(
-        "SELECT value FROM sidebar_nav_preferences WHERE key = ?", (key,)
-    ).fetchone()
+    row = conn.execute("SELECT value FROM sidebar_nav_preferences WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
 
 

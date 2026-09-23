@@ -327,9 +327,11 @@ def normalize_candidate(
     owner = canonical_uuid(owner_id)
     if proposal.value_schema_version not in SUPPORTED_VALUE_SCHEMA_VERSIONS:
         raise MemoryNormalizationError("unsupported_value_schema_version")
-    if proposal.scope_type not in {"global", "project"} or (
-        proposal.scope_type == "global" and proposal.scope_project_id is not None
-    ) or (proposal.scope_type == "project" and not proposal.scope_project_id):
+    if (
+        proposal.scope_type not in {"global", "project"}
+        or (proposal.scope_type == "global" and proposal.scope_project_id is not None)
+        or (proposal.scope_type == "project" and not proposal.scope_project_id)
+    ):
         raise MemoryNormalizationError("invalid_memory_scope")
     try:
         proposed_domain = validate_domain_key(proposal.domain_key)

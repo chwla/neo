@@ -588,9 +588,7 @@ class DeterministicCorrectionResolver:
             for item in matches
             if not any(
                 other is not item
-                and _contains_phrase(
-                    _fold(other.canonical_value), _fold(item.canonical_value)
-                )
+                and _contains_phrase(_fold(other.canonical_value), _fold(item.canonical_value))
                 for other in matches
             )
         )

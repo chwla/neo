@@ -24,10 +24,49 @@ from app.services.gallery.timeframe import Window, parse_window, strip_phrase
 #: substring matching so "that image where the button was broken" is scored on
 #: "button" and "broken" rather than rewarded for containing "image".
 _STOPWORDS = {
-    "a", "an", "and", "that", "the", "this", "was", "were", "what", "when", "where", "which",
-    "who", "with", "you", "your", "show", "showed", "shown", "find", "image", "images", "photo",
-    "photos", "picture", "pictures", "screenshot", "screenshots", "me", "my", "i", "of", "in",
-    "on", "at", "to", "it", "is", "are", "for", "from", "about", "there",
+    "a",
+    "an",
+    "and",
+    "that",
+    "the",
+    "this",
+    "was",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "with",
+    "you",
+    "your",
+    "show",
+    "showed",
+    "shown",
+    "find",
+    "image",
+    "images",
+    "photo",
+    "photos",
+    "picture",
+    "pictures",
+    "screenshot",
+    "screenshots",
+    "me",
+    "my",
+    "i",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "it",
+    "is",
+    "are",
+    "for",
+    "from",
+    "about",
+    "there",
 }
 
 
@@ -70,8 +109,7 @@ def _text_match(item: dict, terms: list[str]) -> tuple[float, float]:
     if not terms:
         return 0.0, 0.0
     haystack = " ".join(
-        str(item.get(field) or "").lower()
-        for field in ("title", "caption", "ocr_text", "alt_text")
+        str(item.get(field) or "").lower() for field in ("title", "caption", "ocr_text", "alt_text")
     )
     tags = " ".join(item.get("tags") or []).lower()
     hits = sum(1 for term in terms if term in haystack)

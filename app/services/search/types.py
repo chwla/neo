@@ -70,6 +70,25 @@ class WebSearchResponse(BaseModel):
     provider_attempts: list[dict[str, object]] = Field(default_factory=list)
 
 
+class PageBlock(BaseModel):
+    """One structural unit of a page, in document order."""
+
+    kind: Literal["heading", "paragraph", "list_item", "table_row"] = "paragraph"
+    text: str
+    level: int = 0
+    heading_path: list[str] = Field(default_factory=list)
+    link_chars: int = 0
+
+
+class PageLink(BaseModel):
+    """An outbound link as it appeared in a page's readable content."""
+
+    href: str
+    text: str = ""
+    #: Index into ``FetchedPage.blocks`` of the block the link sits in, when that block is kept.
+    block_index: int | None = None
+
+
 class FetchedPage(BaseModel):
     url: str
     title: str | None = None
@@ -78,6 +97,26 @@ class FetchedPage(BaseModel):
     fetched: bool = False
     content_type: str | None = None
     error: str | None = None
+    http_status: int | None = None
+    # Structure and metadata for callers that need more than flattened text. All optional,
+    # so pages built by older callers and tests keep working unchanged.
+    blocks: list[PageBlock] = Field(default_factory=list)
+    canonical_url: str | None = None
+    site_name: str | None = None
+    organization_names: list[str] = Field(default_factory=list)
+    schema_types: list[str] = Field(default_factory=list)
+    scholarly: bool = False
+    published_date: str | None = None
+    modified_date: str | None = None
+    author: str | None = None
+    lang: str | None = None
+    #: Links in the readable content, reference lists included, in document order.
+    links: list[PageLink] = Field(default_factory=list)
+    #: The page's ``citation_*`` metadata (title, doi, pdf_url, publisher, ...), keys unprefixed.
+    citation_meta: dict[str, str] = Field(default_factory=dict)
+    document_kind: Literal["html", "pdf", "text"] = "html"
+    #: The body was longer than the size limit and only its beginning was read.
+    truncated: bool = False
 
 
 class EvidenceChunk(BaseModel):

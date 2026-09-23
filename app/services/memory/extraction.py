@@ -30,9 +30,7 @@ TWO_STAGE_PROMPT_VERSION = "memory-extraction-two-stage-v1"
 
 # The identity attributes recall privileges, taken from the slot keys themselves so
 # the extractor cannot propose an attribute the fast path does not recognise.
-_IDENTITY_KEYS = frozenset(
-    key.removeprefix("identity:global:") for key in CORE_IDENTITY_SLOT_KEYS
-)
+_IDENTITY_KEYS = frozenset(key.removeprefix("identity:global:") for key in CORE_IDENTITY_SLOT_KEYS)
 SYNTHETIC_PROBE_INPUT = "PHASE4_OLLAMA_SYNTHETIC_CAPABILITY_PROBE"
 #: What the capability probe asks for. Exact and tiny on purpose -- see the
 #: comment on ``base_payload`` in ``probe_ollama_provider``.
@@ -59,6 +57,7 @@ def _extraction_keep_alive() -> str:
     from app.core.config import get_settings
 
     return get_settings().ollama_keep_alive
+
 
 OLLAMA_SYSTEM_INSTRUCTION = """You are a bounded memory proposal extractor.
 Return exactly one JSON object matching the supplied schema. Do not return prose,

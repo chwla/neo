@@ -193,9 +193,7 @@ class ModelCompareService:
 
         endpoint = (base_url or get_settings().ollama_url).rstrip("/")
         probe = _probe(
-            LLMConfig(
-                id="probe", name="probe", provider="ollama", model=name, base_url=endpoint
-            )
+            LLMConfig(id="probe", name="probe", provider="ollama", model=name, base_url=endpoint)
         )
         if not probe.get("reachable"):
             raise LookupError(f"Neo could not reach a model host at {endpoint}.")
@@ -344,9 +342,7 @@ class ModelCompareService:
             if not written:
                 raise ValueError("Write at least one question you want the models compared on.")
             if len(written) > MAX_CUSTOM_PROMPTS:
-                raise ValueError(
-                    f"A custom comparison takes up to {MAX_CUSTOM_PROMPTS} questions."
-                )
+                raise ValueError(f"A custom comparison takes up to {MAX_CUSTOM_PROMPTS} questions.")
             return tasks.custom_tasks(written)
         selected = tasks.select(use_case, depth, seed)
         if not selected:
@@ -371,9 +367,7 @@ class ModelCompareService:
             allow_thinking=bool(allow_thinking),
         )
 
-    def _judge(
-        self, judge_id: str | None, rubric: str, versions: dict[str, str]
-    ) -> JudgeSettings:
+    def _judge(self, judge_id: str | None, rubric: str, versions: dict[str, str]) -> JudgeSettings:
         if not judge_id:
             return JudgeSettings()
         if len(rubric or "") > MAX_RUBRIC_LENGTH:

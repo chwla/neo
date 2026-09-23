@@ -202,9 +202,7 @@ def find_pending_calendar_proposal(
         proposal = calendar_proposal_metadata(message)
         if proposal is None:
             return None
-        return _proposal_from_metadata(
-            proposal, message_id=message.id, reask_count=reask_count
-        )
+        return _proposal_from_metadata(proposal, message_id=message.id, reask_count=reask_count)
     return None
 
 
@@ -342,7 +340,7 @@ def resolve_pending_action_reply(
     proposal_summary = (
         f'{pending.action} "{pending.event_title or (pending.draft or {}).get("title")}"'
         + (
-            f' at {(pending.draft or {}).get("start_at")}'
+            f" at {(pending.draft or {}).get('start_at')}"
             if (pending.draft or {}).get("start_at")
             else ""
         )

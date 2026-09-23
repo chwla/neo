@@ -125,9 +125,7 @@ class Equals(Check):
         # Whole words inside the answer, rather than equality or a bare substring.
         # Equality would fail "The capital is Canberra.", which is the right answer; a
         # bare substring would pass "pineapple" for "apple", which is not.
-        if any(
-            re.search(rf"\b{re.escape(condensed(item))}\b", cleaned) for item in self.expected
-        ):
+        if any(re.search(rf"\b{re.escape(condensed(item))}\b", cleaned) for item in self.expected):
             return "passed", ""
         return "failed", f"Expected {self.expected[0]}."
 
@@ -191,8 +189,10 @@ class Matches(Check):
         text = (answer or "").translate(_SMART_QUOTES)
         if not text.strip():
             return "skipped", "Nothing came back."
-        return ("passed", "") if re.search(self.pattern, text, self.flags) else (
-            "failed", self.detail or "Not what was expected."
+        return (
+            ("passed", "")
+            if re.search(self.pattern, text, self.flags)
+            else ("failed", self.detail or "Not what was expected.")
         )
 
 

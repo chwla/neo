@@ -1,5 +1,5 @@
+from app.services.research.policy import POLICIES, ResearchPolicy
 from app.services.research.types import (
-    DEPTH_CONFIG,
     DepthMode,
     JobStatus,
     ResearchJob,
@@ -24,7 +24,8 @@ def __getattr__(name: str):
 
 __all__ = [
     "clear_all_jobs",
-    "DEPTH_CONFIG",
+    "POLICIES",
+    "ResearchPolicy",
     "DepthMode",
     "JobStatus",
     "ResearchJob",

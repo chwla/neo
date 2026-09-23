@@ -53,7 +53,6 @@ _MUTATION_LOG = logging.getLogger("neo.calendar.mutation")
 CalendarTurnExecution = Literal["none", "create", "update", "delete", "failed"]
 
 
-
 class CalendarValidationError(ValueError):
     pass
 
@@ -373,16 +372,16 @@ class CalendarService:
                     mismatches.append(
                         f"title: proposed {proposed.get('title')!r}, got {event.title!r}"
                     )
-                if proposed.get("timezone") is not None and proposed.get(
-                    "timezone"
-                ) != event.timezone:
+                if (
+                    proposed.get("timezone") is not None
+                    and proposed.get("timezone") != event.timezone
+                ):
                     mismatches.append(
-                        f"timezone: proposed {proposed.get('timezone')!r}, "
-                        f"got {event.timezone!r}"
+                        f"timezone: proposed {proposed.get('timezone')!r}, got {event.timezone!r}"
                     )
-                if proposed.get("all_day") is not None and bool(
-                    proposed.get("all_day")
-                ) != bool(event.all_day):
+                if proposed.get("all_day") is not None and bool(proposed.get("all_day")) != bool(
+                    event.all_day
+                ):
                     mismatches.append(
                         f"all_day: proposed {proposed.get('all_day')!r}, got {event.all_day!r}"
                     )
@@ -393,9 +392,7 @@ class CalendarService:
                     actual_value = getattr(event, dt_field)
                     try:
                         proposed_dt = (
-                            _parse_dt(proposed_value, label=dt_field)
-                            if proposed_value
-                            else None
+                            _parse_dt(proposed_value, label=dt_field) if proposed_value else None
                         )
                         actual_dt = (
                             _parse_dt(actual_value, label=dt_field) if actual_value else None
@@ -517,7 +514,7 @@ def describe_calendar_draft(action: str | None, title: str, draft: dict[str, Any
         draft.get("start_at"), draft.get("end_at"), all_day=bool(draft.get("all_day"))
     )
     verb = {"create": "add", "update": "update", "delete": "remove"}.get(action, "update")
-    return f"I can {verb} **{title}**{f" on {when}" if when else ""}."
+    return f"I can {verb} **{title}**{f' on {when}' if when else ''}."
 
 
 @dataclass(frozen=True)
@@ -600,8 +597,7 @@ def execute_calendar_proposal(
         return CalendarProposalExecution(
             status="failed",
             note=(
-                "I couldn't make that change -- the details didn't validate. "
-                "Nothing was written."
+                "I couldn't make that change -- the details didn't validate. Nothing was written."
             ),
         )
 

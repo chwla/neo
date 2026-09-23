@@ -249,9 +249,7 @@ def set_sync_enabled(connection_id: str, enabled: bool) -> None:
 
 def delete_connection(connection_id: str) -> bool:
     with _connect() as conn:
-        cursor = conn.execute(
-            "DELETE FROM integration_connections WHERE id=?", (connection_id,)
-        )
+        cursor = conn.execute("DELETE FROM integration_connections WHERE id=?", (connection_id,))
         return cursor.rowcount > 0
 
 
@@ -403,9 +401,7 @@ def consume_oauth_state(state_hash: str, session_hash: str, now: str) -> dict | 
 
 def delete_expired_oauth_states(now: str) -> int:
     with _connect() as conn:
-        cursor = conn.execute(
-            "DELETE FROM integration_oauth_states WHERE expires_at <= ?", (now,)
-        )
+        cursor = conn.execute("DELETE FROM integration_oauth_states WHERE expires_at <= ?", (now,))
         return cursor.rowcount
 
 
@@ -490,9 +486,9 @@ def read_oauth_client(provider: str) -> tuple[str, str] | None:
     secret = ""
     if row["secret_nonce"] and row["secret_ciphertext"]:
         secret = str(
-            open_json(
-                row["secret_nonce"], row["secret_ciphertext"], aad=_client_aad(provider)
-            ).get("client_secret")
+            open_json(row["secret_nonce"], row["secret_ciphertext"], aad=_client_aad(provider)).get(
+                "client_secret"
+            )
             or ""
         )
     return row["client_id"], secret
@@ -526,6 +522,9 @@ def oauth_client_summary(provider: str) -> dict | None:
 
 def delete_oauth_client(provider: str) -> bool:
     with _connect() as conn:
-        return conn.execute(
-            "DELETE FROM integration_oauth_clients WHERE provider=?", (provider,)
-        ).rowcount > 0
+        return (
+            conn.execute(
+                "DELETE FROM integration_oauth_clients WHERE provider=?", (provider,)
+            ).rowcount
+            > 0
+        )
