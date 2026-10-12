@@ -818,6 +818,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-content h1, .chat-content h2, .chat-content h3,
 .chat-content h4, .chat-content h5, .chat-content h6 { margin: 18px 0 9px; color: var(--neo-fg-2); }
 .chat-content ul, .chat-content ol { margin: 0 0 13px; padding-left: 22px; }
+/* Preflight strips list markers. A numbered answer without its numbers reads as a
+   run of unrelated lines, so chat restores them the way notes and reports do. */
+.chat-content ul { list-style: disc; }
+.chat-content ol { list-style: decimal; }
+.chat-content li > ul { list-style: circle; }
+.chat-content li::marker { color: var(--neo-chatink-a60); }
 /* Nested lists sit tight against their parent item instead of opening a new block. */
 .chat-content li > ul, .chat-content li > ol { margin: 4px 0 0; }
 .chat-content li { margin-bottom: 5px; }
@@ -909,11 +915,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .context-window-fact-row span:last-child { color: var(--neo-chatink-a80); text-align: right; }
 .context-window-note { margin: 2px 0 0; color: var(--neo-fg-10); font: 10px/1.5 "JetBrains Mono", monospace; }
 
-.thinking-panel { max-width: 100%; margin: 8px 0 0; background: transparent; padding: 4px 0 4px 12px; color: var(--neo-fg-11); font-size: 13px; line-height: 1.6; }
+.thinking-panel { max-width: 100%; margin: 10px 0 0; background: transparent; padding: 4px 0; color: var(--neo-fg-11); font-size: 13px; line-height: 1.6; }
 /* Neo's turns hang off the right edge, so the reasoning rule follows them. */
 .neo-chat-message.assistant .thinking-panel { color: var(--neo-chatink-a60); }
 .pending-message-header { display: flex; align-items: center; justify-content: flex-start; gap: 8px; color: var(--neo-fg-1); font: 10px "JetBrains Mono", monospace; }
 .neo-chat-message .pending-message-bubble .live-thinking-panel { margin: 8px 0 0; border: 0; padding: 0; color: var(--neo-fg-1); }
+/* Reasoning is the same rendered Markdown as the answer, set a step smaller and
+   quieter behind a rule, so the working never reads as the reply itself. The
+   spacing is tighter than an answer's because a trace is long and skimmed. */
+.thinking-label { display: block; margin-bottom: 7px; color: var(--neo-chatink-a48); font: 600 9px "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
+.neo-chat-message .chat-content.thinking-content { border-left: 2px solid var(--neo-chatink-a16); padding: 1px 0 1px 12px; color: var(--neo-chatink-a70); font-size: 13px; line-height: 1.65; }
+.chat-content.thinking-content p, .chat-content.thinking-content ul, .chat-content.thinking-content ol,
+.chat-content.thinking-content pre, .chat-content.thinking-content blockquote,
+.chat-content.thinking-content table { margin-bottom: 10px; }
+.chat-content.thinking-content ul, .chat-content.thinking-content ol { padding-left: 20px; }
+.chat-content.thinking-content li::marker { color: var(--neo-chatink-a48); }
+.chat-content.thinking-content li { margin-bottom: 3px; }
+.chat-content.thinking-content li > ul, .chat-content.thinking-content li > ol { margin: 3px 0 0; }
+.chat-content.thinking-content h1, .chat-content.thinking-content h2, .chat-content.thinking-content h3,
+.chat-content.thinking-content h4, .chat-content.thinking-content h5,
+.chat-content.thinking-content h6 { margin: 14px 0 6px; color: var(--neo-chatink-a80); font-size: 13px; }
+.chat-content.thinking-content strong { color: var(--neo-chatink-a80); }
+.chat-content.thinking-content > *:first-child { margin-top: 0; }
+.chat-content.thinking-content > *:last-child { margin-bottom: 0; }
 .message-edit-form { display: grid; max-width: 100%; gap: 8px; }
 .message-edit-form textarea { min-height: 90px; padding: 10px; resize: vertical; }
 .chat-message-status { color: var(--neo-danger); font: 10px "JetBrains Mono", monospace; }

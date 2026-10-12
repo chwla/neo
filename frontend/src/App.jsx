@@ -1087,6 +1087,25 @@ function previousUserMessage(messages, message) {
   return null;
 }
 
+/**
+ * A model's reasoning, laid out the way the model wrote it.
+ *
+ * Reasoning arrives as Markdown -- numbered plans, nested bullets, bold step
+ * names -- so it goes through the same escaping renderer as the answer. Dropped
+ * in as a plain string it collapsed into one run of text with every line break
+ * lost and its asterisks showing. The styling keeps it quieter than the answer.
+ */
+function ThinkingBody({ text }) {
+  const html = useMemo(() => renderMessageHtml(text), [text]);
+  return (
+    <>
+      <span className="thinking-label">Thinking</span>
+      {/* Escaped by renderMessageHtml before any tag is emitted. */}
+      <div className="chat-content thinking-content" dangerouslySetInnerHTML={{ __html: html }} />
+    </>
+  );
+}
+
 export function ChatMessage({
   message,
   messages,
@@ -1317,7 +1336,7 @@ export function ChatMessage({
             {!isUser && !isAgentTurn && !isCompactionSummary && thinkingOpen && (
               <div className="thinking-panel">
                 {hasThinking ? (
-                  message.thinking
+                  <ThinkingBody text={message.thinking} />
                 ) : (
                   <>
                     <strong>Reasoning unavailable for this response.</strong>
@@ -1432,7 +1451,9 @@ export function PendingAssistantMessage({ generation, startedAt }) {
           <GenerationTimer startedAt={startedAt} />
         </div>
         <div className="thinking-panel live-thinking-panel">
-          {hasThinking ? generation.thinking : (generation?.statusDetail || "Waiting for response...")}
+          {hasThinking
+            ? <ThinkingBody text={generation.thinking} />
+            : (generation?.statusDetail || "Waiting for response...")}
         </div>
         {hasContent && (
           // Rendered while streaming too, so a code block does not appear only once the

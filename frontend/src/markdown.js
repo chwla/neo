@@ -73,6 +73,7 @@ function parseListItem(line) {
     // Tabs count as four columns so a tab-indented sublist nests like a spaced one.
     indent: match[1].replace(/\t/g, "    ").length,
     ordered: /\d/.test(match[2]),
+    number: Number.parseInt(match[2], 10),
     content: match[3],
   };
 }
@@ -110,7 +111,14 @@ function buildList(entries, start) {
   }
 
   const tag = ordered ? "ol" : "ul";
-  return [`<${tag}>${items.map((item) => `<li>${item}</li>`).join("")}</${tag}>`, index];
+  // A numbered list interrupted by a paragraph resumes at "4.", not "1.", so the
+  // first item's number is kept. It is parsed from digits, so it is safe to emit.
+  const first = entries[start].number;
+  const startAttribute = ordered && Number.isFinite(first) && first !== 1 ? ` start="${first}"` : "";
+  return [
+    `<${tag}${startAttribute}>${items.map((item) => `<li>${item}</li>`).join("")}</${tag}>`,
+    index,
+  ];
 }
 
 /** Splits a table row on unescaped pipes, dropping the optional leading/trailing one. */
