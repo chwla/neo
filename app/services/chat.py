@@ -30,6 +30,8 @@ from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
 from app.services.context import ContextPackage
 from app.services.files.service import WorkspaceFilesService
+from app.services.gallery.chat_lookup import GalleryMatches, wants_gallery
+from app.services.gallery.chat_lookup import lookup as gallery_lookup
 from app.services.git.service import GitContextService
 from app.services.llm import ChatTurn, LLMChatResult, LLMClient, LLMMessage
 from app.services.memory.contracts import SourceKind
@@ -213,6 +215,21 @@ _PROMPT_WORKSPACE = (
     "details to Memory automatically. "
 )
 
+#: How to answer from the gallery. Only present on a turn that searched it,
+#: which is the only turn where the model has anything to say about images it
+#: holds -- and without it the model, told elsewhere to answer personal
+#: questions only from what it was given, says it keeps no images at all.
+_PROMPT_GALLERY = (
+    "Neo keeps a gallery of every image the user has shared or added. Gallery "
+    "context below lists the images from it that answer this message, already "
+    "searched by the application. Those images are displayed to the user "
+    "directly beneath your reply, in the order listed, so do not output image "
+    "links, markdown images, file paths, or ids. Refer to an image by its title "
+    "and describe it only from the description given. If the gallery context "
+    "says nothing matched, say so plainly. Never say that you cannot store, keep, "
+    "or show images. "
+)
+
 #: What Neo may claim to have *done*. Never omitted: generation always sees
 #: `calendar_execution == "none"` (every path that changes the calendar answers
 #: its own turn), so this is the only thing standing between the model and a
@@ -346,6 +363,7 @@ class NeoChatService:
         task_context: str | None = None,
         calendar_execution: CalendarTurnExecution = "none",
         images: list[str] | None = None,
+        gallery_context: str | None = None,
     ) -> list[LLMMessage]:
         web_section = self._compact_web_context(web_context)
         project_section = project_context or "No project context loaded."
@@ -380,6 +398,8 @@ class NeoChatService:
             sections.append(_PROMPT_WEB)
         if carries_workspace or not self.low_effort:
             sections.append(_PROMPT_WORKSPACE)
+        if gallery_context:
+            sections.append(_PROMPT_GALLERY)
         sections.append(_PROMPT_AUTHORITY)
         system_prompt = (
             "".join(sections)
@@ -391,6 +411,7 @@ class NeoChatService:
             f"Task context:\n{task_section}\n\n"
             f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
             f"Web context:\n{web_section}"
+            + (f"\n\nGallery context:\n{gallery_context}" if gallery_context else "")
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         selection = self._build_memory_selection(prompt)
@@ -506,6 +527,37 @@ class NeoChatService:
                 block += f"\nText in image: {item['ocr_text'][:1200]}"
             blocks.append(block)
         return "\n\n".join(blocks)
+
+    def _gallery_matches(self, prompt: str, chat_id: int) -> GalleryMatches | None:
+        """The gallery's answer to this turn, or ``None`` when it has no part in it.
+
+        Returned only when the turn should be answered from the gallery: images
+        matched, or the message asked for them outright and "there are none" is
+        the answer. A looser mention of an image that matched nothing goes back
+        to the ordinary route. The per-chat Tools toggle governs this exactly as
+        it governs the agent's ``search_gallery``, and any failure is swallowed:
+        a gallery that cannot be read must not cost the user their message.
+        """
+
+        cue = wants_gallery(prompt, has_attachments=bool(self._pending_image_ids))
+        if cue is None:
+            return None
+        try:
+            chat = self.store.get_chat(chat_id)
+            if chat is not None and "search_gallery" in (chat.disabled_tools or []):
+                return None
+        except Exception:
+            return None
+        matches = gallery_lookup(
+            prompt,
+            cue=cue,
+            chat_id=chat_id,
+            project_id=self.active_project_id,
+            exclude_ids=self._pending_image_ids,
+        )
+        if matches is None or (not matches.items and matches.cue != "explicit"):
+            return None
+        return matches
 
     def _memory_query_context(self, prompt: str) -> MemoryQueryContext | None:
         if not self.memory_enabled or self.memory_context_factory is None:
@@ -779,11 +831,18 @@ class NeoChatService:
                 "web_search_needed": False,
             }
             return _CALENDAR_NOT_COMPLETED_REPLY
-        structured_live = self._structured_live_answer(
-            prompt,
-            search_intent,
-            timezone=timezone,
-            locale=locale,
+        # Asked about saved images: the gallery answers, so nothing that would
+        # answer instead -- live data, the web, a stored memory -- is consulted.
+        gallery = self._gallery_matches(prompt, chat_id)
+        structured_live = (
+            None
+            if gallery is not None
+            else self._structured_live_answer(
+                prompt,
+                search_intent,
+                timezone=timezone,
+                locale=locale,
+            )
         )
         if structured_live is not None:
             reply, metadata = structured_live
@@ -794,7 +853,7 @@ class NeoChatService:
                 "structured_intent": search_intent.model_dump(mode="json"),
             }
             return reply
-        if search_intent.kind in {
+        if gallery is None and search_intent.kind in {
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
         }:
@@ -805,7 +864,9 @@ class NeoChatService:
         else:
             web_query = prompt
             web_context = WebContext(query=prompt, needed=False)
-        direct_reply = None if web_context.needed else self._direct_reply(prompt)
+        direct_reply = (
+            None if web_context.needed or gallery is not None else self._direct_reply(prompt)
+        )
         if direct_reply is not None:
             self._finalize_memory_usage()
             self._persist_memory_diagnostic(user_message.id)
@@ -884,6 +945,7 @@ class NeoChatService:
             project_context,
             task_context,
             calendar_execution=self.calendar_execution,
+            gallery_context=gallery.prompt_block() if gallery is not None else None,
         )
         self._finalize_memory_usage()
         self._persist_memory_diagnostic(user_message.id)
@@ -921,6 +983,7 @@ class NeoChatService:
                 not self.low_effort
                 and search_intent.kind is SearchIntentKind.NONE
                 and not web_context.needed
+                and gallery is None
                 and _reply_expresses_uncertainty(reply)
             ):
                 refined = self._refine_uncertain_reply(
@@ -997,6 +1060,11 @@ class NeoChatService:
                 **(
                     {"uncertainty_refinement": uncertainty_refinement}
                     if uncertainty_refinement
+                    else {}
+                ),
+                **(
+                    {"gallery_results": gallery.shown()}
+                    if gallery is not None and gallery.items
                     else {}
                 ),
             },
@@ -1399,11 +1467,18 @@ class NeoChatService:
                 "response_kind": _CALENDAR_NOT_COMPLETED_METADATA["response_kind"],
             }
             return
-        structured_live = self._structured_live_answer(
-            prompt,
-            search_intent,
-            timezone=timezone,
-            locale=locale,
+        # Asked about saved images: the gallery answers, so nothing that would
+        # answer instead -- live data, the web, a stored memory -- is consulted.
+        gallery = self._gallery_matches(prompt, chat_id)
+        structured_live = (
+            None
+            if gallery is not None
+            else self._structured_live_answer(
+                prompt,
+                search_intent,
+                timezone=timezone,
+                locale=locale,
+            )
         )
         if structured_live is not None:
             reply, metadata = structured_live
@@ -1428,7 +1503,7 @@ class NeoChatService:
             }
             return
         web_started = time.perf_counter()
-        if search_intent.kind in {
+        if gallery is None and search_intent.kind in {
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
         }:
@@ -1440,7 +1515,9 @@ class NeoChatService:
         else:
             web_query = prompt
             web_context = WebContext(query=prompt, needed=False)
-        direct_reply = None if web_context.needed else self._direct_reply(prompt)
+        direct_reply = (
+            None if web_context.needed or gallery is not None else self._direct_reply(prompt)
+        )
         if direct_reply is not None:
             self._finalize_memory_usage()
             self._persist_memory_diagnostic(routing_message_id)
@@ -1571,6 +1648,7 @@ class NeoChatService:
             project_context,
             task_context,
             calendar_execution=self.calendar_execution,
+            gallery_context=gallery.prompt_block() if gallery is not None else None,
         )
         self._routing_diagnostic(
             chat_id,
@@ -1755,6 +1833,7 @@ class NeoChatService:
             and not self.low_effort
             and search_intent.kind is SearchIntentKind.NONE
             and not web_context.needed
+            and gallery is None
             and _reply_expresses_uncertainty(reply)
         ):
             yield {"type": "status", "content": "Searching trusted sources"}
@@ -1824,6 +1903,11 @@ class NeoChatService:
                 **(
                     {"uncertainty_refinement": uncertainty_refinement}
                     if uncertainty_refinement
+                    else {}
+                ),
+                **(
+                    {"gallery_results": gallery.shown()}
+                    if gallery is not None and gallery.items
                     else {}
                 ),
             },
@@ -2184,9 +2268,29 @@ class NeoChatService:
             elif index in approved:
                 content = _APPROVED_CALENDAR_OFFER_PLACEHOLDER
             else:
-                content = message.content
+                content = message.content + cls._shown_images_note(message)
             turns.append(ChatTurn(role=message.role, content=content))
         return turns
+
+    @staticmethod
+    def _shown_images_note(message: ChatMessage) -> str:
+        """Which gallery images a replayed reply carried.
+
+        The gallery context a reply was written from is not replayed, so without
+        this a follow-up such as "which one is he swinging in?" -- no image word,
+        so no new lookup -- is asked of a model that cannot tell what was shown.
+        """
+
+        if message.role != "assistant" or not message.metadata_json:
+            return ""
+        try:
+            shown = json.loads(message.metadata_json).get("gallery_results") or []
+        except (TypeError, ValueError, AttributeError):
+            return ""
+        titles = [str(entry.get("title") or "untitled image") for entry in shown if entry]
+        if not titles:
+            return ""
+        return f"\n\n[Images shown with this reply, in order: {'; '.join(titles)}]"
 
     @staticmethod
     def _calendar_offer_outcomes(

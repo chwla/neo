@@ -9,7 +9,9 @@ fails closed instead of carrying on without verification.
 
 from __future__ import annotations
 
+import ast
 import json
+import operator
 import re
 import time
 from collections.abc import Callable
@@ -249,16 +251,77 @@ def _extract(text: str, keys: frozenset[str]) -> tuple[Any, bool]:
     for index, char in enumerate(cleaned):
         if char not in "{[":
             continue
+        candidate = cleaned[index:]
         try:
-            value, _ = decoder.raw_decode(cleaned[index:])
+            value, _ = decoder.raw_decode(candidate)
             truncated = False
         except ValueError:
-            value, truncated = _complete_items(cleaned[index:]), True
-            if value is None:
-                continue
+            candidate = _fold_arithmetic(candidate)
+            try:
+                value, _ = decoder.raw_decode(candidate)
+                truncated = False
+            except ValueError:
+                value, truncated = _complete_items(candidate), True
+                if value is None:
+                    continue
         if _is_answer(value, keys):
             return value, truncated
     raise ModelOutputInvalid("no JSON value in model output")
+
+
+#: Arithmetic on number literals, written where JSON wants one number ("365 * 3").
+_ARITHMETIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:\s*[-+*/]\s*-?\d+(?:\.\d+)?)+(?![\w.])")
+_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+
+
+def _fold_arithmetic(text: str) -> str:
+    """Text with arithmetic outside strings replaced by its value.
+
+    Valid JSON never holds an expression outside a string, so this only changes an answer
+    that already failed to parse; strings are left exactly as written.
+    """
+    parts: list[str] = []
+    start = 0
+    in_string = escaped = False
+    for position, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+                parts.append(text[start : position + 1])
+                start = position + 1
+        elif char == '"':
+            parts.append(_ARITHMETIC.sub(_evaluate, text[start:position]))
+            start = position
+            in_string = True
+    tail = text[start:]
+    parts.append(tail if in_string else _ARITHMETIC.sub(_evaluate, tail))
+    return "".join(parts)
+
+
+def _evaluate(match: re.Match[str]) -> str:
+    def value(node: ast.AST) -> float:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -value(node.operand)
+        if isinstance(node, ast.BinOp) and type(node.op) in _OPERATORS:
+            return _OPERATORS[type(node.op)](value(node.left), value(node.right))
+        raise ValueError(match.group())
+
+    try:
+        result = value(ast.parse(match.group(), mode="eval").body)
+    except (ValueError, SyntaxError, ZeroDivisionError):
+        return match.group()
+    return str(int(result)) if float(result).is_integer() else repr(float(result))
 
 
 def _is_answer(value: Any, keys: frozenset[str]) -> bool:

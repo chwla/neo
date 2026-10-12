@@ -7,6 +7,7 @@ numbers so that no caller has to reinvent the phrasing.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from app.services.local_models import catalog, installer, probe, wording
@@ -50,6 +51,22 @@ GOAL_CHOICES: list[dict[str, str]] = [
 ]
 
 
+def _checked_goals(goals: Sequence[str]) -> list[str]:
+    """The goals asked for, once each, in the order given.
+
+    An unknown one is rejected rather than dropped or defaulted: a typo that quietly
+    answers for a different goal gives confident, wrong-shaped advice.
+    """
+
+    chosen = list(dict.fromkeys(goal for goal in goals if goal))
+    if not chosen:
+        raise ValueError(f"Choose at least one goal. Expected any of: {', '.join(GOALS)}.")
+    for goal in chosen:
+        if goal not in GOALS:
+            raise ValueError(f"Unknown goal '{goal}'. Expected one of: {', '.join(GOALS)}.")
+    return chosen
+
+
 class LocalModelsService:
     def goals(self) -> dict[str, Any]:
         return {"goals": GOAL_CHOICES}
@@ -61,37 +78,32 @@ class LocalModelsService:
     def recommendations(
         self,
         *,
-        goal: str = "chat",
+        goals: Sequence[str] = ("chat",),
         limit: int = 40,
         include_unfit: bool = True,
         fresh: bool = False,
     ) -> dict[str, Any]:
-        if goal not in GOALS:
-            # Rejected rather than silently defaulted: a typo that quietly answers for
-            # a different goal gives confident, wrong-shaped advice.
-            raise ValueError(f"Unknown goal '{goal}'. Expected one of: {', '.join(GOALS)}.")
-
+        chosen = _checked_goals(goals)
         found = probe.detect(fresh=fresh)
         models = catalog.get_models()
-        ranked = rank(models, found, goal=goal, limit=limit, include_unfit=include_unfit)
+        ranked = rank(models, found, goals=chosen, limit=limit, include_unfit=include_unfit)
         installed = installer.installed_tags()
 
         return {
             "machine": {**found.as_dict(), "summary": wording.describe_machine(found)},
-            "goal": goal,
+            "goals": chosen,
             "recommendations": [self._present(item, found, installed) for item in ranked],
         }
 
-    def model(self, model_id: str, *, goal: str = "chat") -> dict[str, Any]:
-        if goal not in GOALS:
-            raise ValueError(f"Unknown goal '{goal}'. Expected one of: {', '.join(GOALS)}.")
+    def model(self, model_id: str, *, goals: Sequence[str] = ("chat",)) -> dict[str, Any]:
+        chosen = _checked_goals(goals)
 
         row = catalog.get_model(model_id)
         if row is None:
             raise LookupError(f"No model called '{model_id}' in the catalog.")
 
         found = probe.detect()
-        ranked = rank([row], found, goal=goal, limit=1, include_unfit=True)
+        ranked = rank([row], found, goals=chosen, limit=1, include_unfit=True)
         presented = self._present(ranked[0], found, installer.installed_tags())
         presented["manual_steps"] = catalog.manual_steps(row)
         return presented

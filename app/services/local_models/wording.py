@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.local_models.sizing import bytes_per_parameter
+from app.services.local_models.sizing import weights_gb
 from app.services.local_models.types import Fit, Machine
 
 # An average adult reads continuous non-fiction prose at around 240 words per minute
@@ -80,8 +80,7 @@ def describe_speed_short(tokens_per_sec: float | None) -> str:
 def download_gb(model: dict[str, Any], fit: Fit) -> float:
     """How much has to come down the wire: the compressed weights, not the full model."""
 
-    parameters = float(model.get("parameters_b") or 0.0)
-    return parameters * 1e9 * bytes_per_parameter(fit.quantization) / 1e9
+    return weights_gb(model, fit.quantization)
 
 
 def _download_wait(size_gb: float) -> str:
@@ -129,13 +128,13 @@ def describe_compression(fit: Fit) -> str:
     """
 
     quantization = fit.quantization
-    if quantization in ("F16", "BF16", "Q8_0"):
+    if quantization in ("F16", "BF16", "Q8_0", "MXFP4"):
         return "Full quality, as the makers released it."
     if quantization in ("Q6_K", "Q5_K_M"):
         return "Made slightly smaller to fit, with no noticeable difference in quality."
     if quantization == "Q4_K_M":
         return "Made smaller to fit comfortably. The difference in quality is hard to notice."
-    if quantization == "Q3_K_M":
+    if quantization in ("Q3_K_M", "Q4_0"):
         return "Made considerably smaller to fit. Answers may be a little less reliable."
     return "Compressed as far as it goes to fit this computer. Expect some quality loss."
 

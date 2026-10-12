@@ -18,9 +18,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import LocalModels, {
   TIER_LABEL,
   groupByHowTheyRun,
+  PREVIEW_COUNT,
+  parseRememberedGoals,
+  previewGroups,
   shouldAskFirst,
+  specLine,
   specsOf,
+  toggleGoal,
 } from "../src/LocalModels.jsx";
+import { goalQuery } from "../src/api.js";
 
 function item(id, tier, overrides = {}) {
   return {
@@ -215,3 +221,90 @@ describe("the first visit asks before it scans", () => {
     assert.ok(!markup.includes("ws-back"));
   });
 });
+
+describe("several goals can be chosen at once", () => {
+  test("a goal saved when only one could be chosen still reads back", () => {
+    assert.deepEqual(parseRememberedGoals("coding"), ["coding"]);
+  });
+
+  test("several saved goals read back once each, in order", () => {
+    assert.deepEqual(parseRememberedGoals("chat, coding,,chat"), ["chat", "coding"]);
+    assert.deepEqual(parseRememberedGoals(null), []);
+  });
+
+  test("an empty choice still asks, a list of goals does not", () => {
+    assert.equal(shouldAskFirst([]), true);
+    assert.equal(shouldAskFirst(["chat", "images"]), false);
+  });
+
+  test("choosing a goal adds it and choosing it again removes it", () => {
+    assert.deepEqual(toggleGoal(["chat"], "coding"), ["chat", "coding"]);
+    assert.deepEqual(toggleGoal(["chat", "coding"], "chat"), ["coding"]);
+  });
+
+  test("the last goal cannot be removed, so there is always something to rank for", () => {
+    const only = ["chat"];
+    assert.equal(toggleGoal(only, "chat"), only);
+  });
+
+  test("every goal goes to the server as its own parameter", () => {
+    assert.equal(goalQuery(["chat", "images"]), "goal=chat&goal=images");
+    assert.equal(goalQuery("coding"), "goal=coding");
+    assert.equal(goalQuery([]), "goal=chat");
+  });
+
+  test("the question says more than one may be chosen", () => {
+    const markup = renderToStaticMarkup(createElement(LocalModels, {}));
+
+    assert.ok(markup.includes("Choose as many as you like."));
+  });
+});
+
+describe("the list starts short", () => {
+  const groups = [
+    { tier: "comfortable", label: "Runs comfortably", items: ["a", "b", "c", "d", "e"] },
+    { tier: "good", label: "Runs well", items: ["f", "g", "h"] },
+    { tier: "tight", label: "Runs, but only just", items: ["i"] },
+  ];
+
+  test("only the best few are shown until everything is asked for", () => {
+    const shown = previewGroups(groups);
+    const count = shown.reduce((total, group) => total + group.items.length, 0);
+
+    assert.equal(count, PREVIEW_COUNT);
+    assert.deepEqual(shown.map((group) => group.tier), ["comfortable", "good"]);
+    assert.deepEqual(shown[1].items, ["f"]);
+  });
+
+  test("a group the cut empties is dropped, not shown with no rows", () => {
+    const shown = previewGroups(groups, { count: 2 });
+
+    assert.deepEqual(shown.map((group) => group.tier), ["comfortable"]);
+  });
+
+  test("asking for everything returns every group whole", () => {
+    assert.equal(previewGroups(groups, { showAll: true }), groups);
+  });
+});
+
+describe("the machine in one line", () => {
+  test("each figure is worded to stand on its own", () => {
+    const line = specLine({
+      cpu_name: "Apple M5",
+      gpu_name: "Apple M5",
+      unified_memory: true,
+      total_memory_gb: 32,
+      usable_memory_gb: 25,
+    });
+
+    assert.equal(line, "Apple M5 · 32 GB memory · 25 GB usable for AI");
+  });
+
+  test("a figure that was never established is left out of the line", () => {
+    assert.equal(
+      specLine({ cpu_name: "", gpu_name: "", unified_memory: false, total_memory_gb: 0, usable_memory_gb: 0 }),
+      "",
+    );
+  });
+});
+

@@ -16,6 +16,7 @@ tell.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 from app.services.local_models.types import (
@@ -57,6 +58,12 @@ QUANTIZATION_BYTES: dict[str, float] = {
     "Q8_0": 1.068,
     "F16": 2.000,
     "BF16": 2.000,
+    # Formats some Ollama tags ship instead of Q4_K_M. Q4_0 is 4.5 bits a weight.
+    # MXFP4 covers only gpt-oss's expert weights, with the rest kept wider, so the
+    # figure is that model's whole-file density (13.79 GB over 20.9B) -- the larger
+    # of the two published sizes, since overstating memory is the safe direction.
+    "Q4_0": 0.5625,
+    "MXFP4": 0.66,
 }
 
 # How much quality each format costs, as the perplexity increase over full precision
@@ -76,6 +83,11 @@ QUANTIZATION_QUALITY_COST: dict[str, float] = {
     "Q8_0": 0.0004,
     "F16": 0.0,
     "BF16": 0.0,
+    # llama.cpp's published figure for the older 4-bit format, close to Q3_K_M.
+    "Q4_0": 0.2166,
+    # gpt-oss was trained for MXFP4 and released in it; there is no wider original
+    # to have lost anything against.
+    "MXFP4": 0.0,
 }
 
 # Which versions to try, in preference order, stopping at the first that fits.
@@ -104,6 +116,15 @@ _SMALL_MODEL_LADDER: tuple[str, ...] = (
     "Q3_K_M",
     "Q2_K",
 )
+
+# What a one-click install actually downloads is Ollama's bare tag, and the bare tag is
+# one fixed build -- Q4_K_M for most of the library. A model Neo installs is therefore
+# judged at that build and nothing else. Judging it on the ladder above described a file
+# Neo never fetches: small models were shown at Q8_0, slower than the Q4_K_M that
+# arrived, and a 32B model "fitted" at Q3_K_M on a 25 GB computer while the 20 GB
+# Q4_K_M download did not -- the swap this whole module exists to prevent. The ladder
+# remains for models with no tag, where someone choosing a build by hand has a choice.
+OLLAMA_DEFAULT_QUANTIZATION = "Q4_K_M"
 
 # Boundaries between those ladders, in billions of parameters.
 _SMALL_MODEL_B = 3.0
@@ -227,6 +248,9 @@ SPEED_TARGET: dict[str, float] = {
     "offline": 15.0,
 }
 
+# The goal only a model that can see is any use for.
+VISION_GOAL = "images"
+
 # (capability, responsiveness, headroom, context_reach), summing to 1.
 GOAL_WEIGHTS: dict[str, tuple[float, float, float, float]] = {
     "chat": (0.35, 0.35, 0.20, 0.10),
@@ -256,6 +280,29 @@ def bytes_per_parameter(quantization: str) -> float:
     """Memory one weight costs under ``quantization``."""
 
     return QUANTIZATION_BYTES.get(quantization, QUANTIZATION_BYTES["Q4_K_M"])
+
+
+def shipped_quantization(model: dict[str, Any]) -> str | None:
+    """The build a one-click install downloads, or ``None`` when Neo cannot install it."""
+
+    if not model.get("ollama"):
+        return None
+    return str(model.get("ollama_quantization") or OLLAMA_DEFAULT_QUANTIZATION)
+
+
+def weights_gb(model: dict[str, Any], quantization: str) -> float:
+    """Size of this model's weights in ``quantization``.
+
+    The downloaded build's real size when the catalog records it, since that is the
+    file that gets loaded: a vision encoder or embeddings kept at higher precision
+    make it larger than parameters x format, by a third on a 1B model.
+    """
+
+    recorded = model.get("ollama_weights_gb")
+    if recorded and quantization == shipped_quantization(model):
+        return float(recorded)
+    parameters = float(model.get("parameters_b") or 0.0)
+    return parameters * bytes_per_parameter(quantization)
 
 
 def quality_cost(quantization: str) -> float:
@@ -305,8 +352,7 @@ def kv_bytes_per_token(model: dict[str, Any]) -> float:
 def required_memory_gb(model: dict[str, Any], quantization: str, context: int) -> float:
     """Total memory to load this model and hold a conversation of ``context`` tokens."""
 
-    parameters = float(model.get("parameters_b") or 0.0)
-    weights = parameters * 1e9 * bytes_per_parameter(quantization)
+    weights = weights_gb(model, quantization) * 1e9
     cache = kv_bytes_per_token(model) * max(0, context)
     return (weights + cache) / 1e9 + RUNTIME_OVERHEAD_GB
 
@@ -331,9 +377,14 @@ def estimate_tokens_per_sec(
     """
 
     active = active_parameters_b(model)
-    if active <= 0:
+    parameters = float(model.get("parameters_b") or 0.0)
+    if active <= 0 or parameters <= 0:
         return None
-    bytes_read = active * 1e9 * bytes_per_parameter(quantization)
+    # The active share of the weights as they are actually stored -- the same file size
+    # DECODE_EFFICIENCY was calibrated against. A vision encoder in that file is counted
+    # though text decoding never reads it, which under-promises speed for those models:
+    # the safe direction.
+    bytes_read = weights_gb(model, quantization) * 1e9 * min(1.0, active / parameters)
     if bytes_read <= 0:
         return None
     effective = bandwidth_gbps(machine) * DECODE_EFFICIENCY * 1e9
@@ -387,7 +438,8 @@ def evaluate(
     budget = machine.usable_memory_gb
     caveat = model.get("data_caveat")
 
-    ladder = ladder_for(float(model.get("parameters_b") or 0.0))
+    shipped = shipped_quantization(model)
+    ladder = (shipped,) if shipped else ladder_for(float(model.get("parameters_b") or 0.0))
     # Nothing fitting means the shortfall is reported against the smallest version there
     # is, which is honest: quoting the memory an uncompressed copy would need would
     # overstate how far out of reach the model actually is.
@@ -468,11 +520,29 @@ def _context_score(context: int, goal: str) -> float:
     return max(0.0, min(100.0, context / target * 100.0))
 
 
+def _goal_score(model: dict[str, Any], fit: Fit, goal: str) -> tuple[float, ScoreParts]:
+    weights = GOAL_WEIGHTS.get(goal, GOAL_WEIGHTS["chat"])
+    parts = ScoreParts(
+        capability=_capability_score(model, fit.quantization, goal),
+        responsiveness=_responsiveness_score(fit.tokens_per_sec, goal),
+        headroom=_headroom_score(fit.headroom_ratio),
+        context_reach=_context_score(fit.context, goal),
+    )
+    score = (
+        parts.capability * weights[0]
+        + parts.responsiveness * weights[1]
+        + parts.headroom * weights[2]
+        + parts.context_reach * weights[3]
+    )
+    return score, parts
+
+
 def rank(
     models: list[dict[str, Any]],
     machine: Machine,
     *,
     goal: str = "chat",
+    goals: Sequence[str] | None = None,
     limit: int = 25,
     include_unfit: bool = True,
 ) -> list[Recommendation]:
@@ -481,29 +551,39 @@ def rank(
     Models that do not fit are kept, scored zero and sorted last, with the reason
     attached. Dropping them silently leaves someone wondering where a model they had
     heard of went, and "it needs more memory than you have" is a useful answer.
+
+    Several ``goals`` describe one model used for all of them. It is sized for the
+    longest conversation any of them needs -- a model that fits for chat but not
+    for the code it was also chosen for has not fitted -- and its score is the
+    average of what each goal makes of that one fit, so a model good at all of
+    them beats one that is excellent at one and poor at the rest.
     """
 
-    weights = GOAL_WEIGHTS.get(goal, GOAL_WEIGHTS["chat"])
+    chosen = list(dict.fromkeys(goals)) if goals else [goal]
+    context = max(CONTEXT_TARGET.get(each, 8192) for each in chosen)
+    # A model that cannot read images is not a weaker choice for pictures, it is not a
+    # choice. Scoring it lower was not enough: a strong text-only model outscored every
+    # vision model on capability and came first for "Pictures and screenshots".
+    needs_vision = VISION_GOAL in chosen
     results: list[Recommendation] = []
 
     for model in models:
-        fit = evaluate(model, machine, goal=goal)
+        if needs_vision and not model.get("vision"):
+            continue
+        fit = evaluate(model, machine, goal=chosen[0], context=context)
         if fit.tier == "too_big":
             if include_unfit:
                 results.append(Recommendation(model=model, fit=fit, score=0.0))
             continue
 
+        scored = [_goal_score(model, fit, each) for each in chosen]
+        count = len(scored)
+        score = sum(each_score for each_score, _ in scored) / count
         parts = ScoreParts(
-            capability=_capability_score(model, fit.quantization, goal),
-            responsiveness=_responsiveness_score(fit.tokens_per_sec, goal),
-            headroom=_headroom_score(fit.headroom_ratio),
-            context_reach=_context_score(fit.context, goal),
-        )
-        score = (
-            parts.capability * weights[0]
-            + parts.responsiveness * weights[1]
-            + parts.headroom * weights[2]
-            + parts.context_reach * weights[3]
+            capability=sum(p.capability for _, p in scored) / count,
+            responsiveness=sum(p.responsiveness for _, p in scored) / count,
+            headroom=sum(p.headroom for _, p in scored) / count,
+            context_reach=sum(p.context_reach for _, p in scored) / count,
         )
         results.append(Recommendation(model=model, fit=fit, score=score, parts=parts))
 

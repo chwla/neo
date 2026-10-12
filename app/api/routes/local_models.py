@@ -46,16 +46,20 @@ def scan(
     return _service().machine(fresh=fresh)
 
 
+#: Repeat the parameter for several goals: ``?goal=chat&goal=coding``.
+_GOAL_QUERY = Query(["chat"], description=f"One or more of: {', '.join(GOALS)}.")
+
+
 @router.get("/recommendations")
 def recommendations(
-    goal: str = Query("chat", description=f"One of: {', '.join(GOALS)}."),
+    goal: list[str] = _GOAL_QUERY,
     limit: int = Query(40, ge=1, le=200),
     include_unfit: bool = Query(True, description="Keep models that do not fit, with a reason."),
     fresh: bool = Query(False),
 ) -> dict:
     try:
         return _service().recommendations(
-            goal=goal, limit=limit, include_unfit=include_unfit, fresh=fresh
+            goals=goal, limit=limit, include_unfit=include_unfit, fresh=fresh
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -67,9 +71,9 @@ def installed() -> dict:
 
 
 @router.get("/models/{model_id:path}")
-def model(model_id: str, goal: str = Query("chat")) -> dict:
+def model(model_id: str, goal: list[str] = _GOAL_QUERY) -> dict:
     try:
-        return _service().model(model_id, goal=goal)
+        return _service().model(model_id, goals=goal)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

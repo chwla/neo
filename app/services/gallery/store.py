@@ -532,8 +532,12 @@ def reindex_item(item_id: str) -> None:
 def fts_scores(query: str, limit: int = 200) -> dict[str, float]:
     """Item id -> normalised bm25 score, or empty when fts5 is unavailable.
 
-    Normalisation matches the memory index: ``1 / (1 + |rank|)``, so a score is
-    comparable with the cosine similarity it gets blended with.
+    fts5's bm25 is negative and grows in magnitude with match strength, so the
+    score is ``|rank| / (1 + |rank|)``: 0-1, and higher for a better match. The
+    inverse (``1 / (1 + |rank|)``) put the weakest matches at the top -- a word
+    found in every item has an idf near zero, so a rank near zero, so a score
+    near 1.0, and "the picture with the sword" ranked every image as a perfect
+    hit on "the".
     """
 
     terms = [term for term in _tokenize(query) if term]
@@ -553,7 +557,9 @@ def fts_scores(query: str, limit: int = 200) -> dict[str, float]:
         return {}
     finally:
         conn.close()
-    return {row["item_id"]: 1.0 / (1.0 + abs(float(row["rank"]))) for row in rows}
+    return {
+        row["item_id"]: abs(float(row["rank"])) / (1.0 + abs(float(row["rank"]))) for row in rows
+    }
 
 
 def _tokenize(value: str) -> list[str]:

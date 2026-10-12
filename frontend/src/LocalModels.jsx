@@ -13,6 +13,11 @@ export const TIER_LABEL = {
 // The order the groups appear in, best first.
 const TIER_ORDER = ["comfortable", "good", "tight"];
 
+// How many models the list shows before "Show all". The catalog runs to thirty-odd and
+// nearly all of them fit a modern machine, so the full list on arrival was a wall of
+// near-identical rows that buried the few worth reading.
+export const PREVIEW_COUNT = 6;
+
 const REMEMBERED_GOAL = "neo.localModels.goal";
 
 /**
@@ -42,51 +47,138 @@ export function groupByHowTheyRun(items = []) {
   };
 }
 
-/** Whether the wizard should run, i.e. whether a goal has been chosen before. */
-export function shouldAskFirst(rememberedGoal) {
-  return !rememberedGoal;
+/**
+ * The groups cut down to the first ``count`` models, best first, unless everything was
+ * asked for. Groups keep their order and labels; one emptied by the cut is dropped.
+ */
+export function previewGroups(groups = [], { showAll = false, count = PREVIEW_COUNT } = {}) {
+  if (showAll) return groups;
+  let left = count;
+  return groups
+    .map((group) => {
+      const items = group.items.slice(0, Math.max(0, left));
+      left -= items.length;
+      return { ...group, items };
+    })
+    .filter((group) => group.items.length > 0);
 }
 
-function readRememberedGoal() {
+/** Whether the wizard should run, i.e. whether any goal has been chosen before. */
+export function shouldAskFirst(rememberedGoals) {
+  return !rememberedGoals || rememberedGoals.length === 0;
+}
+
+/**
+ * The goals stored for next time. Written comma-separated, so a value saved when only
+ * one goal could be chosen ("coding") still reads back as that one goal.
+ */
+export function parseRememberedGoals(value) {
+  return [...new Set(String(value || "").split(",").map((goal) => goal.trim()).filter(Boolean))];
+}
+
+/**
+ * Add or remove one goal. The last one cannot be removed: with nothing chosen there is
+ * nothing to rank models for, and an empty list would read as a broken screen.
+ */
+export function toggleGoal(selected, goal) {
+  if (selected.includes(goal)) {
+    return selected.length > 1 ? selected.filter((each) => each !== goal) : selected;
+  }
+  return [...selected, goal];
+}
+
+function readRememberedGoals() {
   try {
-    return window.localStorage.getItem(REMEMBERED_GOAL) || "";
+    return parseRememberedGoals(window.localStorage.getItem(REMEMBERED_GOAL));
   } catch {
     // A private window, or storage turned off. Asking again is a fine fallback.
-    return "";
+    return [];
   }
 }
 
-function rememberGoal(goal) {
+function rememberGoals(goals) {
   try {
-    window.localStorage.setItem(REMEMBERED_GOAL, goal);
+    window.localStorage.setItem(REMEMBERED_GOAL, goals.join(","));
   } catch {
     // Not worth surfacing: the screen still works, it just asks again next time.
   }
 }
 
-function GoalPicker({ goals, selected, onPick, heading }) {
+function GoalPicker({ goals, selected, onToggle, heading, children }) {
   return (
     <section className="lm-goals">
-      <h2 className="lm-h2">{heading}</h2>
-      <div className="lm-goal-row" role="group" aria-label="What do you want it for?">
-        {goals.map((goal) => (
-          <button
-            key={goal.id}
-            type="button"
-            className={`lm-goal${selected === goal.id ? " selected" : ""}`}
-            aria-pressed={selected === goal.id}
-            onClick={() => onPick(goal.id)}
-          >
-            <span className="lm-goal-label">{goal.label}</span>
-            <span className="lm-goal-detail">{goal.detail}</span>
-          </button>
-        ))}
+      <h2 className="lm-goals-heading">{heading}</h2>
+      <p className="lm-goal-hint">Choose as many as you like.</p>
+      <div className="lm-goal-grid" role="group" aria-label={heading}>
+        {goals.map((goal) => {
+          const on = selected.includes(goal.id);
+          return (
+            <button
+              key={goal.id}
+              type="button"
+              className={`lm-goal${on ? " selected" : ""}`}
+              aria-pressed={on}
+              onClick={() => onToggle(goal.id)}
+            >
+              <span className="lm-goal-check" aria-hidden="true" />
+              <span className="lm-goal-label">{goal.label}</span>
+              <span className="lm-goal-detail">{goal.detail}</span>
+            </button>
+          );
+        })}
       </div>
+      {children}
     </section>
   );
 }
 
-function InstallButton({ item, state, onInstall, onCancel }) {
+// Once there are results the question is a filter, so it shrinks to one row of chips.
+// The description each card carried is still there, on hover.
+function GoalChips({ goals, selected, onToggle }) {
+  return (
+    <div className="lm-chipbar" role="group" aria-label="What do you want it for?">
+      <span className="lm-chipbar-label">Use it for</span>
+      {goals.map((goal) => {
+        const on = selected.includes(goal.id);
+        return (
+          <button
+            key={goal.id}
+            type="button"
+            className={`lm-chip${on ? " on" : ""}`}
+            aria-pressed={on}
+            title={goal.detail}
+            onClick={() => onToggle(goal.id)}
+          >
+            {goal.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// The three things anyone deciding wants to know, as labelled sentences rather than a
+// bulleted list -- the label is what makes each one findable at a glance.
+function PlainFacts({ plain }) {
+  return (
+    <dl className="lm-plainfacts">
+      <div>
+        <dt>Speed</dt>
+        <dd>{plain.speed}</dd>
+      </div>
+      <div>
+        <dt>Download</dt>
+        <dd>{plain.download}</dd>
+      </div>
+      <div>
+        <dt>Quality</dt>
+        <dd>{plain.compression}</dd>
+      </div>
+    </dl>
+  );
+}
+
+function InstallButton({ item, state, onInstall, onCancel, primary = false }) {
   const oneClick = item.install_options?.[0]?.kind === "one_click";
   if (item.installed) {
     return <p className="lm-installed">Already on this computer.</p>;
@@ -101,7 +193,7 @@ function InstallButton({ item, state, onInstall, onCancel }) {
       <div className="lm-install-actions">
         <button
           type="button"
-          className="neo-button lm-install-button"
+          className={`neo-button${primary ? " primary" : ""} lm-install-button`}
           onClick={() => onInstall(item)}
           disabled={busy}
         >
@@ -138,7 +230,7 @@ function InstallButton({ item, state, onInstall, onCancel }) {
 function ModelRow({ item, expanded, onToggle, installState, onInstall, onCancelInstall }) {
   const { model, fit, plain } = item;
   return (
-    <li className={`lm-row lm-row-${fit.tier}`}>
+    <li className={`lm-row lm-row-${fit.tier}${expanded ? " open" : ""}`}>
       <button
         type="button"
         className="lm-row-main"
@@ -146,31 +238,26 @@ function ModelRow({ item, expanded, onToggle, installState, onInstall, onCancelI
         onClick={() => onToggle(model.id)}
       >
         <span className="lm-row-name">{model.display_name}</span>
+        {item.installed ? <span className="lm-badge">Installed</span> : null}
         <span className="lm-row-short">{plain.short}</span>
+        <span className="lm-row-chevron" aria-hidden="true" />
       </button>
       {expanded ? (
         <div className="lm-row-detail">
           <p className="lm-row-fit">{plain.fit}</p>
-          <p>{plain.speed}</p>
-          <p>{plain.download}</p>
-          <p>{plain.compression}</p>
+          <PlainFacts plain={plain} />
           {fit.data_caveat ? <p className="lm-caveat">{fit.data_caveat}</p> : null}
-          <dl className="lm-facts">
-            <div>
-              <dt>Made by</dt>
-              <dd>{String(model.id).split("/")[0]}</dd>
-            </div>
-            <div>
-              <dt>Licence</dt>
-              <dd>{model.license || "Not stated"}</dd>
-            </div>
-          </dl>
-          <InstallButton
-            item={item}
-            state={installState}
-            onInstall={onInstall}
-            onCancel={onCancelInstall}
-          />
+          <div className="lm-row-foot">
+            <InstallButton
+              item={item}
+              state={installState}
+              onInstall={onInstall}
+              onCancel={onCancelInstall}
+            />
+            <p className="lm-maker">
+              {String(model.id).split("/")[0]} · {model.license || "Licence not stated"}
+            </p>
+          </div>
         </div>
       ) : null}
     </li>
@@ -199,10 +286,22 @@ export function specsOf(machine) {
   return specs;
 }
 
+// The same specifications as one line under the title, each worded to stand alone.
+const SPEC_PHRASE = {
+  Memory: (value) => `${value} memory`,
+  "Available for AI": (value) => `${value} usable for AI`,
+};
+
+export function specLine(machine) {
+  return specsOf(machine)
+    .map((spec) => (SPEC_PHRASE[spec.label] ? SPEC_PHRASE[spec.label](spec.value) : spec.value))
+    .join(" · ");
+}
+
 export default function LocalModels() {
   const [goals, setGoals] = useState([]);
-  const [goal, setGoal] = useState(() => readRememberedGoal());
-  const [asking, setAsking] = useState(() => shouldAskFirst(readRememberedGoal()));
+  const [chosen, setChosen] = useState(() => readRememberedGoals());
+  const [asking, setAsking] = useState(() => shouldAskFirst(readRememberedGoals()));
   const [machine, setMachine] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -210,9 +309,13 @@ export default function LocalModels() {
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
   const [showTooBig, setShowTooBig] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [installs, setInstalls] = useState({});
   const installing = useRef(false);
   const installAbort = useRef(null);
+  // Goals can now be toggled in quick succession, and each toggle asks again. Only
+  // the newest answer may land, or a slow earlier one would overwrite it.
+  const latestLoad = useRef(0);
 
   // The question and the scan start together. The scan is the slow half, so putting it
   // behind the question would leave someone watching a spinner before they had been
@@ -233,38 +336,69 @@ export default function LocalModels() {
   }, []);
 
   const load = useCallback(
-    async (chosen, { fresh = false } = {}) => {
-      if (!chosen) return;
+    async (picked, { fresh = false } = {}) => {
+      if (!picked?.length) return;
+      const ticket = ++latestLoad.current;
       setLoading(true);
       setError("");
       try {
-        const body = await api.localModelRecommendations({ goal: chosen, fresh });
+        const body = await api.localModelRecommendations({ goals: picked, fresh });
+        if (ticket !== latestLoad.current) return;
         setMachine(body.machine);
         setItems(body.recommendations || []);
       } catch (caught) {
+        if (ticket !== latestLoad.current) return;
         setError(caught.message || "Neo could not work out what this computer can run.");
       } finally {
-        setLoading(false);
+        if (ticket === latestLoad.current) setLoading(false);
       }
     },
     [],
   );
 
+  // A goal remembered from an older version of the list is dropped rather than sent,
+  // since the server rejects goals it does not know. If nothing is left, ask again.
   useEffect(() => {
-    if (!goal || asking) return;
-    load(goal);
-  }, [goal, asking, load]);
+    if (!goals.length) return;
+    setChosen((current) => {
+      const known = current.filter((id) => goals.some((goal) => goal.id === id));
+      if (known.length === current.length) return current;
+      if (!known.length) setAsking(true);
+      return known;
+    });
+  }, [goals]);
 
-  function pickGoal(chosen) {
-    setGoal(chosen);
-    rememberGoal(chosen);
+  const chosenKey = chosen.join(",");
+  useEffect(() => {
+    if (!chosen.length || asking) return;
+    load(chosen);
+    // chosenKey stands in for chosen: the same goals in a new array are not a change.
+  }, [chosenKey, asking, load]);
+
+  // In the first-visit question, choosing only marks a goal; "Show me models" moves
+  // on. Afterwards each change applies straight away, like the filter it now is.
+  function toggleInQuestion(id) {
+    setChosen((current) => (current.includes(id) ? current.filter((each) => each !== id) : [...current, id]));
+  }
+
+  function finishQuestion() {
+    if (!chosen.length) return;
+    rememberGoals(chosen);
     setAsking(false);
+  }
+
+  function toggleOnResults(id) {
+    setChosen((current) => {
+      const next = toggleGoal(current, id);
+      if (next !== current) rememberGoals(next);
+      return next;
+    });
   }
 
   async function rescan() {
     setRescanning(true);
     try {
-      await load(goal, { fresh: true });
+      await load(chosen, { fresh: true });
     } finally {
       setRescanning(false);
     }
@@ -314,7 +448,7 @@ export default function LocalModels() {
       // cancelled or failed attempt changed nothing, and reloading the list would
       // just reset everyone's scroll position for no reason.
       if (finished) {
-        await load(goal);
+        await load(chosen);
       }
     } catch (caught) {
       setInstalls((current) => ({
@@ -345,144 +479,158 @@ export default function LocalModels() {
   }
 
   const grouped = useMemo(() => groupByHowTheyRun(items), [items]);
+  const fitCount = grouped.groups.reduce((total, group) => total + group.items.length, 0);
+  const shownGroups = previewGroups(grouped.groups, { showAll });
 
   if (asking) {
     return (
-      <div className="ws-panel lm">
-        <header className="lm-head">
-          <h1 className="lm-title">Run AI on this computer</h1>
-          <p className="lm-sub">
-            Neo can run AI models on your own machine. Nothing you type leaves it.
+      <div className="ws-panel lm lm-ask">
+        <div className="lm-ask-inner">
+          <header className="lm-ask-head">
+            <h1 className="lm-title">Run AI on this computer</h1>
+            <p className="lm-sub">
+              Neo can run AI models on your own machine. Nothing you type leaves it.
+            </p>
+          </header>
+          <GoalPicker
+            goals={goals}
+            selected={chosen}
+            onToggle={toggleInQuestion}
+            heading="What do you want to use it for?"
+          >
+            {goals.length ? (
+              <button
+                type="button"
+                className="neo-button primary lm-goal-continue"
+                onClick={finishQuestion}
+                disabled={!chosen.length}
+              >
+                {chosen.length > 1 ? `Show models for these ${chosen.length}` : "Show me models"}
+              </button>
+            ) : null}
+          </GoalPicker>
+          <p className="lm-quiet">
+            {machine
+              ? "Neo has finished looking at your computer."
+              : "Neo is looking at your computer while you decide."}
           </p>
-        </header>
-        <GoalPicker
-          goals={goals}
-          selected={goal}
-          onPick={pickGoal}
-          heading="What do you want to use it for?"
-        />
-        <p className="lm-quiet">
-          {machine
-            ? "Neo has finished looking at your computer."
-            : "Neo is looking at your computer while you decide."}
-        </p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="ws-panel lm">
-      <header className="lm-head">
-        <h1 className="lm-title">Models on this computer</h1>
-        <p className="lm-sub">
-          Neo can run AI models on your own machine. Nothing you type leaves it.
-        </p>
-      </header>
+      <div className="lm-inner">
+        <header className="lm-head">
+          <div className="lm-head-text">
+            <h1 className="lm-title">Models on this computer</h1>
+            <p className="lm-verdict">
+              {machine ? machine.summary : "Looking at what this computer can do…"}
+            </p>
+            {machine ? <p className="lm-specline">{specLine(machine)}</p> : null}
+          </div>
+          <button type="button" className="lm-rescan" onClick={rescan} disabled={rescanning}>
+            {rescanning ? "Checking…" : "Check again"}
+          </button>
+        </header>
 
-      {error ? <div className="neo-error lm-error">{error}</div> : null}
+        {(machine?.probe_notes || []).map((note) => (
+          <p key={note.code} className={`lm-note lm-note-${note.severity}`}>
+            {note.message}
+          </p>
+        ))}
 
-      <section className="lm-card lm-scan">
-        {machine ? (
+        {error ? <div className="neo-error lm-error">{error}</div> : null}
+
+        <GoalChips goals={goals} selected={chosen} onToggle={toggleOnResults} />
+
+        {loading ? (
+          <p className="lm-quiet">Working out what runs best here…</p>
+        ) : (
           <>
-            <p className="lm-verdict">{machine.summary}</p>
-            <div className="lm-scan-foot">
-              <dl className="lm-specs">
-                {specsOf(machine).map((spec) => (
-                  <div key={spec.label}>
-                    <dt>{spec.label}</dt>
-                    <dd>{spec.value}</dd>
+            {grouped.top ? (
+              <section className="lm-top">
+                <div className="lm-top-main">
+                  <p className="lm-flag">Best for this</p>
+                  <h2 className="lm-top-name">
+                    {grouped.top.model.display_name}
+                    {grouped.top.installed ? <span className="lm-badge">Installed</span> : null}
+                  </h2>
+                  <p className="lm-top-fit">{grouped.top.plain.fit}</p>
+                  <PlainFacts plain={grouped.top.plain} />
+                </div>
+                <div className="lm-top-action">
+                  <InstallButton
+                    item={grouped.top}
+                    state={installs[grouped.top.model.id]}
+                    onInstall={install}
+                    onCancel={cancelInstall}
+                    primary
+                  />
+                </div>
+              </section>
+            ) : null}
+
+            {shownGroups.length ? (
+              <section className="lm-listbox">
+                {shownGroups.map((group) => (
+                  <div key={group.tier} className={`lm-group lm-group-${group.tier}`}>
+                    <h2 className="lm-group-label">{group.label}</h2>
+                    <ul className="lm-list">
+                      {group.items.map((item) => (
+                        <ModelRow
+                          key={item.model.id}
+                          item={item}
+                          expanded={expandedId === item.model.id}
+                          onToggle={(id) => setExpandedId(expandedId === id ? null : id)}
+                          installState={installs[item.model.id]}
+                          onInstall={install}
+                          onCancelInstall={cancelInstall}
+                        />
+                      ))}
+                    </ul>
                   </div>
                 ))}
-              </dl>
-              <button
-                type="button"
-                className="lm-rescan"
-                onClick={rescan}
-                disabled={rescanning}
-              >
-                {rescanning ? "Checking…" : "Check again"}
-              </button>
-            </div>
-            {(machine.probe_notes || []).map((note) => (
-              <p key={note.code} className={`lm-note lm-note-${note.severity}`}>
-                {note.message}
-              </p>
-            ))}
+                {fitCount > PREVIEW_COUNT ? (
+                  <button
+                    type="button"
+                    className="lm-more"
+                    aria-expanded={showAll}
+                    onClick={() => setShowAll(!showAll)}
+                  >
+                    {showAll ? "Show fewer" : `Show all ${fitCount} that run here`}
+                  </button>
+                ) : null}
+              </section>
+            ) : null}
+
+            {grouped.tooBig.length ? (
+              <section className="lm-toobig">
+                <button
+                  type="button"
+                  className="lm-disclosure"
+                  aria-expanded={showTooBig}
+                  onClick={() => setShowTooBig(!showTooBig)}
+                >
+                  {showTooBig ? "Hide" : "Show"} {grouped.tooBig.length}{" "}
+                  {grouped.tooBig.length === 1 ? "model" : "models"} this computer cannot run
+                </button>
+                {showTooBig ? (
+                  <ul className="lm-list lm-list-toobig">
+                    {grouped.tooBig.map((item) => (
+                      <li key={item.model.id} className="lm-row lm-row-too_big">
+                        <span className="lm-row-name">{item.model.display_name}</span>
+                        <span className="lm-row-reason">{item.fit.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            ) : null}
           </>
-        ) : (
-          <p className="lm-verdict">Looking at what this computer can do…</p>
         )}
-      </section>
-
-      <GoalPicker goals={goals} selected={goal} onPick={pickGoal} heading="What do you want it for?" />
-
-      {loading ? (
-        <p className="lm-quiet">Working out what runs best here…</p>
-      ) : (
-        <>
-          {grouped.top ? (
-            <section className="lm-card lm-top">
-              <p className="lm-flag">Best for this</p>
-              <h2 className="lm-top-name">{grouped.top.model.display_name}</h2>
-              <p className="lm-top-fit">{grouped.top.plain.fit}</p>
-              <ul className="lm-top-facts">
-                <li>{grouped.top.plain.speed}</li>
-                <li>{grouped.top.plain.download}</li>
-                <li>{grouped.top.plain.compression}</li>
-              </ul>
-              <InstallButton
-                item={grouped.top}
-                state={installs[grouped.top.model.id]}
-                onInstall={install}
-                onCancel={cancelInstall}
-              />
-            </section>
-          ) : null}
-
-          {grouped.groups.map((group) => (
-            <section key={group.tier} className="lm-list-section">
-              <h2 className="lm-h2">{group.label}</h2>
-              <ul className="lm-list">
-                {group.items.map((item) => (
-                  <ModelRow
-                    key={item.model.id}
-                    item={item}
-                    expanded={expandedId === item.model.id}
-                    onToggle={(id) => setExpandedId(expandedId === id ? null : id)}
-                    installState={installs[item.model.id]}
-                    onInstall={install}
-                    onCancelInstall={cancelInstall}
-                  />
-                ))}
-              </ul>
-            </section>
-          ))}
-
-          {grouped.tooBig.length ? (
-            <section className="lm-list-section">
-              <button
-                type="button"
-                className="lm-disclosure"
-                aria-expanded={showTooBig}
-                onClick={() => setShowTooBig(!showTooBig)}
-              >
-                {showTooBig ? "Hide" : "Show"} {grouped.tooBig.length}{" "}
-                {grouped.tooBig.length === 1 ? "model" : "models"} this computer cannot run
-              </button>
-              {showTooBig ? (
-                <ul className="lm-list">
-                  {grouped.tooBig.map((item) => (
-                    <li key={item.model.id} className="lm-row lm-row-too_big">
-                      <span className="lm-row-name">{item.model.display_name}</span>
-                      <span className="lm-row-reason">{item.fit.reason}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </section>
-          ) : null}
-        </>
-      )}
+      </div>
     </div>
   );
 }

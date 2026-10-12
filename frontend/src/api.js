@@ -214,6 +214,14 @@ async function streamBinaryRequest(path, body, onEvent, signal) {
   if (buffered.trim()) onEvent?.(JSON.parse(buffered));
 }
 
+/** `goal=a&goal=b` from one goal or several -- the shape the local-models routes read. */
+export function goalQuery(goals) {
+  const list = (Array.isArray(goals) ? goals : [goals]).filter(Boolean);
+  return (list.length ? list : ["chat"])
+    .map((goal) => `goal=${encodeURIComponent(goal)}`)
+    .join("&");
+}
+
 export const api = {
   accountProfiles: () => request("/account-profiles"),
   currentAccountProfile: () => request("/account-profiles/session/current"),
@@ -736,20 +744,22 @@ export const api = {
   localModelGoals: () => request("/local-models/goals"),
   localModelScan: (fresh = false) =>
     request(`/local-models/scan${fresh ? "?fresh=true" : ""}`),
+  // One `goal` parameter per goal: ?goal=chat&goal=coding.
   localModelRecommendations: ({
+    goals,
     goal = "chat",
     limit = 40,
     includeUnfit = true,
     fresh = false,
   } = {}) =>
     request(
-      `/local-models/recommendations?goal=${encodeURIComponent(goal)}&limit=${limit}` +
+      `/local-models/recommendations?${goalQuery(goals ?? goal)}&limit=${limit}` +
         `&include_unfit=${includeUnfit}${fresh ? "&fresh=true" : ""}`,
     ),
-  localModel: (id, goal = "chat") =>
+  localModel: (id, goals = "chat") =>
     request(
       `/local-models/models/${id.split("/").map(encodeURIComponent).join("/")}` +
-        `?goal=${encodeURIComponent(goal)}`,
+        `?${goalQuery(goals)}`,
     ),
   localModelsInstalled: () => request("/local-models/installed"),
   installLocalModel: (modelId, onEvent, signal) =>

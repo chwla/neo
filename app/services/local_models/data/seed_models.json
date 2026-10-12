@@ -4,6 +4,8 @@
       "id": "Qwen/Qwen3-0.6B",
       "display_name": "Qwen3 0.6B",
       "ollama": "qwen3:0.6b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 0.52,
       "parameters_b": 0.752,
       "goals": [
         "offline",
@@ -20,6 +22,8 @@
       "id": "unsloth/Llama-3.2-1B-Instruct",
       "display_name": "Llama 3.2 1B",
       "ollama": "llama3.2:1b",
+      "ollama_quantization": "Q8_0",
+      "ollama_weights_gb": 1.32,
       "parameters_b": 1.236,
       "goals": [
         "offline",
@@ -36,6 +40,8 @@
       "id": "unsloth/gemma-3-1b-it",
       "display_name": "Gemma 3 1B",
       "ollama": "gemma3:1b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 0.81,
       "parameters_b": 1.0,
       "goals": [
         "offline",
@@ -52,6 +58,8 @@
       "id": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
       "display_name": "SmolLM2 1.7B",
       "ollama": "smollm2:1.7b",
+      "ollama_quantization": "Q8_0",
+      "ollama_weights_gb": 1.82,
       "parameters_b": 1.711,
       "goals": [
         "offline",
@@ -68,6 +76,8 @@
       "id": "Qwen/Qwen3-1.7B",
       "display_name": "Qwen3 1.7B",
       "ollama": "qwen3:1.7b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 1.36,
       "parameters_b": 2.032,
       "goals": [
         "offline",
@@ -84,6 +94,8 @@
       "id": "unsloth/Llama-3.2-3B-Instruct",
       "display_name": "Llama 3.2 3B",
       "ollama": "llama3.2:3b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 2.02,
       "parameters_b": 3.213,
       "goals": [
         "chat",
@@ -100,6 +112,8 @@
       "id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
       "display_name": "Qwen2.5 Coder 1.5B",
       "ollama": "qwen2.5-coder:1.5b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 0.99,
       "parameters_b": 1.544,
       "goals": [
         "coding",
@@ -116,6 +130,8 @@
       "id": "microsoft/Phi-4-mini-instruct",
       "display_name": "Phi-4 Mini",
       "ollama": "phi4-mini:3.8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 2.49,
       "parameters_b": 3.836,
       "goals": [
         "chat",
@@ -132,6 +148,8 @@
       "id": "unsloth/gemma-3-4b-it",
       "display_name": "Gemma 3 4B",
       "ollama": "gemma3:4b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 2.5,
       "parameters_b": 4.3,
       "goals": [
         "chat",
@@ -149,6 +167,8 @@
       "id": "Qwen/Qwen3-4B",
       "display_name": "Qwen3 4B",
       "ollama": "qwen3:4b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 2.5,
       "parameters_b": 4.022,
       "goals": [
         "chat",
@@ -165,6 +185,8 @@
       "id": "mistralai/Mistral-7B-Instruct-v0.3",
       "display_name": "Mistral 7B",
       "ollama": "mistral:7b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 4.37,
       "parameters_b": 7.248,
       "goals": [
         "chat",
@@ -181,6 +203,8 @@
       "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
       "display_name": "Qwen2.5 Coder 7B",
       "ollama": "qwen2.5-coder:7b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 4.68,
       "parameters_b": 7.616,
       "goals": [
         "coding"
@@ -196,6 +220,8 @@
       "id": "Qwen/Qwen3-8B",
       "display_name": "Qwen3 8B",
       "ollama": "qwen3:8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 5.23,
       "parameters_b": 8.191,
       "goals": [
         "chat",
@@ -213,6 +239,8 @@
       "id": "unsloth/Meta-Llama-3.1-8B-Instruct",
       "display_name": "Llama 3.1 8B",
       "ollama": "llama3.1:8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 4.92,
       "parameters_b": 8.03,
       "goals": [
         "chat",
@@ -229,6 +257,8 @@
       "id": "ibm-granite/granite-3.3-8b-instruct",
       "display_name": "Granite 3.3 8B",
       "ollama": "granite3.3:8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 4.94,
       "parameters_b": 8.171,
       "goals": [
         "chat",
@@ -245,6 +275,8 @@
       "id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       "display_name": "DeepSeek R1 8B",
       "ollama": "deepseek-r1:8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 5.23,
       "parameters_b": 8.191,
       "goals": [
         "reasoning"
@@ -260,6 +292,8 @@
       "id": "Qwen/Qwen2.5-VL-7B-Instruct",
       "display_name": "Qwen2.5 VL 7B",
       "ollama": "qwen2.5vl:7b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 5.97,
       "parameters_b": 8.292,
       "goals": [
         "images",
@@ -277,6 +311,8 @@
       "id": "unsloth/gemma-3-12b-it",
       "display_name": "Gemma 3 12B",
       "ollama": "gemma3:12b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 7.31,
       "parameters_b": 12.187,
       "goals": [
         "chat",
@@ -295,6 +331,8 @@
       "id": "Qwen/Qwen3-14B",
       "display_name": "Qwen3 14B",
       "ollama": "qwen3:14b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 9.28,
       "parameters_b": 14.768,
       "goals": [
         "chat",
@@ -312,6 +350,8 @@
       "id": "microsoft/phi-4",
       "display_name": "Phi-4",
       "ollama": "phi4:14b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 9.05,
       "parameters_b": 14.66,
       "goals": [
         "reasoning",
@@ -328,6 +368,8 @@
       "id": "Qwen/Qwen2.5-Coder-14B-Instruct",
       "display_name": "Qwen2.5 Coder 14B",
       "ollama": "qwen2.5-coder:14b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 8.99,
       "parameters_b": 14.77,
       "goals": [
         "coding"
@@ -343,6 +385,8 @@
       "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
       "display_name": "DeepSeek R1 14B",
       "ollama": "deepseek-r1:14b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 8.99,
       "parameters_b": 14.77,
       "goals": [
         "reasoning"
@@ -358,6 +402,8 @@
       "id": "openai/gpt-oss-20b",
       "display_name": "GPT-OSS 20B",
       "ollama": "gpt-oss:20b",
+      "ollama_quantization": "MXFP4",
+      "ollama_weights_gb": 13.79,
       "parameters_b": 20.915,
       "goals": [
         "chat",
@@ -378,6 +424,8 @@
       "id": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
       "display_name": "Mistral Small 24B",
       "ollama": "mistral-small3.2:24b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 15.18,
       "parameters_b": 24.011,
       "goals": [
         "chat",
@@ -396,6 +444,8 @@
       "id": "mistralai/Devstral-Small-2507",
       "display_name": "Devstral 24B",
       "ollama": "devstral:24b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 14.33,
       "parameters_b": 23.572,
       "goals": [
         "coding"
@@ -411,6 +461,8 @@
       "id": "unsloth/gemma-3-27b-it",
       "display_name": "Gemma 3 27B",
       "ollama": "gemma3:27b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 16.56,
       "parameters_b": 27.432,
       "goals": [
         "writing",
@@ -429,6 +481,8 @@
       "id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
       "display_name": "Qwen3 Coder 30B",
       "ollama": "qwen3-coder:30b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 18.56,
       "parameters_b": 30.532,
       "goals": [
         "coding"
@@ -448,6 +502,8 @@
       "id": "Qwen/Qwen3-32B",
       "display_name": "Qwen3 32B",
       "ollama": "qwen3:32b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 20.2,
       "parameters_b": 32.762,
       "goals": [
         "reasoning",
@@ -465,6 +521,8 @@
       "id": "Qwen/Qwen2.5-Coder-32B-Instruct",
       "display_name": "Qwen2.5 Coder 32B",
       "ollama": "qwen2.5-coder:32b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 19.85,
       "parameters_b": 32.764,
       "goals": [
         "coding"
@@ -480,6 +538,8 @@
       "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
       "display_name": "DeepSeek R1 32B",
       "ollama": "deepseek-r1:32b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 19.85,
       "parameters_b": 32.764,
       "goals": [
         "reasoning"
@@ -495,6 +555,8 @@
       "id": "mistralai/Mixtral-8x7B-Instruct-v0.1",
       "display_name": "Mixtral 8x7B",
       "ollama": "mixtral:8x7b",
+      "ollama_quantization": "Q4_0",
+      "ollama_weights_gb": 26.44,
       "parameters_b": 46.703,
       "goals": [
         "chat",
@@ -515,6 +577,8 @@
       "id": "unsloth/Llama-3.3-70B-Instruct",
       "display_name": "Llama 3.3 70B",
       "ollama": "llama3.3:70b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 42.52,
       "parameters_b": 70.554,
       "goals": [
         "writing",
@@ -532,6 +596,8 @@
       "id": "openai/gpt-oss-120b",
       "display_name": "GPT-OSS 120B",
       "ollama": "gpt-oss:120b",
+      "ollama_quantization": "MXFP4",
+      "ollama_weights_gb": 65.37,
       "parameters_b": 116.829,
       "goals": [
         "reasoning",

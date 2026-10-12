@@ -457,6 +457,7 @@ def plan_research(
         raise PlanningFailed(f"The research planner did not return a usable plan ({exc}).") from exc
 
     plan = validate_plan(draft, query, depth)
+    plan_draft = draft
     # What validation found in the proposal the plan stands on, without earlier attempts'.
     proposal_issues = plan.issues
     unresolved = [
@@ -491,8 +492,22 @@ def plan_research(
                     *candidate.issues,
                 ]
                 plan = candidate
+                plan_draft = repaired_draft
         except (ModelOutputInvalid, LLMBudgetExhausted):
             plan.issues.append(PlanIssue(code="model_repair_failed"))
+    if not any(t.tier == Tier.CORE for t in plan.top_targets()):
+        # A dimension left unjustified only by its references -- missing, or naming nothing the
+        # plan holds -- would otherwise take every core target in it down with it.
+        adopted = validate_plan(plan_draft, query, depth, adopt_unjustified=True)
+        if any(t.tier == Tier.CORE for t in adopted.top_targets()):
+            # Keep what the run itself recorded (a repair's outcome), not the proposal's notes
+            # twice: the adopted plan re-validated the same proposal.
+            proposal = {id(issue) for issue in proposal_issues}
+            adopted.issues = [
+                *[issue for issue in plan.issues if id(issue) not in proposal],
+                *adopted.issues,
+            ]
+            plan = adopted
     if not any(t.tier == Tier.CORE for t in plan.top_targets()):
         discarded = Counter(issue.code for issue in proposal_issues if issue.code in _DISCARDS)
         reasons = ", ".join(f"{n} {code.replace('_', ' ')}" for code, n in discarded.items())
@@ -626,8 +641,15 @@ def _plan_score(plan: ResearchPlan) -> tuple[int, int]:
     return (-unresolved, sum(1 for t in plan.top_targets() if t.tier == Tier.CORE))
 
 
-def validate_plan(draft: PlanDraft, query: str, depth: DepthMode) -> ResearchPlan:
-    """Check and repair a proposed plan. Pure: no model calls, no topic knowledge."""
+def validate_plan(
+    draft: PlanDraft, query: str, depth: DepthMode, *, adopt_unjustified: bool = False
+) -> ResearchPlan:
+    """Check and repair a proposed plan. Pure: no model calls, no topic knowledge.
+
+    ``adopt_unjustified`` keeps an unjustified dimension that a core target belongs to, rather
+    than discarding it and every target in it. It is the last resort for a plan that would
+    otherwise have no core target, once the model has had whatever chance it gets to repair.
+    """
     issues: list[PlanIssue] = []
 
     def note(code: str, detail: str = "", repaired: bool = True) -> None:
@@ -651,7 +673,15 @@ def validate_plan(draft: PlanDraft, query: str, depth: DepthMode) -> ResearchPla
     criteria = _unique_ids(criteria, "d")
 
     refs = _ref_lookup(constraints, criteria)
-    dimensions, dimension_remap = _dimensions(draft, refs, note)
+    adopt: frozenset[str] = frozenset()
+    if adopt_unjustified:
+        # The targets that will be core: those marked so, or the first few when none is,
+        # as the promotion below would make them.
+        core = [raw for raw in draft.targets if compact(raw.tier or "") == Tier.CORE.value]
+        adopt = frozenset(
+            compact(raw.dimension_id) for raw in core or draft.targets[:3] if raw.dimension_id
+        )
+    dimensions, dimension_remap = _dimensions(draft, refs, note, adopt)
 
     targets = _targets(
         draft,
@@ -836,8 +866,14 @@ def _resolve_refs(raw_refs: list[str], lookup: dict[str, str]) -> list[str]:
 
 
 def _dimensions(
-    draft: PlanDraft, refs: dict[str, str], note
+    draft: PlanDraft, refs: dict[str, str], note, adopt: frozenset[str] = frozenset()
 ) -> tuple[list[Dimension], dict[str, str]]:
+    """The proposal's dimensions that are justified, and how targets may name them.
+
+    ``adopt`` holds the forms (id or name) of dimensions a core target names. An unjustified
+    dimension among them is kept as justified by the query when ``validate_plan`` is asked to
+    adopt: a core target asks what the answer depends on, so its aspect matters to the query.
+    """
     dimensions: list[Dimension] = []
     remap: dict[str, str] = {}
     taken: set[str] = set()
@@ -847,6 +883,9 @@ def _dimensions(
             continue
         description = normalize_ws(raw.description)[:300]
         justified_by = _resolve_refs(raw.justification_refs, refs)
+        if not justified_by and {compact(raw.id), compact(name)} & adopt:
+            justified_by = ["query"]
+            note("dimension_adopted_by_core_target", name)
         if not justified_by:
             note(
                 "dimension_unjustified",

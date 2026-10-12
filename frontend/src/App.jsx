@@ -1151,6 +1151,9 @@ export function ChatMessage({
   // composer state, so a reloaded thread still shows the picture instead of a
   // message that reads as though nothing was sent with it.
   const messageImageIds = message.metadata?.image_ids ?? [];
+  // What a gallery lookup found for this reply, stored with it so the pictures
+  // are still under the answer after a reload. Titles ride along as captions.
+  const galleryResults = isUser ? [] : message.metadata?.gallery_results ?? [];
   const delivery = run?.delivery;
   const hasChanges = Boolean(delivery?.deliverable?.length || delivery?.blocked?.length);
   const canUndo = hasChanges && delivery?.mode === "live" && Boolean(delivery?.undoable);
@@ -1218,6 +1221,9 @@ export function ChatMessage({
             />
             {messageImageIds.length ? (
               <GalleryImages items={messageImageIds} onOpenGallery={onOpenGalleryItem} />
+            ) : null}
+            {galleryResults.length ? (
+              <GalleryImages items={galleryResults} onOpenGallery={onOpenGalleryItem} />
             ) : null}
             {calendarProposal ? (
               <CalendarProposalCard

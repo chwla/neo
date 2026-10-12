@@ -67,6 +67,26 @@ _STOPWORDS = {
     "from",
     "about",
     "there",
+    # Function words a question is phrased with ("do you have any ...", "can
+    # you pull up the one ..."). None of them says anything about the picture.
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "any",
+    "all",
+    "some",
+    "can",
+    "could",
+    "would",
+    "please",
+    "up",
+    "one",
+    "ones",
+    "these",
+    "those",
 }
 
 
@@ -98,8 +118,31 @@ def _recency(item: dict, appearances: list[dict], now: datetime) -> float:
     return max(0.0, 1.0 - min(min(ages) / 365.0, 1.0))
 
 
+def _joined_pairs(text: str) -> set[str]:
+    """Each pair of adjacent words written as one: "spider-man" -> "spiderman".
+
+    The user and the vision model spell compounds independently -- "spiderman"
+    against a caption's "Spider-Man", "email" against "e-mail" -- and neither
+    spelling is wrong. Joining whole neighbouring words, rather than deleting
+    every separator in the text, keeps "cats" from being found in "the cat sat".
+    """
+
+    words = re.findall(r"[a-z0-9]+", text)
+    return {left + right for left, right in zip(words, words[1:], strict=False)}
+
+
+def _found(term: str, words: list[str], pairs: set[str]) -> bool:
+    """A term starts a word ("sword" finds "swords") or spells a joined pair.
+
+    Matching the start of a word rather than anywhere inside one is what keeps
+    "load" out of "upload" and "man" out of "woman".
+    """
+
+    return term in pairs or any(word.startswith(term) for word in words)
+
+
 def _text_match(item: dict, terms: list[str]) -> tuple[float, float]:
-    """Substring hits in the words, and in the tags, as two 0-1 scores.
+    """Word hits in the description, and in the tags, as two 0-1 scores.
 
     This runs alongside bm25 rather than instead of it. fts5 is absent in some
     SQLite builds, and a rare term in a short OCR transcript can rank low under
@@ -111,9 +154,15 @@ def _text_match(item: dict, terms: list[str]) -> tuple[float, float]:
     haystack = " ".join(
         str(item.get(field) or "").lower() for field in ("title", "caption", "ocr_text", "alt_text")
     )
-    tags = " ".join(item.get("tags") or []).lower()
-    hits = sum(1 for term in terms if term in haystack)
-    tag_hits = sum(1 for term in terms if term in tags)
+    tag_list = [str(tag).lower() for tag in item.get("tags") or []]
+    words = re.findall(r"[a-z0-9]+", haystack)
+    tag_words = re.findall(r"[a-z0-9]+", " ".join(tag_list))
+    # Pairs are joined within one tag, never across two: a "superhero" tag next
+    # to a "comic book" tag is not the word "superherocomic".
+    haystack_pairs = _joined_pairs(haystack)
+    tag_pairs = set().union(*(_joined_pairs(tag) for tag in tag_list))
+    hits = sum(1 for term in terms if _found(term, words, haystack_pairs))
+    tag_hits = sum(1 for term in terms if _found(term, tag_words, tag_pairs))
     return hits / len(terms), tag_hits / len(terms)
 
 
@@ -166,7 +215,9 @@ class GallerySearch:
             return {"results": [], "window": self._window_payload(window), "query": text}
 
         appearances = store.appearances_for([item["id"] for item in candidates])
-        lexical_index = store.fts_scores(text) if terms else {}
+        # The terms, not the raw text: every word handed to fts is OR-ed into the
+        # match, so a stopword there is a hit on every item in the gallery.
+        lexical_index = store.fts_scores(" ".join(terms)) if terms else {}
         semantic_index = self._semantic_scores(text, limit=200) if terms else {}
         browsing = not terms
 

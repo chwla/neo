@@ -431,6 +431,27 @@ input:not([type="checkbox"]):not([type="radio"]), textarea, select {
 }
 input::placeholder, textarea::placeholder { color: var(--neo-fg-14); }
 input:focus, textarea:focus, select:focus { border-color: var(--neo-green); }
+
+/* Every dropdown draws its own arrow. Chrome's native one sits about 8px from the
+   border whatever the padding, which on a rounded box reads as touching it, and padding
+   cannot move it -- so it is replaced, 14px in. Drawn with gradients rather than an
+   image so it takes the theme's colours. The !important is deliberate: component rules
+   set `background` and `padding` as shorthands, and either would quietly remove the
+   arrow or let the text run underneath it. The two pickers that draw a caret on their
+   wrapper are left alone. */
+select:not([multiple]):not(.chat-llm-picker select):not(.agent-chip select) {
+  --select-caret: var(--neo-muted);
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px !important;
+  background-image:
+    linear-gradient(45deg, transparent calc(50% - .75px), var(--select-caret) calc(50% - .75px), var(--select-caret) calc(50% + .75px), transparent calc(50% + .75px)),
+    linear-gradient(-45deg, transparent calc(50% - .75px), var(--select-caret) calc(50% - .75px), var(--select-caret) calc(50% + .75px), transparent calc(50% + .75px)) !important;
+  background-size: 5px 5px, 5px 5px !important;
+  background-position: calc(100% - 19px) calc(50% + 1px), calc(100% - 14px) calc(50% + 1px) !important;
+  background-repeat: no-repeat !important;
+}
+select:not([multiple]):hover:not(:disabled), select:not([multiple]):focus { --select-caret: var(--neo-green); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 
 .neo-app { --neo-sidebar-width: 256px; display: flex; width: 100%; height: 100vh; overflow: hidden; background: var(--neo-bg); }
@@ -1143,7 +1164,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0 14px 0 0;
+  padding: 0 18px 0 0;
   color: var(--neo-body);
   font: 11px "JetBrains Mono", monospace;
   text-overflow: ellipsis;
@@ -1152,10 +1173,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .agent-chip select option { background: var(--neo-panel); color: var(--neo-body); }
 /* Caret is drawn on the wrapper because `appearance: none` removes the native
    one, and a select cannot carry its own pseudo-element. */
+.agent-chip:has(select) { padding-right: 14px; }
 .agent-chip:has(select)::after {
   content: "";
   position: absolute;
-  right: 10px;
+  right: 14px;
   width: 6px;
   height: 6px;
   border-right: 1px solid var(--neo-muted);
@@ -1249,9 +1271,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .memory-tabs { display:flex; gap:4px; border-bottom:1px solid var(--neo-line); padding:14px 0 0; }
 .memory-tabs button { border:1px solid transparent; border-bottom:0; background:transparent; padding:9px 12px; color:var(--neo-fg-11); font:600 11px "JetBrains Mono", monospace; text-transform:uppercase; letter-spacing:.04em; }
 .memory-tabs button:hover, .memory-tabs button.active { color:var(--neo-green); background:var(--neo-accent-bg-soft); border-color:var(--neo-line-bright); }
-.memory-sort-bar { display:flex; flex-wrap:wrap; align-items:center; gap:16px; padding:12px 0; border-bottom:1px solid var(--neo-line); color:var(--neo-fg-10); font-size:11px; }
+.memory-sort-bar { display:flex; flex-wrap:wrap; align-items:flex-end; gap:16px; padding:12px 0; border-bottom:1px solid var(--neo-line); color:var(--neo-fg-10); font-size:11px; }
 .memory-sort-bar label { display:flex; align-items:center; gap:6px; }
-.memory-sort-bar select { min-height:30px; padding:4px 8px; }
+.memory-sort-bar select { min-height:30px; padding:4px 14px 4px 10px; }
+/* The Sort label stacks above its select (dialog-wide rule), so the bar aligns to the
+   bottom edge and the buttons match the select's 34px height. */
+.memory-sort-bar .neo-button { min-height:34px; }
 .memory-scroll { display:grid; gap:12px; max-height:calc(100vh - 255px); overflow:auto; padding:14px 0 4px; }
 .memory-card, .memory-item { border:1px solid var(--neo-line); background:var(--neo-panel); padding:14px; }
 .memory-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
@@ -4948,319 +4973,448 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   background: var(--neo-bg);
 }
 
-.lm-head { margin-bottom: 24px; }
-.lm-title {
-  font-family: "Space Grotesk", system-ui, sans-serif;
-  font-size: 24px; margin: 10px 0 4px; color: var(--neo-text);
-}
-.lm-sub { color: var(--neo-muted); font-size: 13px; margin: 0; }
-.lm-error { margin-bottom: 16px; }
-.lm-quiet { color: var(--neo-muted); font-size: 13px; margin: 18px 0; }
+/* One readable column. The list is sentences and a few figures, and stretched across a
+   wide window the figures drift a long way from the names they belong to. */
+.lm-inner { width: 100%; max-width: 980px; margin: 0 auto; }
 
-.lm-card {
-  background: var(--neo-panel-raised);
-  border: 1px solid var(--neo-line);
-  border-radius: 10px;
-  padding: 18px 20px;
-  margin-bottom: 24px;
+.lm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.lm-head-text { min-width: 0; }
+.lm-title {
+  margin: 0; color: var(--neo-text);
+  font-size: 22px; font-weight: 600; letter-spacing: -.025em;
 }
-.lm-verdict { font-size: 15px; line-height: 1.55; color: var(--neo-text); margin: 0; }
-.lm-scan-foot {
-  display: flex; align-items: flex-end; justify-content: space-between;
-  gap: 20px; margin-top: 16px; flex-wrap: wrap;
+.lm-specline {
+  margin: 8px 0 0; color: var(--neo-faint);
+  font: 10.5px "JetBrains Mono", monospace; letter-spacing: .05em;
 }
-.lm-specs { display: flex; gap: 28px; margin: 0; flex-wrap: wrap; }
-.lm-specs div { display: flex; flex-direction: column; gap: 3px; }
-.lm-specs dt {
-  font-family: "JetBrains Mono", monospace; font-size: 10px;
-  letter-spacing: .08em; text-transform: uppercase; color: var(--neo-faint);
-}
-.lm-specs dd { margin: 0; font-size: 13px; color: var(--neo-body); }
+.lm-sub { margin: 6px 0 0; color: var(--neo-muted); font-size: 13px; line-height: 1.55; }
+.lm-verdict { margin: 6px 0 0; max-width: 72ch; color: var(--neo-muted); font-size: 13.5px; line-height: 1.6; }
 .lm-rescan {
-  background: none; border: 1px solid var(--neo-line-bright);
-  color: var(--neo-muted); border-radius: 6px; padding: 6px 12px;
-  font-size: 12px; cursor: pointer;
+  flex: none; border: 1px solid var(--neo-line-bright); border-radius: 999px;
+  background: transparent; padding: 5px 12px; color: var(--neo-muted);
+  font-size: 12px; cursor: pointer; transition: border-color .14s ease, color .14s ease;
 }
-.lm-rescan:hover:not(:disabled) { border-color: var(--neo-green); color: var(--neo-green); }
+.lm-rescan:hover:not(:disabled) { border-color: var(--neo-accent-a45); color: var(--neo-green); }
 .lm-rescan:disabled { opacity: .5; cursor: default; }
+.lm-error { margin: 16px 0 0; }
+.lm-quiet { color: var(--neo-muted); font-size: 13px; margin: 20px 0; }
 
 /* Probe notes explain what the scan could not determine. A warning here is
    the difference between "you have no graphics card" and "your driver did
    not answer", so it is styled to be read, not dismissed. */
 .lm-note {
-  margin: 12px 0 0; padding: 8px 12px; font-size: 12.5px; line-height: 1.5;
+  margin: 12px 0 0; max-width: 72ch; padding: 8px 12px; font-size: 12.5px; line-height: 1.5;
   color: var(--neo-body); border-left: 2px solid var(--neo-line-bright);
   background: var(--neo-panel);
 }
 .lm-note-warning { border-left-color: var(--neo-warn); }
 .lm-note-error { border-left-color: var(--neo-danger); }
 
-.lm-h2 {
-  font-family: "JetBrains Mono", monospace; font-size: 11px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--neo-faint);
-  margin: 0 0 12px;
+/* Goals, once there are results: a filter, so one row of chips. */
+.lm-chipbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 22px 0 20px; padding: 14px 0;
+  border-top: 1px solid var(--neo-line); border-bottom: 1px solid var(--neo-line);
 }
-.lm-goals { margin-bottom: 26px; }
-.lm-goal-row { display: flex; flex-wrap: wrap; gap: 10px; }
-.lm-goal {
-  flex: 1 1 210px; text-align: left; cursor: pointer;
-  background: var(--neo-panel); border: 1px solid var(--neo-line);
-  border-radius: 8px; padding: 12px 14px;
-  display: flex; flex-direction: column; gap: 4px;
+.lm-chipbar-label {
+  flex-basis: 100%; margin-bottom: 4px; color: var(--neo-faint);
+  font: 10px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase;
 }
-.lm-goal:hover { border-color: var(--neo-line-bright); }
-.lm-goal.selected { border-color: var(--neo-green); background: var(--neo-panel-raised); }
-.lm-goal-label { font-size: 13.5px; color: var(--neo-text); }
-.lm-goal-detail { font-size: 12px; color: var(--neo-muted); }
+.lm-chip {
+  border: 1px solid var(--neo-line-bright); border-radius: 999px; background: transparent;
+  padding: 5px 12px; color: var(--neo-fg-9); font-size: 12px; cursor: pointer;
+  transition: border-color .14s ease, background .14s ease, color .14s ease;
+}
+.lm-chip:hover { border-color: var(--neo-fg-14); color: var(--neo-text); }
+.lm-chip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); }
 
-.lm-top { border-color: var(--neo-line-bright); }
+/* The first visit: the same question as cards, because there it is the whole page. */
+.lm-ask-inner { width: 100%; max-width: 760px; margin: 6vh auto 0; }
+.lm-ask-head { margin-bottom: 28px; }
+.lm-goals-heading { margin: 0; color: var(--neo-text); font-size: 15px; font-weight: 500; }
+.lm-goal-hint { margin: 4px 0 14px; color: var(--neo-muted); font-size: 12.5px; }
+.lm-goal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.lm-goal {
+  position: relative; display: flex; flex-direction: column; gap: 5px;
+  min-height: 92px; padding: 14px 40px 14px 14px; text-align: left; cursor: pointer;
+  background: var(--neo-panel); border: 1px solid var(--neo-line); border-radius: 10px;
+  transition: border-color .14s ease, background .14s ease;
+}
+.lm-goal:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); }
+.lm-goal.selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a05); }
+/* Several can be on at once, so each card carries its own tick box rather than relying
+   on the border alone, which reads as "the one you picked". */
+.lm-goal-check {
+  position: absolute; top: 14px; right: 14px; width: 16px; height: 16px;
+  border: 1px solid var(--neo-line-bright); border-radius: 4px;
+}
+.lm-goal.selected .lm-goal-check { border-color: var(--neo-green); background: var(--neo-green); }
+.lm-goal.selected .lm-goal-check::after {
+  content: ""; position: absolute; left: 5px; top: 1px; width: 4px; height: 8px;
+  border: solid var(--neo-bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.lm-goal-label { font-size: 13.5px; color: var(--neo-text); }
+.lm-goal-detail { font-size: 12px; line-height: 1.45; color: var(--neo-muted); }
+.lm-goal-continue { margin-top: 18px; min-width: 180px; }
+.lm-ask .lm-quiet { margin-top: 14px; font-size: 12px; color: var(--neo-faint); }
+
+/* The top pick. Its install button sits beside it rather than under three bullets, so
+   the one action on the screen is where the eye ends up. */
+.lm-top {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: start;
+  margin-bottom: 20px; padding: 20px 22px;
+  border: 1px solid var(--neo-accent-a28); border-radius: 12px;
+  background: linear-gradient(180deg, var(--neo-accent-a04), transparent 70%), var(--neo-panel);
+}
 .lm-flag {
-  font-family: "JetBrains Mono", monospace; font-size: 10px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--neo-green);
-  margin: 0 0 8px;
+  margin: 0 0 6px; color: var(--neo-green);
+  font: 10px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase;
 }
 .lm-top-name {
-  font-family: "Space Grotesk", system-ui, sans-serif;
-  font-size: 19px; margin: 0 0 8px; color: var(--neo-text);
+  display: flex; align-items: center; gap: 10px; margin: 0 0 6px;
+  color: var(--neo-text); font-size: 19px; font-weight: 600; letter-spacing: -.02em;
 }
-.lm-top-fit { font-size: 14px; line-height: 1.55; color: var(--neo-body); margin: 0 0 12px; }
-.lm-top-facts { margin: 0 0 16px; padding-left: 18px; color: var(--neo-muted); font-size: 13px; }
-.lm-top-facts li { margin-bottom: 4px; }
+.lm-top-fit { margin: 0 0 16px; max-width: 64ch; color: var(--neo-body); font-size: 13.5px; line-height: 1.55; }
+.lm-top-action { padding-top: 22px; }
 
-.lm-install { margin-top: 6px; }
+.lm-plainfacts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0;
+}
+.lm-plainfacts div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lm-plainfacts dt {
+  color: var(--neo-faint); font: 10px "JetBrains Mono", monospace;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.lm-plainfacts dd { margin: 0; color: var(--neo-muted); font-size: 12.5px; line-height: 1.5; }
+
+.lm-badge {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+  background: var(--neo-accent-a10); color: var(--neo-green);
+  font: 500 10px "JetBrains Mono", monospace; letter-spacing: .04em; white-space: nowrap;
+}
+
 .lm-install-actions { display: flex; align-items: center; gap: 8px; }
-.lm-install-button { min-width: 190px; }
+.lm-install-button { min-width: 170px; }
 .lm-cancel-button { min-width: 0; }
 .lm-install-status { font-size: 12.5px; color: var(--neo-muted); margin: 8px 0 0; }
 .lm-install-done { color: var(--neo-green); }
 .lm-install-failed, .lm-install-needs_engine { color: var(--neo-danger); }
 .lm-install-cancelled { color: var(--neo-muted); }
 .lm-install-link { display: inline-block; margin-top: 6px; font-size: 12.5px; color: var(--neo-green); }
-.lm-installed { font-size: 12.5px; color: var(--neo-green); margin: 6px 0 0; }
-.lm-note-manual { font-size: 12.5px; color: var(--neo-muted); margin: 6px 0 0; }
-
-.lm-bar {
-  margin-top: 8px; height: 4px; border-radius: 2px;
-  background: var(--neo-line); overflow: hidden;
-}
+.lm-installed { margin: 0; font-size: 12.5px; color: var(--neo-green); white-space: nowrap; }
+.lm-note-manual { margin: 0; font-size: 12.5px; color: var(--neo-muted); }
+.lm-bar { margin-top: 8px; height: 4px; border-radius: 2px; background: var(--neo-line); overflow: hidden; }
 .lm-bar-fill { height: 100%; background: var(--neo-green); transition: width .3s ease; }
 
-.lm-list-section { margin-bottom: 26px; }
-.lm-list { list-style: none; margin: 0; padding: 0; }
-.lm-row { border-bottom: 1px solid var(--neo-line); }
+/* Everything else that runs here, in one bordered list rather than loose rows. */
+.lm-listbox {
+  border: 1px solid var(--neo-line); border-radius: 12px; background: var(--neo-panel);
+  overflow: hidden; margin-bottom: 14px;
+}
+.lm-group + .lm-group { border-top: 1px solid var(--neo-line); }
+.lm-group-label {
+  display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 18px 4px;
+  color: var(--neo-faint); font: 10px "JetBrains Mono", monospace;
+  letter-spacing: .1em; text-transform: uppercase; font-weight: 400;
+}
+.lm-group-label::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--neo-green);
+}
+.lm-group-good .lm-group-label::before { background: var(--neo-accent-a50); }
+.lm-group-tight .lm-group-label::before { background: var(--neo-warn); }
+.lm-list { list-style: none; margin: 0; padding: 0 6px 6px; }
+.lm-row { border-radius: 8px; }
+.lm-row + .lm-row { border-top: 1px solid var(--neo-line); }
+.lm-row.open { background: var(--neo-panel-raised); border-top-color: transparent; }
+.lm-row.open + .lm-row { border-top-color: transparent; }
 .lm-row-main {
-  width: 100%; background: none; border: none; cursor: pointer;
-  display: flex; justify-content: space-between; align-items: baseline;
-  gap: 16px; padding: 12px 2px; text-align: left;
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px; text-align: left; cursor: pointer;
+  background: none; border: none; border-radius: 8px;
 }
 .lm-row-main:hover .lm-row-name { color: var(--neo-green); }
-.lm-row-name { font-size: 14px; color: var(--neo-text); }
-.lm-row-short { font-size: 12px; color: var(--neo-muted); white-space: nowrap; }
-.lm-row-reason { display: block; font-size: 12.5px; color: var(--neo-muted); padding: 0 2px 12px; }
-.lm-row-too_big { padding-top: 12px; }
-.lm-row-too_big .lm-row-name { color: var(--neo-muted); }
-.lm-row-detail { padding: 0 2px 16px; font-size: 13px; color: var(--neo-body); line-height: 1.55; }
-.lm-row-detail p { margin: 0 0 6px; }
-.lm-row-fit { color: var(--neo-text); }
-.lm-caveat { color: var(--neo-warn); font-size: 12.5px; }
-.lm-facts { display: flex; gap: 26px; margin: 12px 0; flex-wrap: wrap; }
-.lm-facts div { display: flex; flex-direction: column; gap: 2px; }
-.lm-facts dt {
-  font-family: "JetBrains Mono", monospace; font-size: 10px;
-  letter-spacing: .08em; text-transform: uppercase; color: var(--neo-faint);
+.lm-row-name { font-size: 13.5px; color: var(--neo-text); }
+.lm-row-short { margin-left: auto; font-size: 12px; color: var(--neo-muted); white-space: nowrap; }
+.lm-row-chevron {
+  flex: none; width: 7px; height: 7px; margin: 0 2px 2px 4px;
+  border: solid var(--neo-faint); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+  transition: transform .14s ease;
 }
-.lm-facts dd { margin: 0; font-size: 12.5px; color: var(--neo-muted); }
+.lm-row.open .lm-row-chevron { transform: rotate(225deg); margin-bottom: -3px; }
+.lm-row-detail { padding: 0 12px 16px; }
+.lm-row-fit { margin: 0 0 14px; color: var(--neo-body); font-size: 13px; line-height: 1.55; }
+.lm-row-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap; margin-top: 16px;
+}
+.lm-maker { margin: 0; color: var(--neo-faint); font-size: 11.5px; }
+.lm-caveat { margin: 12px 0 0; color: var(--neo-warn); font-size: 12.5px; }
 
+.lm-more {
+  display: block; width: 100%; padding: 11px 18px; text-align: left; cursor: pointer;
+  border: none; border-top: 1px solid var(--neo-line); background: transparent;
+  color: var(--neo-muted); font-size: 12.5px;
+}
+.lm-more:hover { color: var(--neo-green); background: var(--neo-lift-a02); }
+
+.lm-toobig { margin-bottom: 24px; }
 .lm-disclosure {
   background: none; border: none; cursor: pointer; padding: 6px 0;
   font-size: 12.5px; color: var(--neo-muted); text-decoration: underline;
   text-underline-offset: 3px;
 }
 .lm-disclosure:hover { color: var(--neo-green); }
+.lm-list-toobig { padding: 0; margin-top: 6px; }
+.lm-row-too_big { padding: 10px 2px; }
+.lm-row-too_big .lm-row-name { color: var(--neo-muted); }
+.lm-row-reason { display: block; margin-top: 2px; font-size: 12px; color: var(--neo-faint); }
+
+@media (max-width: 760px) {
+  .lm-goal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lm-top { grid-template-columns: 1fr; }
+  .lm-top-action { padding-top: 0; }
+  .lm-plainfacts { grid-template-columns: 1fr; gap: 10px; }
+  .lm-row-short { display: none; }
+}
 
 /* ---------- Compare models ---------- */
-.cmp-head { margin-bottom: 24px; }
+.cmp-inner { width: 100%; max-width: 1180px; margin: 0 auto; }
+.cmp-head { margin-bottom: 20px; }
 .cmp-title {
-  font-size: 22px; font-weight: 500; color: var(--neo-text); margin: 12px 0 6px;
+  margin: 0; color: var(--neo-text);
+  font-size: 22px; font-weight: 600; letter-spacing: -.025em;
 }
-.cmp-sub { color: var(--neo-muted); font-size: 13px; margin: 0; max-width: 78ch; line-height: 1.6; }
+.cmp-sub { margin: 6px 0 0; max-width: 78ch; color: var(--neo-muted); font-size: 13.5px; line-height: 1.6; }
 .cmp-error { margin-bottom: 16px; }
-.cmp-quiet { color: var(--neo-muted); font-size: 12.5px; margin: 10px 0 0; max-width: 78ch; line-height: 1.55; }
-.cmp-warn { color: var(--neo-warn); font-size: 12.5px; margin: 8px 0 0; max-width: 78ch; }
-.cmp-notice { color: var(--neo-body); font-size: 12.5px; margin: 0 0 14px; }
-.cmp-block { margin-bottom: 22px; }
-.cmp-h2 {
-  font-size: 13px; font-weight: 500; color: var(--neo-muted); margin: 0 0 10px;
-  text-transform: uppercase; letter-spacing: .06em;
-}
-.cmp-label { display: block; font-size: 13px; color: var(--neo-body); margin-bottom: 8px; }
+.cmp-quiet { color: var(--neo-muted); font-size: 13px; margin: 10px 0 0; }
+.cmp-hint { margin: 6px 0 0; color: var(--neo-faint); font-size: 12px; line-height: 1.5; }
+.cmp-warn { margin: 6px 0 0; color: var(--neo-warn); font-size: 12px; line-height: 1.5; max-width: 78ch; }
+.cmp-notice { margin: 0 0 14px; color: var(--neo-body); font-size: 12.5px; }
 
-.cmp-questions { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.cmp-question { display: flex; align-items: flex-start; gap: 10px; }
-.cmp-question-number {
-  flex: none; width: 22px; height: 22px; margin-top: 8px; border-radius: 50%;
+/* Setup: one card. Before a run it is the page; after one it folds to a single line
+   naming what was compared, so the results are what you see. */
+.cmp-setup {
+  margin-bottom: 22px; border: 1px solid var(--neo-line); border-radius: 12px;
+  background: var(--neo-panel);
+}
+.cmp-setup-body { display: flex; flex-direction: column; gap: 20px; padding: 20px 22px; }
+.cmp-label {
+  display: block; margin: 0 0 8px; color: var(--neo-faint);
+  font: 10px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase;
+}
+.cmp-field-block { min-width: 0; }
+.cmp-fields {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px;
+  padding-top: 20px; border-top: 1px solid var(--neo-line);
+}
+
+.cmp-input, .cmp-slot-select {
+  width: 100%; height: 36px; padding: 0 12px; font: inherit; font-size: 13px;
+  color: var(--neo-text); background: var(--neo-bg);
+  border: 1px solid var(--neo-line-bright); border-radius: 8px;
+}
+.cmp-input:hover, .cmp-slot-select:hover:not(:disabled) { border-color: var(--neo-fg-14); }
+.cmp-input:focus, .cmp-slot-select:focus { border-color: var(--neo-accent-a45); outline: none; }
+.cmp-input-narrow { width: 140px; }
+.cmp-slot-select { cursor: pointer; text-overflow: ellipsis; }
+.cmp-slot-select:disabled { opacity: .55; cursor: default; }
+
+/* One dropdown per model slot. The number beside each is doing real work: the count is
+   the thing a user has to be sure of. */
+.cmp-slots { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cmp-slot { display: flex; align-items: center; gap: 8px; flex: 0 1 300px; min-width: 220px; }
+.cmp-slot-adder { flex: 0 0 auto; min-width: 0; }
+.cmp-slot-number {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 11.5px; color: var(--neo-muted); border: 1px solid var(--neo-line);
+  color: var(--neo-faint); border: 1px solid var(--neo-line-bright);
+  font: 10px "JetBrains Mono", monospace;
 }
-.cmp-question-remove {
-  flex: none; margin-top: 6px; width: 26px; height: 26px; font-size: 16px; line-height: 1;
-  color: var(--neo-muted); background: transparent; border: 1px solid var(--neo-line);
-  border-radius: 6px; cursor: pointer;
+.cmp-slot-remove {
+  flex: none; width: 26px; height: 26px; border: none; border-radius: 6px;
+  background: transparent; color: var(--neo-faint); font-size: 16px; line-height: 1; cursor: pointer;
 }
-.cmp-question-remove:hover { color: var(--neo-danger); border-color: var(--neo-danger); }
-.cmp-add { margin-bottom: 4px; }
+.cmp-slot-remove:hover { background: var(--neo-danger-a10); color: var(--neo-danger); }
+.cmp-slot-add {
+  height: 36px; padding: 0 14px; border: 1px dashed var(--neo-line-bright); border-radius: 8px;
+  background: transparent; color: var(--neo-muted); font-size: 12.5px; cursor: pointer;
+}
+.cmp-slot-add:hover { border-color: var(--neo-accent-a45); color: var(--neo-green); }
 
+.cmp-stepper {
+  display: inline-flex; align-items: stretch; height: 36px;
+  border: 1px solid var(--neo-line-bright); border-radius: 8px; overflow: hidden;
+  background: var(--neo-bg);
+}
+.cmp-stepper button {
+  width: 34px; border: none; background: transparent; color: var(--neo-muted);
+  font-size: 15px; cursor: pointer;
+}
+.cmp-stepper button:hover:not(:disabled) { background: var(--neo-lift-a05); color: var(--neo-green); }
+.cmp-stepper button:disabled { opacity: .35; cursor: default; }
+.cmp-stepper input {
+  width: 56px; border: none; border-left: 1px solid var(--neo-line);
+  border-right: 1px solid var(--neo-line); background: transparent; text-align: center;
+  color: var(--neo-text); font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.cmp-stepper input::-webkit-outer-spin-button,
+.cmp-stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.cmp-stepper input:focus { outline: none; background: var(--neo-lift-a03); }
+
+.cmp-toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+.cmp-toggle {
+  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+  border: 1px solid var(--neo-line-bright); border-radius: 8px; cursor: pointer;
+  color: var(--neo-body); font-size: 12.5px;
+}
+.cmp-toggle:has(input:checked) { border-color: var(--neo-accent-a35); background: var(--neo-accent-a05); color: var(--neo-text); }
+.cmp-toggle input { margin: 0; accent-color: var(--neo-green); }
+.cmp-toggle.disabled { opacity: .5; cursor: default; }
+
+.cmp-questions { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.cmp-question { display: flex; align-items: flex-start; gap: 8px; }
+.cmp-question .cmp-slot-number { margin-top: 9px; }
 .cmp-prompt {
-  width: 100%; max-width: 78ch; padding: 10px 12px; font: inherit; font-size: 13px;
-  color: var(--neo-text); background: var(--neo-panel);
-  border: 1px solid var(--neo-line); border-radius: 8px; resize: vertical;
+  width: 100%; padding: 9px 12px; font: inherit; font-size: 13px; line-height: 1.5;
+  color: var(--neo-text); background: var(--neo-bg);
+  border: 1px solid var(--neo-line-bright); border-radius: 8px; resize: vertical;
 }
-.cmp-prompt:focus { border-color: var(--neo-green); outline: none; }
+.cmp-prompt:focus { border-color: var(--neo-accent-a45); outline: none; }
 
-.cmp-depth { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.cmp-depth .cmp-label { margin-bottom: 0; }
-.cmp-range { flex: 0 1 220px; accent-color: var(--neo-green); }
-.cmp-depth-value { font-size: 12.5px; color: var(--neo-muted); }
-
-.cmp-options { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
-.cmp-option {
-  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
-  font-size: 13px; color: var(--neo-body); max-width: 78ch;
-}
-.cmp-option.disabled { cursor: default; }
-.cmp-option.disabled span { color: var(--neo-muted); }
-.cmp-option input { margin-top: 2px; accent-color: var(--neo-green); }
-.cmp-option-detail { display: block; font-size: 12px; color: var(--neo-muted); margin-top: 3px; line-height: 1.5; }
-.cmp-judge-setup { width: 100%; max-width: 78ch; padding-left: 26px; }
-.cmp-select, .cmp-number {
-  padding: 7px 10px; font: inherit; font-size: 12.5px; color: var(--neo-text);
-  background: var(--neo-panel); border: 1px solid var(--neo-line); border-radius: 6px;
-  margin-bottom: 10px;
-}
-.cmp-number { width: 120px; }
-
-.cmp-advanced {
-  border: 1px solid var(--neo-line); border-radius: 8px; padding: 12px 16px; margin-bottom: 22px;
-}
-.cmp-advanced > summary { cursor: pointer; margin: 0; }
-.cmp-advanced-body { display: flex; flex-direction: column; gap: 16px; padding-top: 14px; }
-.cmp-field { display: flex; flex-direction: column; }
-.cmp-field-note { font-size: 12px; color: var(--neo-muted); }
-
-/* The run control sits on its own, centred, with the wait underneath it. It is the one
-   thing on the page you press, and a row of odds and ends beside it buried that. */
-.cmp-actions {
-  display: flex; flex-direction: column; align-items: center; gap: 12px;
-  margin: 28px 0 24px;
-}
-.cmp-run { min-width: 190px; }
-.cmp-progress {
-  font-size: 12.5px; color: var(--neo-muted); font-variant-numeric: tabular-nums;
-  text-align: center;
+.cmp-judge {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 20px; align-items: start;
+  padding: 16px; border-radius: 10px; background: var(--neo-lift-a02);
 }
 
-/* Tall enough to read across a room, because on a hundred-question run this is the only
-   thing moving for several minutes. */
+/* Folded extras: the summary line shows the current values, so nothing has to be
+   opened to find out what a run will use. */
+.cmp-fold > summary {
+  display: flex; align-items: baseline; gap: 12px; cursor: pointer; list-style: none;
+  color: var(--neo-muted); font-size: 12.5px;
+}
+.cmp-fold > summary::-webkit-details-marker { display: none; }
+.cmp-fold > summary::before {
+  content: ""; align-self: center; width: 6px; height: 6px; margin-right: 2px;
+  border: solid var(--neo-faint); border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg);
+  transition: transform .14s ease;
+}
+.cmp-fold[open] > summary::before { transform: rotate(45deg); }
+.cmp-fold > summary:hover { color: var(--neo-text); }
+.cmp-fold .cmp-prompt { margin-top: 10px; }
+.cmp-fold-values { color: var(--neo-faint); font-size: 11.5px; }
+.cmp-advanced { padding-top: 16px; border-top: 1px solid var(--neo-line); }
+.cmp-advanced-body {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding-top: 16px;
+}
+
+/* The run bar closes the card: what is missing or how long it will take on the left,
+   the one button that matters on the right. */
+.cmp-runbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px 22px; border-top: 1px solid var(--neo-line);
+  border-radius: 0 0 12px 12px; background: var(--neo-panel-raised);
+}
+.cmp-setup.folded .cmp-runbar { border-top: none; }
+.cmp-runbar-info { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+.cmp-runbar-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.cmp-run { min-width: 160px; }
+.cmp-progress { color: var(--neo-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.cmp-progress.missing { color: var(--neo-warn); }
 .cmp-bar {
-  width: 100%; max-width: 420px; height: 8px; background: var(--neo-panel-raised);
-  border: 1px solid var(--neo-line); border-radius: 999px; overflow: hidden;
+  flex: 0 1 280px; height: 6px; border-radius: 999px; overflow: hidden;
+  background: var(--neo-line);
 }
 .cmp-bar-fill {
-  height: 100%; background: var(--neo-green); border-radius: 999px;
-  transition: width .3s ease; min-width: 2px;
+  height: 100%; min-width: 2px; border-radius: 999px; background: var(--neo-green);
+  transition: width .3s ease;
 }
+.cmp-setup-summary { display: flex; flex-direction: column; gap: 3px; padding: 14px 22px 0; }
+.cmp-summary-models { color: var(--neo-text); font-size: 14px; }
+.cmp-summary-detail { color: var(--neo-faint); font-size: 12px; }
 
-.cmp-card {
-  background: var(--neo-panel); border: 1px solid var(--neo-line);
-  border-radius: 10px; padding: 18px 20px; margin-bottom: 22px;
+/* Results */
+.cmp-results { margin-bottom: 26px; }
+.cmp-tradeoff { margin: 0 0 14px; max-width: 80ch; color: var(--neo-text); font-size: 15px; line-height: 1.6; }
+.cmp-scorecards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px;
 }
-.cmp-tradeoff { font-size: 15px; line-height: 1.6; color: var(--neo-text); margin: 0 0 16px; max-width: 78ch; }
+.cmp-scorecard {
+  padding: 16px 18px; border: 1px solid var(--neo-line); border-radius: 12px;
+  background: var(--neo-panel);
+}
+.cmp-scorecard-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+.cmp-scorecard-name { color: var(--neo-text); font-size: 14px; font-weight: 500; }
+.cmp-scorecard-version { color: var(--neo-faint); font: 10.5px "JetBrains Mono", monospace; }
+.cmp-scorecard-error { margin: 0; color: var(--neo-danger); font-size: 12.5px; }
+.cmp-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 10px; margin: 0; }
+.cmp-stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cmp-stat dt {
+  color: var(--neo-faint); font: 9.5px "JetBrains Mono", monospace;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.cmp-stat dd { margin: 0; color: var(--neo-body); font-size: 13px; font-variant-numeric: tabular-nums; }
+.cmp-stat-lead { grid-column: span 3; }
+.cmp-stat-lead dd { display: flex; align-items: baseline; gap: 8px; color: var(--neo-text); font-size: 22px; font-weight: 500; letter-spacing: -.02em; }
+.cmp-stat-lead dd small { color: var(--neo-faint); font-size: 11.5px; font-weight: 400; letter-spacing: 0; }
+.cmp-stat-lead + .cmp-stat-lead { grid-column: span 3; }
 
-.cmp-board { border-collapse: collapse; width: 100%; min-width: 520px; }
-.cmp-board th, .cmp-board td {
-  padding: 9px 14px 9px 0; text-align: left; border-bottom: 1px solid var(--neo-line);
-  font-size: 13px; color: var(--neo-body); vertical-align: top;
-}
-.cmp-board thead th {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--neo-muted); font-weight: 500;
-}
-.cmp-board tbody td { font-variant-numeric: tabular-nums; }
-.cmp-board-model { display: block; color: var(--neo-text); }
-.cmp-board-version { display: block; font-size: 11px; color: var(--neo-muted); }
-.cmp-board-sub { display: block; font-size: 11px; color: var(--neo-muted); }
-.cmp-board-error { color: var(--neo-danger); font-size: 12.5px; }
+.cmp-section-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.cmp-section-title { margin: 0; color: var(--neo-text); font-size: 15px; font-weight: 500; }
+.cmp-section-head .cmp-hint { margin: 0; }
 
 /* Wide content scrolls inside its own box; the page itself never scrolls sideways. */
-.cmp-grid-scroll { overflow-x: auto; margin-bottom: 22px; }
-.cmp-grid { border-collapse: collapse; width: 100%; min-width: 560px; }
-.cmp-grid th, .cmp-grid td {
-  border: 1px solid var(--neo-line); padding: 10px 12px; vertical-align: top; text-align: left;
+.cmp-grid-scroll {
+  overflow-x: auto; margin-bottom: 26px; border: 1px solid var(--neo-line); border-radius: 12px;
+  background: var(--neo-panel);
 }
-.cmp-grid-corner { width: 250px; font-size: 11px; color: var(--neo-muted); font-weight: 500;
-  text-transform: uppercase; letter-spacing: .06em; }
-.cmp-grid-head { min-width: 230px; }
-.cmp-grid-model { display: block; font-size: 13.5px; color: var(--neo-text); }
-.cmp-grid-version { display: block; font-size: 11px; color: var(--neo-muted); margin-top: 2px; }
-.cmp-grid-task { width: 250px; font-weight: 400; }
-.cmp-task-label { display: block; font-size: 13px; color: var(--neo-text); margin-bottom: 6px; }
+.cmp-grid { width: 100%; min-width: 620px; border-collapse: collapse; }
+.cmp-grid th, .cmp-grid td { padding: 0; text-align: left; vertical-align: top; }
+.cmp-grid thead th {
+  padding: 12px 16px; border-bottom: 1px solid var(--neo-line); background: var(--neo-panel-raised);
+}
+.cmp-grid tbody tr + tr > * { border-top: 1px solid var(--neo-line); }
+.cmp-grid tbody td + td, .cmp-grid tbody th + td, .cmp-grid thead th + th { border-left: 1px solid var(--neo-line); }
+.cmp-grid-corner {
+  width: 30%; color: var(--neo-faint); font: 400 10px "JetBrains Mono", monospace;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.cmp-grid-model { display: block; color: var(--neo-text); font-size: 13px; font-weight: 500; }
+.cmp-grid-version { display: block; margin-top: 2px; color: var(--neo-faint); font: 10.5px "JetBrains Mono", monospace; }
+.cmp-grid-task { padding: 14px 16px !important; font-weight: 400; }
+.cmp-task-label { display: block; margin-bottom: 4px; color: var(--neo-text); font-size: 13px; }
 .cmp-task-text {
-  margin: 0 0 6px; font-size: 12px; line-height: 1.5; color: var(--neo-muted);
-  white-space: pre-wrap; max-height: 120px; overflow: auto;
+  margin: 0; color: var(--neo-muted); font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.cmp-task-rubric { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--neo-body); opacity: .75; }
-.cmp-judge-note { font-size: 11.5px; color: var(--neo-muted); margin: 8px 0 0; font-style: italic; }
+.cmp-judge-note { margin: 8px 0 0; color: var(--neo-faint); font-size: 11.5px; font-style: italic; }
 
-.cmp-cell-top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
-.cmp-cell-score { font-size: 16px; color: var(--neo-text); font-variant-numeric: tabular-nums; }
-.cmp-cell-rating { font-size: 12.5px; color: var(--neo-body); font-variant-numeric: tabular-nums; }
-.cmp-cell-time { font-size: 11.5px; color: var(--neo-muted); font-variant-numeric: tabular-nums; }
-.cmp-cell-message { display: block; font-size: 12.5px; color: var(--neo-danger); margin-top: 4px; }
+.cmp-cell-idle { display: block; padding: 14px 16px; }
+.cmp-cell-button {
+  display: flex; flex-direction: column; gap: 6px; width: 100%; height: 100%;
+  padding: 14px 16px; border: none; background: transparent; text-align: left; cursor: pointer;
+  transition: background .12s ease;
+}
+.cmp-cell-button:hover { background: var(--neo-lift-a03); }
+.cmp-cell-button:focus-visible { outline: 1px solid var(--neo-accent-a45); outline-offset: -1px; }
+.cmp-cell-open .cmp-cell-button { background: var(--neo-accent-a05); box-shadow: inset 0 -2px 0 var(--neo-green); }
+.cmp-cell-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cmp-cell-score { color: var(--neo-text); font-size: 16px; font-variant-numeric: tabular-nums; }
+.cmp-cell-rating { color: var(--neo-body); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.cmp-cell-time { margin-left: auto; color: var(--neo-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.cmp-cell-checks { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 12px; }
+.cmp-mark { width: 12px; text-align: center; }
+.cmp-check-passed.cmp-mark, .cmp-check-passed .cmp-check-mark { color: var(--neo-green); }
+.cmp-check-failed.cmp-mark, .cmp-check-failed .cmp-check-mark { color: var(--neo-danger); }
+.cmp-check-skipped.cmp-mark, .cmp-check-skipped .cmp-check-mark { color: var(--neo-faint); }
+.cmp-cell-failed { margin-left: 4px; color: var(--neo-body); font-size: 11.5px; }
 .cmp-cell-preview {
-  margin: 6px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--neo-muted);
-  overflow: hidden; text-overflow: ellipsis; max-height: 3em;
+  color: var(--neo-faint); font: 11.5px/1.5 "JetBrains Mono", monospace; white-space: pre-wrap;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.cmp-cell-open { background: var(--neo-panel-raised); }
-.cmp-state { font-size: 11.5px; color: var(--neo-muted); }
+.cmp-cell-message { color: var(--neo-danger); font-size: 12.5px; }
+.cmp-state { color: var(--neo-muted); font-size: 11.5px; }
 .cmp-state-error { color: var(--neo-danger); }
-.cmp-open {
-  margin-top: 8px; padding: 3px 8px; font-size: 11.5px; cursor: pointer;
-  color: var(--neo-muted); background: transparent;
-  border: 1px solid var(--neo-line); border-radius: 5px;
-}
-.cmp-open:hover { color: var(--neo-green); border-color: var(--neo-green); }
-
-.cmp-checks { list-style: none; margin: 0 0 6px; padding: 0; }
-.cmp-check { display: flex; gap: 6px; font-size: 12px; line-height: 1.5; color: var(--neo-muted); }
-.cmp-check-mark { width: 12px; flex: none; }
-.cmp-check-passed .cmp-check-mark { color: var(--neo-green); }
-.cmp-check-failed .cmp-check-mark { color: var(--neo-danger); }
-.cmp-check-failed .cmp-check-label { color: var(--neo-body); }
-.cmp-check-detail { color: var(--neo-muted); opacity: .8; }
-.cmp-checks-full .cmp-check { flex-wrap: wrap; margin-bottom: 3px; }
-
-.cmp-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.cmp-detail-title { font-size: 15px; font-weight: 500; color: var(--neo-text); margin: 0; }
-.cmp-detail-h3 {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--neo-muted); font-weight: 500; margin: 18px 0 8px;
-}
-.cmp-detail-line { font-size: 13px; color: var(--neo-body); margin: 0 0 8px; }
-.cmp-detail-line strong { color: var(--neo-text); font-weight: 500; }
-.cmp-detail-rubric { color: var(--neo-muted); }
-.cmp-detail-note { font-size: 12.5px; color: var(--neo-warn); margin: 8px 0 0; max-width: 78ch; }
-.cmp-detail-error { font-size: 13px; color: var(--neo-danger); margin: 0; }
-.cmp-detail-facts { display: flex; gap: 26px; flex-wrap: wrap; margin: 0; }
-.cmp-detail-facts div { display: flex; flex-direction: column; gap: 3px; }
-.cmp-detail-facts dt {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--neo-muted);
-}
-.cmp-detail-facts dd { margin: 0; font-size: 13px; color: var(--neo-body); }
-.cmp-answer-body {
-  margin: 0; padding: 10px 12px; font-size: 12px; line-height: 1.55;
-  white-space: pre-wrap; word-break: break-word; color: var(--neo-body);
-  background: var(--neo-panel-raised); border-radius: 6px; max-height: 300px; overflow: auto;
-}
 
 /* A cell that is generating has to read as working, not as blank. */
 .cmp-pending {
@@ -5269,9 +5423,56 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 }
 @keyframes cmp-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
 
-@media (max-width: 720px) {
-  .cmp-detail-facts { gap: 18px; }
-  .cmp-slot-select { min-width: 0; }
+/* The evidence for one answer, opened beneath its own question. */
+.cmp-detail-row > td { padding: 0 !important; background: var(--neo-bg); }
+.cmp-detail { padding: 18px 20px 20px; border-top: 1px solid var(--neo-accent-a28); }
+.cmp-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.cmp-detail-title { margin: 0; color: var(--neo-text); font-size: 14px; font-weight: 500; }
+.cmp-detail-task { color: var(--neo-muted); font-weight: 400; }
+.cmp-detail-close {
+  width: 28px; height: 28px; border: none; border-radius: 6px; background: transparent;
+  color: var(--neo-muted); font-size: 18px; line-height: 1; cursor: pointer;
+}
+.cmp-detail-close:hover { background: var(--neo-lift-a05); color: var(--neo-text); }
+.cmp-detail-body { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 24px; }
+.cmp-detail-h3 {
+  margin: 0 0 8px; color: var(--neo-faint); font: 400 10px "JetBrains Mono", monospace;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.cmp-detail-side .cmp-detail-h3 { margin-top: 18px; }
+.cmp-detail-side .cmp-detail-h3:first-child { margin-top: 0; }
+.cmp-answer-body {
+  margin: 0; padding: 12px 14px; max-height: 320px; overflow: auto;
+  color: var(--neo-body); font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--neo-panel); border: 1px solid var(--neo-line); border-radius: 8px;
+}
+.cmp-detail-more { margin-top: 12px; }
+.cmp-detail-more > summary { cursor: pointer; color: var(--neo-muted); font-size: 12px; }
+.cmp-detail-more > summary:hover { color: var(--neo-text); }
+.cmp-detail-more .cmp-answer-body { margin-top: 8px; }
+.cmp-detail-line { margin: 0 0 6px; color: var(--neo-body); font-size: 12.5px; }
+.cmp-detail-line strong { margin-left: 6px; color: var(--neo-text); font-weight: 500; }
+.cmp-detail-by { color: var(--neo-faint); }
+.cmp-detail-rubric { margin: 0 0 8px; color: var(--neo-faint); font-size: 12px; line-height: 1.5; }
+.cmp-detail-note { margin: 8px 0 0; color: var(--neo-warn); font-size: 12px; }
+.cmp-detail-error { margin: 0; color: var(--neo-danger); font-size: 13px; }
+.cmp-checks { list-style: none; margin: 0 0 10px; padding: 0; }
+.cmp-check { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; line-height: 1.5; color: var(--neo-muted); }
+.cmp-check-mark { width: 12px; flex: none; }
+.cmp-check-failed .cmp-check-label { color: var(--neo-body); }
+.cmp-check-detail { display: block; color: var(--neo-faint); }
+.cmp-detail-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; }
+.cmp-detail-facts div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cmp-detail-facts .cmp-fact-wide { grid-column: span 2; }
+.cmp-detail-facts dt { color: var(--neo-faint); font-size: 11px; }
+.cmp-detail-facts dd { margin: 0; color: var(--neo-body); font-size: 12.5px; overflow-wrap: anywhere; }
+
+@media (max-width: 900px) {
+  .cmp-fields, .cmp-advanced-body { grid-template-columns: 1fr; }
+  .cmp-judge, .cmp-detail-body { grid-template-columns: 1fr; }
+  .cmp-runbar { flex-direction: column; align-items: stretch; }
+  .cmp-runbar-actions { justify-content: flex-end; }
 }
 
 /* Command palette. Anchored near the top rather than centred: the list grows
@@ -5403,46 +5604,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font: 10.5px "JetBrains Mono", monospace;
 }
 
-
-/* Models that are installed but not set up yet. Deliberately not styled as a selected
-   candidate: it is an action, not a choice, and looking identical would invite a click
-   that quietly does something different. */
-.cmp-h3 {
-  font-size: 12px; font-weight: 400; color: var(--neo-muted); margin: 0 0 8px;
-}
-/* One dropdown per model slot. The number beside each is doing real work: the count is
-   the thing a user has to be sure of, and a grid of toggles leaves it implicit until the
-   run button explains it. */
-.cmp-slots { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.cmp-slot { display: flex; align-items: center; gap: 10px; }
-.cmp-slot-number {
-  flex: none; width: 22px; height: 22px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11.5px; color: var(--neo-muted); border: 1px solid var(--neo-line);
-}
-.cmp-slot-select {
-  flex: 1 1 auto; max-width: 460px; padding: 9px 12px; font: inherit; font-size: 13px;
-  color: var(--neo-text); background: var(--neo-panel);
-  border: 1px solid var(--neo-line); border-radius: 8px; cursor: pointer;
-}
-.cmp-slot-select:hover:not(:disabled) { border-color: var(--neo-line-bright); }
-.cmp-slot-select:focus { border-color: var(--neo-green); outline: none; }
-.cmp-slot-select:disabled { opacity: .55; cursor: default; }
-.cmp-slot-remove {
-  flex: none; width: 28px; height: 28px; font-size: 16px; line-height: 1;
-  color: var(--neo-muted); background: transparent; border: 1px solid var(--neo-line);
-  border-radius: 6px; cursor: pointer;
-}
-.cmp-slot-remove:hover { color: var(--neo-danger); border-color: var(--neo-danger); }
-.cmp-slot-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.cmp-usecase-select { max-width: 460px; }
-.cmp-usecase-detail { margin-top: 8px; }
-
-/* The questions control: a slider for the common range, a number box for a exact value
-   that would be fiddly to hit by dragging across a hundred stops. */
-.cmp-depth { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.cmp-range { flex: 1 1 260px; max-width: 380px; accent-color: var(--neo-green); }
-.cmp-depth-number { width: 80px; margin-bottom: 0; }
 
 /* Two keys per row, shown side by side because both are live at once. The
    quick key is the narrower of the pair -- it is usually one character. */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
 
 /**
@@ -258,8 +258,8 @@ function ModelSlots({
   const canAdd = selected.length < max && (spare.length > 0 || discoverable.length > 0);
 
   return (
-    <section className="cmp-block">
-      <h2 className="cmp-h2">Models</h2>
+    <div className="cmp-field-block">
+      <span className="cmp-label">Models</span>
       <ol className="cmp-slots">
         {selected.map((id, index) => {
           const chosen = byId.get(id);
@@ -271,6 +271,7 @@ function ModelSlots({
                 className="cmp-slot-select"
                 value={id}
                 aria-label={`Model ${index + 1}`}
+                title={chosen?.version || ""}
                 disabled={Boolean(adding)}
                 onChange={(event) => onPick(index, event.target.value)}
               >
@@ -311,39 +312,37 @@ function ModelSlots({
             </li>
           );
         })}
-      </ol>
-
-      <div className="cmp-slot-actions">
         {canAdd ? (
-          <button type="button" className="neo-button secondary cmp-add" onClick={onAddSlot}>
-            + Add model
-          </button>
+          <li className="cmp-slot cmp-slot-adder">
+            <button type="button" className="cmp-slot-add" onClick={onAddSlot}>
+              + Add model
+            </button>
+          </li>
         ) : null}
-        {adding ? <span className="cmp-field-note">Setting up {adding}…</span> : null}
-      </div>
-
+      </ol>
+      {adding ? <p className="cmp-hint">Setting up {adding}…</p> : null}
       {candidates.length < min && !discoverable.length ? (
-        <p className="cmp-quiet">
+        <p className="cmp-hint">
           Only {candidates.length === 1 ? "one model is" : "no models are"} set up.
           Download another from Local Models and it will appear here.
         </p>
       ) : null}
-    </section>
+    </div>
   );
 }
 
 function QuestionList({ prompts, onChange, onAdd, onRemove, max }) {
   return (
-    <section className="cmp-block">
-      <h2 className="cmp-h2">Questions</h2>
+    <div className="cmp-field-block cmp-questions-block">
+      <span className="cmp-label">Your questions</span>
       <ol className="cmp-questions">
         {prompts.map((prompt, index) => (
           // eslint-disable-next-line react/no-array-index-key -- position is the identity
           <li key={index} className="cmp-question">
-            <span className="cmp-question-number">{index + 1}</span>
+            <span className="cmp-slot-number">{index + 1}</span>
             <textarea
               className="cmp-prompt"
-              rows={3}
+              rows={2}
               value={prompt}
               aria-label={`Question ${index + 1}`}
               placeholder="Ask them all the same thing…"
@@ -352,7 +351,7 @@ function QuestionList({ prompts, onChange, onAdd, onRemove, max }) {
             {prompts.length > 1 ? (
               <button
                 type="button"
-                className="cmp-question-remove"
+                className="cmp-slot-remove"
                 aria-label={`Remove question ${index + 1}`}
                 onClick={() => onRemove(index)}
               >
@@ -363,15 +362,11 @@ function QuestionList({ prompts, onChange, onAdd, onRemove, max }) {
         ))}
       </ol>
       {prompts.length < max ? (
-        <button type="button" className="neo-button secondary cmp-add" onClick={onAdd}>
+        <button type="button" className="cmp-slot-add" onClick={onAdd}>
           + Add question
         </button>
       ) : null}
-      <p className="cmp-quiet">
-        Every model is asked all of these. There is no right answer to check against, so
-        the replies are shown side by side for you to judge, or a model can rate them.
-      </p>
-    </section>
+    </div>
   );
 }
 
@@ -380,60 +375,77 @@ function Cell({ cell, onOpen, isOpen }) {
   if (!outcome) {
     return (
       <td className={`cmp-cell cmp-cell-${state}`}>
-        <span className="cmp-state">{CELL_STATE[state] || CELL_STATE.queued}</span>
-        {state === "generating" ? <span className="cmp-pending" aria-hidden="true" /> : null}
+        <span className="cmp-cell-idle">
+          <span className="cmp-state">{CELL_STATE[state] || CELL_STATE.queued}</span>
+          {state === "generating" ? <span className="cmp-pending" aria-hidden="true" /> : null}
+        </span>
       </td>
     );
   }
   const broken = outcome.status !== "ok";
+  const checks = outcome.checks || [];
+  const failed = checks.filter((check) => check.status === "failed");
   return (
     <td className={`cmp-cell${broken ? " cmp-cell-error" : ""}${isOpen ? " cmp-cell-open" : ""}`}>
-      {broken ? (
-        <>
-          <span className="cmp-state cmp-state-error">
-            {CELL_STATE[outcome.state] || CELL_STATE.error}
-          </span>
-          <span className="cmp-cell-message">{outcome.message || "No answer."}</span>
-        </>
-      ) : (
-        <>
-          <div className="cmp-cell-top">
-            <span className="cmp-cell-score">{saidAsScore(outcome.score)}</span>
-            {outcome.judge_score !== null && outcome.judge_score !== undefined ? (
-              <span className="cmp-cell-rating">{saidAsRating(outcome.judge_score)}</span>
-            ) : null}
-            <span className="cmp-cell-time">{saidAsTime(outcome.duration_ms)}</span>
-          </div>
-          {outcome.checks.length ? (
-            <ul className="cmp-checks">
-              {outcome.checks.map((check) => (
-                <li key={check.label} className={`cmp-check cmp-check-${check.status}`}>
-                  <span className="cmp-check-mark" aria-hidden="true">
+      {/* The whole cell opens the evidence: a small "Open" button in every cell was
+          a column of identical controls that said nothing. */}
+      <button
+        type="button"
+        className="cmp-cell-button"
+        aria-expanded={isOpen}
+        onClick={() => onOpen(cell)}
+      >
+        {broken ? (
+          <>
+            <span className="cmp-state cmp-state-error">
+              {CELL_STATE[outcome.state] || CELL_STATE.error}
+            </span>
+            <span className="cmp-cell-message">{outcome.message || "No answer."}</span>
+          </>
+        ) : (
+          <>
+            <span className="cmp-cell-top">
+              <span className="cmp-cell-score">{saidAsScore(outcome.score)}</span>
+              {outcome.judge_score !== null && outcome.judge_score !== undefined ? (
+                <span className="cmp-cell-rating">{saidAsRating(outcome.judge_score)}</span>
+              ) : null}
+              <span className="cmp-cell-time">{saidAsTime(outcome.duration_ms)}</span>
+            </span>
+            {checks.length ? (
+              <span className="cmp-cell-checks">
+                {checks.map((check) => (
+                  <span
+                    key={check.label}
+                    className={`cmp-mark cmp-check-${check.status}`}
+                    title={check.label}
+                  >
                     {CHECK_MARK[check.status]}
                   </span>
-                  <span className="cmp-check-label">{check.label}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <p className="cmp-cell-preview">{(outcome.answer || "").slice(0, 90)}</p>
-        </>
-      )}
-      <button type="button" className="cmp-open" onClick={() => onOpen(cell)}>
-        {isOpen ? "Hide details" : "Open"}
+                ))}
+                {failed.length ? (
+                  <span className="cmp-cell-failed">
+                    {failed[0].label}
+                    {failed.length > 1 ? ` and ${failed.length - 1} more` : ""}
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+            <span className="cmp-cell-preview">{(outcome.answer || "").slice(0, 160)}</span>
+          </>
+        )}
       </button>
     </td>
   );
 }
 
-function Grid({ rows, contenders, onOpen, openKey }) {
+function Grid({ rows, contenders, onOpen, openKey, renderDetail }) {
   if (!rows.length) return null;
   return (
     <div className="cmp-grid-scroll">
       <table className="cmp-grid">
         <thead>
           <tr>
-            <th className="cmp-grid-corner" scope="col">What they were asked</th>
+            <th className="cmp-grid-corner" scope="col">Question</th>
             {contenders.map((item) => (
               <th key={item.id} className="cmp-grid-head" scope="col">
                 <span className="cmp-grid-model">{item.display_name}</span>
@@ -445,26 +457,35 @@ function Grid({ rows, contenders, onOpen, openKey }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.task.id}>
-              <th className="cmp-grid-task" scope="row">
-                <span className="cmp-task-label">{row.task.label}</span>
-                <p className="cmp-task-text">{row.task.prompt}</p>
-                {row.task.rubric ? (
-                  <p className="cmp-task-rubric">{row.task.rubric}</p>
+          {rows.map((row) => {
+            const open = row.cells.find((cell) => cell.key === openKey);
+            return (
+              <Fragment key={row.task.id}>
+                <tr className={open ? "cmp-row-open" : ""}>
+                  <th className="cmp-grid-task" scope="row">
+                    <span className="cmp-task-label">{row.task.label}</span>
+                    <p className="cmp-task-text">{row.task.prompt}</p>
+                    {row.judgeNote ? <p className="cmp-judge-note">{row.judgeNote}</p> : null}
+                  </th>
+                  {row.cells.map((cell) => (
+                    <Cell
+                      key={cell.key}
+                      cell={cell}
+                      onOpen={onOpen}
+                      isOpen={openKey === cell.key}
+                    />
+                  ))}
+                </tr>
+                {/* The evidence opens under the question it belongs to. At the foot of
+                    the page it was a scroll away from the cell that asked for it. */}
+                {open ? (
+                  <tr className="cmp-detail-row">
+                    <td colSpan={contenders.length + 1}>{renderDetail(open, row.task)}</td>
+                  </tr>
                 ) : null}
-                {row.judgeNote ? <p className="cmp-judge-note">{row.judgeNote}</p> : null}
-              </th>
-              {row.cells.map((cell) => (
-                <Cell
-                  key={cell.key}
-                  cell={cell}
-                  onOpen={onOpen}
-                  isOpen={openKey === cell.key}
-                />
-              ))}
-            </tr>
-          ))}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -477,169 +498,190 @@ function CellDetail({ cell, task, config, onClose, judgeOn, deterministic }) {
   const generation = config?.generation || {};
   const note = evaluationNote(outcome, { deterministic, judgeOn });
   return (
-    <section className="cmp-card cmp-detail">
+    <section className="cmp-detail">
       <header className="cmp-detail-head">
-        <h2 className="cmp-detail-title">
-          {cell.contender.display_name} · {task.label}
-        </h2>
-        <button type="button" className="neo-button secondary" onClick={onClose}>
-          Close
+        <h3 className="cmp-detail-title">
+          {cell.contender.display_name}
+          <span className="cmp-detail-task"> · {task.label}</span>
+        </h3>
+        <button type="button" className="cmp-detail-close" aria-label="Close details" onClick={onClose}>
+          ×
         </button>
       </header>
 
-      <h3 className="cmp-detail-h3">Prompt</h3>
-      <pre className="cmp-answer-body">{task.prompt}</pre>
+      <div className="cmp-detail-body">
+        <div className="cmp-detail-main">
+          <h4 className="cmp-detail-h3">What it said</h4>
+          <pre className="cmp-answer-body">{outcome?.answer || "(nothing)"}</pre>
 
-      <h3 className="cmp-detail-h3">What it said</h3>
-      <pre className="cmp-answer-body">{outcome?.answer || "(nothing)"}</pre>
+          {outcome?.thinking ? (
+            <details className="cmp-detail-more">
+              <summary>What it thought first</summary>
+              <pre className="cmp-answer-body">{outcome.thinking}</pre>
+            </details>
+          ) : null}
 
-      {outcome?.thinking ? (
-        <>
-          <h3 className="cmp-detail-h3">What it thought first</h3>
-          <pre className="cmp-answer-body">{outcome.thinking}</pre>
-        </>
-      ) : null}
+          <details className="cmp-detail-more">
+            <summary>Prompt that was sent</summary>
+            <pre className="cmp-answer-body">{task.prompt}</pre>
+          </details>
 
-      <h3 className="cmp-detail-h3">Evaluation</h3>
-      {outcome?.checks?.length ? (
-        <>
-          <p className="cmp-detail-line">
-            Rule-based: <strong>{saidAsScore(outcome.score)}</strong>
-            {task.rubric ? <span className="cmp-detail-rubric"> {task.rubric}</span> : null}
-          </p>
-          <ul className="cmp-checks cmp-checks-full">
-            {outcome.checks.map((check) => (
-              <li key={check.label} className={`cmp-check cmp-check-${check.status}`}>
-                <span className="cmp-check-mark" aria-hidden="true">
-                  {CHECK_MARK[check.status]}
-                </span>
-                <span className="cmp-check-label">{check.label}</span>
-                {check.detail ? <span className="cmp-check-detail">{check.detail}</span> : null}
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      {outcome?.judge_score !== null && outcome?.judge_score !== undefined ? (
-        <p className="cmp-detail-line">
-          LLM judge: <strong>{saidAsRating(outcome.judge_score)}</strong>
-          {config?.judge?.display_name ? ` from ${config.judge.display_name}` : ""}
-          {outcome.judge_note ? <span className="cmp-detail-rubric"> {outcome.judge_note}</span> : null}
-        </p>
-      ) : null}
-      {note ? <p className="cmp-detail-note">{note}</p> : null}
+          {outcome?.message ? (
+            <>
+              <h4 className="cmp-detail-h3">What went wrong</h4>
+              <p className="cmp-detail-error">{outcome.message}</p>
+            </>
+          ) : null}
+        </div>
 
-      <h3 className="cmp-detail-h3">Timing</h3>
-      <dl className="cmp-detail-facts">
-        <div>
-          <dt>First output</dt>
-          <dd>{saidAsTime(outcome?.time_to_first_token_ms) || "not recorded"}</dd>
-        </div>
-        <div>
-          <dt>Whole answer</dt>
-          <dd>{saidAsTime(outcome?.duration_ms) || "–"}</dd>
-        </div>
-        <div>
-          <dt>Length</dt>
-          <dd>{outcome?.completion_tokens ? `${outcome.completion_tokens} tokens` : "–"}</dd>
-        </div>
-        {outcome?.thinking_tokens ? (
-          <div>
-            <dt>Of that, thinking</dt>
-            <dd>about {outcome.thinking_tokens} tokens</dd>
-          </div>
-        ) : null}
-      </dl>
+        <div className="cmp-detail-side">
+          <h4 className="cmp-detail-h3">Evaluation</h4>
+          {outcome?.checks?.length ? (
+            <>
+              <p className="cmp-detail-line">
+                Rule-based <strong>{saidAsScore(outcome.score)}</strong>
+              </p>
+              {task.rubric ? <p className="cmp-detail-rubric">{task.rubric}</p> : null}
+              <ul className="cmp-checks">
+                {outcome.checks.map((check) => (
+                  <li key={check.label} className={`cmp-check cmp-check-${check.status}`}>
+                    <span className="cmp-check-mark" aria-hidden="true">
+                      {CHECK_MARK[check.status]}
+                    </span>
+                    <span>
+                      <span className="cmp-check-label">{check.label}</span>
+                      {check.detail ? <span className="cmp-check-detail">{check.detail}</span> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {outcome?.judge_score !== null && outcome?.judge_score !== undefined ? (
+            <>
+              <p className="cmp-detail-line">
+                LLM judge <strong>{saidAsRating(outcome.judge_score)}</strong>
+                {config?.judge?.display_name ? (
+                  <span className="cmp-detail-by"> from {config.judge.display_name}</span>
+                ) : null}
+              </p>
+              {outcome.judge_note ? <p className="cmp-detail-rubric">{outcome.judge_note}</p> : null}
+            </>
+          ) : null}
+          {note ? <p className="cmp-detail-note">{note}</p> : null}
 
-      <h3 className="cmp-detail-h3">Settings this ran under</h3>
-      <dl className="cmp-detail-facts">
-        <div>
-          <dt>Model</dt>
-          <dd>
-            {cell.contender.model}
-            {cell.contender.version ? ` (${cell.contender.version})` : ""}
-          </dd>
-        </div>
-        <div>
-          <dt>Thinking</dt>
-          <dd>{generation.allow_thinking ? "On" : "Off"}</dd>
-        </div>
-        <div>
-          <dt>Output limit</dt>
-          <dd>{generation.max_output_tokens || task.max_tokens} tokens</dd>
-        </div>
-        <div>
-          <dt>Temperature</dt>
-          <dd>{generation.temperature ?? 0}</dd>
-        </div>
-        {config?.grader_version ? (
-          <div>
-            <dt>Checks</dt>
-            <dd>version {config.grader_version}</dd>
-          </div>
-        ) : null}
-      </dl>
+          <h4 className="cmp-detail-h3">Timing</h4>
+          <dl className="cmp-detail-facts">
+            <div>
+              <dt>First output</dt>
+              <dd>{saidAsTime(outcome?.time_to_first_token_ms) || "not recorded"}</dd>
+            </div>
+            <div>
+              <dt>Whole answer</dt>
+              <dd>{saidAsTime(outcome?.duration_ms) || "–"}</dd>
+            </div>
+            <div>
+              <dt>Length</dt>
+              <dd>{outcome?.completion_tokens ? `${outcome.completion_tokens} tokens` : "–"}</dd>
+            </div>
+            {outcome?.thinking_tokens ? (
+              <div>
+                <dt>Of that, thinking</dt>
+                <dd>about {outcome.thinking_tokens} tokens</dd>
+              </div>
+            ) : null}
+          </dl>
 
-      {outcome?.message ? (
-        <>
-          <h3 className="cmp-detail-h3">What went wrong</h3>
-          <p className="cmp-detail-error">{outcome.message}</p>
-        </>
-      ) : null}
+          <h4 className="cmp-detail-h3">Settings this ran under</h4>
+          <dl className="cmp-detail-facts">
+            <div className="cmp-fact-wide">
+              <dt>Model</dt>
+              <dd>
+                {cell.contender.model}
+                {cell.contender.version ? ` (${cell.contender.version})` : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Thinking</dt>
+              <dd>{generation.allow_thinking ? "On" : "Off"}</dd>
+            </div>
+            <div>
+              <dt>Output limit</dt>
+              <dd>{generation.max_output_tokens || task.max_tokens} tokens</dd>
+            </div>
+            <div>
+              <dt>Temperature</dt>
+              <dd>{generation.temperature ?? 0}</dd>
+            </div>
+            {config?.grader_version ? (
+              <div>
+                <dt>Checks</dt>
+                <dd>version {config.grader_version}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      </div>
     </section>
   );
 }
 
-function Scoreboard({ summaries, judgeOn }) {
+/**
+ * One card per model, side by side and identical in shape. Deliberately no highlight on
+ * any of them: picking out the "best" figure is exactly the verdict this screen refuses
+ * to give, and colour would give it without a word.
+ */
+function Scorecards({ summaries, judgeOn }) {
   if (!summaries.length) return null;
   return (
-    <div className="cmp-grid-scroll">
-      <table className="cmp-board">
-        <thead>
-          <tr>
-            <th scope="col">Model</th>
-            <th scope="col">Rule-based</th>
-            {judgeOn ? <th scope="col">LLM judge</th> : null}
-            <th scope="col">Typical answer</th>
-            <th scope="col">First output</th>
-            <th scope="col">Answered</th>
-          </tr>
-        </thead>
-        <tbody>
-          {summaries.map((item) => (
-            <tr key={item.contender.id}>
-              <th scope="row">
-                <span className="cmp-board-model">{item.contender.display_name}</span>
-                {item.contender.version ? (
-                  <span className="cmp-board-version">{item.contender.version}</span>
-                ) : null}
-              </th>
-              {item.error ? (
-                <td colSpan={judgeOn ? 5 : 4} className="cmp-board-error">
-                  {item.error}
-                </td>
-              ) : (
-                <>
-                  <td>
-                    {saidAsScore(item.score)}
-                    {item.checks_applied ? (
-                      <span className="cmp-board-sub">
-                        {item.checks_passed}/{item.checks_applied} checks
-                      </span>
-                    ) : null}
-                  </td>
-                  {judgeOn ? <td>{saidAsRating(item.judge_score)}</td> : null}
-                  <td>{saidAsTime(item.median_duration_ms)}</td>
-                  <td>{saidAsTime(item.median_time_to_first_token_ms) || "–"}</td>
-                  <td>
-                    {item.tasks_answered}/{item.tasks_attempted}
-                  </td>
-                </>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="cmp-scorecards">
+      {summaries.map((item) => (
+        <article key={item.contender.id} className="cmp-scorecard">
+          <header className="cmp-scorecard-head">
+            <span className="cmp-scorecard-name">{item.contender.display_name}</span>
+            {item.contender.version ? (
+              <span className="cmp-scorecard-version">{item.contender.version}</span>
+            ) : null}
+          </header>
+          {item.error ? (
+            <p className="cmp-scorecard-error">{item.error}</p>
+          ) : (
+            <dl className="cmp-stats">
+              <div className="cmp-stat cmp-stat-lead">
+                <dt>Rule-based</dt>
+                <dd>
+                  {saidAsScore(item.score)}
+                  {item.checks_applied ? (
+                    <small>
+                      {item.checks_passed}/{item.checks_applied} checks
+                    </small>
+                  ) : null}
+                </dd>
+              </div>
+              {judgeOn ? (
+                <div className="cmp-stat cmp-stat-lead">
+                  <dt>LLM judge</dt>
+                  <dd>{saidAsRating(item.judge_score)}</dd>
+                </div>
+              ) : null}
+              <div className="cmp-stat">
+                <dt>Typical answer</dt>
+                <dd>{saidAsTime(item.median_duration_ms)}</dd>
+              </div>
+              <div className="cmp-stat">
+                <dt>First output</dt>
+                <dd>{saidAsTime(item.median_time_to_first_token_ms) || "–"}</dd>
+              </div>
+              <div className="cmp-stat">
+                <dt>Answered</dt>
+                <dd>
+                  {item.tasks_answered}/{item.tasks_attempted}
+                </dd>
+              </div>
+            </dl>
+          )}
+        </article>
+      ))}
     </div>
   );
 }
@@ -672,6 +714,7 @@ export default function CompareModels() {
   const [notice, setNotice] = useState("");
   const [estimate, setEstimate] = useState(0);
   const [openKey, setOpenKey] = useState("");
+  const [setupOpen, setSetupOpen] = useState(false);
   const runRef = useRef(null);
 
   const absorb = useCallback((payload) => {
@@ -748,14 +791,6 @@ export default function CompareModels() {
     () => buildGrid({ tasks, contenders, outcomes, states }),
     [tasks, contenders, outcomes, states],
   );
-  const openCell = useMemo(
-    () => rows.flatMap((row) => row.cells).find((cell) => cell.key === openKey) || null,
-    [rows, openKey],
-  );
-  const openTask = openCell
-    ? tasks.find((task) => openKey.endsWith(`::${task.id}`)) || null
-    : null;
-
   function pickModel(index, value) {
     if (value.startsWith(ADD_PREFIX)) {
       addModelInto(index, value.slice(ADD_PREFIX.length));
@@ -842,6 +877,7 @@ export default function CompareModels() {
     runRef.current = { runId, controller };
 
     setPhase("running");
+    setSetupOpen(false);
     setError("");
     setNotice("");
     setComparison(null);
@@ -946,312 +982,367 @@ export default function CompareModels() {
 
   const running = phase === "running";
   const summaries = comparison?.summaries || [];
+  // Before the first run the setup is the page. After it, the results are, so the setup
+  // folds down to one line that says what was compared -- until someone asks to edit it.
+  const setupExpanded = phase === "setup" || setupOpen;
+  const chosenNames = selected
+    .map((id) => candidates.find((item) => item.id === id)?.display_name)
+    .filter(Boolean);
+  const evaluationLabel = [
+    deterministic && deterministicAvailable ? "rule-based checks" : "",
+    judgeOn ? "LLM judge" : "",
+  ].filter(Boolean).join(" and ") || "no evaluation";
+  const depthHint = packSize
+    ? (effectiveDepth >= packSize
+      ? `All ${packSize} in this set`
+      : `${effectiveDepth} of ${packSize}, drawn at random each run`)
+    : "";
+  const evaluationHint = !deterministicAvailable
+    ? (judgeOn
+      ? "Your own questions have no right answer to check, so the judge rates each reply out of ten."
+      : "Your own questions have no right answer to check. Read the replies side by side, or turn on the judge to rate them.")
+    : judgeOn
+      ? "Checks and the judge's ratings are reported separately, never mixed."
+      : "Objective checks with a known right answer. You can read every one.";
 
   return (
     <div className="ws-panel cmp">
-      <header className="cmp-head">
-        <h1 className="cmp-title">Compare models</h1>
-        <p className="cmp-sub">
-          Compare models on tasks you actually care about. Neo asks each of them the same
-          questions and shows you what came back, how it was scored and how long it took.
-          Then you decide which one suits your work. For models running on this computer,
-          nothing you type leaves it.
-        </p>
-      </header>
+      <div className="cmp-inner">
+        <header className="cmp-head">
+          <h1 className="cmp-title">Compare models</h1>
+          <p className="cmp-sub">
+            Ask several models the same tasks you actually care about, then read what came
+            back, how it scored and how long it took. For models running on this computer,
+            nothing you type leaves it.
+          </p>
+        </header>
 
-      {error ? <div className="neo-error cmp-error">{error}</div> : null}
+        {error ? <div className="neo-error cmp-error">{error}</div> : null}
 
-      {loading ? (
-        <p className="cmp-quiet">Looking at which models are set up…</p>
-      ) : (
-        <>
-          <ModelSlots
-            candidates={candidates}
-            discoverable={discoverable}
-            selected={selected}
-            onPick={pickModel}
-            onAddSlot={addSlot}
-            onRemoveSlot={removeSlot}
-            adding={adding}
-            min={meta.min_models || 2}
-            max={meta.max_models || 4}
-          />
+        {loading ? (
+          <p className="cmp-quiet">Looking at which models are set up…</p>
+        ) : (
+          <>
+            <section className={`cmp-setup${setupExpanded ? "" : " folded"}`}>
+              {setupExpanded ? (
+                <div className="cmp-setup-body">
+                  <ModelSlots
+                    candidates={candidates}
+                    discoverable={discoverable}
+                    selected={selected}
+                    onPick={pickModel}
+                    onAddSlot={addSlot}
+                    onRemoveSlot={removeSlot}
+                    adding={adding}
+                    min={meta.min_models || 2}
+                    max={meta.max_models || 4}
+                  />
 
-          <section className="cmp-block">
-            <h2 className="cmp-h2">What do you want to compare?</h2>
-            <select
-              className="cmp-slot-select cmp-usecase-select"
-              value={useCase}
-              aria-label="What to compare them on"
-              onChange={(event) => setUseCase(event.target.value)}
-            >
-              {useCases.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-            {useCaseRow?.detail ? (
-              <p className="cmp-field-note cmp-usecase-detail">{useCaseRow.detail}</p>
-            ) : null}
-          </section>
+                  <div className="cmp-fields">
+                    <div className="cmp-field-block">
+                      <label className="cmp-label" htmlFor="cmp-usecase">Task</label>
+                      <select
+                        id="cmp-usecase"
+                        className="cmp-input"
+                        value={useCase}
+                        onChange={(event) => setUseCase(event.target.value)}
+                      >
+                        {useCases.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                      {useCaseRow?.detail ? <p className="cmp-hint">{useCaseRow.detail}</p> : null}
+                    </div>
 
-          {isCustom ? (
-            <QuestionList
-              prompts={prompts}
-              max={meta.max_custom_prompts || 10}
-              onChange={(index, value) =>
-                setPrompts((current) => current.map((item, i) => (i === index ? value : item)))
-              }
-              onAdd={() => setPrompts((current) => [...current, ""])}
-              onRemove={(index) =>
-                setPrompts((current) => current.filter((_, i) => i !== index))
-              }
-            />
-          ) : (
-            <section className="cmp-block">
-              <label className="cmp-label" htmlFor="cmp-depth">
-                Questions (more is steadier, and takes longer)
-              </label>
-              <div className="cmp-depth">
-                <input
-                  id="cmp-depth"
-                  className="cmp-range"
-                  type="range"
-                  min={1}
-                  max={Math.max(1, maxDepth)}
-                  value={effectiveDepth}
-                  onChange={(event) => setDepth(Number(event.target.value))}
-                />
-                <input
-                  className="cmp-number cmp-depth-number"
-                  type="number"
-                  min={1}
-                  max={Math.max(1, maxDepth)}
-                  aria-label="Number of questions"
-                  value={effectiveDepth}
-                  onChange={(event) => setDepth(Number(event.target.value) || 1)}
-                />
-              </div>
-              <p className="cmp-field-note">{describeDepth(effectiveDepth, packSize)}</p>
+                    {isCustom ? null : (
+                      <div className="cmp-field-block">
+                        <label className="cmp-label" htmlFor="cmp-depth">Questions</label>
+                        <div className="cmp-stepper" title={describeDepth(effectiveDepth, packSize)}>
+                          <button
+                            type="button"
+                            aria-label="Fewer questions"
+                            disabled={effectiveDepth <= 1}
+                            onClick={() => setDepth(Math.max(1, effectiveDepth - 1))}
+                          >
+                            −
+                          </button>
+                          <input
+                            id="cmp-depth"
+                            type="number"
+                            min={1}
+                            max={Math.max(1, maxDepth)}
+                            value={effectiveDepth}
+                            onChange={(event) => setDepth(Number(event.target.value) || 1)}
+                          />
+                          <button
+                            type="button"
+                            aria-label="More questions"
+                            disabled={effectiveDepth >= maxDepth}
+                            onClick={() => setDepth(Math.min(maxDepth, effectiveDepth + 1))}
+                          >
+                            +
+                          </button>
+                        </div>
+                        <p className="cmp-hint">{depthHint || "More is steadier, and takes longer."}</p>
+                      </div>
+                    )}
+
+                    <div className="cmp-field-block">
+                      <span className="cmp-label">Evaluation</span>
+                      <div className="cmp-toggles">
+                        <label className={`cmp-toggle${deterministicAvailable ? "" : " disabled"}`}>
+                          <input
+                            type="checkbox"
+                            checked={deterministic && deterministicAvailable}
+                            disabled={!deterministicAvailable}
+                            onChange={(event) => setDeterministic(event.target.checked)}
+                          />
+                          Rule-based checks
+                        </label>
+                        <label className="cmp-toggle">
+                          <input
+                            type="checkbox"
+                            checked={judgeOn}
+                            onChange={(event) =>
+                              setJudgeId(event.target.checked ? candidates[0]?.id || "" : "")
+                            }
+                          />
+                          LLM judge
+                        </label>
+                      </div>
+                      <p className="cmp-hint">{evaluationHint}</p>
+                    </div>
+                  </div>
+
+                  {isCustom ? (
+                    <QuestionList
+                      prompts={prompts}
+                      max={meta.max_custom_prompts || 10}
+                      onChange={(index, value) =>
+                        setPrompts((current) => current.map((item, i) => (i === index ? value : item)))
+                      }
+                      onAdd={() => setPrompts((current) => [...current, ""])}
+                      onRemove={(index) =>
+                        setPrompts((current) => current.filter((_, i) => i !== index))
+                      }
+                    />
+                  ) : null}
+
+                  {judgeOn ? (
+                    <div className="cmp-judge">
+                      <div className="cmp-field-block">
+                        <label className="cmp-label" htmlFor="cmp-judge">Which model judges</label>
+                        <select
+                          id="cmp-judge"
+                          className="cmp-input"
+                          value={judgeId}
+                          onChange={(event) => setJudgeId(event.target.value)}
+                        >
+                          {candidates.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.display_name}
+                              {selected.includes(item.id) ? " (also being compared)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                        {selected.includes(judgeId) ? (
+                          <p className="cmp-warn">
+                            This model is in the comparison. Models tend to prefer their own
+                            answers, so read its ratings with that in mind.
+                          </p>
+                        ) : (
+                          <p className="cmp-hint">
+                            Rates each answer out of ten, reported apart from the checks.
+                          </p>
+                        )}
+                      </div>
+                      <details className="cmp-fold">
+                        <summary>Judge rubric</summary>
+                        <textarea
+                          id="cmp-rubric"
+                          aria-label="Judge rubric"
+                          className="cmp-prompt"
+                          rows={5}
+                          value={rubric}
+                          onChange={(event) => setRubric(event.target.value)}
+                        />
+                      </details>
+                    </div>
+                  ) : null}
+
+                  <details className="cmp-fold cmp-advanced">
+                    <summary>
+                      Advanced
+                      <span className="cmp-fold-values">
+                        Thinking {allowThinking ? "on" : "off"} · temperature{" "}
+                        {Number(temperature) || 0} · output{" "}
+                        {maxTokens ? `${maxTokens} tokens` : "per question"}
+                      </span>
+                    </summary>
+                    <div className="cmp-advanced-body">
+                      <div className="cmp-field-block">
+                        <label className="cmp-toggle">
+                          <input
+                            type="checkbox"
+                            checked={allowThinking}
+                            onChange={(event) => setAllowThinking(event.target.checked)}
+                          />
+                          Thinking
+                        </label>
+                        <p className="cmp-hint">
+                          Lets models reason before answering. Slower and often better,
+                          but a short output limit can be spent entirely on thinking.
+                        </p>
+                      </div>
+                      <div className="cmp-field-block">
+                        <label className="cmp-label" htmlFor="cmp-max-tokens">Maximum output</label>
+                        <input
+                          id="cmp-max-tokens"
+                          className="cmp-input cmp-input-narrow"
+                          type="number"
+                          min={meta.limits?.min_output_tokens || 32}
+                          max={meta.limits?.max_output_tokens || 4096}
+                          placeholder="per question"
+                          value={maxTokens}
+                          onChange={(event) => setMaxTokens(event.target.value)}
+                        />
+                        <p className="cmp-hint">Empty keeps each question's own limit.</p>
+                      </div>
+                      <div className="cmp-field-block">
+                        <label className="cmp-label" htmlFor="cmp-temperature">Temperature</label>
+                        <input
+                          id="cmp-temperature"
+                          className="cmp-input cmp-input-narrow"
+                          type="number"
+                          min={0}
+                          max={meta.limits?.max_temperature || 2}
+                          step={0.1}
+                          value={temperature}
+                          onChange={(event) => setTemperature(event.target.value)}
+                        />
+                        <p className="cmp-hint">Zero keeps answers steady between runs.</p>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+              ) : (
+                <div className="cmp-setup-summary">
+                  <span className="cmp-summary-models">{chosenNames.join(" vs ")}</span>
+                  <span className="cmp-summary-detail">
+                    {useCaseRow?.label || "Your questions"} · {effectiveDepth}{" "}
+                    {effectiveDepth === 1 ? "question" : "questions"} · {evaluationLabel}
+                  </span>
+                </div>
+              )}
+
+              <footer className="cmp-runbar">
+                <div className="cmp-runbar-info">
+                  {/* The bar is the honest shape of a wait that can be a hundred answers
+                      long: a count alone leaves you doing the arithmetic. */}
+                  {running && progress.total ? (
+                    <div
+                      className="cmp-bar"
+                      role="progressbar"
+                      aria-valuenow={progress.completed}
+                      aria-valuemin={0}
+                      aria-valuemax={progress.total}
+                      aria-label="Responses complete"
+                    >
+                      <div
+                        className="cmp-bar-fill"
+                        style={{ width: `${(progress.completed / progress.total) * 100}%` }}
+                      />
+                    </div>
+                  ) : null}
+                  <span className={`cmp-progress${!running && missing ? " missing" : ""}`}>
+                    {running
+                      ? (progress.total
+                        ? progressLabel(progress.completed, progress.total)
+                        : "Starting the models up…")
+                      : missing || (estimate ? `Usually under ${estimate} seconds.` : "")}
+                  </span>
+                </div>
+                <div className="cmp-runbar-actions">
+                  {!running && phase !== "setup" ? (
+                    <button
+                      type="button"
+                      className="neo-button secondary"
+                      onClick={() => setSetupOpen(!setupOpen)}
+                    >
+                      {setupOpen ? "Hide setup" : "Edit setup"}
+                    </button>
+                  ) : null}
+                  {running ? (
+                    <button type="button" className="neo-button secondary cmp-run" onClick={stop}>
+                      Stop
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="neo-button primary cmp-run"
+                      onClick={start}
+                      disabled={Boolean(missing)}
+                    >
+                      {phase === "done" ? "Run it again" : "Run comparison"}
+                    </button>
+                  )}
+                </div>
+              </footer>
             </section>
-          )}
 
-          <section className="cmp-block cmp-options">
-            <h2 className="cmp-h2">Evaluation</h2>
-            <label className={`cmp-option${deterministicAvailable ? "" : " disabled"}`}>
-              <input
-                type="checkbox"
-                checked={deterministic && deterministicAvailable}
-                disabled={!deterministicAvailable}
-                onChange={(event) => setDeterministic(event.target.checked)}
-              />
-              <span>
-                Rule-based evaluation when available
-                <span className="cmp-option-detail">
-                  {deterministicAvailable
-                    ? "Objective checks with a known right answer: valid JSON, code that parses, the correct value. Instant, and you can read every check."
-                    : "No deterministic evaluation available for your own questions. Enable the LLM judge to evaluate them."}
-                </span>
-              </span>
-            </label>
+            {notice ? <p className="cmp-notice">{notice}</p> : null}
 
-            <label className="cmp-option">
-              <input
-                type="checkbox"
-                checked={judgeOn}
-                onChange={(event) =>
-                  setJudgeId(event.target.checked ? candidates[0]?.id || "" : "")
-                }
-              />
-              <span>
-                Use an LLM judge
-                <span className="cmp-option-detail">
-                  A model reads the answers and rates them out of ten. Reported separately
-                  from the rule-based score, never mixed into it.
-                </span>
-              </span>
-            </label>
-
-            {judgeOn ? (
-              <div className="cmp-judge-setup">
-                <label className="cmp-label" htmlFor="cmp-judge">
-                  Which model judges
-                </label>
-                <select
-                  id="cmp-judge"
-                  className="cmp-select"
-                  value={judgeId}
-                  onChange={(event) => setJudgeId(event.target.value)}
-                >
-                  {candidates.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.display_name}
-                      {selected.includes(item.id) ? " (also being compared)" : ""}
-                    </option>
-                  ))}
-                </select>
-                {selected.includes(judgeId) ? (
-                  <p className="cmp-warn">
-                    This model is in the comparison. Models tend to prefer their own
-                    answers, so read its ratings with that in mind.
+            {summaries.length ? (
+              <section className="cmp-results">
+                <p className="cmp-tradeoff">{describeTradeoff(summaries)}</p>
+                <Scorecards summaries={summaries} judgeOn={Boolean(comparison?.judged_by)} />
+                {comparison?.judged_by ? (
+                  <p className="cmp-hint">
+                    Ratings out of ten came from {comparison.judged_by}. They are that
+                    model's opinion, kept separate from the rule-based checks.
                   </p>
                 ) : null}
-                <label className="cmp-label" htmlFor="cmp-rubric">
-                  Judge rubric
-                </label>
-                <textarea
-                  id="cmp-rubric"
-                  className="cmp-prompt"
-                  rows={5}
-                  value={rubric}
-                  onChange={(event) => setRubric(event.target.value)}
-                />
-              </div>
-            ) : null}
-          </section>
-
-          <details className="cmp-advanced">
-            <summary className="cmp-h2">Advanced</summary>
-            <div className="cmp-advanced-body">
-              <label className="cmp-option">
-                <input
-                  type="checkbox"
-                  checked={allowThinking}
-                  onChange={(event) => setAllowThinking(event.target.checked)}
-                />
-                <span>
-                  Thinking
-                  <span className="cmp-option-detail">
-                    Let models reason out loud before answering. Slower, and often
-                    better. Measured here, gemma4 got the bat-and-ball puzzle right only
-                    with this on. Off by default because a model given a short budget can
-                    spend all of it thinking and never answer. It shows up mostly on your
-                    own questions: the built-in ones ask for a terse answer, which most
-                    models take as a reason not to reason at all.
-                  </span>
-                </span>
-              </label>
-              <div className="cmp-field">
-                <label className="cmp-label" htmlFor="cmp-max-tokens">
-                  Maximum output
-                </label>
-                <input
-                  id="cmp-max-tokens"
-                  className="cmp-number"
-                  type="number"
-                  min={meta.limits?.min_output_tokens || 32}
-                  max={meta.limits?.max_output_tokens || 4096}
-                  placeholder="per task"
-                  value={maxTokens}
-                  onChange={(event) => setMaxTokens(event.target.value)}
-                />
-                <span className="cmp-field-note">
-                  Left empty, each question keeps the limit it was written with.
-                </span>
-              </div>
-              <div className="cmp-field">
-                <label className="cmp-label" htmlFor="cmp-temperature">
-                  Temperature
-                </label>
-                <input
-                  id="cmp-temperature"
-                  className="cmp-number"
-                  type="number"
-                  min={0}
-                  max={meta.limits?.max_temperature || 2}
-                  step={0.1}
-                  value={temperature}
-                  onChange={(event) => setTemperature(event.target.value)}
-                />
-                <span className="cmp-field-note">
-                  Zero keeps answers steady, so two runs are comparable.
-                </span>
-              </div>
-            </div>
-          </details>
-
-          <section className="cmp-block cmp-actions">
-            {running ? (
-              <button type="button" className="neo-button secondary cmp-run" onClick={stop}>
-                Stop
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="neo-button primary cmp-run"
-                onClick={start}
-                disabled={Boolean(missing)}
-              >
-                {phase === "done" ? "Run it again" : "Run comparison"}
-              </button>
-            )}
-
-            {/* The bar is the honest shape of a wait that can be a hundred answers long:
-                a count alone leaves you doing the arithmetic to see how far in you are. */}
-            {running && progress.total ? (
-              <div
-                className="cmp-bar"
-                role="progressbar"
-                aria-valuenow={progress.completed}
-                aria-valuemin={0}
-                aria-valuemax={progress.total}
-                aria-label="Responses complete"
-              >
-                <div
-                  className="cmp-bar-fill"
-                  style={{ width: `${(progress.completed / progress.total) * 100}%` }}
-                />
-              </div>
+                {comparison?.cancelled ? (
+                  <p className="cmp-hint">You stopped this one early.</p>
+                ) : null}
+                {(comparison?.errors || []).map((item) => (
+                  <p key={item} className="cmp-warn">{item}</p>
+                ))}
+              </section>
             ) : null}
 
-            <span className="cmp-progress">
-              {running
-                ? (progress.total
-                  ? progressLabel(progress.completed, progress.total)
-                  : "Starting the models up…")
-                : missing || (estimate ? `Usually under ${estimate} seconds.` : "")}
-            </span>
-          </section>
-
-          {notice ? <p className="cmp-notice">{notice}</p> : null}
-
-          {summaries.length ? (
-            <section className="cmp-card">
-              <p className="cmp-tradeoff">{describeTradeoff(summaries)}</p>
-              <Scoreboard summaries={summaries} judgeOn={Boolean(comparison?.judged_by)} />
-              {comparison?.judged_by ? (
-                <p className="cmp-quiet">
-                  Ratings out of ten came from {comparison.judged_by}. They are that
-                  model's opinion, kept separate from the rule-based checks.
-                </p>
-              ) : null}
-              {comparison?.cancelled ? (
-                <p className="cmp-quiet">You stopped this one early.</p>
-              ) : null}
-              {(comparison?.errors || []).map((item) => (
-                <p key={item} className="cmp-warn">{item}</p>
-              ))}
-            </section>
-          ) : null}
-
-          <Grid
-            rows={rows}
-            contenders={contenders}
-            openKey={openKey}
-            onOpen={(cell) => setOpenKey(openKey === cell.key ? "" : cell.key)}
-          />
-
-          <CellDetail
-            cell={openCell}
-            task={openTask}
-            config={config}
-            judgeOn={judgeOn}
-            deterministic={deterministic && deterministicAvailable}
-            onClose={() => setOpenKey("")}
-          />
-        </>
-      )}
+            {rows.length ? (
+              <section className="cmp-answers">
+                <header className="cmp-section-head">
+                  <h2 className="cmp-section-title">Answers</h2>
+                  <p className="cmp-hint">
+                    Select an answer for the full reply, how it was scored and the
+                    settings it ran under.
+                  </p>
+                </header>
+                <Grid
+                  rows={rows}
+                  contenders={contenders}
+                  openKey={openKey}
+                  onOpen={(cell) => setOpenKey(openKey === cell.key ? "" : cell.key)}
+                  renderDetail={(cell, task) => (
+                    <CellDetail
+                      cell={cell}
+                      task={task}
+                      config={config}
+                      judgeOn={judgeOn}
+                      deterministic={deterministic && deterministicAvailable}
+                      onClose={() => setOpenKey("")}
+                    />
+                  )}
+                />
+              </section>
+            ) : null}
+          </>
+        )}
+      </div>
     </div>
   );
 }
