@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
+import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -49,6 +51,7 @@ from app.services.provider_runtime.errors import (
     classify,
     user_message,
 )
+from app.services.provider_runtime.service import ProviderRuntimeService
 from app.services.rules.resolver import RuleResolver
 from app.services.rules.types import RuleResolveRequest
 from app.services.skills import resolver as skills_resolver
@@ -89,7 +92,7 @@ _CHAT_LOG = logging.getLogger("neo.chat")
 
 
 def _llm_client(
-    config_id: str | None = None, route_name: str = "chat", *, effort: str = "high"
+    config_id: str | None = None, route_name: str = "chat", *, effort: str = "low"
 ) -> LLMClient:
     try:
         return get_llm_client(config_id, route_name=route_name, disable_thinking=effort == "low")
@@ -730,7 +733,7 @@ def _generation_service(
     memory_enabled: bool,
     memory_incognito: bool,
     image_ids: list[str] | None = None,
-    effort: str = "high",
+    effort: str = "low",
 ) -> NeoChatService:
     rule_result = RuleResolver().resolve(
         RuleResolveRequest(
@@ -765,7 +768,7 @@ def _chat_service(
     memory_incognito: bool = False,
     active_project_id: str | None = None,
     image_ids: list[str] | None = None,
-    effort: str = "high",
+    effort: str = "low",
 ) -> NeoChatService:
     runtime = None
     mutation_runtime = None
@@ -1029,7 +1032,9 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 generation.llm_id,
                 memory_enabled=bool(generation_options.get("memory_enabled", True)),
                 memory_incognito=bool(generation_options.get("memory_incognito", False)),
-                effort=str(generation_options.get("effort") or "high"),
+                # Low is the default everywhere: a generation recorded without an
+                # effort follows its chat's setting, and a chat without one is Low.
+                effort=str(generation_options.get("effort") or chat.effort or "low"),
                 image_ids=list(generation_options.get("image_ids") or []),
             )
             partial_response = ""
@@ -1718,6 +1723,38 @@ def create_chat(request: ChatCreateRequest, response: Response, store: StoreDepe
     return ChatRead.model_validate(chat)
 
 
+#: When this process last asked each profile's chat model to load.
+_LAST_WARMUP: dict[str, float] = {}
+#: At most one warm-up request per profile in this window.
+WARMUP_INTERVAL_SECONDS = 60.0
+
+
+@router.post("/chat-model/warm", status_code=status.HTTP_202_ACCEPTED)
+def warm_chat_model() -> dict[str, str]:
+    """Ask the local chat model to load, so the next message does not pay for it.
+
+    The browser calls this when a conversation is opened. It returns at once and
+    loads in the background; the runtime decides whether loading is worthwhile.
+    """
+
+    key = get_settings().database_url
+    now = time.monotonic()
+    if now - _LAST_WARMUP.get(key, 0.0) < WARMUP_INTERVAL_SECONDS:
+        return {"status": "recent"}
+    _LAST_WARMUP[key] = now
+    context = contextvars.copy_context()
+
+    def run() -> None:
+        try:
+            result = ProviderRuntimeService(initialize=False).warm("chat")
+            _CHAT_LOG.info("chat_model_warmup %s", result)
+        except Exception:  # pragma: no cover - warming is best effort
+            _CHAT_LOG.debug("chat_model_warmup_failed", exc_info=True)
+
+    threading.Thread(target=lambda: context.run(run), name="chat-model-warmup", daemon=True).start()
+    return {"status": "started"}
+
+
 @router.get("/chats/{chat_id}", response_model=ChatThreadRead)
 def get_chat(chat_id: int, store: StoreDependency) -> ChatThreadRead:
     return _thread_payload(store, chat_id)
@@ -2224,6 +2261,7 @@ def stream_chat_events(
         cursor = max(0, after)
         idle_since = time.monotonic()
         while True:
+            seen = chat_events.event_counter()
             batch = chat_events.list_events(chat_id, after=cursor)
             for event in batch:
                 cursor = event["seq"]
@@ -2241,7 +2279,7 @@ def stream_chat_events(
             if time.monotonic() - idle_since > CHAT_STREAM_IDLE_TIMEOUT:
                 yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
                 return
-            time.sleep(CHAT_STREAM_POLL_INTERVAL)
+            chat_events.wait_for_events(seen, CHAT_STREAM_POLL_INTERVAL)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
@@ -2288,6 +2326,7 @@ def stream_all_chat_events(request: Request, after: int | None = None) -> Stream
         last_pump = 0.0
         with chat_events.event_reader() as read_events:
             while True:
+                seen = chat_events.event_counter()
                 batch = read_events(after=cursor)
                 for event in batch:
                     cursor = event["seq"]
@@ -2308,7 +2347,9 @@ def stream_all_chat_events(request: Request, after: int | None = None) -> Stream
                 if profile is not None and now - last_pump > QUEUE_PUMP_INTERVAL:
                     last_pump = now
                     _pump_turn_queue(profile)
-                time.sleep(CHAT_STREAM_POLL_INTERVAL)
+                # Wakes as soon as this process writes an event; the interval
+                # remains the most it waits, for writers elsewhere.
+                chat_events.wait_for_events(seen, CHAT_STREAM_POLL_INTERVAL)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 

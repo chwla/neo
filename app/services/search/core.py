@@ -10,7 +10,6 @@ from app.services.llm import LLMMessage as OllamaMessage
 from app.services.search.citations import validate_citation_markers
 from app.services.search.content import (
     WebPageFetcher,
-    augment_page,
     extract_evidence_chunks,
     extract_release_date,
     fetch_pages,
@@ -139,9 +138,20 @@ class WebSearchService:
     ) -> ComprehensiveSearchResult:
         return comprehensive_web_search(query, options, llm=self.llm)
 
-    def build_context_forced(self, query: str, *, hint: str | None = None) -> WebContext:
-        """Build web context, forcing search regardless of decision service."""
-        return self._build_context_inner(query, hint=hint)
+    def build_context_forced(
+        self,
+        query: str,
+        *,
+        hint: str | None = None,
+        options: SearchOptions | None = None,
+    ) -> WebContext:
+        """Build web context, forcing search regardless of decision service.
+
+        ``options`` sets research depth for this request -- results, pages and
+        evidence budget -- and is how effort changes depth without changing
+        whether or how a turn searches. Unset fields use the settings.
+        """
+        return self._build_context_inner(query, hint=hint, options=options)
 
     def build_context(self, query: str, *, hint: str | None = None) -> WebContext:
         decision = self.should_search(query)
@@ -149,7 +159,13 @@ class WebSearchService:
             return WebContext(query=query, needed=False, warning=decision.reason)
         return self._build_context_inner(query, hint=hint)
 
-    def _build_context_inner(self, query: str, *, hint: str | None = None) -> WebContext:
+    def _build_context_inner(
+        self,
+        query: str,
+        *,
+        hint: str | None = None,
+        options: SearchOptions | None = None,
+    ) -> WebContext:
         if self._uses_custom_dependencies:
             return self._build_context_with_dependencies(query, hint=hint)
 
@@ -158,8 +174,14 @@ class WebSearchService:
         result = comprehensive_web_search(
             query,
             SearchOptions(
-                max_results=self.settings.web_search_max_results,
-                max_pages=self.settings.web_fetch_max_pages,
+                max_results=(options.max_results if options and options.max_results else None)
+                or self.settings.web_search_max_results,
+                max_pages=(
+                    options.max_pages
+                    if options and options.max_pages is not None
+                    else self.settings.web_fetch_max_pages
+                ),
+                max_context_tokens=options.max_context_tokens if options else None,
             ),
             llm=self.llm,
             hint=hint,
@@ -210,12 +232,15 @@ class WebSearchService:
             return WebContext(query=query, needed=True, search=search, warning=search.error)
 
         plan = plan_query(query, llm=self.llm, hint=hint)
+        answer_mode = _plan_answer_mode(plan, query)
         profile = build_relevance_profile(
             query,
             search.provider_query or plan.provider_query,
             subject_terms=plan.subject_terms,
+            requires_freshness=_plan_requires_freshness(
+                plan, answer_mode, _plan_time_filter(plan, query, None)
+            ),
         )
-        answer_mode = _plan_answer_mode(plan, query)
         ranked_results = rank_results(profile, search.results)
         if not ranked_results:
             return WebContext(
@@ -235,7 +260,6 @@ class WebSearchService:
             page = self.fetcher.fetch(result.url)
             if not page.title:
                 page.title = result.title
-            page = augment_page(query, page)
             relevant_page = relevant_fetched_page(profile, result, page)
             if relevant_page is None:
                 continue
@@ -299,9 +323,14 @@ def comprehensive_web_search(
 
     plan = plan_query(query, llm=llm, hint=hint)
     rewritten_query = plan.provider_query
-    profile = build_relevance_profile(query, rewritten_query, subject_terms=plan.subject_terms)
     answer_mode = _plan_answer_mode(plan, query)
     time_filter = _plan_time_filter(plan, query, opts.time_filter)
+    profile = build_relevance_profile(
+        query,
+        rewritten_query,
+        subject_terms=plan.subject_terms,
+        requires_freshness=_plan_requires_freshness(plan, answer_mode, time_filter),
+    )
     release_query = resolve_search_intent(query).kind == SearchIntentKind.RELEASE_DATE
     attempted: dict[str, str] = {}
     provider_attempts: list[dict[str, object]] = []
@@ -357,6 +386,7 @@ def comprehensive_web_search(
             continue
 
         candidate = _build_verified_search_result(
+            max_context_tokens=opts.max_context_tokens,
             query=query,
             rewritten_query=rewritten_query,
             provider=provider.name,
@@ -479,6 +509,7 @@ def _build_verified_search_result(
     answer_mode: str,
     max_pages: int,
     time_filter: str | None,
+    max_context_tokens: int | None = None,
 ) -> ComprehensiveSearchResult:
     """Build evidence exclusively from successfully fetched, relevant page bodies."""
 
@@ -490,7 +521,6 @@ def _build_verified_search_result(
                 (item for item in ranked_results if urlparse(item.url).netloc == page.domain),
                 ranked_results[0],
             )
-        page = augment_page(query, page)
         relevant_page = relevant_fetched_page(profile, result, page)
         if relevant_page is None:
             continue
@@ -530,7 +560,9 @@ def _build_verified_search_result(
         evidence_chunks=indexed_chunks,
         structured_sources=structured_sources,
         citations=citations,
-        model_context=build_evidence_pack(indexed_chunks, answer_mode),
+        model_context=build_evidence_pack(
+            indexed_chunks, answer_mode, max_tokens=max_context_tokens
+        ),
         answer_mode=answer_mode,
         debug={
             "fetch_max_pages": max_pages,
@@ -603,9 +635,11 @@ def provider_query(query: str, *, llm: LLMClient | None = None, hint: str | None
     return plan_query(query, llm=llm, hint=hint).provider_query
 
 
-def build_evidence_pack(chunks: list[EvidenceChunk], answer_mode: str) -> str:
+def build_evidence_pack(
+    chunks: list[EvidenceChunk], answer_mode: str, *, max_tokens: int | None = None
+) -> str:
     settings = get_settings()
-    max_chars = int(getattr(settings, "web_context_max_tokens", 1_200)) * 4
+    max_chars = int(max_tokens or getattr(settings, "web_context_max_tokens", 1_200)) * 4
     blocks: list[str] = []
     chunks_by_source: dict[int, list[EvidenceChunk]] = {}
     for chunk in chunks:
@@ -762,32 +796,6 @@ class WebAnswerService:
                 f"The verified release date is {release_date.answer} [{release_date.source_index}]."
             )
 
-        combined = "\n".join(chunk.text for chunk in context.evidence_chunks)
-        next_version = re.search(
-            r"\bPackage\s+next\s+latest version:\s*([0-9][0-9A-Za-z.\-]*)", combined
-        )
-        if not next_version:
-            next_version = re.search(
-                r'"name"\s*:\s*"next".{0,200}?"version"\s*:\s*"([0-9][0-9A-Za-z.\-]*)"', combined
-            )
-        if next_version:
-            version = next_version.group(1).rstrip(".")
-            index = self._first_chunk_index(context)
-            return f"The latest Next.js version is {version} [{index}]."
-
-        upcoming_match = re.search(
-            r"Upcoming match:\s*(?P<match>.+?)\.\s*Date:\s*(?P<date>.+?)\.\s*"
-            r"Time:\s*(?P<time>.+?)\.\s*Venue:\s*(?P<venue>.+?)\.\s*Competition:\s*(?P<competition>.+?)\.",
-            combined,
-        )
-        if upcoming_match:
-            index = self._first_chunk_index(context)
-            return (
-                "The next listed India cricket match is "
-                f"{upcoming_match.group('match')} on {upcoming_match.group('date')} "
-                f"at {upcoming_match.group('time')}, at {upcoming_match.group('venue')} "
-                f"({upcoming_match.group('competition')}) [{index}]."
-            )
         return None
 
     def _first_chunk_index(self, context: WebContext) -> int:
@@ -822,6 +830,20 @@ def _plan_answer_mode(plan: SearchPlan, query: str) -> str:
     return _answer_mode(query)
 
 
+def _plan_requires_freshness(
+    plan: SearchPlan, answer_mode: str, time_filter: str | None
+) -> bool | None:
+    """Whether results must be recent, as the plan decided it.
+
+    A model-authored plan answers this through its window and mode; without one
+    the relevance profile falls back to generic time words in the query.
+    """
+
+    if plan.source != "model":
+        return None
+    return time_filter in {"day", "week"} or answer_mode == "news_summary"
+
+
 def _plan_time_filter(plan: SearchPlan, query: str, explicit: str | None) -> str | None:
     """Resolve the freshness window for a search.
 
@@ -838,26 +860,15 @@ def _plan_time_filter(plan: SearchPlan, query: str, explicit: str | None) -> str
 
 
 def _answer_mode(query: str) -> str:
-    lowered = query.lower()
-    if re.search(r"\b(latest|newest)\b", lowered) and not re.search(
-        r"\b(news|updates|headlines)\b", lowered
-    ):
-        return "fact_lookup"
-    if re.search(
-        r"\b(when|next|version|price|prices|cost|weather|forecast|temperature|conversion|"
-        r"exchange rate|usd|inr|current|currently|schedule|fixture|fixtures|match|release|"
-        r"released|releasing|premiere|episodes?|seasons?|how many|planned|planning|kirkman|"
-        r"ranking|rankings|ranked|rated|fide|newest|right now|world number|world no|champion|"
-        r"world champion|world cup|worldcup|coming out|who (?:created|wrote|directed|produced|"
-        r"founded)|cast of|release date of|tv series|television series)\b",
-        lowered,
-    ):
-        return "fact_lookup"
-    if re.search(r"\b(about|plot|story|recap|overview)\b", lowered) and re.search(
-        r"\b(season|s\d+|movie|film|show|series)\b", lowered
-    ):
-        return "overview"
-    if re.search(r"\b(news|latest|recent|recently|updates|headlines)\b", lowered):
+    """The answer mode when the planner could not choose one.
+
+    The planner (a model) decides between a single fact, news and an overview,
+    because that is a judgement about meaning. Without it, only a request that
+    plainly asks for news is treated as news; everything else is ``unknown``,
+    which means "generate from the evidence", never a domain guess. The keyword
+    list this replaced named specific people, competitions and media formats.
+    """
+    if re.search(r"\b(news|headlines|recent|recently|updates)\b", query, re.IGNORECASE):
         return "news_summary"
     return "unknown"
 
@@ -881,19 +892,5 @@ def _time_filter_for_query(query: str) -> str | None:
     ):
         return "week"
     if "news" in lowered:
-        return "week"
-    if any(
-        term in lowered
-        for term in (
-            "ranking",
-            "rankings",
-            "ranked",
-            "rated",
-            "fide",
-            "champion",
-            "world champion",
-            "world cup",
-        )
-    ):
         return "week"
     return None

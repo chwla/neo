@@ -4,7 +4,7 @@ import json
 import os
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal, Protocol
@@ -56,6 +56,13 @@ class LLMChatResult(BaseModel):
     fallback_used: bool = False
     provider_request_id: str | None = None
     finish_reason: str | None = None
+    #: Where the provider reports them: time spent loading the model for this
+    #: request (non-zero means a cold start or a reload), evaluating the prompt,
+    #: and generating. They separate "the model is slow" from "the model was
+    #: reloaded" and from "the prompt was long", which total time cannot.
+    load_ms: int | None = None
+    prefill_ms: int | None = None
+    decode_ms: int | None = None
 
 
 class ChatTurn(BaseModel):
@@ -251,8 +258,55 @@ class BaseLLMClient:
 
 
 #: Capability answers are cached per (base_url, model): the probe is a network
-#: round trip and the answer only changes when a model is re-pulled.
+#: round trip and the answer only changes when a model is re-pulled. Only an answer
+#: the provider actually gave is cached for good. A probe that failed -- Ollama
+#: restarting, busy loading a model, briefly unreachable -- is remembered for a few
+#: seconds and then asked again: caching that failure as "unsupported" left one
+#: process unable to turn reasoning off for the rest of its life.
 _TOOL_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+_VISION_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+_THINKING_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+_PROBE_FAILURES: dict[tuple[str, str, str], float] = {}
+#: How long a failed capability probe is trusted before it is asked again.
+PROBE_FAILURE_TTL_SECONDS = 30.0
+
+
+def _probe_capability(
+    kind: str,
+    cache: dict[tuple[str, str], bool],
+    base_url: str,
+    model: str,
+    timeout: int,
+    read: Callable[[dict[str, Any]], bool],
+) -> bool:
+    key = (base_url.rstrip("/"), model)
+    if key in cache:
+        return cache[key]
+    failure_key = (kind, *key)
+    failed_at = _PROBE_FAILURES.get(failure_key)
+    if failed_at is not None and time.monotonic() - failed_at < PROBE_FAILURE_TTL_SECONDS:
+        return False
+    try:
+        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("unexpected /api/show payload")
+    except Exception:
+        _PROBE_FAILURES[failure_key] = time.monotonic()
+        return False
+    supported = bool(read(payload))
+    cache[key] = supported
+    _PROBE_FAILURES.pop(failure_key, None)
+    return supported
+
+
+def _reads_tools(payload: dict[str, Any]) -> bool:
+    if "tools" in (payload.get("capabilities") or []):
+        return True
+    # Older Ollama builds omit `capabilities`; the template mentioning tools is
+    # the next best signal.
+    return ".Tools" in str(payload.get("template") or "")
 
 
 def ollama_supports_tools(base_url: str, model: str, timeout: int = 5) -> bool:
@@ -263,27 +317,7 @@ def ollama_supports_tools(base_url: str, model: str, timeout: int = 5) -> bool:
     the text fallback. Ollama reports the answer directly, so ask.
     """
 
-    key = (base_url.rstrip("/"), model)
-    if key in _TOOL_SUPPORT_CACHE:
-        return _TOOL_SUPPORT_CACHE[key]
-    supported = False
-    try:
-        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()
-        capabilities = payload.get("capabilities") or []
-        supported = "tools" in capabilities
-        if not supported:
-            # Older Ollama builds omit `capabilities`; the template mentioning
-            # tools is the next best signal.
-            supported = ".Tools" in str(payload.get("template") or "")
-    except Exception:
-        supported = False
-    _TOOL_SUPPORT_CACHE[key] = supported
-    return supported
-
-
-_VISION_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+    return _probe_capability("tools", _TOOL_SUPPORT_CACHE, base_url, model, timeout, _reads_tools)
 
 
 def ollama_supports_vision(base_url: str, model: str, timeout: int = 5) -> bool:
@@ -294,22 +328,14 @@ def ollama_supports_vision(base_url: str, model: str, timeout: int = 5) -> bool:
     populated it, so trusting it alone reports every model as blind.
     """
 
-    key = (base_url.rstrip("/"), model)
-    if key in _VISION_SUPPORT_CACHE:
-        return _VISION_SUPPORT_CACHE[key]
-    supported = False
-    try:
-        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()
-        supported = "vision" in (payload.get("capabilities") or [])
-    except Exception:
-        supported = False
-    _VISION_SUPPORT_CACHE[key] = supported
-    return supported
-
-
-_THINKING_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
+    return _probe_capability(
+        "vision",
+        _VISION_SUPPORT_CACHE,
+        base_url,
+        model,
+        timeout,
+        lambda payload: "vision" in (payload.get("capabilities") or []),
+    )
 
 
 def ollama_supports_thinking(base_url: str, model: str, timeout: int = 5) -> bool:
@@ -320,18 +346,84 @@ def ollama_supports_thinking(base_url: str, model: str, timeout: int = 5) -> boo
     from the provider rather than from an assumption about the model name.
     """
 
-    key = (base_url.rstrip("/"), model)
-    if key in _THINKING_SUPPORT_CACHE:
-        return _THINKING_SUPPORT_CACHE[key]
-    supported = False
+    return _probe_capability(
+        "thinking",
+        _THINKING_SUPPORT_CACHE,
+        base_url,
+        model,
+        timeout,
+        lambda payload: "thinking" in (payload.get("capabilities") or []),
+    )
+
+
+#: What ``/api/ps`` said about loaded models, per server, and when it said it.
+_LOADED_MODELS: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+#: Loaded state changes only when a model loads or unloads; a couple of seconds
+#: of staleness costs at most one reload, which is what happens without this.
+LOADED_STATE_TTL_SECONDS = 2.0
+
+
+def ollama_loaded_model(base_url: str, model: str, timeout: float = 1.0) -> dict[str, Any] | None:
+    """The loaded instance of ``model``, as Ollama reports it, or ``None``.
+
+    Returns ``{"context_length", "size", "size_vram"}`` for an exact name match.
+    Any error, an older server without these fields, or a model that is not
+    loaded all return ``None``, and callers then behave as if nothing is known.
+    """
+
+    root = base_url.rstrip("/")
+    cached = _LOADED_MODELS.get(root)
+    now = time.monotonic()
+    if cached is None or now - cached[0] > LOADED_STATE_TTL_SECONDS:
+        try:
+            response = requests.get(f"{root}/api/ps", timeout=timeout)
+            response.raise_for_status()
+            models = response.json().get("models") or []
+            if not isinstance(models, list):
+                models = []
+        except Exception:
+            models = []
+        _LOADED_MODELS[root] = (now, models)
+        cached = _LOADED_MODELS[root]
+    for item in cached[1]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("name") == model or item.get("model") == model:
+            context = item.get("context_length")
+            if not isinstance(context, int) or context <= 0:
+                return None
+            return {
+                "context_length": context,
+                "size": item.get("size"),
+                "size_vram": item.get("size_vram"),
+            }
+    return None
+
+
+def ollama_loaded_model_names(base_url: str, timeout: float = 1.0) -> list[str] | None:
+    """Names of every model Ollama has loaded, or ``None`` if it cannot be asked."""
+
+    root = base_url.rstrip("/")
     try:
-        response = requests.post(f"{key[0]}/api/show", json={"model": model}, timeout=timeout)
+        response = requests.get(f"{root}/api/ps", timeout=timeout)
         response.raise_for_status()
-        supported = "thinking" in (response.json().get("capabilities") or [])
+        models = response.json().get("models") or []
     except Exception:
-        supported = False
-    _THINKING_SUPPORT_CACHE[key] = supported
-    return supported
+        return None
+    return [str(item.get("name")) for item in models if isinstance(item, dict) and item.get("name")]
+
+
+def forget_loaded_models(base_url: str | None = None) -> None:
+    """Drop cached ``/api/ps`` state, e.g. after this process caused a load."""
+
+    if base_url is None:
+        _LOADED_MODELS.clear()
+    else:
+        _LOADED_MODELS.pop(base_url.rstrip("/"), None)
+
+
+def _ns_to_ms(value: Any) -> int | None:
+    return int(value / 1_000_000) if isinstance(value, (int, float)) and value > 0 else None
 
 
 class OllamaClient(BaseLLMClient):
@@ -449,6 +541,9 @@ class OllamaClient(BaseLLMClient):
             finish_reason=str(payload.get("done_reason") or "stop"),
             provider_name="ollama",
             model_name=self.model,
+            load_ms=_ns_to_ms(payload.get("load_duration")),
+            prefill_ms=_ns_to_ms(payload.get("prompt_eval_duration")),
+            decode_ms=_ns_to_ms(payload.get("eval_duration")),
         )
 
     def chat_stream(
@@ -491,6 +586,9 @@ class OllamaClient(BaseLLMClient):
                         else int((time.perf_counter() - started) * 1000)
                     ),
                     "finish_reason": str(chunk.get("done_reason") or "stop"),
+                    "load_ms": _ns_to_ms(chunk.get("load_duration")),
+                    "prefill_ms": _ns_to_ms(chunk.get("prompt_eval_duration")),
+                    "decode_ms": _ns_to_ms(chunk.get("eval_duration")),
                 }
                 break
 

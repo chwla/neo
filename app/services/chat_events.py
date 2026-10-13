@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -52,6 +53,41 @@ def _loads(raw: Any, default: Any) -> Any:
         return json.loads(raw)
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+#: Woken whenever this process appends an event, so a tail in the same process
+#: hears about it at once instead of on its next poll. Writers in another
+#: process are still found by the poll, which stays as the fallback.
+_NEW_EVENTS = threading.Condition()
+_EVENT_COUNTER = 0
+
+
+def event_counter() -> int:
+    """How many events this process has appended; read before polling."""
+
+    with _NEW_EVENTS:
+        return _EVENT_COUNTER
+
+
+def wait_for_events(seen: int, timeout: float) -> int:
+    """Wait until an event is appended after ``seen`` was read, or ``timeout``.
+
+    Returns the counter to pass next time. Reading the counter *before* polling
+    and waiting only if it has not moved means an event appended between the
+    poll and the wait is never slept through.
+    """
+
+    with _NEW_EVENTS:
+        if _EVENT_COUNTER == seen:
+            _NEW_EVENTS.wait(timeout)
+        return _EVENT_COUNTER
+
+
+def _announce_event() -> None:
+    global _EVENT_COUNTER
+    with _NEW_EVENTS:
+        _EVENT_COUNTER += 1
+        _NEW_EVENTS.notify_all()
 
 
 def append(
@@ -92,6 +128,7 @@ def append(
             ),
         )
         conn.commit()
+        _announce_event()
         return int(cursor.lastrowid or 0)
     except sqlite3.Error:
         return 0

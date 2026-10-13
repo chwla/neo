@@ -132,10 +132,9 @@ class ReliableWebSearchService:
 
     @staticmethod
     def _official(domain: str) -> bool:
-        return (
-            domain.endswith((".gov", ".edu", ".org"))
-            or domain.startswith("docs.")
-            or domain in {"openai.com", "platform.openai.com", "developer.mozilla.org"}
+        # Naming conventions only, never a list of particular sites.
+        return domain.endswith((".gov", ".edu", ".org")) or domain.startswith(
+            ("docs.", "developer.")
         )
 
     @staticmethod

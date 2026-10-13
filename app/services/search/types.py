@@ -17,6 +17,9 @@ class SearchIntentKind(StrEnum):
     CURRENCY = "currency"
     LOCAL_DATETIME = "local_datetime"
     CONNECTOR_TOOL = "connector_tool"
+    #: The user's own schedule: chosen by the router, then handled by the
+    #: calendar extractor, which decides the action and draft.
+    CALENDAR = "calendar"
 
 
 class ResolvedSearchIntent(BaseModel):
@@ -37,6 +40,10 @@ class ResolvedSearchIntent(BaseModel):
     timezone: str | None = None
     locale: str | None = None
     decision_source: Literal["structured", "model", "fallback"] = "fallback"
+    #: The capability this turn was given: "direct", "web", "memory", "calendar",
+    #: "weather", "currency", "time", "release_date", "greeting" or "follow_up".
+    #: Recorded for diagnostics and benchmarks; ``kind`` still drives dispatch.
+    route: str | None = None
 
     @property
     def needs_external_data(self) -> bool:
@@ -155,11 +162,17 @@ class QueryRelevanceProfile(BaseModel):
     # Terms the planner identified as the actual topic. When present these decide
     # how many term matches a result needs; see rank_results.
     subject_terms: list[str] = Field(default_factory=list)
+    # Names the user wrote (capitalised, or with digits or symbols), compacted.
+    # A source whose site name contains one is the subject's own source.
+    entity_terms: list[str] = Field(default_factory=list)
 
 
 class SearchOptions(BaseModel):
     max_results: int | None = None
     max_pages: int | None = None
+    #: Evidence budget for the model context, in tokens. Unset uses the
+    #: ``web_context_max_tokens`` setting.
+    max_context_tokens: int | None = None
     time_filter: str | None = None
     min_content_length: int = 80
 

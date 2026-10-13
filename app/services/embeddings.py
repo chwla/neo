@@ -171,7 +171,15 @@ class OllamaEmbeddingProvider:
         try:
             response = requests.post(
                 f"{self.base_url}/api/embeddings",
-                json={"model": self.model_name, "prompt": text},
+                json={
+                    "model": self.model_name,
+                    "prompt": text,
+                    # The chat client's keep-alive, not Ollama's 5-minute default:
+                    # every turn embeds its prompt for recall, so an evicted
+                    # embedding model made the first message after a pause pay
+                    # its load.
+                    "keep_alive": get_settings().ollama_keep_alive,
+                },
                 timeout=self.timeout,
             )
             response.raise_for_status()

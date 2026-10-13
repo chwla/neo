@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
@@ -12,6 +13,13 @@ if TYPE_CHECKING:
     from app.services.llm import LLMClient
 
 _SPACE = re.compile(r"\s+")
+_LOG = logging.getLogger("neo.chat.routing")
+#: Fixed by where a decision came from, not reported by a model: a small model's
+#: self-reported confidence is not calibrated and nothing consumed it. These keep
+#: the stored field meaningful as a coarse label, and they are not probabilities.
+_DETERMINISTIC_CONFIDENCE = 0.99
+_MODEL_CONFIDENCE = 0.8
+_FALLBACK_CONFIDENCE = 0.7
 _QUESTION_WORD = re.compile(r"\b(?:who|what|when|where|why|how|which)\b", re.IGNORECASE)
 # An explicit "remember ..." instruction is a memory-write command regardless of
 # what follows it.  ``_PERSONAL_DECLARATION`` below only recognises specific
@@ -25,6 +33,48 @@ _EXPLICIT_LOOKUP = re.compile(
     r"\b(?:look\s+up|lookup|verify|fact[- ]?check|check online)\b)",
     re.IGNORECASE,
 )
+#: A request to search with nothing else in it: it refers to the earlier
+#: question, so the earlier question is what gets searched.
+_BARE_SEARCH_COMMAND = re.compile(
+    r"^\s*(?:(?:can|could|would)\s+you\s+|please\s+)?"
+    r"(?:search|web\s+search|search\s+(?:it|that|this|for\s+(?:it|that|this))|"
+    r"search\s+(?:the\s+)?(?:web|internet)|search\s+online|"
+    r"look\s+(?:it|this|that)\s+up|google\s+(?:it|that|this)|check\s+online)"
+    r"(?:\s+(?:please|for\s+me))?[.!?\s]*$",
+    re.IGNORECASE,
+)
+#: An explicit instruction to use the web, with a subject. Only wording that
+#: names the web itself counts; "find ..." or "verify ..." alone do not, because
+#: "find the bug" and "verify my proof" are not requests to search.
+_EXPLICIT_WEB_COMMAND = re.compile(
+    r"(?:\b(?:search|look)\s+(?:up\s+)?(?:on\s+)?(?:the\s+)?(?:web|internet)\b|"
+    r"\b(?:search|check|look\s+\S+(?:\s+\S+){0,6}\s+up)\s+online\b|"
+    r"\bonline\s+search\b|\bweb\s+search\b|"
+    r"\bgoogle\s+(?!it\b|that\b|this\b)\S|"
+    r"^\s*(?:(?:can|could|would)\s+you\s+|please\s+)?look\s+up\s+(?!it\b|that\b|this\b)\S|"
+    r"\bfact[- ]?check\b)",
+    re.IGNORECASE,
+)
+
+
+#: Longer than this, a message is treated as carrying material beyond a single
+#: request. Generous for a question, short for anything pasted.
+_SINGLE_REQUEST_MAX_CHARS = 280
+
+
+def _is_single_request(query: str) -> bool:
+    """A short message on one or two lines: the shape of a request, not a paste."""
+
+    text = (query or "").strip()
+    return len(text) <= _SINGLE_REQUEST_MAX_CHARS and text.count("\n") <= 1
+
+
+def is_bare_search_command(query: str) -> bool:
+    """Whether ``query`` only asks to search, without saying for what."""
+
+    return bool(_BARE_SEARCH_COMMAND.match(query or ""))
+
+
 _CURRENT_WEB_SIGNAL = re.compile(
     r"\b(?:latest|newest|current|currently|today|yesterday|tomorrow|recent news|"
     r"right now|this week|news|price|prices|cost|schedule|fixtures?|"
@@ -51,7 +101,7 @@ _RELEASE_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 # The word "release" alone is not a request for a date. "What changed in the
-# latest React release?" is a changelog question, and routing it to the
+# latest release of <software>?" is a changelog question, and routing it to the
 # release-date pipeline made it demand a date that no source could supply.
 _RELEASE_DATE_QUESTION = re.compile(
     r"(?:\bwhen\b|\bwhat date\b|\brelease date\b|\blaunch date\b|"
@@ -134,65 +184,122 @@ _CURRENCY_CODES = {
 }
 _CURRENCY_TOKEN = r"(?:USD|INR|EUR|GBP|JPY|dollars?|rupees?|euros?|pounds?|yen)"
 
-_ROUTE_DECISION_SYSTEM_PROMPT = """You are Neo's conservative chat router.
-Decide how to answer a user message.
+#: The capabilities the router may choose between, each with the one line the
+#: router is told about it. A route whose capability is disabled is left out of
+#: the prompt entirely, so the router can only choose what can actually run.
+_ROUTE_LINES: dict[str, str] = {
+    "direct": (
+        "- direct: answer from general knowledge and the conversation: explanations, "
+        "reasoning, math, writing, coding, advice, opinions, brainstorming and casual talk."
+    ),
+    "web": "- web: retrieve sources from the web.",
+    "memory": (
+        "- memory: the user asks about their own saved information, things they said "
+        "earlier, their preferences, goals or past chats."
+    ),
+    "calendar": (
+        "- calendar: the user wants to see, add, change or remove events or reminders in "
+        "their own schedule, or states a specific upcoming personal commitment with a day "
+        "or time."
+    ),
+    "weather": "- weather: the user wants current or forecast weather conditions for a place.",
+}
+ROUTER_ROUTES: tuple[str, ...] = tuple(_ROUTE_LINES)
 
-Return exactly one JSON object with no Markdown or extra text:
-{"route":"memory"|"web"|"direct", "confidence":0.0-1.0}
+#: Schematic examples: placeholders stand for whatever the user actually says.
+#: Concrete prompts live in the tests, never here, so the router learns the
+#: criteria rather than a handful of cases.
+_ROUTE_EXAMPLES: dict[str, str] = {
+    "web": (
+        "USER: <asks for a value that changes over time>\n"
+        'JSON: {"route":"web","query":"<the thing> <the value>","place":""}'
+    ),
+    "direct": (
+        "USER: <asks to explain a well-established concept>\n"
+        'JSON: {"route":"direct","query":"","place":""}'
+    ),
+    "calendar": (
+        "USER: <asks to be reminded of something at a stated time>\n"
+        'JSON: {"route":"calendar","query":"","place":""}'
+    ),
+    "memory": (
+        "USER: <asks what they told Neo earlier about themselves>\n"
+        'JSON: {"route":"memory","query":"","place":""}'
+    ),
+    "weather": (
+        "USER: <asks about conditions outside in a named place>\n"
+        'JSON: {"route":"weather","query":"","place":"<the place>"}'
+    ),
+}
 
-Routes:
-- memory: the user asks about their own prior statements, saved profile,
-  preferences, goals, projects, activities, or chats.
-- web: the user explicitly asks to search/verify online, or needs current external
-  information that cannot reliably come from chat or saved memory.
-- direct: explanation, writing, reasoning, casual conversation, or any ambiguous
-  request. Default to direct when uncertain.
 
-Never select web from a topic word alone. Words such as current, currently,
-latest, recovery, memory, research, files, projects, notes, tasks, agent, and
-restart are not web commands by themselves.
+def route_decision_prompt(routes: tuple[str, ...] | list[str] = ROUTER_ROUTES) -> str:
+    """The router's system prompt, listing only the routes that can run.
 
-When a request asks for current, latest, recent, today's, real-time, or
-otherwise time-sensitive information, or the answer materially depends on
-information that may have changed since your training, route to web --
-automatically, without waiting for the user to ask permission. Stable/general
-questions (how something works, an explanation, a general recommendation not
-tied to "now"/"currently"/a specific year) route to direct.
+    The router decides from what an accurate answer requires. It is not asked
+    for a confidence value: nothing consumed one, and a small model's
+    self-reported confidence is not calibrated, so it only added output tokens.
+    """
 
-Examples:
-USER: What am I currently building?
-JSON: {"route":"memory","confidence":0.99}
-USER: What projects am I currently working on?
-JSON: {"route":"memory","confidence":0.99}
-USER: What are my saved goals for this year?
-JSON: {"route":"memory","confidence":0.99}
-USER: Explain recovery after an application restart.
-JSON: {"route":"direct","confidence":0.98}
-USER: How should a local-first assistant manage memory?
-JSON: {"route":"direct","confidence":0.98}
-USER: Search the web for Kanye West concert dates in 2026.
-JSON: {"route":"web","confidence":0.99}
-USER: What is the current price of NVIDIA stock?
-JSON: {"route":"web","confidence":0.96}
-USER: Is SQLite WAL safe for a local app?
-JSON: {"route":"direct","confidence":0.82}
-USER: What changed in the latest React release?
-JSON: {"route":"web","confidence":0.95}
-USER: What is new in Python 3.13?
-JSON: {"route":"web","confidence":0.93}
-USER: What is the latest version of Next.js?
-JSON: {"route":"web","confidence":0.95}
-USER: What happened in the news today?
-JSON: {"route":"web","confidence":0.97}
-USER: What are the best calendar apps in 2026?
-JSON: {"route":"web","confidence":0.9}
-USER: What is a good calendar app?
-JSON: {"route":"direct","confidence":0.9}
-USER: What is a binary search tree?
-JSON: {"route":"direct","confidence":0.97}
-"""
+    enabled = [route for route in ROUTER_ROUTES if route in set(routes) or route == "direct"]
+    choices = "|".join(enabled)
+    return (
+        "You are Neo's request router. Choose the capability that should handle the "
+        "user's latest message. You get the message and, when present, a short excerpt of "
+        "the conversation before it.\n\n"
+        "Return exactly one JSON object and nothing else:\n"
+        f'{{"route": "{choices}", "query": "<standalone web search query, only when route '
+        'is web, otherwise empty>", "place": "<the place named for weather, only when route '
+        'is weather, otherwise empty>"}\n\n'
+        "Routes:\n" + "\n".join(_ROUTE_LINES[route] for route in enabled) + "\n\n"
+        "Decide from what an accurate answer requires:\n"
+        "- If it depends on information that is live, current, local, niche, or likely to "
+        "have changed since you were trained, choose the capability that provides it.\n"
+        "- If sources would materially improve factual correctness, choose web.\n"
+        "- If it can be answered reliably from general knowledge or the conversation, "
+        "choose direct.\n"
+        "- Whether the request is an action or a question matters: actions on the user's "
+        "own schedule are calendar.\n"
+        "- Your own uncertainty is not a reason to choose or to avoid any route.\n"
+        "- Never choose a route because of a single topic word.\n\n"
+        'Use the excerpt to resolve references such as "it", "that one", "what '
+        'about ..." and short agreements; agreeing to an offer to search means web, about '
+        "the earlier question. For web, write a query that stands alone, keep names and "
+        "numbers exactly, and include no personal details unless the user asked to search "
+        "for them.\n\n"
+        "Examples (placeholders stand for whatever the user actually says):\n"
+        + "\n".join(_ROUTE_EXAMPLES[route] for route in enabled if route in _ROUTE_EXAMPLES)
+        + "\n"
+    )
+
 
 _ROUTE_DECISION_JSON = re.compile(r"\{\s*\"route\".*?\}", re.DOTALL)
+
+
+def _parse_route_decision(
+    llm: object, raw: str, enabled: tuple[str, ...]
+) -> tuple[str, str, str] | None:
+    """``(route, query, place)`` from the router's reply, or ``None`` if unusable."""
+
+    cleaned = llm.clean_response(raw) if hasattr(llm, "clean_response") else raw
+    match = _ROUTE_DECISION_JSON.search(cleaned or "")
+    try:
+        payload = json.loads(match.group(0) if match else (cleaned or "").strip())
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    route = str(payload.get("route") or "").strip().lower()
+    if route not in enabled:
+        return None
+    query = payload.get("query")
+    place = payload.get("place")
+    return (
+        route,
+        query.strip() if isinstance(query, str) else "",
+        place.strip() if isinstance(place, str) else "",
+    )
+
 
 _WEATHER_LOCATION_SYSTEM_PROMPT = """You are Neo's conservative place-name checker.
 
@@ -208,7 +315,7 @@ Return exactly one JSON object with no Markdown or extra text:
 Never guess. When the phrase could plausibly be something other than a place,
 return null.
 
-Examples:
+Examples (placeholders stand for whatever the phrase actually is):
 PHRASE: hi
 JSON: {"location": null}
 PHRASE: yeah got it
@@ -217,16 +324,14 @@ PHRASE: stop using
 JSON: {"location": null}
 PHRASE: thanks
 JSON: {"location": null}
-PHRASE: I currently use a V60 dripper
+PHRASE: I currently use a <device>
 JSON: {"location": null}
-PHRASE: Tokyo
-JSON: {"location": "Tokyo"}
-PHRASE: what about Paris
-JSON: {"location": "Paris"}
-PHRASE: san francisco
-JSON: {"location": "San Francisco"}
-PHRASE: new york city
-JSON: {"location": "New York City"}
+PHRASE: <a city name>
+JSON: {"location": "<the city name>"}
+PHRASE: what about <a city name>
+JSON: {"location": "<the city name>"}
+PHRASE: <a multi-word place name in lowercase>
+JSON: {"location": "<the place name, capitalised>"}
 """
 
 _WEATHER_LOCATION_JSON = re.compile(r"\{\s*\"location\".*?\}", re.DOTALL)
@@ -238,6 +343,10 @@ class SearchIntentResolver:
     Topic similarity alone never selects a live operation. Personal declarations
     are suppressed before freshness and feature-name matching.
     """
+
+    #: What the last ``route_with_model`` call did: ``{"status": "ok" | "failed" |
+    #: "skipped", ...}``. Read by the chat service for diagnostics.
+    last_router: dict[str, object] | None = None
 
     def resolve(
         self,
@@ -397,98 +506,207 @@ class SearchIntentResolver:
             decision_source="fallback",
         )
 
-    def resolve_with_model(
+    def resolve_explicit(
+        self,
+        query: str,
+        *,
+        previous: ResolvedSearchIntent | None = None,
+        timezone: str | None = None,
+        locale: str | None = None,
+    ) -> ResolvedSearchIntent | None:
+        """Stage A: requests that are unambiguous without asking a model.
+
+        Only operations whose wording fully specifies them: the current local date
+        or time, a currency conversion (or a follow-up to one), a release-date
+        question, an explicit connector command, or an explicit instruction to
+        search the web for something. Everything else returns ``None`` and is
+        decided by ``route_with_model``. No model is called here.
+        """
+
+        cleaned = _SPACE.sub(" ", query or "").strip()
+        if not cleaned:
+            return None
+        # A rule can only call a request unambiguous when the request is all the
+        # message contains. Pasted material -- a document, a log, code -- can hold
+        # any of these phrases ("released on", "convert", "what time") without the
+        # user asking for that operation, so such messages go to the router.
+        if not _is_single_request(query):
+            return None
+        context = {"timezone": timezone, "locale": locale}
+        if _CONNECTOR_SIGNAL.search(cleaned):
+            return self._result(
+                SearchIntentKind.CONNECTOR_TOOL,
+                query,
+                cleaned,
+                "Explicit connector/tool invocation.",
+                0.99,
+                decision_source="structured",
+                route="connector",
+                **context,
+            )
+        if _LOCAL_DATETIME.search(cleaned) and not _RELEASE_SIGNAL.search(cleaned):
+            return self._result(
+                SearchIntentKind.LOCAL_DATETIME,
+                query,
+                cleaned,
+                "Current date/time can be resolved from a validated local timezone.",
+                0.99,
+                decision_source="structured",
+                route="time",
+                **context,
+            )
+        currency = self._currency_intent(cleaned, previous)
+        if currency is not None:
+            return currency.model_copy(
+                update={
+                    "original_query": query,
+                    "decision_source": "structured",
+                    "route": "currency",
+                    **context,
+                }
+            )
+        release = self._release_intent(cleaned, previous)
+        if release is not None:
+            return release.model_copy(
+                update={
+                    "original_query": query,
+                    "decision_source": "structured",
+                    "route": "release_date",
+                    **context,
+                }
+            )
+        if _EXPLICIT_WEB_COMMAND.search(cleaned) and not is_bare_search_command(cleaned):
+            return self._result(
+                SearchIntentKind.GENERAL_WEB,
+                query,
+                cleaned,
+                "Explicit instruction to search the web.",
+                0.99,
+                decision_source="structured",
+                route="web",
+                **context,
+            )
+        return None
+
+    def route_with_model(
         self,
         query: str,
         *,
         llm: LLMClient | None,
+        context: str | None = None,
         previous: ResolvedSearchIntent | None = None,
         timezone: str | None = None,
         locale: str | None = None,
-        model_routing: bool = True,
+        routes: tuple[str, ...] | list[str] = ROUTER_ROUTES,
     ) -> ResolvedSearchIntent:
-        """Use the selected chat model for ordinary route choice.
+        """Stage B: one fast, non-reasoning model call chooses the capability.
 
-        Deterministic parsing remains responsible for structured, safety-sensitive
-        operations (weather, currency, date/time, explicit tools and explicit web
-        commands). All ordinary questions are deliberately model-routed so a single
-        freshness word cannot force external search.
-
-        ``model_routing=False`` stops before that model call and keeps the
-        deterministic answer. It is the low-effort setting: the structured routes
-        above still fire, and so does an explicit request to search, but nothing
-        *infers* that an ordinary question needs the web. That inference is the
-        accuracy being traded, and it is the only thing traded here -- this is the
-        same value the method already returns when the model declines to decide.
+        The same prompt, inputs and settings are used whatever effort the turn
+        has, so Low and High always route identically. A failure -- no client,
+        a provider error, unparseable output, or output cut off at its limit --
+        is recorded in ``last_router`` and falls back to a direct answer; an
+        explicit request never depends on this, because Stage A already took it.
         """
-        base = self.resolve(query, previous=previous, llm=llm, timezone=timezone, locale=locale)
-        if base.kind is not SearchIntentKind.NONE or not base.original_query.strip():
+
+        cleaned = _SPACE.sub(" ", query or "").strip()
+        base = self._result(
+            SearchIntentKind.NONE,
+            query,
+            cleaned,
+            "Router unavailable; answering directly.",
+            _FALLBACK_CONFIDENCE,
+            timezone=timezone,
+            locale=locale,
+            decision_source="fallback",
+            route="direct",
+        )
+        self.last_router = {"status": "skipped"}
+        if llm is None or not cleaned:
             return base
-
-        decision = self._model_route(query, llm) if model_routing else None
+        enabled = tuple(
+            route for route in ROUTER_ROUTES if route in set(routes) or route == "direct"
+        )
+        user_content = (
+            f"CONVERSATION EXCERPT:\n{context.strip()}\n\nLATEST MESSAGE: {cleaned}"
+            if context and context.strip()
+            else f"LATEST MESSAGE: {cleaned}"
+        )
+        messages = [
+            LLMMessage(role="system", content=route_decision_prompt(enabled)),
+            LLMMessage(role="user", content=user_content),
+        ]
+        finish_reason: str | None = None
+        try:
+            with_metadata = getattr(llm, "chat_with_metadata", None)
+            if callable(with_metadata):
+                result = with_metadata(messages, temperature=0.0)
+                raw = str(getattr(result, "content", "") or "")
+                finish_reason = getattr(result, "finish_reason", None)
+            else:
+                raw = llm.chat(messages, temperature=0.0)
+        except Exception as exc:  # provider errors, timeouts
+            self.last_router = {
+                "status": "failed",
+                "cause": f"provider_error: {type(exc).__name__}",
+            }
+            _LOG.warning("router_failed cause=provider_error error=%s", exc)
+            return base
+        decision = _parse_route_decision(llm, raw, enabled)
         if decision is None:
-            return base.model_copy(
-                update={
-                    "reason": (
-                        "Model routing skipped for a low-effort turn; keeping local chat."
-                        if not model_routing
-                        else "No reliable model route decision; defaulting to local chat."
-                    ),
-                    "confidence": 0.7,
-                    "decision_source": "fallback",
-                }
-            )
-
-        route, confidence = decision
+            cause = "length" if finish_reason == "length" else "unparseable"
+            self.last_router = {"status": "failed", "cause": cause, "finish_reason": finish_reason}
+            _LOG.warning("router_failed cause=%s finish_reason=%s", cause, finish_reason)
+            return base
+        route, search_query, place = decision
+        self.last_router = {"status": "ok", "route": route, "finish_reason": finish_reason}
+        common = {
+            "timezone": timezone,
+            "locale": locale,
+            "decision_source": "model",
+            "route": route,
+        }
         if route == "web":
-            return base.model_copy(
-                update={
-                    "kind": SearchIntentKind.GENERAL_WEB,
-                    "reason": "Selected model identified a current external-information request.",
-                    "confidence": confidence,
-                    "decision_source": "model",
-                }
+            return self._result(
+                SearchIntentKind.GENERAL_WEB,
+                query,
+                search_query or cleaned,
+                "Router: the answer needs sources from the web.",
+                _MODEL_CONFIDENCE,
+                **common,
+            )
+        if route == "calendar":
+            return self._result(
+                SearchIntentKind.CALENDAR,
+                query,
+                cleaned,
+                "Router: the request concerns the user's own schedule.",
+                _MODEL_CONFIDENCE,
+                **common,
+            )
+        if route == "weather":
+            weather = self._weather_intent(
+                cleaned, previous, llm, confirmed=True, place=place or None
+            )
+            if weather is not None:
+                return weather.model_copy(
+                    update={"original_query": query, "confidence": _MODEL_CONFIDENCE, **common}
+                )
+            return self._result(
+                SearchIntentKind.WEATHER,
+                query,
+                cleaned,
+                "Router: weather, but no place was named.",
+                _MODEL_CONFIDENCE,
+                **common,
             )
         reason = (
-            "Selected model identified a personal-memory recall request."
+            "Router: the user asks about their own saved information."
             if route == "memory"
-            else "Selected model identified a normal local chat request."
+            else "Router: answerable from general knowledge and the conversation."
         )
-        return base.model_copy(
-            update={
-                "reason": reason,
-                "confidence": confidence,
-                "decision_source": "model",
-            }
+        return self._result(
+            SearchIntentKind.NONE, query, cleaned, reason, _MODEL_CONFIDENCE, **common
         )
-
-    @staticmethod
-    def _model_route(query: str, llm: LLMClient | None) -> tuple[str, float] | None:
-        if llm is None:
-            return None
-        try:
-            raw = llm.chat(
-                [
-                    LLMMessage(role="system", content=_ROUTE_DECISION_SYSTEM_PROMPT),
-                    LLMMessage(role="user", content=query),
-                ],
-                temperature=0.0,
-            )
-            cleaned = llm.clean_response(raw) if hasattr(llm, "clean_response") else raw
-            match = _ROUTE_DECISION_JSON.search(cleaned)
-            payload = json.loads(match.group(0) if match else cleaned.strip())
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        route = str(payload.get("route", "")).strip().lower()
-        if route not in {"memory", "web", "direct"}:
-            return None
-        try:
-            confidence = float(payload.get("confidence", 0.8))
-        except (TypeError, ValueError):
-            confidence = 0.8
-        return route, min(1.0, max(0.0, confidence))
 
     @staticmethod
     def _model_confirm_location(fragment: str, llm: LLMClient | None) -> str | None:
@@ -617,13 +835,24 @@ class SearchIntentResolver:
         query: str,
         previous: ResolvedSearchIntent | None,
         llm: LLMClient | None = None,
+        *,
+        confirmed: bool = False,
+        place: str | None = None,
     ) -> ResolvedSearchIntent | None:
+        """Find the place and day for a weather request.
+
+        ``confirmed`` means the router already decided this is a weather request,
+        so the weather-word check is skipped and only parameters are extracted;
+        ``place`` is the place the router read from the message, which needs no
+        second confirmation.
+        """
+
         prior_is_weather = previous is not None and previous.kind == SearchIntentKind.WEATHER
-        explicit = _WEATHER_SIGNAL.search(query) is not None
+        explicit = confirmed or _WEATHER_SIGNAL.search(query) is not None
         if not explicit and not prior_is_weather:
             return None
 
-        location: str | None = None
+        location: str | None = place.strip(" .,?!") if place and place.strip() else None
         matched_pattern_index: int | None = None
         for index, pattern in enumerate(
             (
@@ -635,15 +864,21 @@ class SearchIntentResolver:
                 r"(?P<location>[A-Za-z][A-Za-z .'-]{1,60}?)(?:[,;]|$)",
             )
         ):
+            if location is not None:
+                break
             match = re.search(pattern, query, re.IGNORECASE)
             if match:
                 location = match.group("location").strip(" .,?!")
                 matched_pattern_index = index
                 break
-        if location and re.search(
-            r"\b(?:i|you|want|find|check|show|tell|what|when|where|how|today's)\b",
-            location,
-            re.IGNORECASE,
+        if (
+            location
+            and matched_pattern_index is not None
+            and re.search(
+                r"\b(?:i|you|want|find|check|show|tell|what|when|where|how|today's)\b",
+                location,
+                re.IGNORECASE,
+            )
         ):
             location = None
 
@@ -653,8 +888,8 @@ class SearchIntentResolver:
         # a cheap, deterministic model check confirms the guess before it is
         # trusted. A rejection must not silently fall back to "same place as
         # before" either (see `pattern2_rejected` below) -- otherwise "stop
-        # using weather" right after a Tokyo query would resolve to Tokyo's
-        # weather instead of being recognised as unrelated.
+        # using weather" right after a query about one city would resolve to
+        # that city's weather instead of being recognised as unrelated.
         pattern2_rejected = False
         if matched_pattern_index == 1 and location:
             confirmed = self._model_confirm_location(location, llm)
@@ -735,12 +970,13 @@ class SearchIntentResolver:
             entity = previous.entity
         if not entity or entity.lower() in {"it", "this", "that"}:
             return None
+        # A place named at the end of the question ("... in <Place>?"), whatever
+        # it is: capitalised words after "in" or "for", not a list of countries.
         region_match = re.search(
-            r"\b(?:in|for)\s+(India|UK|US|USA|Canada|Australia)\b",
+            r"\b(?:in|for)\s+(?P<region>[A-Z][\w.-]*(?:\s+[A-Z][\w.-]*){0,2})\s*[?.!]*\s*$",
             query,
-            re.I,
         )
-        region = region_match.group(1) if region_match else None
+        region = region_match.group("region") if region_match else None
         if (
             region is None
             and previous is not None

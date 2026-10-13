@@ -7,7 +7,15 @@ import logging
 import time
 from typing import Any
 
-from app.services.llm import LLMMessage
+import requests
+
+from app.core.config import get_settings
+from app.services.llm import (
+    LLMMessage,
+    forget_loaded_models,
+    ollama_loaded_model,
+    ollama_loaded_model_names,
+)
 from app.services.llm_registry.providers import build_client
 from app.services.provider_runtime import store
 from app.services.provider_runtime.budget import (
@@ -41,6 +49,81 @@ def _sampling(metadata: dict[str, Any]) -> dict[str, float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return {}
     return {"temperature": min(2.0, max(0.0, float(value)))}
+
+
+#: Usage fields a provider may report for one request.
+_USAGE_KEYS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "load_ms",
+    "prefill_ms",
+    "decode_ms",
+)
+
+
+def _result_usage(result: Any) -> dict[str, Any]:
+    return {
+        key: getattr(result, key, None)
+        for key in _USAGE_KEYS
+        if getattr(result, key, None) is not None
+    }
+
+
+#: Smallest output limit worth sending; below this a request is refused instead.
+_MIN_FITTED_OUTPUT = 256
+
+
+def _fit_output_to_window(prompt_tokens: int, max_tokens: int | None, window: int) -> int | None:
+    """``max_tokens`` lowered so prompt plus output fits ``window``, when it can.
+
+    The prompt estimate is padded by 10% because it counts characters, not the
+    model's tokens. A prompt too large to leave a useful output is left alone,
+    and the context check refuses it as before.
+    """
+
+    if not max_tokens or not window:
+        return max_tokens
+    padded_prompt = int(prompt_tokens * 1.1) + 64
+    if padded_prompt + max_tokens <= window:
+        return max_tokens
+    room = window - padded_prompt
+    if room < _MIN_FITTED_OUTPUT:
+        return max_tokens
+    return room
+
+
+def _reuse_loaded_context(provider: dict, model: dict, needed: int) -> int:
+    """Keep the context size the model is already loaded with, when it is larger.
+
+    A local runtime reloads the model whenever the requested context size
+    changes. Requests of different sizes -- a small helper call, then a long
+    answer -- therefore reloaded the model back and forth within one turn, 2-3 s
+    each time. Asking for the size that is already loaded never allocates new
+    memory (it is held either way) and avoids the reload. Growing is still
+    allowed: a request that needs more than is loaded gets what it needs.
+
+    Only Ollama exposes the loaded size, and only when the setting allows it.
+    Anything unknown falls back to the size the request needs.
+    """
+
+    if provider.get("provider_type") != "ollama":
+        return needed
+    if str(getattr(get_settings(), "ollama_context_reuse", "on")).lower() == "off":
+        return needed
+    base_url = provider.get("base_url")
+    if not base_url:
+        return needed
+    loaded = ollama_loaded_model(str(base_url), str(model.get("model_name") or ""))
+    if loaded is None:
+        return needed
+    window = model.get("context_window")
+    loaded_context = int(loaded["context_length"])
+    if loaded_context <= needed:
+        return needed
+    if isinstance(window, int) and window > 0 and loaded_context > window:
+        return needed
+    return loaded_context
 
 
 class ProviderRuntimeService:
@@ -136,6 +219,18 @@ class ProviderRuntimeService:
     ) -> RuntimeResult:
         route = select(request_type, route_name)
         estimates = estimate_tokens(messages, max_tokens)
+        # An output limit is a ceiling. When the prompt fits but prompt plus limit
+        # would not, lower the limit to what the model's window can hold instead
+        # of refusing the request -- that is what lets the same budgets work on a
+        # model with a small context window.
+        fitted = _fit_output_to_window(
+            estimates["prompt_tokens_estimate"],
+            max_tokens,
+            route["model_record"].get("context_window") or DEFAULT_CONTEXT_WINDOW,
+        )
+        if fitted != max_tokens:
+            max_tokens = fitted
+            estimates = estimate_tokens(messages, max_tokens)
         budget = context_check(estimates, route["model_record"].get("context_window"), max_tokens)
         safe_metadata, redaction = safe_value(
             {**metadata, "budget": budget, "message_count": len(messages)}
@@ -212,9 +307,13 @@ class ProviderRuntimeService:
             try:
                 # The fallback model has its own window, so size the request against the
                 # model actually about to serve it rather than reusing the primary's.
-                num_ctx = fit_context(
-                    budget["required_tokens"],
-                    model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
+                num_ctx = _reuse_loaded_context(
+                    provider,
+                    model,
+                    fit_context(
+                        budget["required_tokens"],
+                        model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
+                    ),
                 )
                 client = build_client(
                     provider,
@@ -255,7 +354,7 @@ class ProviderRuntimeService:
                             finish_reason = event.get("finish_reason")
                             stream_usage = {
                                 key: event.get(key)
-                                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                                for key in _USAGE_KEYS
                                 if event.get(key) is not None
                             }
                     result_content, usage = (
@@ -269,11 +368,7 @@ class ProviderRuntimeService:
                     result_content = result.content
                     tool_calls = result.tool_calls
                     thinking = result.thinking or ""
-                    usage = {
-                        "prompt_tokens": result.prompt_tokens,
-                        "completion_tokens": result.completion_tokens,
-                        "total_tokens": result.total_tokens,
-                    }
+                    usage = _result_usage(result)
                     finish_reason = result.finish_reason
                 store.record_rate(
                     route["route_name"],
@@ -336,7 +431,7 @@ class ProviderRuntimeService:
                             redaction,
                             content=result.content,
                             tool_calls=result.tool_calls,
-                            usage={"total_tokens": result.total_tokens},
+                            usage=_result_usage(result),
                             latency=int((time.perf_counter() - started) * 1000),
                             thinking=result.thinking,
                             finish_reason=result.finish_reason,
@@ -399,6 +494,9 @@ class ProviderRuntimeService:
         finish_reason=None,
         detail=None,
     ) -> RuntimeResult:
+        # The request that just ended may have loaded or resized a model, so the
+        # next request must look again rather than trust what was cached before.
+        forget_loaded_models()
         metadata = (store.get_request(request_id) or {}).get("metadata") or {}
         if partial is not None:
             metadata["partial_response"] = partial
@@ -444,6 +542,69 @@ class ProviderRuntimeService:
             error_category=category,
             error_detail=detail or "",
         )
+
+    def warm(self, route_name: str = "chat") -> dict[str, Any]:
+        """Load the routed chat model before the first message needs it.
+
+        Local Ollama only, and only when nothing would be lost: the model is not
+        already loaded, and no other chat model is loaded that the load might
+        evict on a machine short of memory. The setting ``chat_model_warmup``
+        turns it off. Loads at the context size an ordinary turn asks for, so
+        the first message reuses the instance instead of reloading it.
+        """
+
+        settings = get_settings()
+        if not getattr(settings, "chat_model_warmup", True):
+            return {"status": "disabled"}
+        try:
+            route = select("chat", route_name)
+        except Exception:
+            return {"status": "no_route"}
+        provider, model = route["provider_record"], route["model_record"]
+        base_url = str(provider.get("base_url") or "").rstrip("/")
+        name = str(model.get("model_name") or "")
+        if provider.get("provider_type") != "ollama" or not base_url or not name:
+            return {"status": "not_local"}
+        loaded = ollama_loaded_model_names(base_url)
+        if loaded is None:
+            return {"status": "unreachable"}
+        if name in loaded:
+            return {"status": "already_loaded"}
+        ignored = {name}
+        try:
+            ignored.add(str(select("chat", "embedding")["model"]))
+        except Exception:
+            pass
+        others = [item for item in loaded if item not in ignored]
+        if others:
+            return {"status": "skipped", "reason": "another model is loaded", "loaded": others}
+        # An ordinary turn: a prompt of roughly a thousand tokens plus the answer limit.
+        num_ctx = fit_context(
+            1200 + settings.chat_num_predict,
+            model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
+        )
+        started = time.perf_counter()
+        try:
+            requests.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": name,
+                    "messages": [],
+                    "keep_alive": settings.ollama_keep_alive,
+                    "options": {"num_ctx": num_ctx},
+                },
+                timeout=provider.get("timeout_seconds") or 120,
+            ).raise_for_status()
+        except Exception as exc:
+            return {"status": "failed", "error": type(exc).__name__}
+        finally:
+            forget_loaded_models()
+        return {
+            "status": "warmed",
+            "model": name,
+            "num_ctx": num_ctx,
+            "ms": int((time.perf_counter() - started) * 1000),
+        }
 
     def start_stream(self, **kwargs) -> dict:
         route = select(kwargs["request_type"], kwargs.get("route_name"))

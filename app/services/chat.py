@@ -21,6 +21,7 @@ from app.db.session import build_engine
 from app.models import ChatGeneration, ChatMessage
 from app.repositories.app_store import AppStore
 from app.services.agent_core.guidance import agent_run_guidance
+from app.services.calendar.intent import is_social_pleasantry
 from app.services.calendar.service import (
     CalendarContextService,
     CalendarTurnExecution,
@@ -65,14 +66,18 @@ from app.services.projects import ProjectContextService
 from app.services.rules.resolver import RuleResolver
 from app.services.search.citations import validate_citation_markers
 from app.services.search.content import FactResult, extract_release_date, run_extractors
-from app.services.search.intent import SearchIntentResolver, resolve_search_intent
+from app.services.search.intent import (
+    SearchIntentResolver,
+    is_bare_search_command,
+    resolve_search_intent,
+)
 from app.services.search.live_data import (
     FrankfurterClient,
     LiveDataError,
     OpenMeteoClient,
     local_datetime_answer,
 )
-from app.services.search.types import ResolvedSearchIntent, SearchIntentKind
+from app.services.search.types import ResolvedSearchIntent, SearchIntentKind, SearchOptions
 from app.services.source_citations import CitationFormatter
 from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.tasks import TaskContextService
@@ -81,7 +86,6 @@ from app.services.web_search import (
     EXTRACTION_FAILURE_MESSAGE,
     GROUNDING_FAILURE_MESSAGE,
     WebContext,
-    WebSearchDecisionService,
     WebSearchService,
 )
 
@@ -166,16 +170,42 @@ _PROMPT_CORE = (
     "context conflicts, prefer active goals, active projects, current profile facts, "
     "and current preferences. For personal questions about the user's name, age, "
     "location, preferences, goals, or projects, answer only from memory context or "
-    "conversation history. If the fact is not in memory and not a time-sensitive "
-    "question, you may answer from general knowledge confidently. "
-    "IMPORTANT: Either answer confidently or say you are unsure. Never combine "
-    "uncertainty with a partial answer. Do NOT say 'I'm not sure, but...' followed "
-    "by an answer attempt. If you know the answer, state it directly. If you do not "
-    "know, say only: I'm not sure about that. I can look it up if you'd like. "
-    "Never produce dead-end responses like 'I don't know yet' for general factual "
-    "questions. Whether this question needed current web information was already "
-    "decided before you were asked to answer. Do not re-decide that here or offer "
-    "to look things up yourself. "
+    "conversation history. "
+    "Answer the user's actual request directly. Give recommendations, explanations, "
+    "comparisons, coding help, writing and opinions from your own knowledge; they do "
+    "not need a lookup. State facts you know plainly. If a specific fact is genuinely "
+    "unknown to you, say so in one sentence instead of guessing, and still give "
+    "whatever help you can. Never reply with only an offer to search. Never say or "
+    "imply that you searched, checked or verified anything unless web context below "
+    "shows that a search ran. "
+)
+
+#: How Low answers. Low is the default: fast, useful, and short by design.
+_PROMPT_LOW = (
+    "Reply concisely: lead with the answer, then only the details that matter. If the "
+    "answer depends on information that may have changed since your training and no "
+    "web context is provided, give your best answer, say in one short clause that it "
+    "may be out of date, and offer to search the web. When web context is provided, do "
+    "not add that disclaimer. "
+)
+
+#: How High answers. It reasons first; this is about what the answer contains.
+_PROMPT_HIGH = (
+    "Give a complete, well-organized answer suited to the task. Work through difficult "
+    "problems carefully and state key assumptions, trade-offs and edge cases when they "
+    "matter. Keep simple answers short; do not pad. If the answer depends on "
+    "information that may have changed since your training and no web context is "
+    "provided, say which parts may be out of date and offer to search the web. "
+)
+
+#: Used only when a search ran and returned nothing usable: the answer must say
+#: so first, then help from general knowledge without presenting anything
+#: time-sensitive as current.
+_PROMPT_WEB_UNAVAILABLE = (
+    "A web search ran for this message and returned no usable sources. Start with one "
+    "short sentence saying current information could not be verified. Then help from "
+    "general knowledge where the answer does not depend on current information. Do not "
+    "present time-sensitive facts as current or verified, and do not cite sources. "
 )
 
 #: How to use and cite retrieved evidence. Meaningless on a turn that
@@ -189,20 +219,22 @@ _PROMPT_WEB = (
     "your answer. For web-grounded prompts, do not use memory, conversation history, "
     "or general knowledge to fill gaps in the retrieved web evidence. The web context "
     "contains extracted evidence only; do not infer beyond it. "
-    "For questions about current rankings, latest products, prices, versions, news, "
-    "release dates, champions, schedules, or any time-sensitive fact: answer ONLY "
-    "from the web evidence. If the web evidence does not contain the answer, say "
-    "only: I searched the web but could not find sufficiently reliable current "
-    "sources. Do NOT add general knowledge or filler after that statement. Do NOT "
-    "answer from your training data for time-sensitive questions. "
-    "If search results cover multiple unrelated entities with the same name (e.g. "
-    "'Fable' the Xbox game vs other uses), note the ambiguity and present results "
-    "grouped by entity. Do not merge unrelated entities into one answer. "
+    "For time-sensitive facts, answer only from the web evidence. If the web evidence "
+    "does not contain the answer, say only: I searched the web but could not find "
+    "sufficiently reliable current sources. Do NOT add general knowledge or filler "
+    "after that statement. Do NOT answer from your training data for time-sensitive "
+    "questions. "
+    "If the results describe different things that share a name, say so and group the "
+    "results by entity. Do not merge unrelated entities into one answer. "
+    "When the evidence covers several variants of what was asked, say which variant "
+    "each figure applies to. "
     "Do NOT generate a Sources or References block yourself. The backend will "
     "append verified sources automatically. Do NOT invent URLs or cite pages that "
     "were not provided in the web context. "
     "Answer the user's question directly first, then provide brief supporting "
     "evidence. Do not output raw search-result titles or snippet labels. "
+    "The web search for this message has already run: do not offer to search the web, "
+    "and do not call the sources possibly out of date unless their own dates show it. "
 )
 
 #: How to treat project and task context. Left out when the turn carries
@@ -264,17 +296,17 @@ class NeoChatService:
         active_project_id: str | None = None,
         active_project_name: str | None = None,
         image_ids: list[str] | None = None,
-        effort: str = "high",
+        effort: str = "low",
     ) -> None:
         self.db = db
         self.store = AppStore(db)
-        #: Low effort keeps only the deterministic half of the pipeline. What it
-        #: drops is every step that spends a *second* model call to improve an
-        #: answer the first call could already give: choosing the route, and
-        #: re-examining a reply that sounds unsure. On a local single-slot runtime
-        #: those calls are not overlapped with anything -- they are added to the
-        #: wait, and on a greeting they change nothing about the answer.
-        self.low_effort = effort == "low"
+        #: Effort changes how thoroughly a turn is processed, never what it may do.
+        #: Both levels route the same way and reach the same capabilities. High
+        #: reasons before substantive answers and researches more deeply when it
+        #: searches; Low answers without extended reasoning and stays concise.
+        self.effort = "high" if effort == "high" else "low"
+        self.reasoning = self.effort == "high"
+        self.low_effort = not self.reasoning
         #: Gallery items the user attached to this turn, already resolved to
         #: base64 so the provider layer never touches the gallery. Empty when the
         #: turn carries no image or when the routed model cannot see one.
@@ -284,7 +316,7 @@ class NeoChatService:
         if ollama is None:
             from app.services.llm import get_llm_client
 
-            ollama = get_llm_client(route_name="chat")
+            ollama = get_llm_client(route_name="chat", disable_thinking=not self.reasoning)
         self.ollama = ollama
         self.memory_runtime = memory_runtime
         self.active_project_id = active_project_id
@@ -295,6 +327,24 @@ class NeoChatService:
             "warnings": [],
         }
         self.settings = get_settings()
+        # Helper calls -- routing, calendar extraction, query planning, place
+        # checks -- never reason, whatever the answer may do: they emit a few
+        # tokens of JSON, and reasoning first only spent their output limit and
+        # seconds per call. A client without ``derive`` (a test double) is used
+        # as it is.
+        derive = getattr(ollama, "derive", None)
+        if callable(derive):
+            self.helper_llm = derive(
+                disable_thinking=True, num_predict=self.settings.chat_helper_num_predict
+            )
+            self.calendar_llm = derive(
+                disable_thinking=True,
+                num_predict=self.settings.chat_calendar_helper_num_predict,
+            )
+            self.quick_llm = derive(disable_thinking=True)
+        else:
+            self.helper_llm = self.calendar_llm = self.quick_llm = ollama
+        self._timings: dict[str, Any] = {}
         self.memory_enabled = (
             bool(
                 self.settings.memory_enabled
@@ -319,7 +369,7 @@ class NeoChatService:
             memory_orchestrator,
             enabled=(self.memory_enabled and self.memory_direct_answers_enabled),
         )
-        self.web_search = WebSearchService(llm=self.ollama)
+        self.web_search = WebSearchService(llm=self.helper_llm)
         self.project_context = ProjectContextService()
         self.task_context = TaskContextService()
         self.calendar_context = CalendarContextService()
@@ -384,32 +434,42 @@ class NeoChatService:
             if self.memory_enabled
             else f"Memory context:\n{self._compact_context(context)}"
         )
-        # Only what the turn can actually use. A low-effort turn drops the blocks
-        # whose subject is absent -- there is nothing to cite when nothing was
-        # retrieved -- because gemma4-class models use sliding-window attention
-        # and llama.cpp re-processes the whole prompt on every call, so an unused
-        # block is paid for again on every single turn, not just the first.
-        carries_web = bool(
-            web_context is not None and (web_context.needed or web_context.citations)
+        # Only what the turn can actually use, the same way at either effort. The
+        # web rules tell the model to answer only from retrieved evidence, so on a
+        # turn that retrieved nothing they invited "I searched the web but could
+        # not find..." without any search having run.
+        has_evidence = bool(
+            web_context is not None and web_context.needed and web_context.citations
+        )
+        web_unavailable = bool(
+            web_context is not None and web_context.needed and not web_context.citations
         )
         carries_workspace = bool(project_context or task_context)
-        sections = [_PROMPT_CORE]
-        if carries_web or not self.low_effort:
-            sections.append(_PROMPT_WEB)
-        if carries_workspace or not self.low_effort:
-            sections.append(_PROMPT_WORKSPACE)
+        # What never changes within a conversation comes first and what changes
+        # per turn comes last. A runtime with prefix caching then reuses the
+        # whole stable part from one turn to the next instead of re-reading it;
+        # on a turn that searched, the evidence rules no longer split it.
+        stable = [_PROMPT_CORE]
+        if carries_workspace:
+            stable.append(_PROMPT_WORKSPACE)
+        stable.append(_PROMPT_HIGH if self.reasoning else _PROMPT_LOW)
+        stable.append(_PROMPT_AUTHORITY)
+        per_turn = []
+        if has_evidence:
+            per_turn.append(_PROMPT_WEB)
+        elif web_unavailable:
+            per_turn.append(_PROMPT_WEB_UNAVAILABLE)
         if gallery_context:
-            sections.append(_PROMPT_GALLERY)
-        sections.append(_PROMPT_AUTHORITY)
+            per_turn.append(_PROMPT_GALLERY)
         system_prompt = (
-            "".join(sections)
+            "".join(stable) + f"{memory_policy}\n\n"
+            f"{memory_section}\n\n"
+            f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
+            + ("".join(per_turn).strip() + "\n\n" if per_turn else "")
             + f"Calendar activity this turn: {_CALENDAR_EXECUTION_STATEMENT[calendar_execution]}"
             "\n\n"
-            f"{memory_policy}\n\n"
-            f"{memory_section}\n\n"
             f"Project context:\n{project_section}\n\n"
             f"Task context:\n{task_section}\n\n"
-            f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
             f"Web context:\n{web_section}"
             + (f"\n\nGallery context:\n{gallery_context}" if gallery_context else "")
         )
@@ -426,10 +486,21 @@ class NeoChatService:
         # already knows about them instead of being handed an error, so a
         # text-only route still gives a useful answer.
         fallback = self.image_text_fallback()
+        content = f"{prompt}\n\n{fallback}" if fallback else prompt
+        searched_for = _searched_for(prompt, web_context)
+        if searched_for:
+            # Said in the user turn, not the system prompt: a model given only
+            # "search" or "yes" there answers that literally and ignores a
+            # system note. The stored message is unchanged.
+            content = (
+                f'{content}\n\n(The web search for this message looked up "{searched_for}". '
+                "Use it to answer what this message asks, citing the web context; an "
+                "instruction to search or an agreement refers to that question.)"
+            )
         messages.append(
             LLMMessage(
                 role="user",
-                content=f"{prompt}\n\n{fallback}" if fallback else prompt,
+                content=content,
                 images=images or self.turn_images or None,
             )
         )
@@ -650,6 +721,10 @@ class NeoChatService:
         """
         self._turn_started = time.perf_counter()
         self._turn_queued_ms = 0
+        self._timings = {}
+        self._request_marks = {
+            id(client): len(getattr(client, "request_ids", []) or []) for client in self._clients()
+        }
         if turn_started_at is None:
             return
         # A stored timestamp comes back naive on SQLite, and every one this
@@ -782,7 +857,7 @@ class NeoChatService:
             prompt,
             chat_id=chat_id,
             history=persisted_messages,
-            llm=self.ollama,
+            llm=self.helper_llm,
             timezone=timezone,
             locale=locale,
         )
@@ -792,11 +867,30 @@ class NeoChatService:
             self.db.commit()
             self.last_web_debug = {"pending_action_resolved": True, "web_search_needed": False}
             return reply
-        calendar_result = self.calendar_context.handle_prompt(
-            prompt, llm=self.ollama, timezone=timezone, locale=locale
-        )
+        # Asked about saved images: the gallery answers, so nothing that would
+        # answer instead -- live data, the web, a stored memory -- is consulted.
+        gallery = self._gallery_matches(prompt, chat_id)
+        if gallery is not None:
+            search_intent = search_intent.model_copy(update={"route": "gallery"})
+        if gallery is None and search_intent.route is None:
+            search_intent = self._route_turn(
+                prompt,
+                persisted_messages,
+                search_intent,
+                timezone=timezone,
+                locale=locale,
+                message_id=user_message.id,
+            )
+        calendar_result = None
+        if gallery is None and search_intent.kind is SearchIntentKind.CALENDAR:
+            calendar_started = time.perf_counter()
+            calendar_result = self.calendar_context.handle_prompt(
+                prompt, llm=self.calendar_llm, timezone=timezone, locale=locale
+            )
+            self._timings["calendar_ms"] = int((time.perf_counter() - calendar_started) * 1000)
         if calendar_result is not None:
             reply, metadata = calendar_result
+            metadata = _with_timings(metadata, self._timings_snapshot(search_intent))
             calendar_refinement = metadata.pop("_calendar_refinement", None)
             if calendar_refinement:
                 self._routing_diagnostic(
@@ -831,9 +925,6 @@ class NeoChatService:
                 "web_search_needed": False,
             }
             return _CALENDAR_NOT_COMPLETED_REPLY
-        # Asked about saved images: the gallery answers, so nothing that would
-        # answer instead -- live data, the web, a stored memory -- is consulted.
-        gallery = self._gallery_matches(prompt, chat_id)
         structured_live = (
             None
             if gallery is not None
@@ -846,6 +937,7 @@ class NeoChatService:
         )
         if structured_live is not None:
             reply, metadata = structured_live
+            metadata = _with_timings(metadata, self._timings_snapshot(search_intent))
             self.store.add_chat_message(chat_id, "assistant", reply, **metadata)
             self.db.commit()
             self.last_web_debug = {
@@ -857,10 +949,12 @@ class NeoChatService:
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
         }:
-            web_query = self._web_query_with_memory_region(prompt, context)
+            web_started = time.perf_counter()
+            web_query, web_hint = self._web_query_for(prompt, search_intent)
             web_context = self.web_search.build_context_forced(
-                web_query, hint=search_intent.resolved_query
+                web_query, hint=web_hint, options=self._search_options()
             )
+            self._timings["search_ms"] = int((time.perf_counter() - web_started) * 1000)
         else:
             web_query = prompt
             web_context = WebContext(query=prompt, needed=False)
@@ -887,7 +981,7 @@ class NeoChatService:
             )
             return direct_reply
         web_failure = self._web_failure_reply(web_context)
-        if web_failure is not None:
+        if web_failure is not None and not self._answers_without_evidence(web_context):
             self.last_web_debug = self._web_debug(
                 web_context,
                 context=context,
@@ -963,12 +1057,13 @@ class NeoChatService:
         model_name = None
         route_name = "web_search" if web_context.needed else "chat"
         trace_id = None
-        uncertainty_refinement: dict[str, Any] | None = None
+        recovery: dict[str, Any] | None = None
+        answer_llm = self._answer_client(search_intent)
+        budget = self._num_predict(prompt, context, reasoning=self._answer_reasons(search_intent))
         try:
-            result = self._generate_complete(
-                messages,
-                num_predict=self._num_predict(prompt, context),
-            )
+            generation_started = time.perf_counter()
+            result = self._generate_complete(messages, num_predict=budget, llm=answer_llm)
+            self._timings["generation_ms"] = int((time.perf_counter() - generation_started) * 1000)
             if web_context.citations and not self._has_web_citation_marker(
                 result.content, web_context
             ):
@@ -979,29 +1074,44 @@ class NeoChatService:
                 )
             else:
                 reply = self._with_web_citations(result.content, web_context)
-            if (
-                not self.low_effort
-                and search_intent.kind is SearchIntentKind.NONE
-                and not web_context.needed
-                and gallery is None
-                and _reply_expresses_uncertainty(reply)
-            ):
-                refined = self._refine_uncertain_reply(
+            failure = self._classify_answer_failure(
+                reply,
+                finish_reason=result.finish_reason,
+                intent=search_intent,
+                web_context=web_context,
+                gallery=gallery,
+            )
+            if failure is not None:
+                recovery_started = time.perf_counter()
+                recovered = self._recover_answer(
+                    failure,
                     prompt,
+                    messages=messages,
                     context=context,
                     history=history,
                     project_context=project_context,
                     task_context=task_context,
+                    llm=answer_llm,
+                    budget=budget,
                 )
-                if refined is not None:
-                    reply, web_context, refined_result, uncertainty_refinement = refined
+                recovery = {"kind": failure, **recovered["recovery"]}
+                if recovered.get("reply") is not None:
+                    reply = recovered["reply"]
+                    web_context = recovered.get("web_context") or web_context
                     route_name = "web_search" if web_context.needed else route_name
-                    if refined_result is not None:
-                        result = refined_result
+                    if recovered.get("result") is not None:
+                        result = recovered["result"]
+                if failure == "empty" and not reply.strip():
+                    reply = _EMPTY_ANSWER_REPLY
+                if recovery.get("result") == "search_failed":
+                    reply = f"{reply.rstrip()}\n\n{_SEARCH_FOUND_NOTHING_NOTE}"
+                recovery["ms"] = int((time.perf_counter() - recovery_started) * 1000)
+                self._timings["recovery"] = recovery
             prompt_tokens = result.prompt_tokens
             completion_tokens = result.completion_tokens
             total_tokens = result.total_tokens
             thinking = result.thinking
+            self._note_unrequested_reasoning(answer_llm, thinking)
             finish_reason = result.finish_reason
             provider_name = result.provider_name or result.provider_id
             model_name = result.model_name or result.model_id
@@ -1023,15 +1133,15 @@ class NeoChatService:
                 )
                 raise
         memory_extraction = {"status": "scheduled", "source_message_id": str(user_message.id)}
-        if uncertainty_refinement is not None:
+        if recovery is not None:
             self._routing_diagnostic(
                 chat_id,
                 prompt,
                 message_id=user_message.id,
-                selected_route="web_search",
-                component="uncertainty_refinement",
-                final_status="refined",
-                extra=uncertainty_refinement,
+                selected_route="web_search" if recovery.get("kind") == "knowledge_gap" else "llm",
+                component="answer_recovery",
+                final_status=str(recovery.get("result")),
+                extra=recovery,
             )
         assistant = self.store.add_chat_message(
             chat_id,
@@ -1057,11 +1167,7 @@ class NeoChatService:
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                     final_answer=reply,
                 ),
-                **(
-                    {"uncertainty_refinement": uncertainty_refinement}
-                    if uncertainty_refinement
-                    else {}
-                ),
+                "timings": self._timings_snapshot(search_intent),
                 **(
                     {"gallery_results": gallery.shown()}
                     if gallery is not None and gallery.items
@@ -1157,7 +1263,14 @@ class NeoChatService:
             generation_id=generation_id,
             generation_lease_token=generation_lease_token,
         ):
-            if event.get("type") == "done":
+            kind = event.get("type")
+            # Recorded as events leave, before the generator resumes, so the
+            # message persisted at the end of the turn already carries them.
+            if kind in {"status", "thinking", "chunk", "replace"}:
+                self._timings.setdefault("first_event_ms", self._turn_duration_ms())
+            if kind in {"chunk", "replace"} and str(event.get("content") or "").strip():
+                self._timings.setdefault("first_content_ms", self._turn_duration_ms())
+            if kind == "done":
                 event = {**event, "duration_ms": self._turn_duration_ms()}
             yield event
 
@@ -1380,7 +1493,7 @@ class NeoChatService:
             prompt,
             chat_id=chat_id,
             history=search_history,
-            llm=self.ollama,
+            llm=self.helper_llm,
             timezone=timezone,
             locale=locale,
         )
@@ -1403,11 +1516,31 @@ class NeoChatService:
                 "web_debug": self.last_web_debug,
             }
             return
-        calendar_result = self.calendar_context.handle_prompt(
-            prompt, llm=self.ollama, timezone=timezone, locale=locale
-        )
+        # Asked about saved images: the gallery answers, so nothing that would
+        # answer instead -- live data, the web, a stored memory -- is consulted.
+        gallery = self._gallery_matches(prompt, chat_id)
+        if gallery is not None:
+            search_intent = search_intent.model_copy(update={"route": "gallery"})
+        if gallery is None and search_intent.route is None:
+            yield {"type": "status", "content": "Understanding request"}
+            search_intent = self._route_turn(
+                prompt,
+                search_history,
+                search_intent,
+                timezone=timezone,
+                locale=locale,
+                message_id=routing_message_id,
+            )
+        calendar_result = None
+        if gallery is None and search_intent.kind is SearchIntentKind.CALENDAR:
+            calendar_started = time.perf_counter()
+            calendar_result = self.calendar_context.handle_prompt(
+                prompt, llm=self.calendar_llm, timezone=timezone, locale=locale
+            )
+            self._timings["calendar_ms"] = int((time.perf_counter() - calendar_started) * 1000)
         if calendar_result is not None:
             reply, metadata = calendar_result
+            metadata = _with_timings(metadata, self._timings_snapshot(search_intent))
             calendar_refinement = metadata.pop("_calendar_refinement", None)
             if calendar_refinement:
                 self._routing_diagnostic(
@@ -1467,9 +1600,6 @@ class NeoChatService:
                 "response_kind": _CALENDAR_NOT_COMPLETED_METADATA["response_kind"],
             }
             return
-        # Asked about saved images: the gallery answers, so nothing that would
-        # answer instead -- live data, the web, a stored memory -- is consulted.
-        gallery = self._gallery_matches(prompt, chat_id)
         structured_live = (
             None
             if gallery is not None
@@ -1482,6 +1612,7 @@ class NeoChatService:
         )
         if structured_live is not None:
             reply, metadata = structured_live
+            metadata = _with_timings(metadata, self._timings_snapshot(search_intent))
             assistant = persist_assistant(
                 reply,
                 **metadata,
@@ -1507,11 +1638,12 @@ class NeoChatService:
             SearchIntentKind.GENERAL_WEB,
             SearchIntentKind.RELEASE_DATE,
         }:
-            web_query = self._web_query_with_memory_region(prompt, context)
-            yield {"type": "status", "content": "Searching trusted sources"}
+            web_query, web_hint = self._web_query_for(prompt, search_intent)
+            yield {"type": "status", "content": "Searching the web"}
             web_context = self.web_search.build_context_forced(
-                web_query, hint=search_intent.resolved_query
+                web_query, hint=web_hint, options=self._search_options()
             )
+            self._timings["search_ms"] = int((time.perf_counter() - web_started) * 1000)
         else:
             web_query = prompt
             web_context = WebContext(query=prompt, needed=False)
@@ -1555,7 +1687,7 @@ class NeoChatService:
             }
             return
         web_failure = self._web_failure_reply(web_context)
-        if web_failure is not None:
+        if web_failure is not None and not self._answers_without_evidence(web_context):
             self.last_web_debug = self._web_debug(
                 web_context,
                 context=context,
@@ -1572,6 +1704,7 @@ class NeoChatService:
                 "metadata": {
                     "search_intent": search_intent.model_dump(mode="json"),
                     "web_debug": self.last_web_debug,
+                    "timings": self._timings_snapshot(search_intent),
                 },
             }
             assistant = persist_assistant(
@@ -1613,6 +1746,7 @@ class NeoChatService:
                 "metadata": {
                     "search_intent": search_intent.model_dump(mode="json"),
                     "web_debug": self.last_web_debug,
+                    "timings": self._timings_snapshot(search_intent),
                 },
             }
             assistant = persist_assistant(
@@ -1675,86 +1809,25 @@ class NeoChatService:
         # writer wait until SQLite's timeout and fail with "database is locked".
         self.db.commit()
 
-        raw_reply = ""
-        streamed_thinking = ""
-        final_metadata: dict[str, Any] = {
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "total_tokens": None,
-            "duration_ms": None,
-            "finish_reason": None,
-        }
-        buffer_for_validation = bool(web_context.needed)
+        answer_llm = self._answer_client(search_intent)
+        # Text that answers from web evidence is held back until its citations are
+        # checked; everything else streams as it is written.
+        buffer_for_validation = bool(web_context.needed and web_context.citations)
         if buffer_for_validation:
-            yield {"type": "status", "content": "Reading and validating evidence"}
-        output_budget = self._num_predict(prompt, context)
-        # What the client has actually received. Continuation text is accumulated but not
-        # streamed, so this is the only reliable way to know whether the browser is showing
-        # the whole answer or just the first call's output.
-        streamed_reply = ""
+            yield {"type": "status", "content": _writing_from_sources(web_context)}
+        output_budget = self._num_predict(
+            prompt, context, reasoning=self._answer_reasons(search_intent)
+        )
+        generation_started = time.perf_counter()
         try:
-            for event in self.ollama.chat_stream(
-                messages,
-                temperature=0.2,
-                num_predict=output_budget,
-            ):
-                if event["type"] == "chunk":
-                    raw_reply += event["content"]
-                    if not buffer_for_validation:
-                        streamed_reply += event["content"]
-                        yield event
-                    continue
-                if event["type"] == "thinking":
-                    streamed_thinking += event["content"]
-                    yield event
-                    continue
-                final_metadata = event
-            continuation_count = 0
-            while final_metadata.get("finish_reason") == "length" and continuation_count < 2:
-                continuation_count += 1
-                yield {
-                    "type": "status",
-                    "content": "Continuing a response that reached the model limit",
-                }
-                # An assistant turn with no text carries nothing to continue from, and some
-                # providers reject empty turns outright.
-                continuation_messages = [
-                    *messages,
-                    *(
-                        [LLMMessage(role="assistant", content=raw_reply)]
-                        if raw_reply.strip()
-                        else []
-                    ),
-                    LLMMessage(
-                        role="user",
-                        content=(
-                            "Continue the same answer exactly where it stopped. "
-                            "Do not repeat earlier text. Finish the requested answer."
-                        ),
-                    ),
-                ]
-                continuation = ""
-                continuation_metadata: dict[str, Any] = {}
-                # Grow the budget each round. Repeating the same cap makes a model that
-                # overspends on reasoning fail identically every time.
-                retry_budget = min(output_budget * (continuation_count + 1), 8192)
-                for event in self.ollama.chat_stream(
-                    continuation_messages,
-                    temperature=0.2,
-                    num_predict=retry_budget,
-                ):
-                    if event["type"] == "chunk":
-                        continuation += str(event.get("content") or "")
-                    elif event["type"] == "thinking":
-                        streamed_thinking += str(event.get("content") or "")
-                        yield event
-                    elif event["type"] == "done":
-                        continuation_metadata = event
-                raw_reply = _append_without_overlap(raw_reply, continuation)
-                final_metadata = _merge_generation_metadata(
-                    final_metadata,
-                    continuation_metadata,
-                )
+            (
+                raw_reply,
+                final_metadata,
+                streamed_reply,
+                streamed_thinking,
+            ) = yield from self._stream_answer(
+                answer_llm, messages, output_budget, buffer_content=buffer_for_validation
+            )
         except Exception as exc:
             if not web_context.citations:
                 self.last_web_debug = self._web_debug(
@@ -1807,8 +1880,9 @@ class NeoChatService:
             }
             return
 
+        self._timings["generation_ms"] = int((time.perf_counter() - generation_started) * 1000)
         incomplete = final_metadata.get("finish_reason") == "length"
-        cleaned_reply = self.ollama.clean_response(raw_reply)
+        cleaned_reply = answer_llm.clean_response(raw_reply)
         if incomplete:
             reply = (
                 "The selected model repeatedly reached its output limit before it "
@@ -1827,57 +1901,109 @@ class NeoChatService:
             )
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
-        uncertainty_refinement: dict[str, Any] | None = None
-        if (
-            not incomplete
-            and not self.low_effort
-            and search_intent.kind is SearchIntentKind.NONE
-            and not web_context.needed
-            and gallery is None
-            and _reply_expresses_uncertainty(reply)
-        ):
-            yield {"type": "status", "content": "Searching trusted sources"}
-            refined = self._refine_uncertain_reply(
-                prompt,
-                context=context,
-                history=history,
-                project_context=project_context,
-                task_context=task_context,
+        failure = (
+            None
+            if incomplete
+            else self._classify_answer_failure(
+                reply,
+                finish_reason=final_metadata.get("finish_reason"),
+                intent=search_intent,
+                web_context=web_context,
+                gallery=gallery,
             )
-            if refined is not None:
-                reply, web_context, refined_result, uncertainty_refinement = refined
-                if refined_result is not None:
-                    final_metadata["prompt_tokens"] = refined_result.prompt_tokens
-                    final_metadata["completion_tokens"] = refined_result.completion_tokens
-                    final_metadata["total_tokens"] = refined_result.total_tokens
-                    final_metadata["duration_ms"] = refined_result.duration_ms
-                    final_metadata["thinking"] = refined_result.thinking
-                    final_metadata["finish_reason"] = refined_result.finish_reason
-                    final_metadata["provider_name"] = (
-                        refined_result.provider_name or refined_result.provider_id
-                    )
-                    final_metadata["model_name"] = (
-                        refined_result.model_name or refined_result.model_id
-                    )
-                    final_metadata["route_name"] = refined_result.route_name or "web_search"
-                    final_metadata["provider_request_id"] = refined_result.provider_request_id
-                self._routing_diagnostic(
-                    chat_id,
-                    prompt,
-                    message_id=routing_message_id,
-                    selected_route="web_search",
-                    component="uncertainty_refinement",
-                    final_status="refined",
-                    extra=uncertainty_refinement,
+        )
+        recovery: dict[str, Any] | None = None
+        if failure is not None:
+            recovery_started = time.perf_counter()
+            recovery = {"kind": failure}
+            recovered_context = web_context
+            recovery_messages = messages
+            if failure == "knowledge_gap":
+                recovery["action"] = "search"
+                yield {"type": "status", "content": "Searching the web"}
+                recovered_context = self.web_search.build_context_forced(
+                    prompt, options=self._search_options()
                 )
+                direct = self._direct_web_reply(prompt, recovered_context)
+                if direct is not None:
+                    reply, web_context = direct, recovered_context
+                    recovery["result"] = "direct"
+                    recovery_messages = None
+                elif self._web_failure_reply(recovered_context) is not None:
+                    recovery["result"] = "search_failed"
+                    recovery_messages = None
+                else:
+                    recovery_messages = self.build_messages(
+                        prompt,
+                        history,
+                        context,
+                        recovered_context,
+                        project_context,
+                        task_context,
+                        calendar_execution=self.calendar_execution,
+                    )
+                    yield {"type": "replace", "content": ""}
+                    yield {"type": "status", "content": _writing_from_sources(recovered_context)}
+            else:
+                recovery["action"] = "regenerate"
+            if recovery_messages is not None:
+                try:
+                    (
+                        recovered_raw,
+                        recovered_meta,
+                        _,
+                        recovered_thinking,
+                    ) = yield from self._stream_answer(
+                        answer_llm,
+                        recovery_messages,
+                        output_budget,
+                        buffer_content=True,
+                    )
+                except Exception:
+                    recovered_raw, recovered_meta, recovered_thinking = "", {}, ""
+                recovered = answer_llm.clean_response(recovered_raw)
+                if recovered.strip() and recovered_meta.get("finish_reason") != "length":
+                    if recovered_context.citations and not self._has_web_citation_marker(
+                        recovered, recovered_context
+                    ):
+                        reply = self._web_generation_fallback(
+                            prompt,
+                            recovered_context,
+                            RuntimeError("recovered answer lacked citation markers"),
+                        )
+                    else:
+                        reply = self._with_web_citations(recovered, recovered_context)
+                    web_context = recovered_context
+                    final_metadata = _merge_generation_metadata(final_metadata, recovered_meta)
+                    if recovered_thinking.strip():
+                        streamed_thinking = f"{streamed_thinking}\n\n{recovered_thinking}".strip()
+                    recovery["result"] = "generated"
+                else:
+                    recovery.setdefault("result", "unchanged")
+            if failure == "empty" and not reply.strip():
+                reply = _EMPTY_ANSWER_REPLY
+            if recovery.get("result") == "search_failed":
+                reply = f"{reply.rstrip()}\n\n{_SEARCH_FOUND_NOTHING_NOTE}"
+            recovery["ms"] = int((time.perf_counter() - recovery_started) * 1000)
+            self._timings["recovery"] = recovery
+            self._routing_diagnostic(
+                chat_id,
+                prompt,
+                message_id=routing_message_id,
+                selected_route="web_search" if failure == "knowledge_gap" else "llm",
+                component="answer_recovery",
+                final_status=str(recovery.get("result")),
+                extra=recovery,
+            )
         memory_extraction = {"status": "scheduled", "source_message_id": str(routing_message_id)}
         if buffer_for_validation or reply != streamed_reply:
             yield {"type": "replace", "content": reply}
         thinking = (
             final_metadata.get("thinking")
             or streamed_thinking.strip()
-            or self.ollama.extract_thinking(raw_reply)
+            or answer_llm.extract_thinking(raw_reply)
         )
+        self._note_unrequested_reasoning(answer_llm, thinking)
         assistant = persist_assistant(
             reply,
             prompt_tokens=final_metadata.get("prompt_tokens"),
@@ -1900,11 +2026,7 @@ class NeoChatService:
                     web_context_in_prompt=bool(web_context.needed and web_context.context_text),
                     final_answer=reply,
                 ),
-                **(
-                    {"uncertainty_refinement": uncertainty_refinement}
-                    if uncertainty_refinement
-                    else {}
-                ),
+                "timings": self._timings_snapshot(search_intent),
                 **(
                     {"gallery_results": gallery.shown()}
                     if gallery is not None and gallery.items
@@ -2486,17 +2608,311 @@ class NeoChatService:
         timezone: str | None,
         locale: str | None,
     ) -> ResolvedSearchIntent:
+        """Stage A: settle what is unambiguous without calling any model.
+
+        A bare search command searches the earlier question; a greeting or
+        courtesy is answered at once; an explicit command or a fully specified
+        structured request (local time, a currency conversion, a release date, an
+        instruction to search the web) goes straight to its capability. Anything
+        else is left with ``route=None`` for the router, which runs later and only
+        if the turn gets that far (``_route_turn``).
+        """
+
         previous = self._previous_search_intent(prior_messages)
-        intent = self.search_intent_resolver.resolve_with_model(
-            prompt,
-            llm=self.ollama,
-            previous=previous,
-            timezone=timezone,
-            locale=locale,
-            model_routing=not self.low_effort,
-        )
+        cleaned = " ".join((prompt or "").split())
+        common: dict[str, Any] = {
+            "original_query": prompt,
+            "timezone": timezone,
+            "locale": locale,
+            "decision_source": "structured",
+        }
+        intent: ResolvedSearchIntent | None = None
+        if is_bare_search_command(cleaned):
+            question = self._previous_substantive_question(prior_messages)
+            intent = ResolvedSearchIntent(
+                kind=SearchIntentKind.GENERAL_WEB if question else SearchIntentKind.NONE,
+                resolved_query=question or cleaned,
+                reason=(
+                    "Search command: searching the earlier question."
+                    if question
+                    else "Search command with no earlier question to search."
+                ),
+                confidence=0.99,
+                route="follow_up" if question else "direct",
+                **common,
+            )
+        elif is_social_pleasantry(cleaned) and not self._last_reply_asked_question(prior_messages):
+            intent = ResolvedSearchIntent(
+                kind=SearchIntentKind.NONE,
+                resolved_query=cleaned,
+                reason="Greeting or courtesy.",
+                confidence=0.99,
+                route="greeting",
+                **common,
+            )
+        else:
+            intent = self.search_intent_resolver.resolve_explicit(
+                prompt, previous=previous, timezone=timezone, locale=locale
+            )
+        if intent is None:
+            intent = ResolvedSearchIntent(
+                kind=SearchIntentKind.NONE,
+                original_query=prompt,
+                resolved_query=cleaned,
+                reason="Awaiting the router.",
+                confidence=0.7,
+                timezone=timezone,
+                locale=locale,
+                decision_source="fallback",
+                route=None,
+            )
         self.last_search_intent = intent
         return intent
+
+    def _route_turn(
+        self,
+        prompt: str,
+        prior_messages: list[ChatMessage],
+        intent: ResolvedSearchIntent,
+        *,
+        timezone: str | None,
+        locale: str | None,
+        message_id: int | None,
+    ) -> ResolvedSearchIntent:
+        """Stage B: let the router choose the capability, if Stage A did not.
+
+        Called at the point where the capability is needed, after every earlier
+        exit (rules, guidance, internal commands, a pending calendar proposal,
+        the gallery), so a turn that ends earlier never pays for it. The final
+        intent replaces the provisional one stored on the user message.
+        """
+
+        if intent.route is not None:
+            return intent
+        started = time.perf_counter()
+        routed = self.search_intent_resolver.route_with_model(
+            prompt,
+            llm=self.helper_llm,
+            context=self._router_context(prior_messages),
+            previous=self._previous_search_intent(prior_messages),
+            timezone=timezone,
+            locale=locale,
+            routes=self._enabled_routes(),
+        )
+        self._timings["router_ms"] = int((time.perf_counter() - started) * 1000)
+        self._timings["router"] = dict(self.search_intent_resolver.last_router or {})
+        if message_id is not None:
+            self._store_search_intent(message_id, routed)
+        self.last_search_intent = routed
+        return routed
+
+    def _enabled_routes(self) -> tuple[str, ...]:
+        """The capabilities the router may choose between for this turn."""
+
+        routes = ["direct", "calendar", "weather"]
+        if self.settings.web_search_enabled:
+            routes.append("web")
+        if self.memory_enabled:
+            routes.append("memory")
+        return tuple(routes)
+
+    def _router_context(self, prior_messages: list[ChatMessage]) -> str | None:
+        """The previous exchange, short, for resolving references.
+
+        Built from ``_history_turns`` so it carries the same redactions the model
+        sees: a forgotten memory or an expired calendar offer is never shown to
+        the router either.
+        """
+
+        turns = self._history_turns(prior_messages)
+        last_reply_index = next(
+            (i for i in range(len(turns) - 1, -1, -1) if turns[i].role == "assistant"), None
+        )
+        if last_reply_index is None:
+            return None
+        asked = next(
+            (turns[i] for i in range(last_reply_index - 1, -1, -1) if turns[i].role == "user"),
+            None,
+        )
+        lines = []
+        if asked is not None:
+            lines.append(f"User earlier: {_excerpt(asked.content)}")
+        lines.append(
+            f"Neo replied: {_excerpt(_strip_llm_sources_block(turns[last_reply_index].content))}"
+        )
+        used = _capability_used(
+            next((m for m in reversed(prior_messages) if m.role == "assistant"), None)
+        )
+        if used:
+            lines.append(f"That reply used: {used}.")
+        return "\n".join(lines)
+
+    def _store_search_intent(self, message_id: int, intent: ResolvedSearchIntent) -> None:
+        """Record the final routing decision on the user message it belongs to."""
+
+        message = self.db.get(ChatMessage, message_id)
+        if message is None:
+            return
+        try:
+            metadata = json.loads(message.metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["search_intent"] = intent.model_dump(mode="json")
+        message.metadata_json = json.dumps(metadata, sort_keys=True)
+        self.db.commit()
+
+    @staticmethod
+    def _previous_substantive_question(prior_messages: list[ChatMessage]) -> str | None:
+        """The most recent user message that asked for something."""
+
+        for message in reversed(prior_messages):
+            if message.role != "user":
+                continue
+            text = " ".join((message.content or "").split())
+            if (
+                not text
+                or is_bare_search_command(text)
+                or is_social_pleasantry(text)
+                or _SHORT_AGREEMENT.match(text)
+            ):
+                continue
+            return text
+        return None
+
+    @staticmethod
+    def _last_reply_asked_question(prior_messages: list[ChatMessage]) -> bool:
+        """Whether Neo's last reply ended by asking the user something."""
+
+        for message in reversed(prior_messages):
+            if message.role == "assistant":
+                body = _strip_llm_sources_block(message.content or "").rstrip()
+                lines = [line.strip() for line in body.splitlines() if line.strip()]
+                return bool(lines) and lines[-1].endswith("?")
+            if message.role == "user":
+                return False
+        return False
+
+    def _search_options(self) -> SearchOptions:
+        """Research depth for this turn's effort. Routing is unaffected."""
+
+        settings = self.settings
+        if self.reasoning:
+            return SearchOptions(
+                max_results=settings.web_search_max_results_high,
+                max_pages=settings.web_fetch_max_pages_high,
+                max_context_tokens=settings.web_context_max_tokens_high,
+            )
+        return SearchOptions(
+            max_results=settings.web_search_max_results,
+            max_pages=settings.web_fetch_max_pages,
+            max_context_tokens=settings.web_context_max_tokens,
+        )
+
+    def _web_query_for(self, prompt: str, intent: ResolvedSearchIntent) -> tuple[str, str | None]:
+        """The text to search and the planning hint, for a turn that searches.
+
+        A follow-up searches the earlier question, and a router decision searches
+        the standalone query the router wrote; an explicit command or a
+        structured request searches the message itself, as it always did.
+        """
+
+        if intent.route == "follow_up" or (
+            intent.decision_source == "model" and intent.kind is SearchIntentKind.GENERAL_WEB
+        ):
+            return intent.resolved_query or prompt, None
+        return prompt, intent.resolved_query
+
+    def _answer_reasons(self, intent: ResolvedSearchIntent | None) -> bool:
+        """High reasons on every substantive answer; a greeting needs none."""
+
+        return self.reasoning and not (intent is not None and intent.route == "greeting")
+
+    def _answer_client(self, intent: ResolvedSearchIntent | None) -> LLMClient:
+        if self.reasoning and not self._answer_reasons(intent):
+            return self.quick_llm
+        return self.ollama
+
+    def _note_unrequested_reasoning(self, llm: LLMClient, thinking: str | None) -> None:
+        """Record that the model reasoned although this answer asked it not to.
+
+        Some models cannot switch reasoning off. The user's effort setting is
+        left alone; the flag only lets the effort control say why Low is slower
+        with this model. It is set from what the model did, never assumed.
+        """
+
+        if getattr(llm, "disable_thinking", False) and (thinking or "").strip():
+            self._timings["model_always_reasons"] = True
+
+    def _clients(self) -> list[LLMClient]:
+        seen: list[LLMClient] = []
+        for client in (self.helper_llm, self.calendar_llm, self.quick_llm, self.ollama):
+            if all(client is not other for other in seen):
+                seen.append(client)
+        return seen
+
+    def _timings_snapshot(self, intent: ResolvedSearchIntent | None = None) -> dict[str, Any]:
+        """What this turn spent, for the message metadata and benchmarks."""
+
+        data = dict(self._timings)
+        data["effort"] = self.effort
+        data["total_ms"] = self._turn_duration_ms()
+        if intent is not None:
+            data["route"] = intent.route or (
+                "direct" if intent.kind is SearchIntentKind.NONE else intent.kind.value
+            )
+        marks = getattr(self, "_request_marks", {})
+        request_ids: list[str] = []
+        helper_calls = 0
+        for client in self._clients():
+            ids = list(getattr(client, "request_ids", []) or [])[marks.get(id(client), 0) :]
+            request_ids.extend(ids)
+            if client is not self.ollama:
+                helper_calls += len(ids)
+        data["request_ids"] = request_ids
+        data["model_calls"] = len(request_ids)
+        data["helper_calls"] = helper_calls
+        return data
+
+    def _classify_answer_failure(
+        self,
+        reply: str,
+        *,
+        finish_reason: str | None,
+        intent: ResolvedSearchIntent,
+        web_context: WebContext,
+        gallery: GalleryMatches | None,
+    ) -> str | None:
+        """Why a finished answer failed, from signals already in hand, or ``None``.
+
+        Only two failures are acted on after generation. A cut-off answer has
+        already been continued by the generation loop, and tool failures, missing
+        parameters and unsupported actions are answered by their capability
+        before any generation runs.
+
+        * ``empty``: the model stopped without writing anything visible.
+        * ``knowledge_gap``: the reply is short and says the model lacks the
+          current or specific information the question needs, on a turn that did
+          not search and could have. Only this one leads to a search -- a weak
+          answer for any other reason is not something a search can fix.
+        """
+
+        if finish_reason in {"length", "incomplete_length"}:
+            return None
+        text = (reply or "").strip()
+        if not text:
+            return "empty"
+        if (
+            gallery is None
+            and not web_context.needed
+            and intent.route in {"direct", "memory"}
+            and self.settings.web_search_enabled
+            and len(text) <= _KNOWLEDGE_GAP_MAX_CHARS
+            and _KNOWLEDGE_GAP.search(text[:_KNOWLEDGE_GAP_SCAN_CHARS])
+        ):
+            return "knowledge_gap"
+        return None
 
     def _previous_search_intent(
         self,
@@ -2528,6 +2944,29 @@ class NeoChatService:
         locale: str | None,
     ) -> tuple[str, dict[str, Any]] | None:
         started = time.perf_counter()
+        if intent.kind == SearchIntentKind.CONNECTOR_TOOL:
+            # Explaining the limitation is the honest answer: chat replies have no
+            # connector runner, and generating anyway let the model describe a
+            # call that never happened.
+            return _CONNECTOR_UNSUPPORTED_REPLY, {
+                "response_kind": "unsupported_action",
+                "provider_name": "Neo",
+                "route_name": "connector",
+                "finish_reason": "unsupported",
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "metadata": {"search_intent": intent.model_dump(mode="json")},
+            }
+        if intent.kind == SearchIntentKind.WEATHER and not intent.location:
+            # The one parameter a weather lookup cannot do without: ask for it
+            # rather than guessing a place or answering without data.
+            return _WEATHER_PLACE_QUESTION, {
+                "response_kind": "structured_weather",
+                "provider_name": "Neo",
+                "route_name": "weather",
+                "finish_reason": "needs_parameter",
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "metadata": {"search_intent": intent.model_dump(mode="json")},
+            }
         if intent.kind == SearchIntentKind.LOCAL_DATETIME:
             result = local_datetime_answer(
                 prompt,
@@ -2953,9 +3392,6 @@ class NeoChatService:
         self, prompt: str, web_context: WebContext, error: Exception
     ) -> str:
         grounded_prompt = web_context.query or prompt
-        price_clarification = _price_query_clarification(grounded_prompt)
-        if price_clarification is not None:
-            return price_clarification
         if web_context.answer_mode == "fact_lookup":
             release_answer = self._verified_release_answer(grounded_prompt, web_context)
             if release_answer is not None:
@@ -2982,157 +3418,146 @@ class NeoChatService:
         )
 
     def _direct_web_reply(self, prompt: str, web_context: WebContext) -> str | None:
+        """Answer a single-fact lookup straight from the evidence, when that is safe.
+
+        A verified release date answers through its own extractor. Any other fact
+        type answers without the model only when independent sources agree on the
+        extracted value; one source, or sources that disagree, go to generation
+        from the cited evidence instead, which can say which variant or source
+        each figure belongs to.
+        """
+
         if not web_context.needed or not web_context.evidence_chunks or not web_context.citations:
             return None
-        price_clarification = _price_query_clarification(prompt)
-        if price_clarification is not None:
-            return price_clarification
-        if web_context.answer_mode == "fact_lookup":
-            release_answer = self._verified_release_answer(prompt, web_context)
-            if release_answer is not None:
-                return release_answer
-            fact = run_extractors(prompt, web_context.evidence_chunks)
-            if fact is not None:
-                answer = self._format_fact_answer(prompt, fact)
-                citations = self.citation_formatter.format_citations(
-                    [
-                        citation
-                        for citation in web_context.citations
-                        if citation.index == fact.source_index
-                    ]
-                )
-                return f"{answer}\n\n{citations}" if citations else answer
-            planned_match = self._planned_seasons_from_evidence(prompt, web_context)
-            if planned_match is not None:
-                planned, source_index = planned_match
-                answer = (
-                    f"Robert Kirkman has described the plan as {planned} seasons [{source_index}]."
-                )
-                citations = self.citation_formatter.format_citations(web_context.citations)
-                return f"{answer}\n\n{citations}" if citations else answer
-            if re.search(
-                r"\b(weather|forecast|temperature|how hot|how cold)\b",
-                prompt,
-                re.IGNORECASE,
-            ):
-                return (
-                    "I found weather sources, but could not extract a reliable current "
-                    "temperature from them. Please try again or specify the city and date."
-                )
+        if web_context.answer_mode != "fact_lookup":
+            # news_summary and overview deliberately fall through to the model.
+            # Rendering the evidence chunks straight out reads as extracted
+            # snippets rather than an answer; summarising them is what the model
+            # is for. The deterministic rendering is kept in _evidence_digest and
+            # used by _web_generation_fallback when generation fails.
             return None
-        # news_summary and overview deliberately fall through to the model.
-        # Rendering the evidence chunks straight out reads as extracted snippets
-        # rather than an answer; summarising them is what the model is for. The
-        # deterministic rendering is kept in _evidence_digest and used by
-        # _web_generation_fallback when generation fails or skips its citations,
-        # which is the same shape fact_lookup already relies on.
-        return None
+        release_answer = self._verified_release_answer(prompt, web_context)
+        if release_answer is not None:
+            return release_answer
+        fact = run_extractors(prompt, web_context.evidence_chunks)
+        if fact is None or not _corroborated(fact, web_context):
+            return None
+        answer = self._format_fact_answer(prompt, fact)
+        citations = self.citation_formatter.format_citations(
+            [citation for citation in web_context.citations if citation.index == fact.source_index]
+        )
+        return f"{answer}\n\n{citations}" if citations else answer
 
-    def _refine_uncertain_reply(
+    def _recover_answer(
         self,
+        failure: str,
         prompt: str,
         *,
+        messages: list[LLMMessage],
         context: ContextPackage,
         history: list[ChatTurn],
         project_context: str | None,
         task_context: str | None,
-    ) -> tuple[str, WebContext, LLMChatResult | None, dict[str, Any]] | None:
-        """Bounded, one-shot safety net: the draft reply hedged even though
-        ``search_intent`` (see ``SearchIntentResolver``/Mechanism B0) already
-        said no search was needed. Redo the turn once with search forced on,
-        reusing the exact building blocks the ``GENERAL_WEB`` route already
-        uses -- never re-checked for uncertainty afterward, so this can only
-        ever run once per turn.
+        llm: LLMClient,
+        budget: int,
+    ) -> dict[str, Any]:
+        """The one bounded recovery for a failed answer, on the non-streaming path.
+
+        ``knowledge_gap`` searches the original question once and answers from
+        what is found; ``empty`` regenerates once with the same inputs. Nothing
+        here runs again for the same turn. Returns the new ``reply`` (or ``None``
+        when nothing better was found), the ``web_context`` it used, the model
+        ``result`` and a ``recovery`` record for diagnostics.
         """
-        web_query = self._web_query_with_memory_region(prompt, context)
-        web_context = self.web_search.build_context_forced(web_query)
 
-        direct = self._direct_web_reply(web_query, web_context)
-        if direct is not None:
-            return direct, web_context, None, {"step": "direct"}
-
-        failure = self._web_failure_reply(web_context)
-        if failure is not None:
-            return failure, web_context, None, {"step": "failure"}
-
-        messages = self.build_messages(
-            prompt,
-            history,
-            context,
-            web_context,
-            project_context,
-            task_context,
-            calendar_execution=self.calendar_execution,
-        )
-        result = self._generate_complete(messages, num_predict=self._num_predict(prompt, context))
-        if web_context.citations and not self._has_web_citation_marker(result.content, web_context):
-            reply = self._web_generation_fallback(
+        if failure == "knowledge_gap":
+            web_context = self.web_search.build_context_forced(
+                prompt, options=self._search_options()
+            )
+            direct = self._direct_web_reply(prompt, web_context)
+            if direct is not None:
+                return {
+                    "reply": direct,
+                    "web_context": web_context,
+                    "recovery": {"action": "search", "result": "direct"},
+                }
+            if self._web_failure_reply(web_context) is not None:
+                return {"reply": None, "recovery": {"action": "search", "result": "search_failed"}}
+            recovery_messages = self.build_messages(
                 prompt,
+                history,
+                context,
                 web_context,
-                RuntimeError("refined web answer lacked citation markers"),
+                project_context,
+                task_context,
+                calendar_execution=self.calendar_execution,
             )
         else:
-            reply = self._with_web_citations(result.content, web_context)
-        return reply, web_context, result, {"step": "generated"}
+            web_context = None
+            recovery_messages = messages
+        try:
+            result = self._generate_complete(recovery_messages, num_predict=budget, llm=llm)
+        except Exception:
+            return {"reply": None, "recovery": {"action": "regenerate", "result": "provider_error"}}
+        content = result.content
+        if not content.strip() or result.finish_reason == "length":
+            return {
+                "reply": None,
+                "recovery": {
+                    "action": "search" if failure == "knowledge_gap" else "regenerate",
+                    "result": "unchanged",
+                },
+            }
+        if web_context is not None and web_context.citations:
+            reply = (
+                self._web_generation_fallback(
+                    prompt, web_context, RuntimeError("recovered answer lacked citation markers")
+                )
+                if not self._has_web_citation_marker(content, web_context)
+                else self._with_web_citations(content, web_context)
+            )
+        else:
+            reply = content
+        return {
+            "reply": reply,
+            "web_context": web_context,
+            "result": result,
+            "recovery": {
+                "action": "search" if failure == "knowledge_gap" else "regenerate",
+                "result": "generated",
+            },
+        }
 
     def _evidence_digest(self, prompt: str, web_context: WebContext) -> str:
         """Render evidence chunks directly, for when generation cannot be used."""
-        clusters = _cluster_evidence_by_entity(prompt, web_context.evidence_chunks)
-        if len(clusters) > 1:
-            lines = ["I found results for multiple topics:"]
-            for cluster_label, cluster_chunks in clusters.items():
-                lines.append(f"\n**{cluster_label}:**")
-                for chunk in cluster_chunks[:2]:
-                    lines.append(
-                        f"- {_clean_snippet_text(chunk.text[:350])} [{chunk.source_index}]"
-                    )
-        else:
-            lines = [
-                "Here are the source-backed updates I found:"
-                if web_context.answer_mode == "news_summary"
-                else "Here is what the sources say:"
-            ]
-            chunks = sorted(
-                web_context.evidence_chunks,
-                key=lambda chunk: (self._source_priority(chunk.source_url), -chunk.relevance_score),
-            )
-            for chunk in chunks[:4]:
-                lines.append(f"- {_clean_snippet_text(chunk.text[:420])} [{chunk.source_index}]")
+        lines = [
+            "Here are the source-backed updates I found:"
+            if web_context.answer_mode == "news_summary"
+            else "Here is what the sources say:"
+        ]
+        chunks = sorted(web_context.evidence_chunks, key=lambda chunk: -chunk.relevance_score)
+        for chunk in chunks[:4]:
+            lines.append(f"- {_clean_snippet_text(chunk.text[:420])} [{chunk.source_index}]")
         citations = self._citations_for_body("\n".join(lines), web_context)
         if citations:
             lines.extend(["", citations])
         return "\n".join(lines)
 
     def _format_fact_answer(self, prompt: str, fact: FactResult) -> str:
-        """Format a structured fact extraction result into a user-facing answer."""
-        lowered = prompt.lower()
-        if re.search(r"\b(season|seasons)\b", lowered) and not re.search(
-            r"\b(episode|episodes)\b", lowered
-        ):
-            return f"The series has {fact.answer} [{fact.source_index}]."
-        if re.search(r"\b(episode|episodes)\b", lowered):
-            return f"The listed episode count is {fact.answer} [{fact.source_index}]."
-        if re.search(r"\b(champion|ranking|rankings|rated|rating|highest rated)\b", lowered):
-            if "champion" in fact.match_reason:
-                return f"The current world chess champion is {fact.answer} [{fact.source_index}]."
-            return f"The top-rated player is {fact.answer} [{fact.source_index}]."
-        if re.search(r"\b(version|latest)\b", lowered) and re.search(
-            r"\b(next\.?js|react|node|npm|python)\b", lowered
-        ):
-            return f"The latest version is {fact.answer} [{fact.source_index}]."
-        if re.search(r"\b(price|cost|how much)\b", lowered):
-            region = self._target_region(prompt)
-            prefix = "In India, the" if region == "india" else "The"
-            return f"{prefix} listed price is {fact.answer} [{fact.source_index}]."
-        if re.search(r"\b(release|released|premiere|when|coming out|date)\b", lowered):
-            region = self._target_region(prompt)
-            prefix = (
-                "In India, the listed release date is"
-                if region == "india"
-                else "The listed release date is"
-            )
-            return f"{prefix} {fact.answer} [{fact.source_index}]."
-        return f"{fact.answer} [{fact.source_index}]."
+        """A short, cited answer from one extracted fact, in domain-neutral words.
+
+        The supporting sentence is quoted so the reader sees what the figure
+        refers to -- which variant, which region, which date -- in the source's
+        own words, instead of Neo guessing a label from the question.
+        """
+
+        answer = f"{fact.answer} [{fact.source_index}]."
+        support = _clean_snippet_text(fact.support_text or "").strip()
+        if support and support.lower() != str(fact.answer).lower():
+            if len(support) > 240:
+                support = support[:239].rstrip() + "\u2026"
+            return f'{answer}\n\nFrom the source: "{support}"'
+        return answer
 
     def _verified_release_answer(
         self,
@@ -3152,54 +3577,11 @@ class NeoChatService:
             citations = self.citation_formatter.format_citations(web_context.citations)
             return f"{answer}\n\n{citations}" if citations else answer
 
-        prefix = (
-            "In India, the verified release date is"
-            if self._target_region(prompt) == "india"
-            else "The verified release date is"
-        )
-        answer = f"{prefix} {fact.answer} [{fact.source_index}]."
+        answer = f"The verified release date is {fact.answer} [{fact.source_index}]."
         citations = self.citation_formatter.format_citations(
             [citation for citation in web_context.citations if citation.index == fact.source_index]
         )
         return f"{answer}\n\n{citations}" if citations else answer
-
-    def _source_priority(self, url: str) -> int:
-        domain = urlparse(url).netloc.lower().removeprefix("www.")
-        official_domains = {
-            "bcci.tv",
-            "icc-cricket.com",
-            "marvel.com",
-            "nextjs.org",
-            "openai.com",
-            "primevideo.com",
-            "registry.npmjs.org",
-            "sonypictures.com",
-            "sonypictures.in",
-            "x.ai",
-        }
-        return 0 if domain in official_domains else 1
-
-    def _planned_seasons_from_evidence(
-        self, prompt: str, web_context: WebContext
-    ) -> tuple[str, int] | None:
-        if not re.search(r"\b(kirkman|planning|planned|how many seasons)\b", prompt, re.IGNORECASE):
-            return None
-        for position, chunk in enumerate(web_context.evidence_chunks):
-            text = f"{chunk.source_title}. {chunk.text}"
-            if re.search(
-                r"\b(7-9|7\s+to\s+9|seven,\s*eight,\s*or\s*nine|seven\s+or\s+eight\s+or\s+nine)\s+seasons\b",
-                text,
-                re.IGNORECASE,
-            ):
-                return "seven to nine", chunk.source_index or position + 1
-            if re.search(r"\b(7-8|7\s+to\s+8|seven\s+to\s+eight)\s+seasons\b", text, re.IGNORECASE):
-                return "seven to eight", chunk.source_index or position + 1
-        return None
-
-    def _target_region(self, prompt: str) -> str | None:
-        if re.search(r"\b(india|indian|in india)\b", prompt, re.IGNORECASE):
-            return "india"
-        return None
 
     def _web_debug(
         self,
@@ -3377,14 +3759,112 @@ class NeoChatService:
             min(words * NeoChatService._TOKENS_PER_WORD, NeoChatService._MAX_REQUESTED_PREDICT)
         )
 
-    def _generate_complete(self, messages: list[LLMMessage], *, num_predict: int) -> LLMChatResult:
+    def _stream_answer(
+        self,
+        llm: LLMClient,
+        messages: list[LLMMessage],
+        budget: int,
+        *,
+        buffer_content: bool,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream one answer, continuing it at most twice if it hits the output limit.
+
+        Yields what the client should see -- thinking always, the answer text
+        unless ``buffer_content`` -- and returns ``(raw_reply, final_metadata,
+        streamed_reply, thinking)`` through ``yield from``. Continuation text is
+        collected, not streamed, so ``streamed_reply`` is exactly what the
+        client has been shown.
+        """
+
+        raw_reply = ""
+        streamed_reply = ""
+        thinking = ""
+        final_metadata: dict[str, Any] = {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "duration_ms": None,
+            "finish_reason": None,
+        }
+        for event in llm.chat_stream(messages, temperature=0.2, num_predict=budget):
+            kind = event.get("type")
+            if kind == "chunk":
+                raw_reply += event["content"]
+                if not buffer_content:
+                    streamed_reply += event["content"]
+                    yield event
+            elif kind == "thinking":
+                thinking += event["content"]
+                yield event
+            elif kind == "done":
+                final_metadata = event
+        continuation_count = 0
+        while final_metadata.get("finish_reason") == "length" and continuation_count < 2:
+            continuation_count += 1
+            yield {
+                "type": "status",
+                "content": "Continuing a response that reached the model limit",
+            }
+            # An assistant turn with no text carries nothing to continue from, and
+            # some providers reject empty turns outright.
+            continuation_messages = [
+                *messages,
+                *([LLMMessage(role="assistant", content=raw_reply)] if raw_reply.strip() else []),
+                LLMMessage(
+                    role="user",
+                    content=(
+                        "Continue the same answer exactly where it stopped. "
+                        "Do not repeat earlier text. Finish the requested answer."
+                    ),
+                ),
+            ]
+            continuation = ""
+            continuation_metadata: dict[str, Any] = {}
+            # Grow the budget each round. Repeating the same cap makes a model that
+            # overspends on reasoning fail identically every time.
+            retry_budget = min(budget * (continuation_count + 1), 8192)
+            for event in llm.chat_stream(
+                continuation_messages, temperature=0.2, num_predict=retry_budget
+            ):
+                kind = event.get("type")
+                if kind == "chunk":
+                    continuation += str(event.get("content") or "")
+                elif kind == "thinking":
+                    thinking += str(event.get("content") or "")
+                    yield event
+                elif kind == "done":
+                    continuation_metadata = event
+            raw_reply = _append_without_overlap(raw_reply, continuation)
+            final_metadata = _merge_generation_metadata(final_metadata, continuation_metadata)
+        return raw_reply, final_metadata, streamed_reply, thinking
+
+    @staticmethod
+    def _answers_without_evidence(web_context: WebContext) -> bool:
+        """Whether a failed search can still be followed by a general answer.
+
+        A single current fact -- a figure, a date, a version -- cannot be answered
+        honestly without sources, so it keeps the plain "could not find" reply.
+        Anything else is answered from general knowledge, after saying that
+        current information could not be verified.
+        """
+
+        return web_context.answer_mode != "fact_lookup"
+
+    def _generate_complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        num_predict: int,
+        llm: LLMClient | None = None,
+    ) -> LLMChatResult:
         """Generate, continuing when the model stops because it hit the output limit.
 
         The streaming path already does this. Without it here a long answer comes back
         silently truncated mid-word, because the caller has no way to tell a finished
         answer from one that ran out of room.
         """
-        result = self.ollama.chat_with_metadata(messages, temperature=0.2, num_predict=num_predict)
+        llm = llm or self.ollama
+        result = llm.chat_with_metadata(messages, temperature=0.2, num_predict=num_predict)
         content = result.content
         prompt_tokens = result.prompt_tokens or 0
         completion_tokens = result.completion_tokens or 0
@@ -3404,7 +3884,7 @@ class NeoChatService:
                     ),
                 ),
             ]
-            result = self.ollama.chat_with_metadata(
+            result = llm.chat_with_metadata(
                 follow_up, temperature=0.2, num_predict=min(num_predict * (attempts + 1), 8192)
             )
             content = _append_without_overlap(content, result.content)
@@ -3422,28 +3902,106 @@ class NeoChatService:
             }
         )
 
-    def _num_predict(self, prompt: str, context: ContextPackage) -> int:
+    def _num_predict(self, prompt: str, context: ContextPackage, *, reasoning: bool = False) -> int:
+        """The output limit for an answer: a ceiling, not a target.
+
+        An explicit length request ("in about 1500 words") gets room for it;
+        anything else gets the configured limit. When the answer reasons first,
+        its reasoning counts against the same limit, so it gets extra headroom
+        rather than leaving the answer itself to be cut off. The provider runtime
+        lowers the limit further if the model's context window cannot hold it.
+        """
+
         requested = self._requested_output_tokens(prompt)
-        if requested:
-            return max(requested, self.settings.chat_num_predict)
-        has_memory = bool(
-            context.profile
-            or context.preferences
-            or context.goals
-            or context.projects
-            or context.relevant_memories
-            or context.events
-            or context.archive_results
+        budget = (
+            max(requested, self.settings.chat_num_predict)
+            if requested
+            else self.settings.chat_num_predict
         )
-        if not has_memory and len(prompt) < 120:
-            return self.settings.simple_chat_num_predict
-        if re.search(
-            r"\b(explain|detail|detailed|compare|summarize|roadmap|what should|"
-            r"recommend|suggest|build next|documentation|failure cases?)\b",
-            prompt.lower(),
-        ):
-            return self.settings.chat_num_predict
-        return max(self.settings.simple_chat_num_predict, self.settings.chat_num_predict)
+        if reasoning:
+            budget += self.settings.chat_thinking_headroom_tokens
+        return budget
+
+
+#: The reply to an explicit connector command: chat has no connector runner.
+_CONNECTOR_UNSUPPORTED_REPLY = (
+    "I can't run connectors or external tools from a chat reply, so nothing was called."
+)
+
+#: Asked when a weather request names no place.
+_WEATHER_PLACE_QUESTION = "Which place should I check the weather for?"
+
+#: Added when a reply said it lacked information and the search for it found
+#: nothing usable, so the user knows a search was tried.
+_SEARCH_FOUND_NOTHING_NOTE = "I also searched the web for this, but found no usable sources."
+
+#: The answer when a model returns nothing visible twice in a row.
+_EMPTY_ANSWER_REPLY = (
+    "I couldn't produce an answer to that just now. Please try again, or rephrase the question."
+)
+
+
+def _searched_for(prompt: str, web_context: WebContext | None) -> str | None:
+    """What the turn searched, when that is not the user's message itself.
+
+    A search command or an agreement searches the earlier question, and a
+    router decision searches a standalone rewrite. The answer step only sees
+    the user's literal message ("search", "yes"), so without this it may not
+    know what the evidence is for and answer the wrong question.
+    """
+
+    if web_context is None or not web_context.needed:
+        return None
+    query = " ".join((web_context.query or "").split())[:300]
+    if not query or query.casefold() == " ".join((prompt or "").split()).casefold():
+        return None
+    return query.replace('"', "'")
+
+
+def _with_timings(metadata: dict[str, Any], timings: dict[str, Any]) -> dict[str, Any]:
+    """``metadata`` for a persisted reply, with this turn's timings added."""
+
+    inner = metadata.get("metadata")
+    inner = dict(inner) if isinstance(inner, dict) else {}
+    inner["timings"] = timings
+    return {**metadata, "metadata": inner}
+
+
+def _writing_from_sources(web_context: WebContext) -> str:
+    """A status naming the sources the answer is being written from."""
+
+    hosts: list[str] = []
+    for citation in web_context.citations:
+        host = urlparse(citation.url).netloc.lower().removeprefix("www.")
+        if host and host not in hosts:
+            hosts.append(host)
+    if not hosts:
+        return "Writing the answer from sources"
+    shown = ", ".join(hosts[:3]) + (" and others" if len(hosts) > 3 else "")
+    count = len(web_context.citations)
+    return f"Writing the answer from {count} source{'s' if count != 1 else ''}: {shown}"
+
+
+def _corroborated(fact: FactResult, web_context: WebContext) -> bool:
+    """Whether independent sources state the same extracted value.
+
+    Counted by registrable domain, so two pages of one site are one source. A
+    value only one source states, or one that another source contradicts, is not
+    corroborated, and the answer is then generated from the cited evidence.
+    """
+
+    from app.services.research.textutil import compact, host_group, host_of
+
+    value = compact(str(fact.answer or ""))
+    if len(value) < 2:
+        return False
+    hosts = {
+        host_group(host_of(chunk.source_url))
+        for chunk in web_context.evidence_chunks
+        if value in compact(chunk.text)
+    }
+    hosts.discard("")
+    return len(hosts) >= 2
 
 
 def _append_without_overlap(existing: str, continuation: str) -> str:
@@ -3473,83 +4031,6 @@ def _merge_generation_metadata(
     return merged
 
 
-ENTITY_CLUSTER_PATTERNS: list[tuple[str, list[re.Pattern[str]]]] = [
-    (
-        "Xbox/Video Game",
-        [
-            re.compile(
-                r"\b(xbox|playstation|ps5|ps4|nintendo|game(?:play)?|rpg|"
-                r"lionhead|playground games|fable (?:game|reboot|remake|trilogy))\b",
-                re.IGNORECASE,
-            )
-        ],
-    ),
-    (
-        "AI/Technology",
-        [
-            re.compile(
-                r"\b(ai|artificial intelligence|model|llm|openai|"
-                r"gpt|machine learning|neural|fable\s+\d)\b",
-                re.IGNORECASE,
-            )
-        ],
-    ),
-    (
-        "TV Series",
-        [
-            re.compile(
-                r"\b(tv|television|series|season|episode|streaming|netflix|"
-                r"hulu|peacock|paramount|prime video|showrunner|renewed|"
-                r"cancelled|canceled)\b",
-                re.IGNORECASE,
-            )
-        ],
-    ),
-    (
-        "Movie/Film",
-        [
-            re.compile(
-                r"\b(movie|film|cinema|theatrical|box office|director|starring|trailer)\b",
-                re.IGNORECASE,
-            )
-        ],
-    ),
-]
-
-
-def _cluster_evidence_by_entity(query: str, chunks: list) -> dict[str, list]:
-    """Detect if evidence chunks belong to clearly different entity categories."""
-    if len(chunks) < 2:
-        return {}
-
-    chunk_labels: list[tuple[str, object]] = []
-    for chunk in chunks:
-        text = f"{chunk.source_title}. {chunk.text[:500]}".lower()
-        best_label = "General"
-        best_score = 0
-        for label, patterns in ENTITY_CLUSTER_PATTERNS:
-            score = sum(1 for p in patterns if p.search(text))
-            if score > best_score:
-                best_score = score
-                best_label = label
-        chunk_labels.append((best_label if best_score > 0 else "General", chunk))
-
-    clusters: dict[str, list] = {}
-    for label, chunk in chunk_labels:
-        clusters.setdefault(label, []).append(chunk)
-
-    non_general = {k: v for k, v in clusters.items() if k != "General"}
-    if len(non_general) < 2:
-        return {}
-
-    if "General" in clusters:
-        for chunk in clusters["General"]:
-            largest = max(non_general, key=lambda k: len(non_general[k]))
-            non_general[largest].append(chunk)
-
-    return non_general
-
-
 def _referenced_citation_indices(text: str) -> set[int]:
     """Citation numbers the text actually cites, including grouped [1, 2] markers."""
     indices: set[int] = set()
@@ -3558,14 +4039,22 @@ def _referenced_citation_indices(text: str) -> set[int]:
     return indices
 
 
+#: The start of a Sources/References block the model wrote itself. At the start
+#: of a line it may be bolded or a heading ("**Sources:**", "## References:").
+#: Mid-line it counts only when citations or a line break follow, so prose such
+#: as "the main energy sources: coal and gas" is never cut off.
+_LLM_SOURCES_HEADER = re.compile(
+    r"(?:^|\n)[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?(?:Sources|References|Citations)(?:\*\*|__)?"
+    r"[ \t]*:"
+    r"|\s(?:\*\*|__)?(?:Sources|References|Citations)(?:\*\*|__)?[ \t]*:"
+    r"(?=\s*(?:\[\d|https?://|\n|$))",
+    re.IGNORECASE,
+)
+
+
 def _strip_llm_sources_block(reply: str) -> str:
     """Remove any Sources/References block the LLM generated; the backend appends its own."""
-    cleaned = re.split(
-        r"(?:^|\s)(?:Sources|References|Citations)\s*:",
-        reply,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
+    cleaned = _LLM_SOURCES_HEADER.split(reply, maxsplit=1)[0]
     cleaned = re.sub(
         r"\n{1,3}(?:Sources|References|Citations)\s*:\s*\n(?:\s*\[?\d{1,2}\]?\s*.*\n?)*",
         "",
@@ -3577,39 +4066,6 @@ def _strip_llm_sources_block(reply: str) -> str:
     )
     cleaned = re.sub(r"\s*[\[(]\s*$", "", cleaned)
     return cleaned.strip()
-
-
-def _price_query_clarification(query: str) -> str | None:
-    """Require product and market specificity before presenting a single tech price."""
-
-    lowered = query.lower()
-    if not re.search(r"\b(price|prices|cost|how much|pricing)\b", lowered):
-        return None
-    if not re.search(
-        r"\b(iphone|ipad|macbook|pixel|galaxy|smartphone|phone|laptop)\b",
-        lowered,
-    ):
-        return None
-    has_model = bool(
-        re.search(
-            r"\b(?:iphone|ipad|pixel|galaxy|macbook)\s+"
-            r"(?:\d{1,3}|m\d|air|pro|max|plus|mini|ultra|fold)\b",
-            lowered,
-        )
-    )
-    has_market = bool(
-        re.search(
-            r"\b(india|united states|usa|uk|canada|australia|"
-            r"usd|inr|gbp|eur|dollars?|rupees?|pounds?|euros?)\b",
-            lowered,
-        )
-    )
-    if has_model and has_market:
-        return None
-    return (
-        "Which exact model and country or currency should I price? "
-        "Product families have multiple current models and region-specific prices."
-    )
 
 
 _MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\(\s*(https?://[^\s)]+)\s*\)")
@@ -3653,101 +4109,54 @@ def _clean_snippet_text(text: str) -> str:
     return cleaned.strip()
 
 
-FOLLOW_UP_SEARCH_COMMAND = re.compile(
-    r"^(can you |could you |please )?(look|search|check|find)\s+(it|this|that)\s+up[.?!\s]*$",
+#: Replies that agree to something, with nothing else in them. Used only to skip
+#: past them when looking for the question a search command refers to.
+_SHORT_AGREEMENT = re.compile(
+    r"^(?:yes|yeah|yep|yup|sure|ok|okay|please|please do|go ahead|do it|go for it|"
+    r"yes please|sure thing|alright|all right)[.!\s]*$",
     re.IGNORECASE,
 )
 
-
-_UNCERTAINTY_MARKERS = re.compile(
-    r"(?:I don'?t know|I'?m not sure|I couldn'?t find|I can look it up|"
-    r"I don'?t have (?:that|this) information|I'?m unable to|"
-    r"I don'?t have enough|not in my memory|I couldn'?t locate)",
+#: A reply that says the model lacks the information the question needs. This
+#: reads the model's own wording about itself -- never the user's topic -- and it
+#: is only acted on for short replies on turns that did not search.
+_KNOWLEDGE_GAP = re.compile(
+    r"(?:\bI (?:do not|don't) know\b|"
+    r"\bI (?:do not|don't) have (?:access to )?(?:any )?(?:current|real-time|up-to-date|live|"
+    r"the latest|recent|reliable|that|this|enough) (?:information|data|details)?|"
+    r"\bI(?:'m| am) not sure\b|"
+    r"\bI (?:couldn't|could not|can't|cannot) (?:find|verify|confirm|access|browse|check)\b|"
+    r"\bI can look (?:it|this|that) up\b|"
+    r"\bas of my (?:last|latest|most recent) (?:update|training|knowledge)|"
+    r"\bmy (?:knowledge|training data|training) (?:cutoff|cut-off|only goes|ends)\b|"
+    r"\bno (?:access|way) to (?:the internet|real-time|current|live)\b)",
     re.IGNORECASE,
 )
-
-_FACTUAL_ENTITY_QUERY = re.compile(
-    r"\b("
-    r"how many (?:seasons?|episodes?|parts?|volumes?|runs?|goals?|points?)|"
-    r"who (?:created|wrote|directed|produced|made|invented|designed|"
-    r"founded|built|developed|started|launched)|"
-    r"who (?:is|are|was|were) the (?:creator|writer|director|founder|"
-    r"maker|developer|original creator)s? of|"
-    r"who (?:is|are|was|were) the (?:original |founding )?(?:creator|"
-    r"writer|director|founder|maker|developer|team)s? (?:of|behind)|"
-    r"cast of|release date of|"
-    r"when did .+ (?:release|end|start|premiere|air|come out)|"
-    r"when was .+ (?:released|made|created|published)|"
-    r"when did .+ (?:score|win|play|debut)|"
-    r"(?:tv|television) series|"
-    r"how many .+ (?:does|did|do|has|have)"
-    r")\b",
-    re.IGNORECASE,
-)
+_KNOWLEDGE_GAP_MAX_CHARS = 500
+_KNOWLEDGE_GAP_SCAN_CHARS = 300
 
 
-def _reply_expresses_uncertainty(reply: str) -> bool:
-    return bool(_UNCERTAINTY_MARKERS.search(reply[:400]))
+def _excerpt(text: str, limit: int = 300) -> str:
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "\u2026"
 
 
-def _is_factual_entity_query(prompt: str) -> bool:
-    return bool(_FACTUAL_ENTITY_QUERY.search(prompt))
+def _capability_used(message: ChatMessage | None) -> str | None:
+    """A short label for what an earlier reply drew on, for the router's context."""
 
-
-def _is_follow_up_search(prompt: str) -> bool:
-    cleaned = prompt.strip()
-    return bool(
-        FOLLOW_UP_SEARCH_COMMAND.match(cleaned)
-        or WebSearchDecisionService.BARE_COMMAND.match(cleaned)
-    )
-
-
-_CONTEXTUAL_WEB_FOLLOW_UP = re.compile(
-    r"^(?:and\s+)?(?:"
-    r"(?:when|where|how|who|what|which|is|are|was|were|does|do|did|"
-    r"will|would|can|could|should)\b.{0,100}\b"
-    r"(?:it|this|that|they|them|these|those|there)\b|"
-    r"what\s+about\b|"
-    r"(?:tell|show)\s+me\s+more\b|"
-    r"(?:in|for)\s+[a-z][a-z .'-]{1,40}\??$"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def _is_contextual_web_follow_up(prompt: str) -> bool:
-    cleaned = " ".join(prompt.split())
-    if re.search(r"\bit\s+(?:rain|snow|hail)\b", cleaned, re.IGNORECASE):
-        return False
-    return bool(_CONTEXTUAL_WEB_FOLLOW_UP.match(cleaned))
-
-
-def resolve_web_search_query(prompt: str, history: list[ChatTurn]) -> str:
-    cleaned = prompt.strip()
-    bare_command = bool(
-        WebSearchDecisionService.BARE_COMMAND.match(cleaned)
-        or FOLLOW_UP_SEARCH_COMMAND.match(cleaned)
-    )
-    contextual_follow_up = _is_contextual_web_follow_up(cleaned)
-    if not bare_command and not contextual_follow_up:
-        return prompt
-    decision_service = WebSearchDecisionService()
-    for turn in reversed(history):
-        if turn.role != "user":
-            continue
-        previous = turn.content.strip()
-        if (
-            previous
-            and not WebSearchDecisionService.BARE_COMMAND.match(previous)
-            and not FOLLOW_UP_SEARCH_COMMAND.match(previous)
-            and not _is_contextual_web_follow_up(previous)
-            and (
-                bare_command
-                or decision_service.decide(previous).needed
-                or _is_factual_entity_query(previous)
-            )
-        ):
-            if bare_command:
-                return previous
-            return f"{previous.rstrip(' .?!')} Follow-up: {cleaned}"
-    return prompt
+    if message is None:
+        return None
+    kind = message.response_kind or ""
+    if kind == "web_search":
+        return "web search"
+    if kind.startswith("calendar"):
+        return "the user's calendar"
+    if kind == "structured_weather":
+        return "a weather lookup"
+    if kind == "structured_currency":
+        return "a currency conversion"
+    if kind == "local_datetime":
+        return "the local clock"
+    if kind == "direct_memory":
+        return "saved memory"
+    return None

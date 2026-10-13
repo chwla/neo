@@ -44,6 +44,37 @@ OLLAMA_PROBE_INSTRUCTION = (
 PROBE_NUM_PREDICT = 256
 
 
+def _extraction_num_ctx(endpoint: str, model: str, payload: dict[str, Any]) -> int:
+    """The context size to request for an extraction call.
+
+    Without one, Ollama loads the model at its own default -- 32,768 on a large
+    machine -- while chat requests ask for the smallest step that fits. Each switch
+    between the two reloaded the model, so a background extraction left the user's
+    next message paying a reload. This asks for the step the request needs, or the
+    size already loaded when that is larger, which is what chat requests ask for
+    too. Disabling reuse in settings keeps the explicit step and drops the reuse.
+    """
+
+    from app.core.config import get_settings
+    from app.services.llm import ollama_loaded_model
+    from app.services.provider_runtime.budget import fit_context
+
+    chars = sum(len(str(message.get("content") or "")) for message in payload.get("messages", []))
+    output = int((payload.get("options") or {}).get("num_predict") or 2048)
+    needed = fit_context((chars + 3) // 4 + output, 262_144)
+    if str(getattr(get_settings(), "ollama_context_reuse", "on")).lower() == "off":
+        return needed
+    root = endpoint.rstrip("/")
+    for suffix in ("/api/chat", "/api/generate"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)]
+            break
+    loaded = ollama_loaded_model(root, model)
+    if loaded is not None and int(loaded["context_length"]) > needed:
+        return int(loaded["context_length"])
+    return needed
+
+
 def _extraction_keep_alive() -> str:
     """How long extraction asks Ollama to keep the model resident.
 
@@ -747,6 +778,7 @@ class OllamaChatExtractionProvider(_JsonHttpExtractionProvider):
             payload["options"]["num_predict"] = 2048
         if self.capabilities.keep_alive_supported:
             payload["keep_alive"] = _extraction_keep_alive()
+        payload["options"]["num_ctx"] = _extraction_num_ctx(self.endpoint, self.model, payload)
         return payload
 
     def _decode_response(
@@ -981,6 +1013,7 @@ class TwoStageOllamaChatExtractionProvider(OllamaChatExtractionProvider):
             payload["options"]["num_predict"] = 2048
         if self.capabilities.keep_alive_supported:
             payload["keep_alive"] = _extraction_keep_alive()
+        payload["options"]["num_ctx"] = _extraction_num_ctx(self.endpoint, self.model, payload)
         status, body = self._post(payload, forbidden_texts=forbidden_texts)
         decoded = self._decode_response(status, body, forbidden_texts=forbidden_texts)
         raw = decoded.raw_output
@@ -1260,6 +1293,11 @@ def probe_ollama_provider(
         # the *option* being unsupported rather than the answer being cut off.
         "options": {"temperature": 0, "num_predict": PROBE_NUM_PREDICT},
     }
+    # The probe's requests carry the same context size every other request does.
+    # Without one Ollama loads the model at its own default (32,768 on a large
+    # machine), and the chat requests between probes reloaded it back each time.
+    probe_num_ctx = _extraction_num_ctx(endpoint, model, base_payload)
+    base_payload["options"]["num_ctx"] = probe_num_ctx
     warmup_success, failure_code, failure_message, warmup_latency = _probe_chat(
         provider,
         base_payload,
@@ -1301,10 +1339,23 @@ def probe_ollama_provider(
     # ``supports`` merges at the top level, so an update carrying ``options``
     # replaces the base's wholesale -- each of these has to re-state the cap.
     seed_supported, _seed_code, _seed_message = supports(
-        {"options": {"temperature": 0, "seed": 0, "num_predict": PROBE_NUM_PREDICT}}
+        {
+            "options": {
+                "temperature": 0,
+                "seed": 0,
+                "num_predict": PROBE_NUM_PREDICT,
+                "num_ctx": probe_num_ctx,
+            }
+        }
     )
     num_predict_supported, _num_code, _num_message = supports(
-        {"options": {"temperature": 0, "num_predict": PROBE_NUM_PREDICT}}
+        {
+            "options": {
+                "temperature": 0,
+                "num_predict": PROBE_NUM_PREDICT,
+                "num_ctx": probe_num_ctx,
+            }
+        }
     )
     keep_alive_supported, _keep_code, _keep_message = supports({"keep_alive": "5m"})
     capabilities = OllamaCapabilities(

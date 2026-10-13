@@ -659,10 +659,13 @@ def create_chat_for_session(objective: str, title: str) -> tuple[int, int]:
     now = now_iso()
     conn = _connect()
     try:
+        # The effort is named rather than left to the column default: profiles
+        # whose ``effort`` column was added while the default was "high" still
+        # carry that default, and a new conversation must start in Low.
         chat = conn.execute(
             "INSERT INTO chats (title, project_id, archived, pinned, agent_mode,"
-            " disabled_tools, created_at, updated_at) VALUES (?,?,0,0,?,?,?,?)",
-            (title[:160], None, "normal", "[]", now, now),
+            " disabled_tools, effort, created_at, updated_at) VALUES (?,?,0,0,?,?,?,?,?)",
+            (title[:160], None, "normal", "[]", "low", now, now),
         )
         chat_id = int(chat.lastrowid or 0)
         conn.execute(

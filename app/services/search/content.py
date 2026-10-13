@@ -537,8 +537,12 @@ def untrusted_context_message(content: str, source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _clean_wikipedia_text(text: str, page: FetchedPage) -> str:
-    """Extract useful content from Wikipedia pages."""
+def _clean_article_text(text: str, page: FetchedPage) -> str:
+    """Keep the body of an encyclopedia-style article.
+
+    Drops everything from the first reference-style heading on, the "[edit]"
+    markers next to section titles, very short lines, and licence boilerplate.
+    """
     lines = text.split("\n")
     cleaned: list[str] = []
     for line in lines:
@@ -551,7 +555,7 @@ def _clean_wikipedia_text(text: str, page: FetchedPage) -> str:
             stripped = re.sub(r"\[\s*edit\s*\]", "", stripped, flags=re.IGNORECASE).strip()
         if len(stripped) < 10:
             continue
-        if re.search(r"(Wikipedia|Wikimedia|Creative Commons|GNU Free|Retrieved from)", stripped):
+        if re.search(r"(Creative Commons|GNU Free|Retrieved from)", stripped):
             continue
         cleaned.append(stripped)
     result = " ".join(cleaned)
@@ -561,34 +565,14 @@ def _clean_wikipedia_text(text: str, page: FetchedPage) -> str:
     return result
 
 
-def _clean_fide_text(text: str, page: FetchedPage) -> str:
-    """Extract useful content from FIDE pages, stripping menus and sidebar."""
-    lines = text.split("\n")
-    cleaned: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or len(stripped) < 15:
-            continue
-        if re.search(
-            r"\b(PARNTERS|CONTACTS|MAIN/NEWS|RATINGS|CHAMPIONSHIP|CALENDAR|HANDBOOK|Documents)\b",
-            stripped,
-        ):
-            continue
-        if re.search(
-            r"\b(Top Federations|Main Page|Download|Financial Reports|Clean Sport)\b", stripped
-        ):
-            continue
-        cleaned.append(stripped)
-    return " ".join(cleaned)
-
-
 def _apply_source_cleanup(text: str, page: FetchedPage) -> str:
-    """Apply source-specific text cleaning based on domain."""
-    domain = page.domain.lower().removeprefix("www.")
-    if "wikipedia.org" in domain:
-        return _clean_wikipedia_text(text, page)
-    if "fide.com" in domain:
-        return _clean_fide_text(text, page)
+    """Clean pages by their structure, never by which site they come from.
+
+    Article pages with "[edit]" section markers get their reference sections
+    and markers removed; every other page is left as extracted.
+    """
+    if re.search(r"\[\s*edit\s*\]", text, re.IGNORECASE):
+        return _clean_article_text(text, page)
     return text
 
 
@@ -1000,62 +984,6 @@ def extract_evidence_chunks(
     return sorted(chunks, key=lambda chunk: chunk.relevance_score, reverse=True)[:8]
 
 
-def augment_page(query: str, page: FetchedPage) -> FetchedPage:
-    if "bcci.tv" not in page.domain or "fixtures" not in page.url:
-        return page
-    settings = get_settings()
-    try:
-        response = requests.get(
-            "https://scores2.bcci.tv/getUpcomingMatches",
-            params={
-                "platform": "international",
-                "previousMatchesCount": 0,
-                "filterType": "all",
-                "loadMore": "false",
-            },
-            headers={
-                "Accept": "application/json",
-                "User-Agent": settings.web_search_user_agent,
-                "Referer": page.url,
-            },
-            timeout=settings.web_fetch_timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        return page
-
-    matches = payload.get("upcomingMatches", [])
-    if not isinstance(matches, list) or not matches:
-        return page
-
-    lines = [page.text, "Extracted BCCI upcoming fixtures:"]
-    for match in matches[:8]:
-        if not isinstance(match, dict):
-            continue
-        name = str(match.get("MatchName") or "").strip()
-        date = str(match.get("MatchDateNew") or match.get("MatchDate") or "").strip()
-        time_ = str(match.get("MatchTime") or "").strip()
-        venue = ", ".join(
-            part
-            for part in [
-                str(match.get("GroundName") or "").strip(),
-                str(match.get("city") or "").strip(),
-            ]
-            if part
-        )
-        competition = str(match.get("CompetitionName") or "").strip()
-        match_type = str(match.get("MatchTypeName") or match.get("MatchType") or "").strip()
-        team_type = str(match.get("TeamType") or "").strip()
-        lines.append(
-            "Upcoming match: "
-            f"{name}. Date: {date}. Time: {time_} IST. "
-            f"Venue: {venue}. Competition: {competition}. "
-            f"Format: {match_type}. Team type: {team_type}."
-        )
-    return page.model_copy(update={"text": "\n".join(line for line in lines if line)})
-
-
 def _candidate_chunks(page: FetchedPage) -> list[str]:
     if "json" in (page.content_type or "") or page.text.lstrip().startswith("{"):
         structured = _json_evidence_chunks(page.text)
@@ -1070,7 +998,7 @@ def _candidate_chunks(page: FetchedPage) -> list[str]:
 
     meta_chunks = _meta_and_infobox_chunks(page.text)
 
-    listing_chunks = _listing_evidence_chunks(page.text)
+    listing_chunks: list[str] = []
     if listing_chunks:
         return meta_chunks + listing_chunks
 
@@ -1133,28 +1061,22 @@ def _json_evidence_chunks(text: str) -> list[str]:
     return []
 
 
-def _listing_evidence_chunks(text: str) -> list[str]:
-    chunks: list[str] = []
-    openai_pattern = re.compile(
-        r"(?P<title>[A-Z][^.!?]{20,160}?)\s+"
-        r"(?P<section>Product|Research|Company|Applied AI|AI Adoption|Safety|"
-        r"Engineering|Security|Global Affairs)\s+"
-        r"(?P<date>[A-Z][a-z]{2}\s+\d{1,2},\s+20\d{2})"
-    )
-    for match in openai_pattern.finditer(text):
-        chunks.append(
-            f"{match.group('title').strip()}. "
-            f"Category: {match.group('section')}. "
-            f"Date: {match.group('date')}."
-        )
-    return chunks
+#: What evidence looks like regardless of topic: a figure, a quantity with a
+#: unit, a dotted version number, a year or a date.
+_EVIDENCE_SHAPE = re.compile(
+    r"(?:[$\u20ac\u00a3\u20b9\u00a5]\s?\d|\b\d+(?:\.\d+)+\b|\b\d{1,3}(?:,\d{3})+\b|"
+    r"\b(?:19|20)\d{2}\b|\b\d+(?:\.\d+)?\s?(?:%|percent|km|kg|mph|gb|tb|mb|hours?|"
+    r"minutes?|days?|weeks?|months?|years?|million|billion)\b|"
+    r"\b\d{1,2}\s+[a-z]{3,9}\s+20\d{2}\b|\b20\d{2}-\d{2}-\d{2}\b)",
+    re.IGNORECASE,
+)
 
 
 def _score_chunk(profile: QueryRelevanceProfile, answer_mode: str, chunk: str) -> float:
     normalized = _normalize_for_relevance(chunk)
-    if _is_boilerplate_chunk(normalized):
-        return 0.0
     term_hits = _term_hit_count(profile, chunk)
+    if _is_boilerplate_chunk(normalized, term_hits=term_hits):
+        return 0.0
     alias_hit = _has_alias_hit(profile, chunk)
     score = float(term_hits * 2)
     if alias_hit:
@@ -1165,22 +1087,19 @@ def _score_chunk(profile: QueryRelevanceProfile, answer_mode: str, chunk: str) -
         score += 3.0
     if chunk.startswith("Page description:") or chunk.startswith("Infobox:"):
         score += 4.0
-    if answer_mode == "fact_lookup" and re.search(
-        r"\b(version|price|cost|upcoming match|match|date|time|venue|schedule|"
-        r"season|seasons|episode|episodes|directed|created|written|"
-        r"champion|winner|ranking|rated|rating|world chess)\b",
-        normalized,
-    ):
+    # A single fact is usually a figure, a quantity, a version or a date, in
+    # whatever domain; a chunk that carries one is more likely to answer it.
+    if answer_mode == "fact_lookup" and _EVIDENCE_SHAPE.search(chunk):
         score += 3.0
     if answer_mode == "news_summary" and re.search(
-        r"\b(news|announced|announces|launch|launched|trailer|release|released|coming|update)\b",
+        r"\b(news|announced|announces|launch|launched|release|released|coming|update)\b",
         normalized,
     ):
         score += 2.0
     return score
 
 
-def _is_boilerplate_chunk(normalized_chunk: str) -> bool:
+def _is_boilerplate_chunk(normalized_chunk: str, *, term_hits: int = 0) -> bool:
     boilerplate_terms = (
         "newsletter",
         "sign in",
@@ -1215,27 +1134,10 @@ def _is_boilerplate_chunk(normalized_chunk: str) -> bool:
         "share this",
     )
     boilerplate_hits = sum(1 for term in boilerplate_terms if term in normalized_chunk)
-    evidence_terms = (
-        "date ",
-        "category ",
-        "upcoming match",
-        "latest version",
-        "announced",
-        "released",
-        "unveiled",
-        "season",
-        "episode",
-        "premiere",
-        "directed",
-        "created",
-        "champion",
-        "winner",
-        "ranking",
-        "rating",
-        "price",
-    )
-    evidence_hits = sum(1 for term in evidence_terms if term in normalized_chunk)
-    return boilerplate_hits >= 2 and evidence_hits == 0
+    # Navigation text that still names the subject or carries a figure or date
+    # may hold the answer; only navigation with neither is discarded.
+    has_evidence = term_hits > 0 or bool(_EVIDENCE_SHAPE.search(normalized_chunk))
+    return boilerplate_hits >= 2 and not has_evidence
 
 
 def _clean_chunk(value: str) -> str:
@@ -1244,7 +1146,16 @@ def _clean_chunk(value: str) -> str:
 
 def _has_alias_hit(profile: QueryRelevanceProfile, value: str) -> bool:
     normalized = _normalize_for_relevance(value)
-    return any(alias in normalized for alias in profile.aliases)
+    if any(alias in normalized for alias in profile.aliases):
+        return True
+    squashed = _compact(value)
+    return any(
+        len(form) >= 4 and form in squashed for form in (_compact(a) for a in profile.aliases)
+    )
+
+
+def _compact(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
 
 def _term_hit_count(profile: QueryRelevanceProfile, value: str) -> int:
@@ -1280,11 +1191,6 @@ def _has_freshness_hit(value: str) -> bool:
 
 def _normalize_for_relevance(value: str) -> str:
     normalized = value.lower()
-    normalized = normalized.replace("next.js", "nextjs")
-    normalized = normalized.replace("next js", "nextjs")
-    normalized = normalized.replace("open ai", "openai")
-    normalized = normalized.replace("spider-man", "spiderman")
-    normalized = normalized.replace("spider man", "spiderman")
     normalized = re.sub(r"[^a-z0-9./+#-]+", " ", normalized)
     return normalized
 
@@ -1292,29 +1198,6 @@ def _normalize_for_relevance(value: str) -> str:
 # ---------------------------------------------------------------------------
 # Structured fact extractors
 # ---------------------------------------------------------------------------
-
-_WORD_TO_NUM = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "eleven": 11,
-    "twelve": 12,
-    "thirteen": 13,
-    "fourteen": 14,
-    "fifteen": 15,
-    "sixteen": 16,
-    "seventeen": 17,
-    "eighteen": 18,
-    "nineteen": 19,
-    "twenty": 20,
-}
 
 
 class FactResult:
@@ -1335,223 +1218,6 @@ class FactResult:
         self.match_reason = match_reason
 
 
-def _num(text: str) -> int | None:
-    if text.isdigit():
-        val = int(text)
-        return val if 0 < val < 1000 else None
-    return _WORD_TO_NUM.get(text.lower())
-
-
-def _structured_fact_source_bonus(chunk: EvidenceChunk) -> float:
-    domain = urlparse(chunk.source_url).netloc.lower().removeprefix("www.")
-    if (
-        domain == "wikipedia.org"
-        or domain.endswith(".gov")
-        or domain.endswith(".edu")
-        or domain
-        in {
-            "apple.com",
-            "bbc.com",
-            "hbo.com",
-            "imdb.com",
-            "reuters.com",
-        }
-    ):
-        return 0.25
-    return 0.0
-
-
-def extract_season_count(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
-    if not re.search(r"\b(season|seasons|how many)\b", query, re.IGNORECASE):
-        return None
-    if re.search(r"\b(episode|episodes)\b", query, re.IGNORECASE):
-        return None
-    best: FactResult | None = None
-    for chunk in chunks:
-        text = f"{chunk.source_title}. {chunk.text}"
-        for pattern, reason in [
-            (
-                r"\b(?:consists of|has|have|had|ran for|spanned|comprises|"
-                r"featuring|with)\s+(?P<n>\d{1,2}|" + "|".join(_WORD_TO_NUM) + r")\s+seasons?\b",
-                "verb+count",
-            ),
-            (r"\b(?P<n>\d{1,2}|" + "|".join(_WORD_TO_NUM) + r")\s+seasons?\b", "count+seasons"),
-        ]:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if not match:
-                continue
-            n = _num(match.group("n"))
-            if n is None or n > 50:
-                continue
-            context_start = max(0, match.start() - 60)
-            support = text[context_start : match.end() + 60].strip()
-            confidence = min(
-                0.99,
-                (0.8 if reason == "verb+count" else 0.6) + _structured_fact_source_bonus(chunk),
-            )
-            if best is None or confidence > best.confidence:
-                best = FactResult(
-                    answer=f"{n} season{'s' if n != 1 else ''}",
-                    support_text=support,
-                    source_index=chunk.source_index or 1,
-                    confidence=confidence,
-                    match_reason=reason,
-                )
-    return best
-
-
-def extract_episode_count(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
-    if not re.search(r"\b(episode|episodes|how many)\b", query, re.IGNORECASE):
-        return None
-    best: FactResult | None = None
-    for chunk in chunks:
-        text = f"{chunk.source_title}. {chunk.text}"
-        if re.search(
-            r"\b(first|last|next|remaining|one more|final)\s+\w+\s+episodes\b", text, re.IGNORECASE
-        ):
-            continue
-        for pattern, reason in [
-            (
-                r"\b(?:consists of|has|have|with|contains|includes|featuring|"
-                r"totaling)\s+(?P<n>\d{1,3}|" + "|".join(_WORD_TO_NUM) + r")\s+episodes?\b",
-                "verb+count",
-            ),
-            (r"\b(?P<n>\d{1,3}|" + "|".join(_WORD_TO_NUM) + r")\s+episodes?\b", "count+episodes"),
-        ]:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if not match:
-                continue
-            n = _num(match.group("n"))
-            if n is None or n > 500:
-                continue
-            context_start = max(0, match.start() - 60)
-            support = text[context_start : match.end() + 60].strip()
-            confidence = 0.8 if reason == "verb+count" else 0.6
-            if best is None or confidence > best.confidence:
-                best = FactResult(
-                    answer=f"{n} episode{'s' if n != 1 else ''}",
-                    support_text=support,
-                    source_index=chunk.source_index or 1,
-                    confidence=confidence,
-                    match_reason=reason,
-                )
-    return best
-
-
-_CHAMPION_TITLE_QUERY = re.compile(
-    r"\b(world chess champion|chess world champion|classical.{0,10}champion|"
-    r"current.{0,10}champion|reigning.{0,10}champion|undisputed.{0,10}champion)\b",
-    re.IGNORECASE,
-)
-_RATING_QUERY = re.compile(
-    r"\b(highest rated|top rated|ranking|rankings|rated|rating|"
-    r"world number|number one|no\.\s*1|fide rating|live rating|"
-    r"current fide|top chess player)\b",
-    re.IGNORECASE,
-)
-_CHAMPION_TITLE_EVIDENCE = re.compile(
-    r"(world chess champion|world champion|current champion|reigning champion|"
-    r"undisputed champion|classical champion|became.{0,15}champion|"
-    r"won.{0,15}championship|defeated.{0,15}world champion|"
-    r"claimed.{0,15}world.{0,10}title|new world champion)",
-    re.IGNORECASE,
-)
-_RATING_ONLY_EVIDENCE = re.compile(
-    r"\b(rating|rated|ranking|ranked|elo|live rating|standard rating|"
-    r"world ranking|fide rating|classical rating)\b",
-    re.IGNORECASE,
-)
-
-
-def extract_champion_or_ranking(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
-    is_champion_query = bool(_CHAMPION_TITLE_QUERY.search(query))
-    is_rating_query = bool(_RATING_QUERY.search(query))
-    if not is_champion_query and not is_rating_query:
-        if not re.search(r"\b(champion|fide|world chess)\b", query, re.IGNORECASE):
-            return None
-
-    best: FactResult | None = None
-    for chunk in chunks:
-        text = f"{chunk.source_title}. {chunk.text}"
-
-        champion_patterns = [
-            (
-                r"(?:world chess champion|world champion|current champion|"
-                r"reigning champion|undisputed champion)\s*(?:is|:)?\s*"
-                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
-                "champion_title",
-            ),
-            (
-                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*"
-                r"(?:is the|became|won|defeated|claimed)\s*(?:the\s+)?"
-                r"(?:world|chess)\s*champion",
-                "champion_context",
-            ),
-            (
-                r"(?:World\s+(?:Chess\s+)?Champion(?:ship)?.*?"
-                r"(?:won by|winner|champion)\s*:?\s*)"
-                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
-                "championship_winner",
-            ),
-        ]
-        rating_patterns = [
-            (
-                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*\(\s*(?:\d{4}\s*(?:rating|Elo|FIDE)?\s*:?\s*)?\s*(?P<rating>\d{4})\s*\)",
-                "name_with_rating",
-            ),
-            (r"#1\s+(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})", "ranked_number_one"),
-            (
-                r"(?:highest[- ]rated|top[- ]rated|number one|#1)[^.]{0,40}"
-                r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
-                "highest_rated",
-            ),
-        ]
-
-        if is_champion_query:
-            patterns = champion_patterns
-        elif is_rating_query:
-            patterns = rating_patterns + champion_patterns
-        else:
-            patterns = champion_patterns + rating_patterns
-
-        for pattern, reason in patterns:
-            match = re.search(pattern, text)
-            if not match:
-                continue
-            name = match.group("name").strip()
-            if len(name) < 4 or len(name) > 60:
-                continue
-            context_start = max(0, match.start() - 100)
-            context_end = min(len(text), match.end() + 100)
-            support = text[context_start:context_end].strip()
-
-            is_champion_evidence = bool(_CHAMPION_TITLE_EVIDENCE.search(support))
-            is_rating_evidence = bool(_RATING_ONLY_EVIDENCE.search(support))
-
-            if is_champion_query and not is_champion_evidence:
-                continue
-            if is_rating_query and reason in (
-                "champion_title",
-                "champion_context",
-                "championship_winner",
-            ):
-                if not is_rating_evidence:
-                    pass
-
-            confidence = 0.9 if is_champion_evidence else 0.7
-            if is_champion_query and not is_champion_evidence:
-                continue
-            if best is None or confidence > best.confidence:
-                best = FactResult(
-                    answer=name,
-                    support_text=support,
-                    source_index=chunk.source_index or 1,
-                    confidence=confidence,
-                    match_reason=reason,
-                )
-    return best
-
-
 def extract_release_date(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
     if not re.search(
         r"\b(release|released|releasing|premiere|when|date|coming out|launch)\b",
@@ -1569,7 +1235,7 @@ def extract_release_date(query: str, chunks: list[EvidenceChunk]) -> FactResult 
             r"(?:is\s+|will\s+be\s+)?premiere(?:d|s|ing)?(?:\s+on|\s+in)?|"
             r"(?:is\s+)?(?:coming|came)\s+out(?:\s+on|\s+in)?|"
             r"(?:is\s+|will\s+be\s+)?launch(?:ed|es|ing)?(?:\s+on|\s+in)?|"
-            r"(?:in|into)\s+(?:Indian\s+)?(?:theatres|theaters|cinemas)(?:\s+on)?"
+            r"(?:in|into)\s+(?:[A-Z][a-z]+\s+)?(?:theatres|theaters|cinemas)(?:\s+on)?"
             r")\s*:?\s*"
             r"(?P<date>"
             r"(?:January|February|March|April|May|June|July|August|September|"
@@ -1589,7 +1255,9 @@ def extract_release_date(query: str, chunks: list[EvidenceChunk]) -> FactResult 
             date = match.group("date").strip()
             candidates.append((date, _normalized_release_date(date), chunk, support))
 
-    official = [candidate for candidate in candidates if _is_official_release_source(candidate[2])]
+    official = [
+        candidate for candidate in candidates if _is_primary_release_source(query, candidate[2])
+    ]
     if official:
         date, _, chunk, support = max(official, key=lambda item: item[2].relevance_score)
         return FactResult(
@@ -1600,15 +1268,13 @@ def extract_release_date(query: str, chunks: list[EvidenceChunk]) -> FactResult 
             match_reason="official_explicit_release_date",
         )
 
+    # Otherwise a date counts only when independent sites -- different
+    # registrable domains -- state the same one.
     by_date: dict[str, list[tuple[str, str, EvidenceChunk, str]]] = {}
     for candidate in candidates:
-        if _is_authoritative_release_source(candidate[2]):
-            by_date.setdefault(candidate[1], []).append(candidate)
+        by_date.setdefault(candidate[1], []).append(candidate)
     corroborated = [
-        rows
-        for rows in by_date.values()
-        if len({urlparse(row[2].source_url).netloc.lower().removeprefix("www.") for row in rows})
-        >= 2
+        rows for rows in by_date.values() if len({_site_of(row[2].source_url) for row in rows}) >= 2
     ]
     if not corroborated:
         return None
@@ -1652,12 +1318,9 @@ def _is_publication_date_match(text: str, trigger_start: int, date_start: int) -
 
 
 def _release_entity_matches(query: str, evidence: str) -> bool:
-    normalized_query = (
-        query.lower().replace("spider-man", "spiderman").replace("spider man", "spiderman")
-    )
-    normalized_evidence = (
-        evidence.lower().replace("spider-man", "spiderman").replace("spider man", "spiderman")
-    )
+    normalized_query = query.lower()
+    normalized_evidence = evidence.lower()
+    squashed_evidence = re.sub(r"[^a-z0-9]+", "", normalized_evidence)
     ignored = {
         "are",
         "coming",
@@ -1669,8 +1332,6 @@ def _release_entity_matches(query: str, evidence: str) -> bool:
         "has",
         "have",
         "how",
-        "india",
-        "indian",
         "is",
         "launch",
         "movie",
@@ -1698,39 +1359,29 @@ def _release_entity_matches(query: str, evidence: str) -> bool:
     if not terms:
         return False
     required = 2 if len(terms) >= 2 else 1
-    return sum(1 for term in set(terms) if term in normalized_evidence) >= required
-
-
-def _is_official_release_source(chunk: EvidenceChunk) -> bool:
-    domain = urlparse(chunk.source_url).netloc.lower().removeprefix("www.")
-    official_suffixes = (
-        "apple.com",
-        "marvel.com",
-        "nintendo.com",
-        "playstation.com",
-        "primevideo.com",
-        "sonypictures.com",
-        "sonypictures.in",
-        "xbox.com",
+    return (
+        sum(
+            1
+            for term in set(terms)
+            if term in normalized_evidence or re.sub(r"[^a-z0-9]+", "", term) in squashed_evidence
+        )
+        >= required
     )
-    return any(domain == suffix or domain.endswith(f".{suffix}") for suffix in official_suffixes)
 
 
-def _is_authoritative_release_source(chunk: EvidenceChunk) -> bool:
-    domain = urlparse(chunk.source_url).netloc.lower().removeprefix("www.")
-    authoritative_suffixes = (
-        "apnews.com",
-        "bbc.com",
-        "bookmyshow.com",
-        "district.in",
-        "ign.com",
-        "reuters.com",
-        "theverge.com",
-        "variety.com",
-    )
-    return any(
-        domain == suffix or domain.endswith(f".{suffix}") for suffix in authoritative_suffixes
-    )
+def _site_of(url: str) -> str:
+    from app.services.research.textutil import host_group, host_of
+
+    return host_group(host_of(url))
+
+
+def _is_primary_release_source(query: str, chunk: EvidenceChunk) -> bool:
+    """The subject's own site: its name contains a name the user wrote."""
+
+    from app.services.search.ranking import _entity_terms
+
+    site = re.sub(r"[^a-z0-9]+", "", _site_of(chunk.source_url))
+    return any(len(term) >= 3 and term in site for term in _entity_terms(query))
 
 
 def extract_software_version(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
@@ -1777,8 +1428,7 @@ _PRICE_REJECT_CONTEXT = re.compile(
 )
 _PRICE_ACCEPT_CONTEXT = re.compile(
     r"\b(price|starts?\s+at|starting\s+at|MRP|buy|product price|"
-    r"from \u20b9|from \$|costs?|priced at|retail|MSRP|"
-    r"MacBook|iPhone|iPad|Galaxy|laptop|desktop|Pro|Air)\b",
+    r"from \u20b9|from \$|costs?|priced at|retail|MSRP|sells? for|listed at)\b",
     re.IGNORECASE,
 )
 
@@ -1821,12 +1471,8 @@ def extract_price(query: str, chunks: list[EvidenceChunk]) -> FactResult | None:
                 continue
 
             amount = _parse_price_amount(price)
-            if amount is not None:
-                is_inr = "\u20b9" in price or "INR" in price
-                if is_inr and amount < 20000:
-                    continue
-                if not is_inr and amount < 50:
-                    continue
+            if amount is None or amount <= 0:
+                continue
 
             has_product_context = bool(_PRICE_ACCEPT_CONTEXT.search(support))
             if reason == "currency_symbol" and not has_product_context:
@@ -1938,11 +1584,10 @@ def extract_weather(query: str, chunks: list[EvidenceChunk]) -> FactResult | Non
     return None
 
 
+#: Typed extractors for single facts that look the same in any domain: a
+#: temperature, a release date, a version number, a price.
 ALL_EXTRACTORS = [
     extract_weather,
-    extract_season_count,
-    extract_episode_count,
-    extract_champion_or_ranking,
     extract_release_date,
     extract_software_version,
     extract_price,

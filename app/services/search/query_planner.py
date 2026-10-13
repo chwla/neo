@@ -1,9 +1,9 @@
 """Model-based search query planning.
 
 The provider query used to be produced by a long ladder of hand-written regex
-rules, one per entity Neo had been asked about (Avengers Doomsday, Spider-Man,
-Dune 3, FIDE, BCCI, ...).  That ladder only ever fired for the entities somebody
-had already hit a bug with, and it left ordinary questions untouched -- so a
+rules, one per entity Neo had been asked about.  That ladder only ever fired
+for the entities somebody had already hit a bug with, and it left ordinary
+questions untouched -- so a
 natural-language question was passed to the provider verbatim, and every word in
 it was then treated as a relevance term.
 
@@ -270,19 +270,17 @@ Fields:
 - window: day or week only when an older answer would be wrong. Use null for
   changelogs, documentation and anything historical.
 
-Examples:
-USER: What changed in the latest React release?
-JSON: {"q":"React release notes changelog","terms":["react"],"mode":"news","window":null}
-USER: when is Avengers Doomsday releasing in India
-JSON: {"q":"Avengers Doomsday India release date","terms":["avengers"],"mode":"fact","window":null}
-USER: search what has recently changed in react
-JSON: {"q":"React recent changes release notes","terms":["react"],"mode":"news","window":null}
-USER: what is the current price of NVIDIA stock
-JSON: {"q":"NVIDIA stock price","terms":["nvidia"],"mode":"fact","window":"day"}
-USER: how many seasons does Invincible have
-JSON: {"q":"Invincible season count","terms":["invincible"],"mode":"fact","window":null}
-USER: tell me about the plot of Dune Part Three
-JSON: {"q":"Dune Part Three plot","terms":["dune"],"mode":"overview","window":null}
+Examples (placeholders stand for whatever the user actually names):
+USER: what changed in the newest release of <software>
+JSON: {"q":"<software> release notes changelog","terms":["<software>"],"mode":"news","window":null}
+USER: when does <title> come out in <country>
+JSON: {"q":"<title> <country> release date","terms":["<title>"],"mode":"fact","window":null}
+USER: what is the price of <product> right now
+JSON: {"q":"<product> price","terms":["<product>"],"mode":"fact","window":"day"}
+USER: how many <units> does <work> have
+JSON: {"q":"<work> number of <units>","terms":["<work>"],"mode":"fact","window":null}
+USER: tell me about the story of <work>
+JSON: {"q":"<work> plot summary","terms":["<work>"],"mode":"overview","window":null}
 """
 
 _PLAN_JSON = re.compile(r"\{\s*\"q\".*?\}", re.DOTALL)

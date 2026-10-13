@@ -47,11 +47,37 @@ class ProviderRuntimeClient(BaseLLMClient):
         disable_thinking: bool = False,
     ) -> None:
         self.route_name, self.num_predict, self.timeout = route_name, num_predict, timeout
+        self.disable_thinking = disable_thinking
         # Profile initialization owns schema creation. Model requests must not
         # run SQLite DDL in their hot path.
         self.runtime = ProviderRuntimeService(initialize=False, disable_thinking=disable_thinking)
         self.model = "runtime"
         self.last_metadata: dict[str, Any] = {}
+        #: Every provider request this client made, in order. A chat turn reads
+        #: these from all of its clients to count its model calls exactly.
+        self.request_ids: list[str] = []
+
+    def derive(
+        self,
+        *,
+        disable_thinking: bool | None = None,
+        num_predict: int | None = None,
+    ) -> ProviderRuntimeClient:
+        """A sibling client on the same route with different generation settings.
+
+        Used for the small structured calls a turn makes before it answers --
+        routing, calendar extraction, query planning -- which must never spend
+        their budget reasoning, whatever the answer itself is allowed to do.
+        """
+
+        return ProviderRuntimeClient(
+            self.route_name,
+            num_predict=num_predict if num_predict is not None else self.num_predict,
+            timeout=self.timeout,
+            disable_thinking=(
+                self.disable_thinking if disable_thinking is None else disable_thinking
+            ),
+        )
 
     def is_available(self) -> bool:
         try:
@@ -109,6 +135,7 @@ class ProviderRuntimeClient(BaseLLMClient):
                 detail=result.error_detail,
                 provider=str(result.route.get("provider") or ""),
             )
+        self.request_ids.append(result.request_id)
         request = self.runtime.request(result.request_id) or {}
         thinking = (request.get("metadata") or {}).get("thinking")
         self.last_metadata = {
@@ -135,6 +162,9 @@ class ProviderRuntimeClient(BaseLLMClient):
             fallback_used=self.last_metadata["fallback_used"],
             provider_request_id=result.request_id,
             finish_reason=result.finish_reason,
+            load_ms=result.usage.get("load_ms"),
+            prefill_ms=result.usage.get("prefill_ms"),
+            decode_ms=result.usage.get("decode_ms"),
         )
 
     def chat_stream(
@@ -147,6 +177,7 @@ class ProviderRuntimeClient(BaseLLMClient):
             max_tokens=num_predict or self.num_predict,
             metadata={"temperature": temperature},
         )
+        self.request_ids.append(session["id"])
         yield {"type": "start", "request_id": session["id"]}
         seen = 0
         seen_thinking = 0
@@ -181,6 +212,9 @@ class ProviderRuntimeClient(BaseLLMClient):
                 "total_tokens": usage.get("total_tokens"),
                 "duration_ms": session.get("latency_ms"),
                 "thinking": str(thinking) if thinking else None,
+                "load_ms": usage.get("load_ms"),
+                "prefill_ms": usage.get("prefill_ms"),
+                "decode_ms": usage.get("decode_ms"),
                 **self.last_metadata,
             }
         else:

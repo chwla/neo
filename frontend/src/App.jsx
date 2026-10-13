@@ -47,6 +47,7 @@ import {
 } from "./chatPresentation.js";
 
 import { lazyPanel } from "./lazyPanel.jsx";
+import { effortTooltip, modelAlwaysReasons } from "./chatEffort.js";
 
 const CommandPalette = lazyPanel(() => import("./CommandPalette.jsx"));
 const AppearanceSettings = lazyPanel(() => import("./AppearanceSettings.jsx"));
@@ -1746,6 +1747,8 @@ export function ChatComposer({
   onExternalEffortChange,
   effort = "low",
   onEffortChange = () => {},
+  //: True once a Low reply from the chosen model reasoned anyway (see chatEffort.js).
+  effortAlwaysReasons = false,
   onOpenFolder,
   folderAttaching = false,
   onOpenToolsPanel,
@@ -2374,7 +2377,7 @@ export function ChatComposer({
                       <span className="agent-chip-label">Effort</span>
                       <select value={effort} onChange={(event) => onEffortChange(event.target.value)}
                         disabled={disabled} aria-label="Select effort"
-                        title="High lets a model choose the route and reason before replying. Low keeps the deterministic parts only -- it answers far faster, and it will not decide on its own that a question needs the web.">
+                        title={effortTooltip(effortAlwaysReasons)}>
                         {/* Default first, as the other chips do. */}
                         <option value="low">Low · faster replies</option>
                         <option value="high">High · more thorough</option>
@@ -3870,6 +3873,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 
   const loadChat = useCallback(async (chatId, options = {}) => {
     const thread = await api.getChat(chatId);
+    // Fire and forget: loading the model is the server's call and must never
+    // hold up or break opening the conversation.
+    api.warmChatModel().catch(() => {});
     setActiveChat(thread.chat);
     setMessages(thread.messages);
     setSelectedProjectId(thread.chat.project_id);
@@ -5310,6 +5316,10 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           }
           effort={activeChat?.effort || "low"}
           onEffortChange={(next) => updateChatAgentSettings({ effort: next })}
+          effortAlwaysReasons={modelAlwaysReasons(
+            messages,
+            llms.find((llm) => llm.id === selectedLlmId)?.model || "",
+          )}
           onOpenFolder={handleOpenFolder}
           folderAttaching={false}
           onOpenToolsPanel={() => setShowChatTools(true)}

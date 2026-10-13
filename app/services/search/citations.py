@@ -6,7 +6,9 @@ from pydantic import BaseModel, Field
 
 from app.services.source_citations import SourceCitation
 
-_MARKER = re.compile(r"\[(?P<index>\d+)]")
+#: One marker, or a group such as [1, 2] -- models write both, and the rest of
+#: the chat pipeline already reads groups (``_referenced_citation_indices``).
+_MARKER = re.compile(r"\[(?P<group>\d+(?:\s*,\s*\d+)*)]")
 _SOURCES_HEADER = re.compile(
     r"(?:^|\n)\s*(?:#{1,6}\s*)?(?:sources?|references?)\s*:",
     re.IGNORECASE,
@@ -47,7 +49,13 @@ def validate_citation_markers(
 ) -> CitationValidationResult:
     cleaned = strip_generated_sources_block(answer)
     markers = list(_MARKER.finditer(cleaned))
-    used = list(dict.fromkeys(int(marker.group("index")) for marker in markers))
+    used = list(
+        dict.fromkeys(
+            int(number)
+            for marker in markers
+            for number in re.findall(r"\d+", marker.group("group"))
+        )
+    )
     available = {citation.index for citation in citations if citation.fetched}
     supported = available if supported_indices is None else available & supported_indices
     errors: list[str] = []
@@ -62,8 +70,12 @@ def validate_citation_markers(
         errors.append(f"Unsupported citation indices: {unsupported}.")
     for marker in markers:
         prefix = cleaned[max(0, marker.start() - 120) : marker.start()]
-        if not re.search(r"[A-Za-z0-9)](?:[.!?,;:]|\s)*$", prefix):
-            errors.append(f"Orphaned citation marker: [{marker.group('index')}].")
+        # A marker belongs to the text before it. Anything that can end a claim
+        # counts -- a word, a closing bracket or quote, markdown emphasis, or
+        # another marker ("[1][2]") -- so only a marker with no claim before it
+        # (the start of the answer, or after an opening bracket) is orphaned.
+        if not re.search(r"[^\s(\[](?:[.!?,;:]|\s)*$", prefix):
+            errors.append(f"Orphaned citation marker: [{marker.group('group')}].")
             break
     return CitationValidationResult(
         answer=cleaned,

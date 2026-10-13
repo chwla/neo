@@ -1,6 +1,7 @@
 from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -101,6 +102,24 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = Field(default="30m")
     chat_num_predict: int = Field(default=2048)
     chat_history_turns: int = Field(default=8, ge=1, le=24)
+    #: Output cap for the small structured calls a turn makes before it answers
+    #: (routing, query planning, place checks). They never reason, so this only
+    #: has to fit their JSON; it is a ceiling, not a target.
+    chat_helper_num_predict: int = Field(default=512, ge=64, le=4096)
+    #: The calendar extractor writes the largest JSON of any helper (a full
+    #: event draft with recurrence), so it gets its own, larger ceiling.
+    chat_calendar_helper_num_predict: int = Field(default=768, ge=64, le=4096)
+    #: Extra output allowance when an answer reasons first. Reasoning tokens
+    #: count against the same limit as the answer, so without this the answer is
+    #: what gets cut off.
+    chat_thinking_headroom_tokens: int = Field(default=1024, ge=0, le=8192)
+    #: "on" keeps whatever context size the local runtime already has loaded when
+    #: it is larger than a request needs, instead of reloading the model at a
+    #: smaller size. "off" sizes every request on its own.
+    ollama_context_reuse: Literal["on", "off"] = Field(default="on")
+    #: Load the chat model before the first message of a session, for local
+    #: providers, so that message does not pay the cold start.
+    chat_model_warmup: bool = Field(default=True)
     llm_config_path: str = Field(default="neo_llms.json")
     workspace_files_dir: str = Field(default="data/workspace_files")
     workspace_repos_dir: str = Field(default="data/workspace_repos")
@@ -289,6 +308,11 @@ class Settings(BaseSettings):
         le=5,
         validation_alias=AliasChoices("WEB_FETCH_MAX_PAGES", "NEO_WEB_FETCH_MAX_PAGES"),
     )
+    #: Research depth for High effort, once a turn has decided to search. Low
+    #: uses the three settings above; routing is the same for both.
+    web_search_max_results_high: int = Field(default=8, ge=1, le=10)
+    web_fetch_max_pages_high: int = Field(default=5, ge=0, le=5)
+    web_context_max_tokens_high: int = Field(default=2000, ge=200, le=6000)
     web_fetch_timeout_seconds: float = Field(
         default=8.0,
         gt=0,

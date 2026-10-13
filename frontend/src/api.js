@@ -723,6 +723,9 @@ export const api = {
     }),
   updateChat: (chatId, changes) =>
     request(`/chats/${chatId}`, { method: "PATCH", body: JSON.stringify(changes) }),
+  // Ask the local chat model to load while the user is still reading or typing,
+  // so the first message does not pay for it. The server decides whether to.
+  warmChatModel: () => request("/chat-model/warm", { method: "POST" }),
   /**
    * Tail a chat's live log. Both kinds of turn append to it, so this is the
    * only live connection a thread needs, whatever it is doing.
