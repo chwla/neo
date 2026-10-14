@@ -4,7 +4,7 @@ import {
   formatMessageTime,
   formatResponseKind,
   formatTokens,
-  renderMessageHtml,
+  renderStreamingHtml,
 } from "./chatPresentation.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
 
@@ -30,10 +30,14 @@ function groupEntries(entries) {
     const previous = grouped[grouped.length - 1];
     if (entry.kind === "text" && previous?.kind === "text") {
       // Two turns merged into one bubble cost the sum of both, and the model
-      // that answered last is the one the bubble is showing.
+      // that answered last is the one the bubble is showing. The id stays the
+      // first chunk's: it is the bubble's React key, and taking each new chunk's
+      // would remount the bubble on every chunk -- re-parsing it from scratch and
+      // closing a menu someone had open on it.
       grouped[grouped.length - 1] = {
         ...previous,
         ...entry,
+        id: previous.id,
         content: previous.content + entry.content,
         total_tokens: (previous.total_tokens || 0) + (entry.total_tokens || 0) || undefined,
         duration_ms: (previous.duration_ms || 0) + (entry.duration_ms || 0) || undefined,
@@ -118,8 +122,13 @@ function traceEntries(run, liveEntries) {
   return (run?.tool_calls || []).map(entryFromToolCall);
 }
 
-function AgentBubble({ role, text, html, entry, onCopy, extraActions, sender = "Neo" }) {
+function AgentBubble({ role, text, html, markdown, entry, onCopy, extraActions, sender = "Neo" }) {
   const isUser = role === "user";
+  // Rendered here, once per change of its own text: the bubble keeps its id as
+  // chunks merge in (see groupEntries), so only the one still growing re-renders.
+  // Uncached, because a growing bubble is a new prefix every chunk.
+  const markdownHtml = useMemo(() => (markdown == null ? null : renderStreamingHtml(markdown)), [markdown]);
+  const renderedHtml = html ?? markdownHtml;
   const sentAt = formatMessageTime(entry?.created_at);
   const metadataItems = isUser
     ? []
@@ -132,9 +141,9 @@ function AgentBubble({ role, text, html, entry, onCopy, extraActions, sender = "
       <div className="message-stack">
         <span className="message-sender">{isUser ? "You" : sender}</span>
         <div className="message-bubble">
-          {html ? (
-            /* Escaped by renderMessageHtml before any tag is emitted. */
-            <div className="chat-content" dangerouslySetInnerHTML={{ __html: html }} />
+          {renderedHtml ? (
+            /* Escaped by the Markdown renderer before any tag is emitted. */
+            <div className="chat-content" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
           ) : (
             <div className="chat-content">{body}</div>
           )}
@@ -421,7 +430,7 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
                 key={entry.id}
                 sender={engine}
                 role={entry.kind === "user" ? "user" : "assistant"}
-                html={entry.kind === "user" ? undefined : renderMessageHtml(entry.content)}
+                markdown={entry.kind === "user" ? undefined : entry.content}
                 text={entry.kind === "user" ? entry.content : undefined}
                 entry={entry}
                 onCopy={copyText}

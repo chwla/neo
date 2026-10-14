@@ -31,6 +31,9 @@ async function request(path, options = {}) {
       },
     });
   } catch (error) {
+    // A request its caller cancelled is not an outage: it is passed through as
+    // the AbortError it is, so the caller can tell "superseded" from "down".
+    if (error?.name === "AbortError") throw error;
     throw new Error(
       `Backend API is not reachable. Start FastAPI on http://127.0.0.1:8000. Details: ${
         error.message || error
@@ -669,7 +672,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ llm_id: llmId }),
     }),
-  getChat: (chatId) => request(`/chats/${chatId}`),
+  // `signal` lets a newer chat-open cancel this one; see `loadChat`.
+  getChat: (chatId, { signal } = {}) => request(`/chats/${chatId}`, signal ? { signal } : {}),
   sendMessage: (chatId, prompt, llmId = null, context = {}) =>
     request(`/chats/${chatId}/messages`, {
       method: "POST",

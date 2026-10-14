@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 
 import { api } from "./api.js";
@@ -35,18 +35,28 @@ import GalleryImages from "./GalleryImages.jsx";
 import ImageLightbox from "./ImageLightbox.jsx";
 import ProfilePicker from "./ProfilePicker.jsx";
 import {
+  agentArrivalKey,
+  arrivalKeyFor,
+  createArrivals,
   formatDuration,
   formatMessageTime,
   formatOutputTokens,
   formatResponseKind,
+  clearMessageHtmlCache,
   parseNeoTimestamp,
   renderMessageHtml,
+  renderStreamingHtml,
+  replyArrivalKey,
   resolveContextWindow,
   splitGeneratedText,
   sumTotalTokens,
 } from "./chatPresentation.js";
 
 import { lazyPanel } from "./lazyPanel.jsx";
+import { usePanelPreloading } from "./panelPreload.js";
+import { createKeyedWriter } from "./setWriter.js";
+import { SIDEBAR_FIELDS, patchSidebarChat, shouldCommitLoad } from "./chatView.js";
+import { chatStatusKey, createStatusFor } from "./chatStatus.js";
 import { effortTooltip, modelAlwaysReasons } from "./chatEffort.js";
 
 const CommandPalette = lazyPanel(() => import("./CommandPalette.jsx"));
@@ -87,9 +97,56 @@ const Continuity = lazyPanel(() => import("./Continuity.jsx"));
 const AccountSettings = lazyPanel(() => import("./AccountSettings.jsx"));
 const MemoryDialog = lazyPanel(() => import("./MemoryDialog.jsx"));
 
+//: Panels by the name their triggers carry in `data-preload` (panelPreload.js).
+//: A trigger is any control that opens the panel: a sidebar destination, a
+//: settings row, a composer action. The names of the sidebar's destinations
+//: are the system-nav ids, which is also how the background list is chosen.
+const PANEL_PRELOADS = {
+  memory: MemoryDialog,
+  research: Research,
+  notes: Notes,
+  calendar: Calendar,
+  gallery: Gallery,
+  localModels: LocalModels,
+  compareModels: CompareModels,
+  projects: Projects,
+  tasks: Tasks,
+  files: Files,
+  repos: Repos,
+  commandPalette: CommandPalette,
+  appearance: AppearanceSettings,
+  chatBackground: BackgroundSettings,
+  keyboard: KeyboardSettings,
+  voice: VoiceSettings,
+  account: AccountSettings,
+  openFolder: OpenFolderDialog,
+  chatTools: ChatToolsPanel,
+  skills: SkillsPanel,
+  usage: UsagePanel,
+  engines: ExternalAgents,
+  integrations: Integrations,
+  rules: RulesProfiles,
+  agents: AgentSettings,
+  sidebarItems: SidebarItemsSettings,
+  bundles: Bundles,
+  github: GitHub,
+  contextMemory: ContextMemory,
+  memoryRetrieval: MemoryRetrieval,
+  commandSandbox: CommandSandbox,
+  lsp: LspPanel,
+  reliableWebSearch: WebSearch,
+  providerRuntime: ProviderRuntime,
+  evaluationHarness: EvaluationHarness,
+  workspaceOrchestration: WorkspaceOrchestration,
+  continuity: Continuity,
+};
+
 // The guard key for a send that is creating its chat as it goes: there is no id
 // to key by yet, and two such sends are the double-click the guard exists for.
 const NEW_CHAT_GUARD_KEY = "new-chat";
+//: The view's target while a new chat is being made: equal to no chat id, so
+//: no load can put an old chat back on screen before the new one lands.
+const NEW_CHAT_TARGET = Symbol("new chat");
 
 const EMPTY_SIDEBAR = { projects: [], chats: [] };
 
@@ -530,7 +587,15 @@ const TURN_STATUS_LABELS = {
   done: "Finished while you were away",
 };
 
-function SidebarChatRow({
+//: Per-list class names, as constants so a memoized row sees the same object
+//: every render. The template literals that join them stay exactly as they are:
+//: an inactive row's class ends in a space, which keeps it out of the workspace
+//: suffix sweep in index.css.
+const PROJECT_ROW_CLASSES = { item: "project-chat-item", link: "project-chat-link", menu: "project-chat-menu" };
+const CHAT_ROW_CLASSES = { item: "chat-item", link: "chat-item-title", menu: "chat-item-menu" };
+const ARCHIVED_ROW_CLASSES = { item: "chat-item is-archived", link: "chat-item-title", menu: "chat-item-menu" };
+
+const SidebarChatRow = memo(function SidebarChatRow({
   chat,
   href,
   isActive,
@@ -632,9 +697,14 @@ function SidebarChatRow({
       </RowActionsMenu>
     </div>
   );
-}
+});
 
-export function Sidebar({
+/**
+ * Memoized: its handlers arrive as stable wrappers (`sidebarActions` in NeoApp)
+ * and its status function changes only with a status, so a keystroke, a
+ * streamed token or a dictation tick re-renders none of it.
+ */
+export const Sidebar = memo(function Sidebar({
   sidebar,
   activeChatId,
   statusFor,
@@ -931,11 +1001,7 @@ export function Sidebar({
                 chat={chat}
                 href={chatPermalink(chat.id, project.id)}
                 isActive={chat.id === activeChatId}
-                classes={{
-                  item: "project-chat-item",
-                  link: "project-chat-link",
-                  menu: "project-chat-menu",
-                }}
+                classes={PROJECT_ROW_CLASSES}
                 status={statusFor?.(chat)}
                 onOpenChat={onOpenChat}
                 onDeleteChat={onDeleteChat}
@@ -977,7 +1043,7 @@ export function Sidebar({
               chat={chat}
               href={chatPermalink(chat.id)}
               isActive={chat.id === activeChatId}
-              classes={{ item: "chat-item", link: "chat-item-title", menu: "chat-item-menu" }}
+              classes={CHAT_ROW_CLASSES}
               status={statusFor?.(chat)}
               onOpenChat={onOpenChat}
               onDeleteChat={onDeleteChat}
@@ -1028,7 +1094,7 @@ export function Sidebar({
                     chat={chat}
                     href={chatPermalink(chat.id)}
                     isActive={chat.id === activeChatId}
-                    classes={{ item: "chat-item is-archived", link: "chat-item-title", menu: "chat-item-menu" }}
+                    classes={ARCHIVED_ROW_CLASSES}
                     onOpenChat={onOpenChat}
                     onDeleteChat={onDeleteChat}
                     onRenameChat={onRenameChat}
@@ -1050,7 +1116,7 @@ export function Sidebar({
           <div className="sidebar-section">SYSTEM</div>
           <nav className="system-nav" aria-label="Neo system">
             {systemItems.map(([id, label, onClick]) => (
-              <button className={activeView === id ? "active" : ""} type="button" onClick={onClick} key={id}>
+              <button className={activeView === id ? "active" : ""} type="button" onClick={onClick} key={id} data-preload={id}>
                 <span>{label}</span>
               </button>
             ))}
@@ -1068,7 +1134,7 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
+});
 
 function formatElapsedDuration(durationMs) {
   if (!Number.isFinite(durationMs)) {
@@ -1097,7 +1163,8 @@ function previousUserMessage(messages, message) {
  * lost and its asterisks showing. The styling keeps it quieter than the answer.
  */
 function ThinkingBody({ text }) {
-  const html = useMemo(() => renderMessageHtml(text), [text]);
+  // Uncached: live thinking is a new prefix every frame (see renderStreamingHtml).
+  const html = useMemo(() => renderStreamingHtml(text), [text]);
   return (
     <>
       <span className="thinking-label">Thinking</span>
@@ -1107,9 +1174,26 @@ function ThinkingBody({ text }) {
   );
 }
 
+/**
+ * Whether this mount is the first appearance of something new.
+ *
+ * Read once, in the state initializer, so the answer cannot flip while the
+ * entrance plays; the key is consumed only after the mount commits, so the
+ * StrictMode double render reads the same answer twice and a later remount of
+ * the same row reads `false`. No registry (tests, static markup): never.
+ */
+function useArrival(arrivals, key) {
+  const [arriving] = useState(() => Boolean(key && arrivals?.has(key)));
+  useEffect(() => {
+    if (arriving) arrivals.consume(key);
+  }, [arriving, arrivals, key]);
+  return arriving;
+}
+
 export function ChatMessage({
   message,
   messages,
+  arrivals,
   previousUser: suppliedPreviousUser,
   editingMessageId,
   editingValue,
@@ -1138,6 +1222,10 @@ export function ChatMessage({
   sessionTokensUsed,
 }) {
   const isUser = message.role === "user";
+  const arriving = useArrival(arrivals, arrivalKeyFor(message));
+  // Keyed on the text, so a reload that replaces the message object keeps it,
+  // and cached by text (renderMessageHtml), so a remount renders nothing anew.
+  const contentHtml = useMemo(() => renderMessageHtml(message.content), [message.content]);
   const hasThinking = Boolean(message.thinking?.trim());
   const isEditing = isUser && editingMessageId === message.id;
   const previousUser = isUser ? null : (suppliedPreviousUser === undefined
@@ -1183,7 +1271,7 @@ export function ChatMessage({
   const hideEmptyBubble = isAgentTurn && !message.content?.trim();
 
   return (
-    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}${isAgentTurn ? " agent-turn-message" : ""}${isCompactionSummary ? " compaction-summary-message" : ""}`}>
+    <article className={`neo-chat-message ${isUser ? "user" : "assistant"}${isAgentTurn ? " agent-turn-message" : ""}${isCompactionSummary ? " compaction-summary-message" : ""}${arriving ? " is-arriving" : ""}`}>
       <div className="message-stack">
         <span className="message-sender">{isUser ? "You" : senderName(runExecutor)}</span>
         {isAgentTurn ? (
@@ -1237,7 +1325,7 @@ export function ChatMessage({
             {/* Escaped by renderMessageHtml before any tag is emitted. */}
             <div
               className="chat-content"
-              dangerouslySetInnerHTML={{ __html: renderMessageHtml(message.content) }}
+              dangerouslySetInnerHTML={{ __html: contentHtml }}
             />
             {messageImageIds.length ? (
               <GalleryImages items={messageImageIds} onOpenGallery={onOpenGalleryItem} />
@@ -1363,7 +1451,7 @@ const MemoChatMessage = memo(ChatMessage);
 
 export const ChatTranscript = memo(function ChatTranscript({
   messages, contextWindowIndex, sessionTokensUsed, editingMessageId, editingValue,
-  openThinkingMessageId, agentRuns, agentBusy, agentPatch, agentPatchSessionId, actions,
+  openThinkingMessageId, agentRuns, agentBusy, agentPatch, agentPatchSessionId, actions, arrivals,
 }) {
   let previousUser = null;
   return messages.map((message) => {
@@ -1375,6 +1463,7 @@ export const ChatTranscript = memo(function ChatTranscript({
       <MemoChatMessage
         key={message.id}
         message={message}
+        arrivals={arrivals}
         previousUser={preceding}
         contextWindowIndex={contextWindowIndex}
         sessionTokensUsed={sessionTokensUsed}
@@ -1434,16 +1523,17 @@ function GenerationTimer({ startedAt }) {
   return <span className="pending-message-timer">{formatElapsedDuration(elapsedMs)}</span>;
 }
 
-export function PendingAssistantMessage({ generation, startedAt }) {
+export const PendingAssistantMessage = memo(function PendingAssistantMessage({ generation, startedAt, arrivals, arrivalKey }) {
+  const arriving = useArrival(arrivals, arrivalKey);
   const hasThinking = Boolean(generation?.thinking);
   const hasContent = Boolean(generation?.content);
   const contentHtml = useMemo(
-    () => renderMessageHtml(generation?.content || ""),
+    () => renderStreamingHtml(generation?.content || ""),
     [generation?.content],
   );
 
   return (
-    <article className="neo-chat-message assistant thinking">
+    <article className={`neo-chat-message assistant thinking${arriving ? " is-arriving" : ""}`}>
       <div className="message-stack">
         <span className="message-sender">Neo</span>
         <div className="message-bubble pending-message-bubble">
@@ -1468,7 +1558,7 @@ export function PendingAssistantMessage({ generation, startedAt }) {
       </div>
     </article>
   );
-}
+});
 
 function formatFileSize(value) {
   if (!Number.isFinite(value)) return "";
@@ -1597,6 +1687,31 @@ function MicrophoneIcon() {
  * settings screen instead of recording. An unset-up capability is a task, not a
  * choice, and every other control here takes effect the moment it is pressed.
  */
+/**
+ * The recording clock and level bar: the only part of the composer that moves
+ * with the microphone. It reads the hook's meter store directly, so a level
+ * tick re-renders these two spans and nothing above them. A plain
+ * `{ seconds, level }` (what tests pass) still renders the same markup.
+ */
+const NO_METER = Object.freeze({ subscribe: () => () => {}, getSnapshot: () => null });
+function DictationMeter({ dictation }) {
+  const meter = dictation.meter ?? NO_METER;
+  // The third argument is the server snapshot: static rendering requires it.
+  const live = useSyncExternalStore(meter.subscribe, meter.getSnapshot, meter.getSnapshot);
+  const seconds = live ? live.seconds : dictation.seconds;
+  const level = live ? live.level : dictation.level;
+  return (
+    <>
+      <span className="composer-dictation-time">{formatDictationTime(seconds)}</span>
+      <span
+        className="composer-dictation-level"
+        aria-hidden="true"
+        style={{ "--level": Math.min(1, (level ?? 0) * 6) }}
+      />
+    </>
+  );
+}
+
 function DictateButton({ available, reason, message, recording, busy, disabled, onDictate, onSetUp }) {
   /* The control always does something. Every unavailable state that a person can fix
      routes to the settings screen instead of being greyed out, because a disabled
@@ -1624,6 +1739,7 @@ function DictateButton({ available, reason, message, recording, busy, disabled, 
       type="button"
       className={`send-button chat-dictate-button${recording ? " is-recording" : ""}`}
       onClick={needsSetUp ? onSetUp : onDictate}
+      data-preload={needsSetUp ? "voice" : undefined}
       disabled={disabled || busy || inert}
       /* The idle tooltip explains the feature; once it is running the tooltip has to
          say what pressing it does now, or it describes the button you are no longer
@@ -1718,7 +1834,12 @@ export function withEngineSetting(current, executor, value) {
  * first line with the model picker opposite it, and a control row underneath --
  * tools on the left, mode switch and send on the right.
  */
-export function ChatComposer({
+/**
+ * Memoized: NeoApp hands it stable handler wrappers (`composerActions`) and
+ * memoized derived values, so it re-renders for what it shows -- the draft, the
+ * chips, a running turn -- and not for a streamed token or an unrelated click.
+ */
+export const ChatComposer = memo(function ChatComposer({
   disabled,
   value,
   onChange,
@@ -2092,12 +2213,7 @@ export function ChatComposer({
             </span>
             {dictation.recording ? (
               <>
-                <span className="composer-dictation-time">{formatDictationTime(dictation.seconds)}</span>
-                <span
-                  className="composer-dictation-level"
-                  aria-hidden="true"
-                  style={{ "--level": Math.min(1, (dictation.level ?? 0) * 6) }}
-                />
+                <DictationMeter dictation={dictation} />
                 <button type="button" className="composer-dictation-stop" onClick={dictation.stop}>
                   Stop
                 </button>
@@ -2282,6 +2398,7 @@ export function ChatComposer({
                     <button
                       type="button"
                       className="composer-menu-action agent-folder-button"
+                      data-preload="openFolder"
                       onClick={() => {
                         setMenuOpen(false);
                         onOpenFolder?.();
@@ -2303,6 +2420,7 @@ export function ChatComposer({
                     <button
                       type="button"
                       className="composer-menu-action agent-tools-button"
+                      data-preload="chatTools"
                       onClick={() => {
                         setMenuOpen(false);
                         onOpenToolsPanel?.();
@@ -2324,6 +2442,7 @@ export function ChatComposer({
                     <button
                       type="button"
                       className="composer-menu-action agent-skills-button"
+                      data-preload="skills"
                       onClick={() => {
                         setMenuOpen(false);
                         onOpenSkillsPanel?.();
@@ -2346,6 +2465,7 @@ export function ChatComposer({
                       <button
                         type="button"
                         className="composer-menu-action agent-usage-button"
+                      data-preload="usage"
                         onClick={() => {
                           setMenuOpen(false);
                           onOpenUsagePanel?.();
@@ -2537,7 +2657,7 @@ export function ChatComposer({
       </div>
     </div>
   );
-}
+});
 
 function WebSearchSettingsDialog({ onClose, backLabel, onBack }) {
   const [searchConfig, setSearchConfig] = useState(null);
@@ -3248,12 +3368,12 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       description: "Models, behavior, and agent configuration.",
       items: [
         ["LLM Providers", "Models, routes, fallbacks, and usage", onOpenLLMs],
-        ["Provider Runtime", "Health, rate limits, streaming, and request audit", onOpenProviderRuntime],
-        ["Evaluation Harness", "Offline scoring, reports, baselines, and safety regression", onOpenEvaluationHarness],
-        ["Workspace Orchestration", "Plans, evidence, readiness, risks, and project delivery", onOpenWorkspaceOrchestration],
-        ["Continuity", "Redacted exports, import validation, and resumable state", onOpenContinuity],
-        ["Rules & Profiles", "Scoped guidance and resolution priority", onOpenRules],
-        ["Agents", "Roles, permissions, tools, and skills", onOpenAgents],
+        ["Provider Runtime", "Health, rate limits, streaming, and request audit", onOpenProviderRuntime, "providerRuntime"],
+        ["Evaluation Harness", "Offline scoring, reports, baselines, and safety regression", onOpenEvaluationHarness, "evaluationHarness"],
+        ["Workspace Orchestration", "Plans, evidence, readiness, risks, and project delivery", onOpenWorkspaceOrchestration, "workspaceOrchestration"],
+        ["Continuity", "Redacted exports, import validation, and resumable state", onOpenContinuity, "continuity"],
+        ["Rules & Profiles", "Scoped guidance and resolution priority", onOpenRules, "rules"],
+        ["Agents", "Roles, permissions, tools, and skills", onOpenAgents, "agents"],
         ["Background chats", "How many chats reply at once, and how you're told when one finishes", onOpenBackgroundChats],
       ],
     },
@@ -3262,13 +3382,13 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "terminal",
       description: "Connected tools and runtime services.",
       items: [
-        ["Connected accounts", "Link Google so Neo can use your mail, calendar and documents", onOpenIntegrations],
-        ["Engines", "Sign in to the coding CLIs that run agent turns", onOpenEngines],
-        ["Voice input", "Speak instead of typing: engine, model, and microphone", onOpenVoice],
+        ["Connected accounts", "Link Google so Neo can use your mail, calendar and documents", onOpenIntegrations, "integrations"],
+        ["Engines", "Sign in to the coding CLIs that run agent turns", onOpenEngines, "engines"],
+        ["Voice input", "Speak instead of typing: engine, model, and microphone", onOpenVoice, "voice"],
         ["Web Search", "Search provider and availability", onOpenWebSearch],
-        ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch],
-        ["Language Server", "Workspace language intelligence", onOpenLsp],
-        ["Command Sandbox", "Controlled command policy and history", onOpenCommandSandbox],
+        ["Reliable Web Search", "Evidence, citations, conflicts, and audit", onOpenReliableWebSearch, "reliableWebSearch"],
+        ["Language Server", "Workspace language intelligence", onOpenLsp, "lsp"],
+        ["Command Sandbox", "Controlled command policy and history", onOpenCommandSandbox, "commandSandbox"],
       ],
     },
     {
@@ -3276,11 +3396,11 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "layers",
       description: "Stored context and research materials.",
       items: [
-        ["Memory", "Durable personal context", onOpenMemory],
-        ["Context Memory", "Long-run summaries and compaction", onOpenContextMemory],
-        ["Workspace Retrieval", "Searchable workspace history, scoring, and audit", onOpenMemoryRetrieval],
-        ["Research", "Sources and research sessions", onOpenResearch],
-        ["Notes", "Saved working notes", onOpenNotes],
+        ["Memory", "Durable personal context", onOpenMemory, "memory"],
+        ["Context Memory", "Long-run summaries and compaction", onOpenContextMemory, "contextMemory"],
+        ["Workspace Retrieval", "Searchable workspace history, scoring, and audit", onOpenMemoryRetrieval, "memoryRetrieval"],
+        ["Research", "Sources and research sessions", onOpenResearch, "research"],
+        ["Notes", "Saved working notes", onOpenNotes, "notes"],
         ["Gallery", "Images Neo has seen, and whether duplicates are kept", onOpenGallerySettings],
       ],
     },
@@ -3289,7 +3409,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "shield",
       description: "Your name, picture, password, and session.",
       items: [
-        ["Account", "Name, profile picture, and password", onOpenAccount],
+        ["Account", "Name, profile picture, and password", onOpenAccount, "account"],
       ],
     },
     {
@@ -3297,12 +3417,12 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "folder",
       description: "Projects, work tracking, and portability.",
       items: [
-        ["Keyboard", "Every shortcut and quick key, and how to change them", onOpenKeyboard],
-        ["Projects", "Organize related chats and work", onOpenProjects],
-        ["Files", "Uploaded and generated workspace files", onOpenFiles],
-        ["Repositories", "Registered code repositories", onOpenRepos],
-        ["Bundles", "Export and import sanitized archives", onOpenBundles],
-        ["GitHub", "Issue and pull request workflow", onOpenGitHub],
+        ["Keyboard", "Every shortcut and quick key, and how to change them", onOpenKeyboard, "keyboard"],
+        ["Projects", "Organize related chats and work", onOpenProjects, "projects"],
+        ["Files", "Uploaded and generated workspace files", onOpenFiles, "files"],
+        ["Repositories", "Registered code repositories", onOpenRepos, "repos"],
+        ["Bundles", "Export and import sanitized archives", onOpenBundles, "bundles"],
+        ["GitHub", "Issue and pull request workflow", onOpenGitHub, "github"],
       ],
     },
     {
@@ -3315,7 +3435,7 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "pin",
       description: "What the sidebar offers.",
       items: [
-        ["Sidebar items", "Which of Memory, Notes, Calendar and the rest stay pinned", onOpenSidebarItems],
+        ["Sidebar items", "Which of Memory, Notes, Calendar and the rest stay pinned", onOpenSidebarItems, "sidebarItems"],
       ],
     },
     {
@@ -3323,8 +3443,8 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
       icon: "sparkle",
       description: "How Neo looks.",
       items: [
-        ["Theme", "The colour of every surface, from phosphor green to daylight", onOpenAppearance],
-        ["Background", "Motion behind the conversation, or none at all", onOpenChatBackground],
+        ["Theme", "The colour of every surface, from phosphor green to daylight", onOpenAppearance, "appearance"],
+        ["Background", "Motion behind the conversation, or none at all", onOpenChatBackground, "chatBackground"],
       ],
     },
   ];
@@ -3355,8 +3475,8 @@ function SettingsDialog({ onOpenKeyboard, onOpenAccount, onOpenBackgroundChats, 
             <p>{active.description}</p>
           </div>
           <div className="set-detail-list">
-            {active.items.map(([title, description, onClick]) => (
-              <button className="set-row" type="button" onClick={onClick} key={title}>
+            {active.items.map(([title, description, onClick, preload]) => (
+              <button className="set-row" type="button" onClick={onClick} key={title} data-preload={preload}>
                 <span className="set-row-text">
                   <strong>{title}</strong>
                   <small>{description}</small>
@@ -3775,12 +3895,99 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   // while the user is looking at Tasks still has to be written into the thread.
   const streamChatIdRef = useRef(null);
   streamChatIdRef.current = activeChat?.id ?? null;
+  // What is new to the person looking (see `createArrivals`). One registry for
+  // the life of this view, outliving the transcript's own remounts, so a chat
+  // switch or a trip to a workspace and back can never replay an entrance.
+  const arrivalsRef = useRef(null);
+  if (arrivalsRef.current === null) arrivalsRef.current = createArrivals();
+  // Which chat the view is meant to show, read and written by every load in the
+  // tick it decides (see `shouldCommitLoad`): the newest navigation's load
+  // number, the chat last asked for, the load that last went on screen, and the
+  // controller that can cancel the navigation in flight.
+  const chatViewRef = useRef({ seq: 0, navSeq: 0, target: null, committed: 0, controller: null });
+  // The chat a click has asked for while its thread is still on the way, so
+  // the sidebar marks it at once. Only the newest navigation sets or clears it.
+  const [pendingChatId, setPendingChatId] = useState(null);
+  // One keyed writer per chat (see `createKeyedWriter`): a chat's PATCHes never
+  // overlap, and a slow reply never repaints a newer choice.
+  const chatWritersRef = useRef(new Map());
+  // Sidebar reads in flight: the newest applied, and a counter every optimistic
+  // sidebar edit bumps, so a read that left before an edit cannot paint over it.
+  const sidebarReadsRef = useRef({ issued: 0, applied: 0, edits: 0 });
 
   const refreshSidebar = useCallback(async () => {
+    const reads = sidebarReadsRef.current;
+    const seq = ++reads.issued;
+    const editsAtStart = reads.edits;
     const nextSidebar = await api.sidebar();
-    setSidebar(nextSidebar);
+    // Applied only when nothing newer has been, no sidebar edit was painted
+    // after this read left, and none is still being saved. In each of those
+    // cases the payload predates what is already on screen, and the read that
+    // follows the save brings the truth. The data is returned either way.
+    const editInFlight = [...chatWritersRef.current.values()].some((writer) =>
+      Object.keys(writer.pending()).some((field) => SIDEBAR_FIELDS.includes(field)));
+    if (seq > reads.applied && editsAtStart === reads.edits && !editInFlight) {
+      reads.applied = seq;
+      setSidebar(nextSidebar);
+    }
     return nextSidebar;
   }, []);
+
+  // A chat's field values onto everything that shows them: the open chat and,
+  // for title, pin and archive, its sidebar row.
+  const applyChatValues = useCallback((chatId, values) => {
+    setActiveChat((current) => (current?.id === chatId ? { ...current, ...values } : current));
+    if (Object.keys(values).some((field) => SIDEBAR_FIELDS.includes(field))) {
+      sidebarReadsRef.current.edits += 1;
+      setSidebar((current) => patchSidebarChat(current, chatId, values));
+    }
+  }, []);
+
+  // Where a failed save is reported: the sidebar's actions say so the way they
+  // always have, the composer's chips in the composer -- whose note only shows
+  // in agent mode, so in chat mode the transcript's error line carries it. A
+  // chip now changes on the click, so a failure that put it back unexplained
+  // would read as the control changing its own mind.
+  const chatModeRef = useRef(chatMode);
+  chatModeRef.current = chatMode;
+  const reportChatWriteError = useCallback((error, fields) => {
+    if (fields.some((field) => SIDEBAR_FIELDS.includes(field))) setStatusError(errorMessage(error));
+    else if (chatModeRef.current === "agent") setChatAgentMessage(`Could not save that: ${errorMessage(error)}`);
+    else setStatusError(`Could not save that: ${errorMessage(error)}`);
+  }, []);
+
+  const writerFor = useCallback((chatId) => {
+    const writers = chatWritersRef.current;
+    if (!writers.has(chatId)) {
+      writers.set(chatId, createKeyedWriter({
+        // The server sets each field it is sent and nothing else, so only those
+        // fields of its reply are taken back; a field it did not echo keeps the
+        // value that was sent.
+        send: async (changes) => {
+          const updated = await api.updateChat(chatId, changes);
+          return Object.fromEntries(
+            Object.keys(changes).filter((field) => updated && field in updated).map((field) => [field, updated[field]]),
+          );
+        },
+        onState: (values) => applyChatValues(chatId, values),
+        onError: reportChatWriteError,
+        // Order, the archive heading and the archived list are the server's to
+        // decide, so a settled sidebar edit is always followed by a read.
+        onSettled: (fields) => {
+          if (fields.some((field) => SIDEBAR_FIELDS.includes(field))) refreshSidebar().catch(() => {});
+        },
+      }));
+    }
+    return writers.get(chatId);
+  }, [applyChatValues, refreshSidebar, reportChatWriteError]);
+
+  // A chat as the server sent it, with whatever this browser has asked for and
+  // the server has not yet acknowledged laid over it, so a read that lands mid
+  // save never shows the old value.
+  const mergeServerChat = useCallback(
+    (chat) => (chat ? { ...chat, ...chatWritersRef.current.get(chat.id)?.pending() } : chat),
+    [],
+  );
 
   const loadAgentContext = useCallback(async () => {
     try {
@@ -3871,13 +4078,62 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     setSelectedLlmId(next.active_id || "");
   }, []);
 
+  /**
+   * Put a chat's thread on screen, or refresh the one that is there.
+   *
+   * Every load that can change what the view shows comes through here, so this
+   * is where the order is kept. A navigation (`intent` other than "refresh":
+   * a click, a link, Back, bootstrap) becomes the chat the view wants, marks it
+   * in the sidebar at once and cancels the navigation before it. A refresh (a
+   * turn ending, an agent starting, a compaction) never moves the view: if the
+   * person has asked for another chat meanwhile, its thread is returned for the
+   * caller's own use and nothing goes on screen. Only the load
+   * `shouldCommitLoad` accepts commits the transcript, the active chat, the
+   * highlight and the address; a superseded one resolves to its thread (or to
+   * `null` when cancelled) without an error, so a caller's fallback -- such as
+   * bootstrap opening a new chat -- runs only for a real failure.
+   */
   const loadChat = useCallback(async (chatId, options = {}) => {
-    const thread = await api.getChat(chatId);
+    const view = chatViewRef.current;
+    const navigate = options.intent !== "refresh";
+    const seq = ++view.seq;
+    let signal;
+    if (navigate) {
+      view.navSeq = seq;
+      view.target = chatId;
+      view.controller?.abort();
+      view.controller = typeof AbortController === "function" ? new AbortController() : null;
+      signal = view.controller?.signal;
+      setPendingChatId(chatId);
+    }
+    let thread;
+    try {
+      thread = await api.getChat(chatId, { signal });
+    } catch (error) {
+      // Superseded: the navigation that replaced this one owns the highlight
+      // and any error; a refresh of a chat no longer wanted is nobody's news.
+      const superseded = navigate ? view.navSeq !== seq : view.target !== null && view.target !== chatId;
+      if (error?.name === "AbortError" || superseded) return null;
+      if (navigate) {
+        view.controller = null;
+        setPendingChatId(null);
+      }
+      throw error;
+    }
+    if (!shouldCommitLoad(view, { seq, navigate, chatId })) return thread;
+    view.committed = seq;
+    view.target = chatId;
+    if (navigate) {
+      view.controller = null;
+      setPendingChatId(null);
+    }
     // Fire and forget: loading the model is the server's call and must never
     // hold up or break opening the conversation.
     api.warmChatModel().catch(() => {});
-    setActiveChat(thread.chat);
+    setActiveChat(mergeServerChat(thread.chat));
     setMessages(thread.messages);
+    // Same tick as the messages, so anything it clears goes in the same render.
+    options.onApplied?.(thread);
     setSelectedProjectId(thread.chat.project_id);
     localStorage.setItem("neo-active-chat-id", String(thread.chat.id));
     if (options.history !== "none") {
@@ -3918,7 +4174,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       setTurnFor(thread.chat.id, null);
     }
     return thread;
-  }, [setTurnFor]);
+  }, [mergeServerChat, setTurnFor]);
 
   // A proposal's resolution is server state now, so the transcript only needs
   // the stamped metadata swapped in. Patching the one message keeps the scroll
@@ -3941,6 +4197,12 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       }
       const creation = (async () => {
         const chat = await api.createChat(projectId);
+        // A new chat is a view change like any navigation: it becomes the chat
+        // the view wants, so no load still in flight can replace it.
+        const view = chatViewRef.current;
+        view.committed = ++view.seq;
+        view.target = chat.id;
+        setPendingChatId(null);
         setActiveChat(chat);
         if (options.resetMessages !== false) {
           setMessages([]);
@@ -4028,7 +4290,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       try {
         const result = await api.compactChat(chatId);
         if (result.compacted_message_count > 0 && streamChatIdRef.current === chatId) {
-          await loadChat(chatId, { history: "none" });
+          await loadChat(chatId, { history: "none", intent: "refresh" });
         }
       } catch {
         // Silent: a background convenience, not a user-initiated action --
@@ -4050,17 +4312,30 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         // context limit while you are elsewhere still being compacted rather than
         // waiting until you next open it.
         const thread = visible
-          ? await loadChat(chatId, { history: "none" })
+          ? await loadChat(chatId, {
+            history: "none",
+            intent: "refresh",
+            // The saved reply and the live one would otherwise share the screen
+            // for the round trip `loadChat` still has to make. Cleared only once
+            // the reply is actually in the thread, so the pane never blanks.
+            onApplied: (applied) => {
+              const last = applied.messages?.[applied.messages.length - 1];
+              if (last?.role === "assistant") clearStream(chatId);
+            },
+          })
           : await api.getChat(chatId);
-        await maybeAutoCompact(chatId, thread.messages || []);
+        // `null` only when the person moved on mid-read; there is no thread to check.
+        if (thread) await maybeAutoCompact(chatId, thread.messages || []);
       } catch (error) {
         if (visible) setStatusError(`Could not reload the chat: ${errorMessage(error)}`);
       }
       setTurnFor(chatId, null);
       guardFor(chatId).release();
-      // Dropped only now: until the transcript above has been reloaded, this
-      // buffer is the only copy of what the turn said, and clearing it earlier
-      // would blank the pane for the moment in between.
+      // Dropped here at the latest: until the transcript above holds the turn,
+      // this buffer is the only copy of what it said, and clearing it earlier
+      // would blank the pane for the moment in between. A visible chat whose
+      // reply landed was already cleared with it (`onApplied`); this covers the
+      // rest, and clearing twice is a no-op.
       clearStream(chatId);
       if (
         shouldNotify({
@@ -4121,17 +4396,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     return titles;
   }, [sidebar]);
 
-  const statusFor = useCallback(
-    (chat) => {
-      const liveState = streams.get(chat.id);
-      if (liveState?.sessionStatus) return liveState.sessionStatus;
-      if (liveState?.kind) return "running";
-      if (turns.has(chat.id)) return "running";
-      const stored = chat.turn_status || chat.agent_status;
-      if (stored) return stored;
-      return finishedChatIds.has(chat.id) ? "done" : null;
-    },
-    [streams, turns, finishedChatIds],
+  // Rebuilt only when some chat's status changes (see `chatStatus.js`), so a
+  // streamed token that changes no badge hands the sidebar the same function.
+  const statusKey = chatStatusKey(streams, turns, finishedChatIds);
+  const statusFor = useMemo(
+    () => createStatusFor(streams, turns, finishedChatIds),
+    // The key is the complete input; the maps themselves change every frame.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [statusKey],
   );
 
   // How many threads are mid-turn, for the sign-out confirmation. Counted off
@@ -4296,6 +4568,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     setStatusError("");
     const previousChatId = activeChat?.id ?? null;
     visibleChatIdRef.current = null;
+    // A new chat outranks any chat-open still on the way: cancel it, and hold the
+    // view on "the new chat" so nothing lands in the gap before it exists.
+    const view = chatViewRef.current;
+    view.controller?.abort();
+    view.controller = null;
+    view.navSeq = ++view.seq;
+    view.target = NEW_CHAT_TARGET;
+    setPendingChatId(null);
     try {
       // Every workspace, not the four this used to name. The panels have no back
       // button any more -- the sidebar is the way out of them -- so a half-closed
@@ -4307,6 +4587,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       visibleChatIdRef.current = chat.id;
     } catch (error) {
       visibleChatIdRef.current = previousChatId;
+      // No new chat after all: the one still on screen is what the view wants.
+      if (view.target === NEW_CHAT_TARGET) view.target = previousChatId;
       setStatusError(errorMessage(error));
     }
   }
@@ -4318,50 +4600,39 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     try {
       closeWorkspaces();
       setInitialProjectId(null);
-      await loadChat(chatId);
-      visibleChatIdRef.current = chatId;
+      // The row is marked at once by `loadChat`; the thread follows. A later
+      // click supersedes this one quietly, so only an applied load is "visible".
+      let applied = false;
+      await loadChat(chatId, { onApplied: () => { applied = true; } });
+      if (applied) visibleChatIdRef.current = chatId;
     } catch (error) {
       visibleChatIdRef.current = previousChatId;
       setStatusError(errorMessage(error));
     }
   }
 
-  async function handlePinChat(chat, pinned) {
+  // Pin, archive and rename go through the chat's writer: the row changes on
+  // the click, at most one save per chat is in flight, a failure puts back only
+  // what it asked for, and the sidebar is re-read once each settles.
+  function handlePinChat(chat, pinned) {
     setStatusError("");
-    try {
-      const updated = await api.pinChat(chat.id, pinned);
-      setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
-      await refreshSidebar();
-    } catch (error) {
-      setStatusError(errorMessage(error));
-    }
+    writerFor(chat.id).set({ pinned }, chat);
   }
 
-  async function handleArchiveChat(chat, archived) {
+  function handleArchiveChat(chat, archived) {
     setStatusError("");
-    try {
-      const updated = await api.archiveChat(chat.id, archived);
-      setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
-      // Both lists change at once -- the row leaves one and joins the other, and
-      // the Archived heading's count moves with it -- so the sidebar is re-read
-      // rather than the one row being patched from here.
-      await refreshSidebar();
-    } catch (error) {
-      setStatusError(errorMessage(error));
-    }
+    // Both lists change at once -- the row leaves one and joins the other, and
+    // the Archived heading's count moves with it. The row is hidden from the
+    // live list at once, but the sidebar is still re-read after the save, which
+    // is what settles where everything really is.
+    writerFor(chat.id).set({ archived }, chat);
   }
 
-  async function handleRenameChat(chat, title) {
+  function handleRenameChat(chat, title) {
     setStatusError("");
-    try {
-      const updated = await api.renameChat(chat.id, title);
-      // The header reads from activeChat, so the open conversation retitles immediately
-      // rather than waiting for the next sidebar load.
-      setActiveChat((current) => (current?.id === chat.id ? { ...current, ...updated } : current));
-      await refreshSidebar();
-    } catch (error) {
-      setStatusError(errorMessage(error));
-    }
+    // The header reads from activeChat, so the open conversation retitles with
+    // the row, before the server has answered.
+    writerFor(chat.id).set({ title }, chat);
   }
 
   function handleDeleteChat(chat) {
@@ -4529,16 +4800,22 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       created_at: new Date().toISOString(),
       metadata: imageIds.length ? { image_ids: imageIds } : undefined,
     };
+    // The one place a sent bubble is created, so the one place it is news.
+    arrivalsRef.current.mark(arrivalKeyFor(optimisticMessage));
     setMessages((current) => [...current, optimisticMessage]);
 
     let chatId = activeChat?.id ?? null;
+    let startedAt = null;
     try {
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
       chatId = chat.id;
       // The turn is recorded against the chat before the request is even sent, so
       // Stop has something to stop during the gap between the POST and the first
-      // event -- which is exactly when a user reaches for it.
-      setTurnFor(chatId, { kind: "chat", startedAt: Date.now(), stopping: false });
+      // event -- which is exactly when a user reaches for it. Its reply is marked
+      // first, so the pending bubble mounts already knowing it is new.
+      startedAt = Date.now();
+      arrivalsRef.current.mark(replyArrivalKey(chatId, startedAt));
+      setTurnFor(chatId, { kind: "chat", startedAt, stopping: false });
       const result = await api.startChatGeneration(
         chat.id,
         prompt,
@@ -4558,11 +4835,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         },
       );
       if (result.agent_session_id) {
+        // An agent turn draws into a row of its own, not a pending reply, so the
+        // news moves from the reply's key to the run's row before it loads.
+        arrivalsRef.current.consume(replyArrivalKey(chatId, startedAt));
+        arrivalsRef.current.mark(agentArrivalKey(result.agent_session_id));
         setTurnFor(chatId, { kind: "agent", sessionId: result.agent_session_id });
         // The run wrote a row to hold its place in the transcript, and the trace
         // draws into that row -- so the thread is reloaded rather than waiting
         // for the first event to imply a turn that is already there.
-        if (streamChatIdRef.current === chatId) await loadChat(chatId, { history: "none" });
+        if (streamChatIdRef.current === chatId) await loadChat(chatId, { history: "none", intent: "refresh" });
         refreshSidebar().catch(() => {});
       } else {
         setTurnFor(chatId, { kind: "chat", generationId: result.generation.id });
@@ -4582,6 +4863,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
       }
       setTurnFor(chatId, null);
+      // No reply is coming, so its mark would only wait out the registry's bound.
+      if (startedAt !== null) arrivalsRef.current.consume(replyArrivalKey(chatId, startedAt));
     } finally {
       // A send that failed has no turn to end, so nothing else will release this.
       // A send that succeeded is released again by `handleTurnEnd`; releasing a
@@ -4699,9 +4982,11 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   async function updateChatAgentSettings(changes) {
     setChatAgentMessage("");
     try {
+      // With no chat yet there is nothing to paint onto, so it is made first, as
+      // before. From then on the chip shows the choice on the click and the
+      // chat's writer saves it (see `writerFor`).
       const chat = activeChat ?? (await createActiveChat(selectedProjectId, { resetMessages: false }));
-      const updated = await api.updateChat(chat.id, changes);
-      setActiveChat((current) => (current?.id === updated.id ? { ...current, ...updated } : current));
+      writerFor(chat.id).set(changes, chat);
     } catch (error) {
       setChatAgentMessage(`Could not save that: ${errorMessage(error)}`);
     }
@@ -4714,7 +4999,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     setStatusError("");
     try {
       await api.decideAgentApproval(run.session.id, run.pending_approval.id, decision, predicate);
-      await loadChat(activeChat.id, { history: "none" });
+      await loadChat(activeChat.id, { history: "none", intent: "refresh" });
     } catch (error) {
       setStatusError(errorMessage(error));
     } finally {
@@ -4763,7 +5048,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
             .join(", ")}, changed after the run finished.`
           : `Undid ${reversed} file(s).`,
       );
-      await loadChat(activeChat.id, { history: "none" });
+      await loadChat(activeChat.id, { history: "none", intent: "refresh" });
     } catch (error) {
       setChatAgentMessage(errorMessage(error));
     } finally {
@@ -4818,7 +5103,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     setCompacting(true);
     try {
       const result = await api.compactChat(activeChat.id);
-      await loadChat(activeChat.id, { history: "none" });
+      await loadChat(activeChat.id, { history: "none", intent: "refresh" });
       if (result.compacted_message_count === 0) {
         setChatAgentMessage("Nothing to compact yet.");
         window.setTimeout(() => setChatAgentMessage(""), 3000);
@@ -4894,14 +5179,18 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       : null;
   // Only a plain reply gets the pending bubble; an agent turn has a row of its
   // own to draw into, so a second placeholder would be the same turn twice.
-  const streamingAssistant = live.kind === "chat"
-    ? {
+  // One object per change of what it shows, and the text split once rather
+  // than twice, so the memoized pending bubble re-renders only for new text.
+  const streamingAssistant = useMemo(() => {
+    if (live.kind !== "chat") return null;
+    const split = splitGeneratedText(live.text);
+    return {
       rawContent: live.text,
-      ...splitGeneratedText(live.text),
-      thinking: live.thinking || splitGeneratedText(live.text).thinking,
+      ...split,
+      thinking: live.thinking || split.thinking,
       statusDetail: live.statusText,
-    }
-    : null;
+    };
+  }, [live.kind, live.text, live.thinking, live.statusText]);
   /* The keyboard. Registered here, at the bottom of the component, because the
      map is evaluated during render and every handler in it has to already exist. */
   /* The transcript's scroll container, and the composer's own small API. Both
@@ -4987,12 +5276,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   const stepThroughChats = useCallback((delta) => {
     const everyChat = [...sidebar.chats, ...sidebar.projects.flatMap((project) => project.chats)];
     if (everyChat.length === 0) return false;
-    const at = everyChat.findIndex((chat) => chat.id === activeChat?.id);
+    // From the marked row, so holding the key keeps moving while threads load.
+    const current = pendingChatId ?? activeChat?.id;
+    const at = everyChat.findIndex((chat) => chat.id === current);
     const next = everyChat[at < 0 ? 0 : at + delta];
-    if (!next || next.id === activeChat?.id) return false;
+    if (!next || next.id === current) return false;
     handleOpenChat(next.id);
     return true;
-  }, [sidebar, activeChat?.id]);
+  }, [sidebar, activeChat?.id, pendingChatId]);
 
   const keyboardScopes = useScopes(activeView, activeChat?.id ? ["hasChat"] : []);
   useKeyboardEngine(keyboardKeymap, keyboardScopes);
@@ -5086,6 +5377,77 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 
   // Saved messages do not change as the composer or pending answer updates.
   // Stable event wrappers keep the memo boundary effective without stale actions.
+  // Panel code fetched ahead of the open: on intent, and in idle time for the
+  // destinations this profile's sidebar shows (see panelPreload.js).
+  usePanelPreloading(PANEL_PRELOADS, visibleSystemNav(hiddenSystemItems).map((item) => item.id));
+
+  // The composer's handlers, the same arrangement as the sidebar's below.
+  const composerActions = useStableActions({
+    onDictate: () => dictation.toggle(),
+    onOpenVoiceSettings: () => setShowVoiceSettings(true),
+    onStop: handleStopGeneration,
+    onAttachFiles: handleAttachFiles,
+    onRemoveAttachment: handleRemoveAttachment,
+    onSubmit: handleSendMessage,
+    onLlmChange: handleLlmChange,
+    onRepoChange: (repoId) => updateChatAgentSettings({ repo_id: repoId }),
+    onAgentDefinitionChange: (id) => updateChatAgentSettings({ agent_definition_id: id }),
+    onAgentModeChange: (nextMode) => updateChatAgentSettings({ agent_mode: nextMode }),
+    onExecutorChange: handleEngineSelected,
+    onOpenEngineSettings: () => setShowEngines(true),
+    // The whole map is sent, with this engine's entry set or removed -- an
+    // empty choice is spelled by *absence*, so "use whatever the CLI is already
+    // set to" has one representation rather than two.
+    onExternalModelChange: (model) => updateChatAgentSettings({
+      external_models: withEngineSetting(activeChat?.external_models, chatExecutor, model),
+    }),
+    onExternalEffortChange: (level) => updateChatAgentSettings({
+      external_efforts: withEngineSetting(activeChat?.external_efforts, chatExecutor, level),
+    }),
+    onEffortChange: (next) => updateChatAgentSettings({ effort: next }),
+    onOpenFolder: handleOpenFolder,
+    onOpenToolsPanel: () => setShowChatTools(true),
+    onOpenSkillsPanel: () => setShowSkills(true),
+    onOpenUsagePanel: () => setShowUsage(true),
+    onCompactConversation: handleCompactConversation,
+  });
+  const selectedModel = llms.find((llm) => llm.id === selectedLlmId)?.model || "";
+  const effortAlwaysReasons = useMemo(
+    () => modelAlwaysReasons(messages, selectedModel),
+    [messages, selectedModel],
+  );
+  const usageWarnings = useMemo(
+    () => (externalUsage[chatExecutor]?.windows || []).filter((limit) => limit.severity !== "normal"),
+    [externalUsage, chatExecutor],
+  );
+
+  // The sidebar's handlers as stable wrappers, the same arrangement as the
+  // transcript's below: each always calls the latest committed handler, and
+  // none changes identity, so the memoized sidebar skips unrelated renders.
+  const sidebarActions = useStableActions({
+    onToggleProjectForm: () => setShowNewProjectForm((visible) => !visible),
+    onCreateProject: handleCreateProject,
+    onNewChat: handleNewChat,
+    onOpenChat: handleOpenChat,
+    onDeleteChat: handleDeleteChat,
+    onRenameChat: handleRenameChat,
+    onPinChat: handlePinChat,
+    onArchiveChat: handleArchiveChat,
+    onDeleteProject: handleDeleteProject,
+    onOpenSettings: openSettings,
+    onOpenChatHome: openChatHome,
+    onOpenMemory: openMemory,
+    onOpenResearch: openResearch,
+    onOpenNotes: openNotes,
+    onOpenTasks: openTasks,
+    onOpenCalendar: openCalendar,
+    onOpenGallery: openGallery,
+    onOpenLocalModels: openLocalModels,
+    onOpenCompareModels: openCompareModels,
+    onSwitchProfile: () => setConfirmingSignOut(true),
+    onToggleCollapsed: toggleSidebar,
+  });
+
   const transcriptActions = useStableActions({
     onCancelEdit: () => { setEditingMessageId(null); setEditingValue(""); },
     onCopy: copyText,
@@ -5112,35 +5474,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar
         sidebar={sidebar}
-        activeChatId={activeChat?.id ?? null}
+        activeChatId={pendingChatId ?? activeChat?.id ?? null}
         statusFor={statusFor}
         selectedProjectId={selectedProjectId}
         showNewProjectForm={showNewProjectForm}
-        onToggleProjectForm={() => setShowNewProjectForm((visible) => !visible)}
-        onCreateProject={handleCreateProject}
-        onNewChat={handleNewChat}
-        onOpenChat={handleOpenChat}
-        onDeleteChat={handleDeleteChat}
-        onRenameChat={handleRenameChat}
-        onPinChat={handlePinChat}
-        onArchiveChat={handleArchiveChat}
-        onDeleteProject={handleDeleteProject}
-        onOpenSettings={openSettings}
-        onOpenChatHome={openChatHome}
-        onOpenMemory={openMemory}
-        onOpenResearch={openResearch}
-        onOpenNotes={openNotes}
-        onOpenTasks={openTasks}
-        onOpenCalendar={openCalendar}
-        onOpenGallery={openGallery}
-        onOpenLocalModels={openLocalModels}
-        onOpenCompareModels={openCompareModels}
         hiddenSystemItems={hiddenSystemItems}
         activeView={activeView}
         profile={profile}
-        onSwitchProfile={() => setConfirmingSignOut(true)}
         collapsed={sidebarCollapsed}
-        onToggleCollapsed={toggleSidebar}
+        {...sidebarActions}
       />
 
       {showProjects ? (
@@ -5244,10 +5586,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
             agentPatch={agentPatch}
             agentPatchSessionId={agentPatchSessionId}
             actions={transcriptActions}
+            arrivals={arrivalsRef.current}
           />
 
           {streamingAssistant && (
-            <PendingAssistantMessage generation={streamingAssistant} startedAt={generationStartedAt} />
+            <PendingAssistantMessage
+              generation={streamingAssistant}
+              startedAt={generationStartedAt}
+              arrivals={arrivalsRef.current}
+              arrivalKey={generationStartedAt ? replyArrivalKey(activeChatId, generationStartedAt) : null}
+            />
           )}
 
           {statusError && <div className="neo-error">{statusError}</div>}
@@ -5257,80 +5605,41 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           onComposerReady={handleComposerReady}
           voice={voiceStatus}
           dictation={dictation}
-          onDictate={dictation.toggle}
-          onOpenVoiceSettings={() => setShowVoiceSettings(true)}
           /* Stop is offered whenever something is running, full stop -- a run
              being steered is still a run someone may want to cancel outright. */
           generating={sending && Boolean(activeTurn)}
-          onStop={handleStopGeneration}
           stopping={stopping}
           steering={Boolean(steeringSessionId)}
           attachments={chatAttachments}
           images={chatImages}
-          onAttachFiles={handleAttachFiles}
-          onRemoveAttachment={handleRemoveAttachment}
           attaching={attachingFiles}
           attachError={attachError}
           value={composerValue}
           onChange={setComposerValue}
-          onSubmit={handleSendMessage}
           /* Never disabled by a missing workspace: an agent turn without one
              runs with the folder tools withheld rather than being refused. */
           disabled={sending && !steeringSessionId}
           llms={llms}
           llmId={selectedLlmId}
-          onLlmChange={handleLlmChange}
           mode={chatMode}
           onModeChange={setChatMode}
           repos={agentRepos}
           selectedRepoId={activeChat?.repo_id || ""}
-          onRepoChange={(repoId) => updateChatAgentSettings({ repo_id: repoId })}
           agentDefinitions={agentDefinitions}
           selectedAgentDefinitionId={activeChat?.agent_definition_id || "general"}
-          onAgentDefinitionChange={(id) => updateChatAgentSettings({ agent_definition_id: id })}
           agentMode={activeChat?.agent_mode || "normal"}
-          onAgentModeChange={(nextMode) => updateChatAgentSettings({ agent_mode: nextMode })}
           executor={activeChat?.executor || "neo"}
-          onExecutorChange={handleEngineSelected}
           externalAgents={externalAgents}
-          onOpenEngineSettings={() => setShowEngines(true)}
           engineModels={engineModels[chatExecutor] || null}
           externalModel={(activeChat?.external_models || {})[chatExecutor] || ""}
           externalEffort={(activeChat?.external_efforts || {})[chatExecutor] || ""}
-          /* The whole map is sent, with this engine's entry set or removed --
-             an empty choice is spelled by *absence*, so "use whatever the CLI
-             is already set to" has one representation rather than two. */
-          onExternalModelChange={(model) =>
-            updateChatAgentSettings({
-              external_models: withEngineSetting(activeChat?.external_models, chatExecutor, model),
-            })
-          }
-          onExternalEffortChange={(level) =>
-            updateChatAgentSettings({
-              external_efforts: withEngineSetting(
-                activeChat?.external_efforts,
-                chatExecutor,
-                level,
-              ),
-            })
-          }
           effort={activeChat?.effort || "low"}
-          onEffortChange={(next) => updateChatAgentSettings({ effort: next })}
-          effortAlwaysReasons={modelAlwaysReasons(
-            messages,
-            llms.find((llm) => llm.id === selectedLlmId)?.model || "",
-          )}
-          onOpenFolder={handleOpenFolder}
+          effortAlwaysReasons={effortAlwaysReasons}
           folderAttaching={false}
-          onOpenToolsPanel={() => setShowChatTools(true)}
-          onOpenSkillsPanel={() => setShowSkills(true)}
-          onOpenUsagePanel={() => setShowUsage(true)}
-          usageWarnings={(externalUsage[chatExecutor]?.windows || []).filter(
-            (limit) => limit.severity !== "normal",
-          )}
+          usageWarnings={usageWarnings}
           agentMessage={chatAgentMessage}
-          onCompactConversation={handleCompactConversation}
           compacting={compacting}
+          {...composerActions}
         />
         {showOpenFolder && (
           <OpenFolderDialog
@@ -5598,6 +5907,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 export const PROFILE_SCOPED_STORAGE_KEYS = ["neo-active-chat-id"];
 
 export function clearProfileScopedState() {
+  // Rendered message text is the previous profile's; it must not linger.
+  clearMessageHtmlCache();
   try {
     for (const key of PROFILE_SCOPED_STORAGE_KEYS) localStorage.removeItem(key);
   } catch {

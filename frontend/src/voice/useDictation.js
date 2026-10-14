@@ -15,7 +15,7 @@
  * gets you a transcript pasted into the middle of your sentence a second later.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api.js";
 import {
@@ -27,6 +27,7 @@ import {
   can,
   isBusy,
 } from "./dictationMachine.js";
+import { createMeter } from "./meter.js";
 import { captureSupport, startRecording } from "./recorder.js";
 
 /** Beyond this the recording stops itself and transcribes what it has. Five minutes is
@@ -36,9 +37,18 @@ const WARN_SECONDS = 270;
 
 export function useDictation({ onText, onError } = {}) {
   const [state, setState] = useState(IDLE);
-  const [seconds, setSeconds] = useState(0);
-  const [level, setLevel] = useState(0);
   const [error, setError] = useState(null);
+  // The level and the clock tick far faster than anything else here changes, so
+  // they live in a store only the meter reads (see `meter.js`); the warning near
+  // the limit is the one thing about the clock the rest of the composer shows.
+  const [meter] = useState(createMeter);
+  const [nearLimit, setNearLimit] = useState(false);
+  // The caller's callbacks, read when they are needed rather than captured, so
+  // the functions this returns keep one identity and a memoized composer holds.
+  const onTextRef = useRef(onText);
+  const onErrorRef = useRef(onError);
+  onTextRef.current = onText;
+  onErrorRef.current = onError;
 
   const sessionRef = useRef(null);
   const tickRef = useRef(null);
@@ -80,10 +90,10 @@ export function useDictation({ onText, onError } = {}) {
     (detail) => {
       setError(detail);
       setPhase(ERROR);
-      setSeconds(0);
-      setLevel(0);
+      meter.reset();
+      setNearLimit(false);
     },
-    [setPhase],
+    [meter, setPhase],
   );
 
   const cancel = useCallback(async () => {
@@ -92,11 +102,11 @@ export function useDictation({ onText, onError } = {}) {
     abortRef.current?.abort();
     abortRef.current = null;
     setPhase(IDLE);
-    setSeconds(0);
-    setLevel(0);
+    meter.reset();
+    setNearLimit(false);
     setError(null);
     await releaseMicrophone();
-  }, [releaseMicrophone, setPhase]);
+  }, [meter, releaseMicrophone, setPhase]);
 
   const transcribe = useCallback(
     async (pcm, run) => {
@@ -133,26 +143,27 @@ export function useDictation({ onText, onError } = {}) {
 
       if (failure) {
         fail({ code: "transcribe_failed", message: failure });
-        onError?.(new Error(failure));
+        onErrorRef.current?.(new Error(failure));
         return;
       }
-      if (text) onText?.(text);
+      if (text) onTextRef.current?.(text);
       else if (empty) setError({ code: "no_speech", message: "I didn't catch anything." });
       setPhase(IDLE);
     },
-    [fail, onError, onText, setPhase],
+    [fail, setPhase],
   );
 
   const stop = useCallback(async () => {
     if (!can(stateRef.current, "stop")) return;
     const run = runRef.current;
     setPhase(PROCESSING);
-    setLevel(0);
+    meter.set({ level: 0 });
     const pcm = await releaseMicrophone();
     if (runRef.current !== run) return; // cancelled while the stream was closing
-    setSeconds(0);
+    meter.reset();
+    setNearLimit(false);
     await transcribe(pcm, run);
-  }, [releaseMicrophone, setPhase, transcribe]);
+  }, [meter, releaseMicrophone, setPhase, transcribe]);
 
   const start = useCallback(async () => {
     if (!can(stateRef.current, "start")) return;
@@ -171,14 +182,14 @@ export function useDictation({ onText, onError } = {}) {
     try {
       const session = await startRecording({
         onLevel: ({ rms }) => {
-          if (runRef.current === run) setLevel(rms);
+          if (runRef.current === run) meter.set({ level: rms });
         },
         onError: (caught) => {
           if (runRef.current !== run) return;
           // A track that ended is a device unplugged or a permission revoked. Finish
           // rather than discard: the words already spoken are still worth having.
           if (caught?.code === "track_ended") stop();
-          else onError?.(caught);
+          else onErrorRef.current?.(caught);
         },
       });
 
@@ -195,7 +206,9 @@ export function useDictation({ onText, onError } = {}) {
       tickRef.current = setInterval(() => {
         if (runRef.current !== run) return;
         const elapsed = session.seconds;
-        setSeconds(elapsed);
+        meter.set({ seconds: elapsed });
+        // Flips once; setting the same value again is a no-op for React.
+        if (elapsed >= WARN_SECONDS) setNearLimit(true);
         if (elapsed >= MAX_SECONDS) stop();
       }, 250);
     } catch (caught) {
@@ -206,7 +219,7 @@ export function useDictation({ onText, onError } = {}) {
         remedy: caught?.remedy ?? "",
       });
     }
-  }, [fail, onError, setPhase, stop]);
+  }, [fail, meter, setPhase, stop]);
 
   const toggle = useCallback(() => {
     if (stateRef.current === RECORDING) stop();
@@ -226,22 +239,25 @@ export function useDictation({ onText, onError } = {}) {
     [stopClock],
   );
 
-  return {
+  const dismissError = useCallback(() => {
+    setError(null);
+    setPhase(IDLE);
+  }, [setPhase]);
+
+  // One object per change of what it holds, so a memoized consumer re-renders
+  // when dictation changes phase, never because its owner re-rendered.
+  return useMemo(() => ({
     state,
-    seconds,
-    level,
     error,
+    meter,
     recording: state === RECORDING,
     busy: isBusy(state),
-    nearLimit: seconds >= WARN_SECONDS,
+    nearLimit,
     maxSeconds: MAX_SECONDS,
     start,
     stop,
     cancel,
     toggle,
-    dismissError: () => {
-      setError(null);
-      setPhase(IDLE);
-    },
-  };
+    dismissError,
+  }), [state, error, meter, nearLimit, start, stop, cancel, toggle, dismissError]);
 }

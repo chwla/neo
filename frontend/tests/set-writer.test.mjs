@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { createSetWriter, sameSet } from "../src/setWriter.js";
+import { createKeyedWriter, createSetWriter, sameSet, sameValue } from "../src/setWriter.js";
 
 /** A send that resolves when the test says so, and records what it was asked. */
 function deferredSend() {
@@ -283,5 +283,123 @@ describe("nothing can switch the writer off", () => {
     calls[0].ok();
     await settle();
     assert.deepEqual(painted.at(-1), ["a"]);
+  });
+});
+
+/* ---------------------------------------------------------------- keyed -- */
+
+
+/** A keyed send that settles when the test says, optionally with stored values. */
+function deferredKeyedSend() {
+  const calls = [];
+  const send = (attempt) => {
+    let settle;
+    const promise = new Promise((resolve, reject) => {
+      settle = {
+        ok: (stored = attempt) => resolve(stored),
+        fail: () => reject(new Error("nope")),
+      };
+    });
+    calls.push({ attempt, ...settle });
+    return promise;
+  };
+  return { send, calls };
+}
+
+function keyed() {
+  const screen = {};
+  const errors = [];
+  const settled = [];
+  const { send, calls } = deferredKeyedSend();
+  const instance = createKeyedWriter({
+    send,
+    onState: (values) => Object.assign(screen, values),
+    onError: (error, fields) => errors.push(fields),
+    onSettled: (fields, ok) => settled.push({ fields, ok }),
+  });
+  return { instance, calls, screen, errors, settled };
+}
+
+describe("saving one record a field at a time", () => {
+  test("a change paints at once", () => {
+    const { instance, screen } = keyed();
+    instance.set({ effort: "high" }, { effort: "low" });
+    assert.equal(screen.effort, "high");
+  });
+
+  test("one write in flight; later changes ride the next one together", async () => {
+    const { instance, calls } = keyed();
+    instance.set({ effort: "high" }, { effort: "low" });
+    instance.set({ agent_mode: "plan" }, { agent_mode: "normal" });
+    instance.set({ repo_id: "7" }, { repo_id: null });
+    assert.equal(calls.length, 1, "no second PATCH while the first is out");
+    assert.deepEqual(calls[0].attempt, { effort: "high" });
+    calls[0].ok();
+    await settle();
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].attempt, { agent_mode: "plan", repo_id: "7" });
+  });
+
+  test("a reply never repaints a field changed after it was sent", async () => {
+    const { instance, calls, screen } = keyed();
+    instance.set({ effort: "high" }, { effort: "low" });
+    instance.set({ effort: "low" });
+    calls[0].ok({ effort: "high" });
+    await settle();
+    assert.equal(screen.effort, "low", "the stale reply must not win");
+    assert.deepEqual(calls[1].attempt, { effort: "low" });
+    calls[1].ok();
+    await settle();
+    assert.equal(screen.effort, "low");
+    assert.equal(calls.length, 2);
+  });
+
+  test("a failure reverts only its own fields that nobody has changed since", async () => {
+    const { instance, calls, screen, errors } = keyed();
+    instance.set({ effort: "high", agent_mode: "plan" }, { effort: "low", agent_mode: "normal" });
+    instance.set({ agent_mode: "auto" });
+    calls[0].fail();
+    await settle();
+    assert.equal(screen.effort, "low", "the failed field goes back to what the server has");
+    assert.equal(screen.agent_mode, "auto", "the newer change survives the failure");
+    assert.deepEqual(errors, [["effort", "agent_mode"]]);
+    assert.deepEqual(calls[1].attempt, { agent_mode: "auto" });
+  });
+
+  test("a failure goes back to the last stored value, never further", async () => {
+    const { instance, calls, screen } = keyed();
+    instance.set({ effort: "high" }, { effort: "low" });
+    calls[0].ok();
+    await settle();
+    instance.set({ effort: "low" });
+    calls[1].fail();
+    await settle();
+    assert.equal(screen.effort, "high", "the newer stored value is not rolled back");
+  });
+
+  test("a server normalisation shows once it is stored", async () => {
+    const { instance, calls, screen } = keyed();
+    instance.set({ repo_id: "" }, { repo_id: "4" });
+    calls[0].ok({ repo_id: null });
+    await settle();
+    assert.equal(screen.repo_id, null);
+    assert.deepEqual(instance.pending(), {}, "null and empty-after-normalise are settled");
+  });
+
+  test("pending() lists what is asked for and not yet acknowledged", async () => {
+    const { instance, calls, settled } = keyed();
+    instance.set({ title: "New" }, { title: "Old" });
+    assert.deepEqual(instance.pending(), { title: "New" });
+    calls[0].ok();
+    await settle();
+    assert.deepEqual(instance.pending(), {});
+    assert.deepEqual(settled, [{ fields: ["title"], ok: true }]);
+  });
+
+  test("objects compare by content and null matches undefined", () => {
+    assert.ok(sameValue({ codex: "o3" }, { codex: "o3" }));
+    assert.ok(!sameValue({ codex: "o3" }, { codex: "o4" }));
+    assert.ok(sameValue(null, undefined));
+    assert.ok(!sameValue("", null));
   });
 });

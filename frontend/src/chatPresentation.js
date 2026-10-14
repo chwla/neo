@@ -9,7 +9,108 @@ import { renderMarkdown } from "./markdown.js";
  * more trusted here than it was as plain text.
  */
 export function renderMessageHtml(content) {
+  const source = String(content ?? "");
+  // Very long bodies are rendered but not kept: they would crowd out hundreds
+  // of ordinary messages for one rarely re-shown screen.
+  if (source.length > HTML_CACHE_MAX_SOURCE) return renderMarkdown(source);
+  const hit = htmlCache.get(source);
+  if (hit !== undefined) {
+    // Re-inserted, so the Map's insertion order is least-recently-used first.
+    htmlCache.delete(source);
+    htmlCache.set(source, hit);
+    return hit;
+  }
+  const html = renderMarkdown(source);
+  htmlCache.set(source, html);
+  htmlCacheChars += source.length + html.length;
+  while (htmlCache.size > HTML_CACHE_MAX_ENTRIES || htmlCacheChars > HTML_CACHE_MAX_CHARS) {
+    const [oldest, oldestHtml] = htmlCache.entries().next().value;
+    htmlCache.delete(oldest);
+    htmlCacheChars -= oldest.length + oldestHtml.length;
+  }
+  return html;
+}
+
+/**
+ * Saved messages are rendered once per distinct text.
+ *
+ * A chat switch, a turn ending or a compaction replaces every message object,
+ * and each row used to re-run the Markdown renderer on mount or re-render. The
+ * renderer is a pure function of the text alone -- no options, no locale, no
+ * clock -- so the text is the complete key: any option it ever gains must join
+ * the key here. Bounded by count and by characters held (source plus HTML), so
+ * a long session cannot grow it without limit.
+ */
+const HTML_CACHE_MAX_ENTRIES = 500;
+const HTML_CACHE_MAX_CHARS = 4_000_000;
+const HTML_CACHE_MAX_SOURCE = 100_000;
+const htmlCache = new Map();
+let htmlCacheChars = 0;
+
+/**
+ * Text that is still arriving: rendered fresh, never cached. Every streamed
+ * frame is a new prefix, and keeping them would evict saved messages to hold
+ * strings nobody will ask for again.
+ */
+export function renderStreamingHtml(content) {
   return renderMarkdown(content);
+}
+
+/** Drop every cached rendering, e.g. when the profile changes. */
+export function clearMessageHtmlCache() {
+  htmlCache.clear();
+  htmlCacheChars = 0;
+}
+
+/** How many renderings are held, and how many characters they cost. For tests. */
+export function messageHtmlCacheStats() {
+  return { entries: htmlCache.size, chars: htmlCacheChars };
+}
+
+/**
+ * What is new to the person looking, as presentation keys.
+ *
+ * Only the code that creates content marks it -- the bubble just sent, the reply
+ * that send starts, an agent run it starts -- so a saved row arriving from a
+ * reload is never mistaken for news. A row reads its key once, when it mounts,
+ * and the key is removed once that mount commits: a later remount (a chat
+ * switch, a workspace round trip, a reload) finds nothing and stays still, and
+ * the saved row that replaces a pending one has a key nobody marked.
+ */
+export function createArrivals(limit = 64) {
+  const keys = new Set();
+  return {
+    mark(key) {
+      keys.delete(key);
+      keys.add(key);
+      // Bounded: a mark nobody consumes (a send that failed before its reply
+      // existed) must not accumulate for the life of the tab.
+      while (keys.size > limit) keys.delete(keys.values().next().value);
+    },
+    has: (key) => keys.has(key),
+    consume: (key) => {
+      keys.delete(key);
+    },
+    get size() {
+      return keys.size;
+    },
+  };
+}
+
+/** The key an agent run's row is marked under, known as soon as the run starts. */
+export function agentArrivalKey(sessionId) {
+  return `agent:${sessionId}`;
+}
+
+/** The key a transcript row is marked under: an agent row by its run, any other by its id. */
+export function arrivalKeyFor(message) {
+  const sessionId = message?.agent?.session?.id;
+  return sessionId != null ? agentArrivalKey(sessionId) : `message:${message?.id}`;
+}
+
+/** The key for the pending reply of the turn started at `startedAt` in `chatId`. */
+export function replyArrivalKey(chatId, startedAt) {
+  return `turn:${chatId}:${startedAt}`;
 }
 
 export function formatTokens(message) {
@@ -90,8 +191,13 @@ export function formatMessageTime(value) {
   if (Number.isNaN(parsed)) {
     return null;
   }
-  return new Date(parsed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // One formatter for every bubble: `toLocaleTimeString` with these options
+  // builds an equivalent one on each call. Created on first use, so the zone
+  // and locale are the viewer's at that moment, as before.
+  timeFormat ??= new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+  return timeFormat.format(new Date(parsed));
 }
+let timeFormat = null;
 
 export function formatResponseKind(message) {
   const labels = {

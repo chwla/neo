@@ -419,6 +419,71 @@ button, input, textarea, select { font: inherit; }
 button { color: inherit; cursor: pointer; }
 button:disabled, input:disabled, textarea:disabled, select:disabled { cursor: not-allowed; opacity: .45; }
 a { color: inherit; }
+
+/* Press feedback, shared by every control that has a hover style (the list
+   below is those controls, kept in step with the hover rules by
+   tests/interaction-timing.test.mjs). `filter: opacity()` multiplies with the
+   control's own opacity instead of replacing it, so a disabled control (.32 to
+   .5), a dimmed or archived row (.5 to .62) or a hidden-until-hover trigger (0)
+   keeps its meaning while pressed. Nothing else in this sheet sets `filter`
+   and nothing transitions it, so the dim lands on the pointer-down frame and
+   lifts on release. Explicit rather than `button, a`: scrims, form fields and
+   anything that is not one of these controls are untouched. None of them holds
+   a fixed-position child (menus are siblings or portals), so the filter's
+   containing block moves nothing. Increase Contrast and forced colours get no
+   dimming at all. */
+/* On `html` rather than `:root`: the themes keep `:root` a single rule. */
+html { --neo-press: opacity(.75); }
+@media (prefers-contrast: more), (forced-colors: active) { html { --neo-press: none; } }
+:is(
+  .account-identity-actions button, .agent-approval-actions button, .agent-chip-action,
+  .agent-definition-form > button, .agent-definition-list > button, .agent-engine-link,
+  .agent-run-list > button, .agent-step-list > button, .agent-tool-head,
+  .agentic-run-list > button, .artifact-list > button, .bg-intensity-option,
+  .calendar-agenda-row, .calendar-day-cell, .chat-attachment button, .chat-attachment-open,
+  .chat-attachment-remove, .chat-input-form .send-button, .chat-input-form .stop-button,
+  .chat-item-title, .chat-mode-switch button, .cmdk-row, .cmp-cell-button, .cmp-detail-close,
+  .cmp-slot-add, .cmp-slot-remove, .cmp-stepper button, .code-index-results > button,
+  .code-index-tabs button, .coding-agent-buttons button, .coding-agent-runs > button,
+  .composer-dictation-cancel, .composer-dictation-stop, .composer-menu-action, .composer-tool,
+  .composer-tool-accent, .composer-usage-dismiss, .context-window-trigger,
+  .dialog-actions button, .dialog-back, .dialog-close, .engine-button, .engine-connect-cta,
+  .files-list button, .gal-add, .gal-btn, .gal-card-pin, .gal-card-shot, .gal-chip,
+  .gal-density button, .gal-linkbtn, .gal-panel-close, .gal-panel-nav button, .gal-preview,
+  .gal-search-clear, .gal-tagchip, .gal-toggle, .gallery-strip-button,
+  .kb-conflict-choices button, .kb-record, .kb-reset, .kb-resolve, .lbx-action, .lbx-close,
+  .lbx-step, .llm-card-actions button, .llm-config-form > button, .llm-config-list > button,
+  .llm-model-row, .lm-chip, .lm-disclosure, .lm-goal, .lm-more, .lm-rescan, .lm-row-main,
+  .memory-card-edit, .memory-tabs button, .message-actions button,
+  .message-actions-menu button, .modal-header > button, .neo-button,
+  .neo-dialog :not(.dialog-title-row):not(.modal-header) > button, .notes-danger-btn,
+  .notes-item, .notes-new-btn, .nw-action, .nw-chip button,
+  .nw-detail .file-attachment-list button, .nw-detail .file-attachments-actions button,
+  .nw-detail-attach button, .nw-detail-head button, .nw-detail-list button, .nw-link,
+  .nw-menu button, .nw-new, .nw-row, .nw-save, .nw-search-clear, .nw-segment button,
+  .nw-tagchip, .nw-toggle, .open-folder-crumb button, .open-folder-item, .open-folder-select,
+  .password-reveal, .patch-application-list > button, .patch-apply-controls button,
+  .profile-card, .profile-danger-button, .project-chat-link, .project-folder-delete,
+  .project-folder-new-chat, .projects-danger-btn, .projects-item, .projects-new-btn,
+  .reminder-toast-dismiss, .repo-file-list button, .repos-list button, .research-back,
+  .research-start-btn, .row-actions-menu button, .row-actions-trigger, .rs-btn, .rs-depth,
+  .rs-error button, .rs-evidence figcaption a, .rs-histrow, .rs-notice button, .rs-rail-clear,
+  .rs-rail-confirm button, .rs-source, .rs-tab, .rs-toggle, .set-nav-item, .set-row,
+  .settings-actions button,
+  .settings-dialog :not(.dialog-title-row):not(.modal-header) > button, .settings-link,
+  .settings-section > button, .settings-section > form > button, .settings-section li button,
+  .sidebar-collapse-button, .sidebar-profile, .sidebar-rail-button, .sidebar-section-collapse,
+  .sidebar-section-toggle, .sidebar-settings, .skills-remove, .skills-reset,
+  .system-nav button, .task-card, .theme-card, .ws-action, .ws-attach button, .ws-chip button,
+  .ws-primary, .ws-row, .ws-save, .ws-search-clear, .ws-tab, .ws-toggle, button.ws-tile
+):not(:disabled):not([aria-disabled="true"]):active { filter: var(--neo-press); }
+/* A disclosure header can hold its own buttons (a project's delete), so it dims
+   only when none of them is the thing being pressed. A rule of its own, so a
+   browser without :has() drops just this one. */
+:is(
+  .agent-executor-note > summary, .cmp-detail-more > summary, .cmp-fold > summary,
+  .open-folder-manual summary, .project-folder summary, .skills-options summary
+):active:not(:has(:is(button, a[href], summary):active)) { filter: var(--neo-press); }
 h1, h2, h3, h4, p { margin-top: 0; }
 
 input:not([type="checkbox"]):not([type="radio"]), textarea, select {
@@ -472,6 +537,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
    the edge; the brand's own width: 100% would otherwise push it out of view. */
 .sidebar-brand-row { display: flex; align-items: center; }
 .sidebar-brand-row .sidebar-brand { width: auto; min-width: 0; flex: 1; }
+/* Feedback timing, for every control in this sheet: what a pointer, focus or
+   click turns on appears on the next frame, and only the way back fades. A
+   transition runs with the timing of the state being entered, so the base rule
+   keeps its `transition` (that is the fade out) and each on-state rule --
+   :hover, :focus-visible, :focus-within, .active, .on, .is-selected and the
+   like -- sets `transition-duration: 0s`. Where a base also eases motion (a
+   lift, a shadow), the on-state lists one duration per property in the base's
+   order, so the colour lands at once while the movement still eases. */
 .sidebar-collapse-button {
   display: grid;
   width: 26px;
@@ -487,7 +560,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   font: 13px "JetBrains Mono", monospace;
   transition: background .12s ease, color .12s ease;
 }
-.sidebar-collapse-button:hover { background: var(--neo-accent-a08); color: var(--neo-green); }
+.sidebar-collapse-button:hover { background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
 
 /* Minimised, the sidebar is a rail of icon-sized controls. */
 .neo-sidebar-rail { align-items: center; padding: 20px 0 16px; gap: 8px; }
@@ -507,7 +580,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   line-height: 1;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.sidebar-rail-button:hover { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); color: var(--neo-green); }
+.sidebar-rail-button:hover { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
 
 .sidebar-brand {
   display: flex;
@@ -540,10 +613,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   transition: border-color .12s ease, color .12s ease, background .12s ease;
 }
 .sidebar-primary-action .neo-button { width: 100%; height: 36px; justify-content: flex-start; padding-left: 12px; clip-path: polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px)); text-align: left; }
-.neo-button:hover:not(:disabled), .neo-button:focus-visible { border-color: var(--neo-green); color: var(--neo-green); outline: none; }
+.neo-button:hover:not(:disabled), .neo-button:focus-visible { border-color: var(--neo-green); color: var(--neo-green); outline: none; transition-duration: 0s; }
 .neo-button.primary { border-color: var(--neo-green); color: var(--neo-green); }
 .neo-button.danger { border-color: var(--neo-danger-line); color: var(--neo-danger); }
-.neo-button.danger:hover { border-color: var(--neo-danger); background: var(--neo-danger-a05); }
+.neo-button.danger:hover { border-color: var(--neo-danger); background: var(--neo-danger-a05); transition-duration: 0s; }
 .neo-button.secondary { background: transparent; }
 
 .sidebar-search { position: relative; display: block; margin: 0 16px 12px; }
@@ -626,7 +699,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .project-chat-item:hover .row-actions-trigger,
 .row-actions-trigger:focus-visible,
 .row-actions-trigger.is-open { opacity: 1; }
-.row-actions-trigger:hover, .row-actions-trigger.is-open { background: var(--neo-lift-a06); color: var(--neo-green); }
+.row-actions-trigger:hover, .row-actions-trigger.is-open { background: var(--neo-lift-a06); color: var(--neo-green); transition-duration: 0s; }
 /* Positioned against the window, not the row: the chat list scrolls, and a menu
    absolutely positioned inside a scrolling box is cut off at its edges. The
    coordinates come from `RowActionsMenu`, which measures before paint and puts
@@ -739,8 +812,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   display: flex;
   max-width: none;
   padding: 7px 0;
-  animation: neo-slide-in .18s ease;
 }
+/* Only what is new to the person looking slides in: the bubble they just
+   sent, the reply it starts, an agent run it starts. A saved row is never
+   news, so switching chats, coming back from a workspace or swapping a
+   pending row for its saved copy shows the transcript as it is, on the
+   frame it is asked for. The class is decided once per row (see
+   `createArrivals`), so nothing replays. */
+.neo-chat-message.is-arriving { animation: neo-slide-in .18s ease; }
+@media (prefers-reduced-motion: reduce) { .neo-chat-message.is-arriving { animation: none; } }
 .neo-chat-message.user { justify-content: flex-end; }
 .message-stack { display: flex; min-width: 0; max-width: min(680px, 82%); flex-direction: column; }
 .neo-chat-message.user .message-stack { align-items: flex-end; }
@@ -976,6 +1056,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-input-shell:focus-within {
   border-color: var(--neo-accent-a55);
   box-shadow: 0 16px 40px var(--neo-shadow-a55), 0 0 42px var(--neo-accent-a10);
+  transition-duration: 0s;
 }
 .chat-input-form { display: flex; flex-direction: column; gap: 14px; }
 .composer-head { display: flex; align-items: flex-start; gap: var(--composer-head-gap); }
@@ -1037,12 +1118,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   transition: color .14s ease, background .14s ease;
 }
 .composer-tool svg { width: 18px; height: 18px; transition: transform .16s ease; }
-.composer-tool:hover:not(:disabled) { background: var(--neo-accent-a08); color: var(--composer-accent); }
+.composer-tool:hover:not(:disabled) { background: var(--neo-accent-a08); color: var(--composer-accent); transition-duration: 0s; }
 .composer-tool:disabled { opacity: .4; }
 .composer-tool-accent { background: var(--neo-accent-a10); color: var(--neo-accent-soft); }
-.composer-tool-accent:hover:not(:disabled) { background: var(--neo-accent-a16); }
+.composer-tool-accent:hover:not(:disabled) { background: var(--neo-accent-a16); transition-duration: 0s; }
 .composer-menu-button svg { width: 20px; height: 20px; }
-.composer-menu-button.is-open { background: var(--neo-accent-a16); color: var(--composer-accent); }
+.composer-menu-button.is-open { background: var(--neo-accent-a16); color: var(--composer-accent); transition-duration: 0s; }
 .composer-menu-button.is-open svg { transform: rotate(45deg); }
 
 /* Everything the run needs but the objective. It opens upward, over the
@@ -1061,7 +1142,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   background: var(--neo-bg);
   padding: 8px;
   box-shadow: 0 18px 40px var(--neo-shadow-a70), 0 0 26px var(--neo-accent-a06);
-  animation: neo-slide-in .12s ease;
 }
 .composer-menu[hidden] { display: none; }
 .composer-menu .agent-chip { justify-content: space-between; min-height: 38px; border-radius: 11px; padding: 0 12px; }
@@ -1079,7 +1159,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   font: 11px "JetBrains Mono", monospace;
   transition: border-color .14s ease, background .14s ease, color .14s ease;
 }
-.composer-menu-action:hover:not(:disabled) { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-text); }
+.composer-menu-action:hover:not(:disabled) { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-text); transition-duration: 0s; }
 .composer-menu-action:disabled { opacity: .45; }
 
 /* Segmented mode switch: the inactive half is a label, the active half a chip. */
@@ -1103,8 +1183,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   text-transform: none;
   transition: color .14s ease, background .14s ease;
 }
-.chat-mode-switch button:hover:not(.active) { color: var(--neo-accent-mid); }
-.chat-mode-switch button.active { background: var(--neo-accent-a10); color: var(--neo-accent-pale); }
+.chat-mode-switch button:hover:not(.active) { color: var(--neo-accent-mid); transition-duration: 0s; }
+.chat-mode-switch button.active { background: var(--neo-accent-a10); color: var(--neo-accent-pale); transition-duration: 0s; }
 
 /* Send: the one filled control in the composer. */
 .chat-input-form .send-button {
@@ -1172,8 +1252,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   padding: 0 10px;
   transition: border-color .14s ease, background .14s ease;
 }
-.agent-chip:hover { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); }
-.agent-chip:focus-within { border-color: var(--neo-green); background: var(--neo-accent-a08); }
+.agent-chip:hover { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); transition-duration: 0s; }
+.agent-chip:focus-within { border-color: var(--neo-green); background: var(--neo-accent-a08); transition-duration: 0s; }
 .agent-chip-label {
   color: var(--neo-muted);
   font: 600 9px "JetBrains Mono", monospace;
@@ -1211,7 +1291,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 }
 .agent-chip:hover:has(select)::after, .agent-chip:focus-within:has(select)::after { border-color: var(--neo-green); }
 .agent-chip-action { border-style: dashed; color: var(--neo-body); }
-.agent-chip-action:hover:not(:disabled) { border-style: solid; border-color: var(--neo-green); }
+.agent-chip-action:hover:not(:disabled) { border-style: solid; border-color: var(--neo-green); transition-duration: 0s; }
 .agent-chip-action:disabled { opacity: .45; }
 .agent-chip-value { color: var(--neo-green); font: 11px "JetBrains Mono", monospace; }
 .agent-task-picker { display: flex; align-items: center; gap: 5px; color: var(--neo-fg-14); font: 9px "JetBrains Mono", monospace; }
@@ -1258,7 +1338,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   cursor: pointer;
   transition: color .12s ease;
 }
-.dialog-back:hover, .dialog-back:focus-visible { color: var(--neo-green); }
+.dialog-back:hover, .dialog-back:focus-visible { color: var(--neo-green); transition-duration: 0s; }
 .dialog-close { border: 0; background: transparent; color: var(--neo-fg-12); font: 18px "JetBrains Mono", monospace; }
 .dialog-close:hover { color: var(--neo-green); }
 .dialog-caption { color: var(--neo-fg-12); font-size: 12px; line-height: 1.5; }
@@ -1337,7 +1417,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .profile-picker-copy, .profile-form > p { margin: 8px 0 24px; color: var(--neo-fg-11); }
 .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
 .profile-card { min-height: 170px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-panel); padding: 16px; }
-.profile-card:hover { border-color: var(--neo-green); }
+/* `!important` because the class-suffix sweep for workspaces locks the border
+   of anything ending in -card; without it this hover never showed. */
+.profile-card:hover { border-color: var(--neo-green) !important; }
 .profile-card small, .profile-form small { color: var(--neo-fg-12); text-align: center; }
 .profile-card-add { border-style: dashed; }
 /* Round, like every other avatar in Neo. `overflow: hidden` was already here to
@@ -1481,8 +1563,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   text-align: left;
   transition: border-color .12s ease, background .12s ease;
 }
-.calendar-day-cell:hover { border-color: var(--neo-line-bright); background: var(--neo-lift-a03); }
-.calendar-day-cell.selected { border-color: var(--neo-green); background: var(--neo-accent-a06); }
+.calendar-day-cell:hover { border-color: var(--neo-line-bright); background: var(--neo-lift-a03); transition-duration: 0s; }
+.calendar-day-cell.selected { border-color: var(--neo-green); background: var(--neo-accent-a06); transition-duration: 0s; }
 .calendar-day-cell.outside-month { opacity: .32; }
 .calendar-day-number { align-self: flex-start; font: 11px "JetBrains Mono", monospace; line-height: 1.4; }
 /* Today reads as a marked date rather than merely a green numeral. */
@@ -1661,7 +1743,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   letter-spacing: .05em;
   transition: background .12s ease, border-color .12s ease;
 }
-.nw-new:hover { border-color: var(--neo-green); background: var(--neo-accent-a16); }
+.nw-new:hover { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
 .nw-new kbd {
   margin-left: auto;
   border-radius: 3px;
@@ -1721,9 +1803,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   font-size: 11px;
   transition: background .12s ease, color .12s ease, border-color .12s ease;
 }
-.nw-tagchip:hover { background: var(--neo-lift-a08); color: var(--neo-fg-5); }
+.nw-tagchip:hover { background: var(--neo-lift-a08); color: var(--neo-fg-5); transition-duration: 0s; }
 .nw-tagchip em { color: var(--neo-fg-13); font: 9.5px "JetBrains Mono", monospace; font-style: normal; }
-.nw-tagchip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); }
+.nw-tagchip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
 .nw-tagchip.on em { color: var(--neo-accent-a60); }
 
 .nw-toggle {
@@ -1740,8 +1822,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   font-size: 11px;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.nw-toggle:hover { color: var(--neo-fg-7); }
-.nw-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); }
+.nw-toggle:hover { color: var(--neo-fg-7); transition-duration: 0s; }
+.nw-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
 
 /* --- rows ---------------------------------------------------------------- */
 .nw-list { display: grid; align-content: start; gap: 2px; overflow-y: auto; padding: 4px 10px 28px; }
@@ -1778,9 +1860,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   background: transparent;
   transition: background .12s ease;
 }
-.nw-row:hover { background: var(--neo-lift-a03); }
-.nw-row.active { border-color: var(--neo-accent-a20); background: var(--neo-accent-a06); }
-.nw-row.active::before { background: var(--neo-green); }
+.nw-row:hover { background: var(--neo-lift-a03); transition-duration: 0s; }
+.nw-row.active { border-color: var(--neo-accent-a20); background: var(--neo-accent-a06); transition-duration: 0s; }
+.nw-row.active::before { background: var(--neo-green); transition-duration: 0s; }
 .nw-row.archived { opacity: .5; }
 .nw-row-head { display: flex; min-width: 0; align-items: center; gap: 6px; }
 .nw-row-pin { width: 11px; height: 11px; color: var(--neo-green); }
@@ -1899,8 +1981,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   transition: background .12s ease, color .12s ease;
 }
 .nw-segment button + button { border-left: 1px solid var(--nw-edge-lit); }
-.nw-segment button:hover { background: var(--neo-lift-a04); color: var(--neo-fg-6); }
-.nw-segment button.on { background: var(--neo-accent-a10); color: var(--neo-green); }
+.nw-segment button:hover { background: var(--neo-lift-a04); color: var(--neo-fg-6); transition-duration: 0s; }
+.nw-segment button.on { background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
 
 .nw-action {
   display: flex;
@@ -1916,11 +1998,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   white-space: nowrap;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.nw-action:hover { border-color: var(--nw-edge-lit); background: var(--neo-lift-a03); color: var(--neo-fg-4); }
-.nw-action.on { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); color: var(--neo-green); }
+.nw-action:hover { border-color: var(--nw-edge-lit); background: var(--neo-lift-a03); color: var(--neo-fg-4); transition-duration: 0s; }
+.nw-action.on { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
 .nw-action.icon { width: 28px; justify-content: center; padding: 0; }
-.nw-action.danger:hover { border-color: var(--neo-danger-a40); color: var(--neo-danger); }
-.nw-action.danger.on { border-color: var(--neo-danger-a50); background: var(--neo-danger-a12); color: var(--neo-danger-bright); }
+.nw-action.danger:hover { border-color: var(--neo-danger-a40); color: var(--neo-danger); transition-duration: 0s; }
+.nw-action.danger.on { border-color: var(--neo-danger-a50); background: var(--neo-danger-a12); color: var(--neo-danger-bright); transition-duration: 0s; }
 
 .nw-save {
   min-height: 28px;
@@ -1934,7 +2016,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   white-space: nowrap;
   transition: background .12s ease, border-color .12s ease;
 }
-.nw-save:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); }
+.nw-save:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
 .nw-save:disabled { border-color: var(--nw-edge-lit); background: transparent; color: var(--neo-fg-14); opacity: 1; }
 
 .nw-menu-wrap { position: relative; }
@@ -2227,7 +2309,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   text-transform: uppercase;
   transition: background .12s ease, border-color .12s ease;
 }
-.ws-primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); }
+.ws-primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
 
 .ws-filters { display: grid; gap: 7px; padding: 14px 18px 12px; }
 .ws-search { position: relative; display: flex; align-items: center; }
@@ -2266,8 +2348,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   text-decoration: none;
   transition: background .12s ease, border-color .12s ease;
 }
-.ws-row:hover { background: var(--neo-lift-a02); }
-.ws-row.active { border-color: var(--neo-line-bright); background: var(--neo-accent-a04); }
+.ws-row:hover { background: var(--neo-lift-a02); transition-duration: 0s; }
+.ws-row.active { border-color: var(--neo-line-bright); background: var(--neo-accent-a04); transition-duration: 0s; }
 .ws-row.dim { opacity: .55; }
 .ws-row-head { display: flex; min-width: 0; align-items: center; gap: 6px; }
 .ws-row-pin { width: 11px; height: 11px; color: var(--neo-green); }
@@ -2537,10 +2619,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   transition: background .12s ease, color .12s ease;
 }
 .set-nav-item .ws-icon { width: 14px; height: 14px; flex: 0 0 auto; color: var(--neo-fg-11); transition: color .12s ease; }
-.set-nav-item:hover { color: var(--neo-text); background: var(--neo-lift-a03); }
-.set-nav-item:hover .ws-icon { color: var(--neo-fg-8); }
-.set-nav-item.is-active { color: var(--neo-green); background: var(--neo-accent-a10); }
-.set-nav-item.is-active .ws-icon { color: var(--neo-green); }
+.set-nav-item:hover { color: var(--neo-text); background: var(--neo-lift-a03); transition-duration: 0s; }
+.set-nav-item:hover .ws-icon { color: var(--neo-fg-8); transition-duration: 0s; }
+.set-nav-item.is-active { color: var(--neo-green); background: var(--neo-accent-a10); transition-duration: 0s; }
+.set-nav-item.is-active .ws-icon { color: var(--neo-green); transition-duration: 0s; }
 
 .set-detail { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px 24px; }
 .set-detail-head { margin-bottom: 14px; border-bottom: 1px solid var(--neo-line); padding-bottom: 14px; }
@@ -2559,7 +2641,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   text-align: left;
   transition: background .12s ease, border-color .12s ease;
 }
-.set-row:hover { border-color: var(--neo-line-bright); background: var(--neo-lift-a03); }
+.set-row:hover { border-color: var(--neo-line-bright); background: var(--neo-lift-a03); transition-duration: 0s; }
 .set-row-text { display: grid; min-width: 0; flex: 1; gap: 2px; }
 .set-row-text strong { color: var(--neo-fg-4); font-size: 12.5px; font-weight: 500; }
 .set-row:hover .set-row-text strong { color: var(--neo-green); }
@@ -3353,6 +3435,19 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   50% { top: calc(100% - 8px); }
   100% { top: 0; }
 }
+/* Moved with `transform` wherever container units exist, so the dot stops
+   laying the page out on every frame: `100cqh` is the rail's own height, which
+   is what `top: calc(100% - 8px)` meant. The rail's size comes from its insets,
+   never from the dot, so size containment changes nothing about it. Before the
+   reduced-motion rule, which still swaps in the pulse. */
+@supports (height: 1cqh) {
+  .agent-steps-rail { container-type: size; }
+  .agent-steps.is-working .agent-steps-dot { animation-name: agent-rail-glide; }
+  @keyframes agent-rail-glide {
+    0%, 100% { transform: translate(-50%, 0); }
+    50% { transform: translate(-50%, calc(100cqh - 8px)); }
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .agent-steps.is-working .agent-steps-dot { animation: neo-pulse 1.6s ease infinite; top: 0; }
 }
@@ -3470,7 +3565,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-align: left;
   font-size: 12.5px;
 }
-.open-folder-item:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a06); color: var(--neo-text); }
+/* The border needs `!important` past the -item suffix sweep, or it never shows. */
+.open-folder-item:hover:not(:disabled) { border-color: var(--neo-green) !important; background: var(--neo-accent-a06); color: var(--neo-text); }
 .open-folder-item-name { min-width: 0; overflow-wrap: anywhere; }
 .open-folder-item-meta { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .open-folder-tag {
@@ -3719,6 +3815,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   border-color: var(--neo-accent-a45);
   transform: translateY(-2px);
   box-shadow: 0 10px 22px var(--neo-shadow-a50);
+  transition-duration: 0s, .14s, .14s;
 }
 /* A fixed box with a cropped fill, so a tall screenshot and a wide one occupy
    the same space. The crop is only the preview -- clicking gives the whole
@@ -3738,7 +3835,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   cursor: zoom-in;
   transition: border-color .14s ease;
 }
-.chat-attachment-open:hover { border-color: var(--neo-accent-a50); }
+.chat-attachment-open:hover { border-color: var(--neo-accent-a50); transition-duration: 0s; }
 .chat-attachment-open img { display: block; width: 56px; height: 56px; object-fit: cover; }
 .chat-attachment-remove {
   position: absolute;
@@ -3802,7 +3899,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   letter-spacing: .05em;
   transition: background .12s ease, border-color .12s ease;
 }
-.gal-add:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); }
+.gal-add:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
 
 .gal-search { position: relative; display: flex; align-items: center; }
 .gal-search > .ws-icon { position: absolute; left: 13px; color: var(--neo-fg-13); pointer-events: none; }
@@ -3872,8 +3969,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 11.5px;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.gal-toggle:hover { color: var(--neo-fg-7); }
-.gal-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); }
+.gal-toggle:hover { color: var(--neo-fg-7); transition-duration: 0s; }
+.gal-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
 .gal-density { display: flex; overflow: hidden; border: 1px solid var(--gal-edge-lit); border-radius: 5px; }
 .gal-density button {
   display: grid;
@@ -3887,8 +3984,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   transition: background .12s ease, color .12s ease;
 }
 .gal-density button + button { border-left: 1px solid var(--gal-edge-lit); }
-.gal-density button:hover { background: var(--neo-lift-a05); color: var(--neo-fg-7); }
-.gal-density button.on { background: var(--neo-accent-a10); color: var(--neo-green); }
+.gal-density button:hover { background: var(--neo-lift-a05); color: var(--neo-fg-7); transition-duration: 0s; }
+.gal-density button.on { background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
 
 .gal-tagbar { display: flex; flex-wrap: wrap; gap: 5px; }
 .gal-tagchip {
@@ -3903,9 +4000,9 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 11px;
   transition: background .12s ease, color .12s ease, border-color .12s ease;
 }
-.gal-tagchip:hover { background: var(--neo-lift-a08); color: var(--neo-fg-5); }
+.gal-tagchip:hover { background: var(--neo-lift-a08); color: var(--neo-fg-5); transition-duration: 0s; }
 .gal-tagchip em { color: var(--neo-fg-13); font: 9.5px "JetBrains Mono", monospace; font-style: normal; }
-.gal-tagchip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); }
+.gal-tagchip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
 .gal-tagchip.on em { color: var(--neo-accent-a60); }
 
 .gal-window { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--neo-fg-9); font-size: 11.5px; }
@@ -3955,10 +4052,11 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   transition: border-color .14s ease, transform .14s ease, box-shadow .14s ease;
 }
 .gal-card-shot img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
-.gal-card-shot:hover { border-color: var(--gal-edge-lit); transform: translateY(-2px); box-shadow: 0 10px 24px var(--neo-shadow-a50); }
+.gal-card-shot:hover { border-color: var(--gal-edge-lit); transform: translateY(-2px); box-shadow: 0 10px 24px var(--neo-shadow-a50); transition-duration: 0s, .14s, .14s; }
 .gal-card.is-active .gal-card-shot {
   border-color: var(--neo-green);
   box-shadow: 0 0 0 1px var(--neo-accent-a35), 0 10px 24px var(--neo-shadow-a50);
+  transition-duration: 0s, .14s, 0s;
 }
 .gal-flag {
   position: absolute;
@@ -3993,9 +4091,9 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   backdrop-filter: blur(4px);
   transition: opacity .12s ease, color .12s ease, background .12s ease;
 }
-.gal-card:hover .gal-card-pin, .gal-card-pin:focus-visible { opacity: 1; }
-.gal-card-pin:hover { background: var(--neo-scrim-a90); color: var(--neo-fg-3); }
-.gal-card-pin.on { opacity: 1; background: var(--neo-accent-a16); color: var(--neo-green); }
+.gal-card:hover .gal-card-pin, .gal-card-pin:focus-visible { opacity: 1; transition-duration: 0s, .12s, .12s; }
+.gal-card-pin:hover, .gal-card .gal-card-pin:hover { background: var(--neo-scrim-a90); color: var(--neo-fg-3); transition-duration: 0s; }
+.gal-card-pin.on, .gal-card .gal-card-pin.on { opacity: 1; background: var(--neo-accent-a16); color: var(--neo-green); transition-duration: 0s; }
 .gal-card-foot { display: grid; gap: 2px; padding: 0 2px; }
 .gal-card-name {
   overflow: hidden;
@@ -4070,7 +4168,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   color: var(--neo-fg-11);
   transition: border-color .12s ease, color .12s ease, background .12s ease;
 }
-.gal-panel-nav button:hover:not(:disabled), .gal-panel-close:hover { border-color: var(--gal-edge-lit); background: var(--neo-lift-a04); color: var(--neo-fg-3); }
+.gal-panel-nav button:hover:not(:disabled), .gal-panel-close:hover { border-color: var(--gal-edge-lit); background: var(--neo-lift-a04); color: var(--neo-fg-3); transition-duration: 0s; }
 .gal-panel-body { min-height: 0; flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
 
 .gal-preview {
@@ -4099,7 +4197,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   opacity: 0;
   transition: opacity .12s ease;
 }
-.gal-preview:hover .gal-preview-zoom { opacity: 1; }
+.gal-preview:hover .gal-preview-zoom { opacity: 1; transition-duration: 0s; }
 .gal-panel-title { margin: 14px 0 6px; color: var(--neo-text); font-size: 17px; font-weight: 600; letter-spacing: -.02em; line-height: 1.3; }
 .gal-facts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 14px; color: var(--neo-faint); font: 10px "JetBrains Mono", monospace; }
 .gal-facts span:not(:last-child)::after { content: " ·"; color: var(--neo-fg-15); }
@@ -4119,12 +4217,12 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   white-space: nowrap;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.gal-btn:hover:not(:disabled) { border-color: var(--neo-fg-15); background: var(--neo-lift-a04); color: var(--neo-fg-3); }
-.gal-btn.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); }
+.gal-btn:hover:not(:disabled) { border-color: var(--neo-fg-15); background: var(--neo-lift-a04); color: var(--neo-fg-3); transition-duration: 0s; }
+.gal-btn.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
 .gal-btn.primary { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); font-weight: 600; }
-.gal-btn.primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); }
+.gal-btn.primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
 .gal-btn.danger { color: var(--neo-danger-dim); }
-.gal-btn.danger:hover:not(:disabled) { border-color: var(--neo-danger-a45); background: var(--neo-danger-a10); color: var(--neo-danger-bright); }
+.gal-btn.danger:hover:not(:disabled) { border-color: var(--neo-danger-a45); background: var(--neo-danger-a10); color: var(--neo-danger-bright); transition-duration: 0s; }
 
 .gal-section { margin-top: 20px; }
 .gal-section h3 {
@@ -4275,17 +4373,17 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   white-space: nowrap;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.rs-btn:hover:not(:disabled) { border-color: var(--neo-fg-15); background: var(--neo-lift-a04); color: var(--neo-fg-3); }
+.rs-btn:hover:not(:disabled) { border-color: var(--neo-fg-15); background: var(--neo-lift-a04); color: var(--neo-fg-3); transition-duration: 0s; }
 .rs-btn.primary {
   border-color: var(--neo-accent-a32);
   background: var(--neo-accent-a08);
   color: var(--neo-green);
   font-weight: 600;
 }
-.rs-btn.primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); }
+.rs-btn.primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
 .rs-btn.primary:disabled { border-color: var(--rs-edge-lit); background: transparent; color: var(--neo-fg-14); opacity: 1; }
 .rs-btn.danger { border-color: var(--neo-danger-a35); background: var(--neo-danger-a08); color: var(--neo-danger-text); }
-.rs-btn.danger:hover:not(:disabled) { border-color: var(--neo-danger); background: var(--neo-danger-a16); color: var(--neo-danger-bright); }
+.rs-btn.danger:hover:not(:disabled) { border-color: var(--neo-danger); background: var(--neo-danger-a16); color: var(--neo-danger-bright); transition-duration: 0s; }
 .rs-btn.lg { min-height: 38px; padding: 0 18px; font-size: 12.5px; }
 .rs-btn kbd { border-radius: 3px; background: var(--neo-accent-a12); padding: 1px 5px; color: var(--neo-accent-a65); font: 9.5px "JetBrains Mono", monospace; }
 
@@ -4352,8 +4450,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 }
 .rs-depth strong { color: var(--neo-fg-6); font-size: 12.5px; font-weight: 600; }
 .rs-depth span { color: var(--neo-fg-13); font: 10px "JetBrains Mono", monospace; }
-.rs-depth:hover { border-color: var(--neo-fg-15); background: var(--neo-lift-a03); }
-.rs-depth.on { border-color: var(--neo-accent-a40); background: var(--neo-accent-a08); }
+.rs-depth:hover { border-color: var(--neo-fg-15); background: var(--neo-lift-a03); transition-duration: 0s; }
+.rs-depth.on { border-color: var(--neo-accent-a40); background: var(--neo-accent-a08); transition-duration: 0s; }
 .rs-depth.on strong { color: var(--neo-green); }
 .rs-depth.on span { color: var(--neo-accent-a50); }
 
@@ -4383,8 +4481,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 11.5px;
   transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.rs-toggle:hover { color: var(--neo-fg-7); }
-.rs-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); }
+.rs-toggle:hover { color: var(--neo-fg-7); transition-duration: 0s; }
+.rs-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
 .rs-composer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
 
 /* --- run ----------------------------------------------------------------- */
@@ -4419,8 +4517,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 12px;
   transition: color .12s ease, border-color .12s ease;
 }
-.rs-tab:hover { color: var(--neo-fg-7); }
-.rs-tab.on { border-bottom-color: var(--neo-green); color: var(--neo-green); }
+.rs-tab:hover { color: var(--neo-fg-7); transition-duration: 0s; }
+.rs-tab.on { border-bottom-color: var(--neo-green); color: var(--neo-green); transition-duration: 0s; }
 .rs-tab em { border-radius: 20px; background: var(--neo-lift-a08); padding: 1px 6px; font: 9.5px "JetBrains Mono", monospace; font-style: normal; }
 .rs-tab.on em { background: var(--neo-accent-a16); }
 
@@ -4534,7 +4632,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-decoration: none;
   transition: border-color .12s ease, background .12s ease;
 }
-.rs-source:hover { border-color: var(--neo-accent-a28); background: var(--neo-panel-raised); }
+.rs-source:hover { border-color: var(--neo-accent-a28); background: var(--neo-panel-raised); transition-duration: 0s; }
 .rs-source.unread { opacity: .62; }
 .rs-source-body { display: grid; min-width: 0; flex: 1; gap: 6px; }
 .rs-source-body strong { overflow: hidden; color: var(--neo-fg-4); font-size: 13px; font-weight: 500; line-height: 1.45; }
@@ -4594,8 +4692,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-align: left;
   transition: background .12s ease, border-color .12s ease;
 }
-.rs-histrow:hover { background: var(--neo-lift-a03); }
-.rs-histrow.active { border-color: var(--neo-accent-a20); background: var(--neo-accent-a06); }
+.rs-histrow:hover { background: var(--neo-lift-a03); transition-duration: 0s; }
+.rs-histrow.active { border-color: var(--neo-accent-a20); background: var(--neo-accent-a06); transition-duration: 0s; }
 .rs-histrow-top { display: flex; min-width: 0; align-items: flex-start; gap: 8px; }
 .rs-histrow-top .rs-dot { margin-top: 5px; }
 .rs-histrow-title {
@@ -4634,7 +4732,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   border: 0;
   background: var(--neo-scrim-a93);
   padding: 0;
-  backdrop-filter: blur(6px);
 }
 .lbx-figure {
   position: relative;
@@ -4691,7 +4788,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   color: var(--neo-fg-5);
   transition: border-color .12s ease, color .12s ease, background .12s ease;
 }
-.lbx-step:hover, .lbx-close:hover { border-color: var(--neo-accent-a45); background: var(--neo-scrim-a96); color: var(--neo-green); }
+.lbx-step:hover, .lbx-close:hover { border-color: var(--neo-accent-a45); background: var(--neo-scrim-a96); color: var(--neo-green); transition-duration: 0s; }
 .lbx-step .ws-icon, .lbx-close .ws-icon { width: 17px; height: 17px; }
 .lbx-step.left { left: 24px; }
 .lbx-step.right { right: 24px; }
@@ -5018,7 +5115,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   background: transparent; padding: 5px 12px; color: var(--neo-muted);
   font-size: 12px; cursor: pointer; transition: border-color .14s ease, color .14s ease;
 }
-.lm-rescan:hover:not(:disabled) { border-color: var(--neo-accent-a45); color: var(--neo-green); }
+.lm-rescan:hover:not(:disabled) { border-color: var(--neo-accent-a45); color: var(--neo-green); transition-duration: 0s; }
 .lm-rescan:disabled { opacity: .5; cursor: default; }
 .lm-error { margin: 16px 0 0; }
 .lm-quiet { color: var(--neo-muted); font-size: 13px; margin: 20px 0; }
@@ -5049,8 +5146,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   padding: 5px 12px; color: var(--neo-fg-9); font-size: 12px; cursor: pointer;
   transition: border-color .14s ease, background .14s ease, color .14s ease;
 }
-.lm-chip:hover { border-color: var(--neo-fg-14); color: var(--neo-text); }
-.lm-chip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); }
+.lm-chip:hover { border-color: var(--neo-fg-14); color: var(--neo-text); transition-duration: 0s; }
+.lm-chip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
 
 /* The first visit: the same question as cards, because there it is the whole page. */
 .lm-ask-inner { width: 100%; max-width: 760px; margin: 6vh auto 0; }
@@ -5064,8 +5161,8 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   background: var(--neo-panel); border: 1px solid var(--neo-line); border-radius: 10px;
   transition: border-color .14s ease, background .14s ease;
 }
-.lm-goal:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); }
-.lm-goal.selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a05); }
+.lm-goal:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); transition-duration: 0s; }
+.lm-goal.selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a05); transition-duration: 0s; }
 /* Several can be on at once, so each card carries its own tick box rather than relying
    on the border alone, which reads as "the one you picked". */
 .lm-goal-check {
@@ -5419,9 +5516,9 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   padding: 14px 16px; border: none; background: transparent; text-align: left; cursor: pointer;
   transition: background .12s ease;
 }
-.cmp-cell-button:hover { background: var(--neo-lift-a03); }
+.cmp-cell-button:hover { background: var(--neo-lift-a03); transition-duration: 0s; }
 .cmp-cell-button:focus-visible { outline: 1px solid var(--neo-accent-a45); outline-offset: -1px; }
-.cmp-cell-open .cmp-cell-button { background: var(--neo-accent-a05); box-shadow: inset 0 -2px 0 var(--neo-green); }
+.cmp-cell-open .cmp-cell-button { background: var(--neo-accent-a05); box-shadow: inset 0 -2px 0 var(--neo-green); transition-duration: 0s; }
 .cmp-cell-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .cmp-cell-score { color: var(--neo-text); font-size: 16px; font-variant-numeric: tabular-nums; }
 .cmp-cell-rating { color: var(--neo-body); font-size: 12.5px; font-variant-numeric: tabular-nums; }
@@ -5895,8 +5992,11 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   text-align: left;
   transition: border-color .14s ease, background .14s ease;
 }
-.theme-card:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); }
-.theme-card.is-selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a06); }
+/* An unselected card's class ends in -card, so the workspace sweep locks its
+   border and ground with `!important` and this hover never showed. Scoped to
+   unselected cards so the selected one keeps its own look under the pointer. */
+.theme-card:not(.is-selected):hover { border-color: var(--neo-line-bright) !important; background: var(--neo-panel-raised) !important; transition-duration: 0s; }
+.theme-card.is-selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a06); transition-duration: 0s; }
 .theme-card:focus-visible { outline: 1px solid var(--neo-accent-a55); outline-offset: 1px; }
 
 /* The palette, as five chips in a row. A column of colour rather than a grid,
@@ -6165,6 +6265,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
     0 18px 44px -10px var(--neo-shadow-a55),
     0 0 42px var(--neo-accent-a10),
     inset 0 1px 0 var(--glass-inner-lit);
+  transition-duration: 0s;
 }
 
 /* 4. The settings dialog: the fourth surface, and the only one that is not
@@ -6250,6 +6351,6 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   font-size: 11px;
   transition: border-color .14s ease, background .14s ease, color .14s ease;
 }
-.bg-intensity-option:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); }
-.bg-intensity-option.is-selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a06); color: var(--neo-accent); }
+.bg-intensity-option:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); transition-duration: 0s; }
+.bg-intensity-option.is-selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a06); color: var(--neo-accent); transition-duration: 0s; }
 .bg-intensity-option:focus-visible { outline: 1px solid var(--neo-accent-a55); outline-offset: 1px; }
