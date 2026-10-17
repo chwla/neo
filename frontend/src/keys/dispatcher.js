@@ -12,7 +12,7 @@
  * a test calls it directly and never needs a fake clock.
  */
 
-import { chordFromEvent } from "./chord.js";
+import { chordFromEvent, physicalChordFromEvent } from "./chord.js";
 import { matchSequence } from "./keymap.js";
 import { allowsBareKeys } from "./mode.js";
 
@@ -83,8 +83,17 @@ export function createDispatcher(options = {}) {
         return { action: "pending", commandId: null, count: 1, sequence: "", preventDefault: true };
       }
 
-      const attempt = [...pending, chord];
-      const result = matchSequence(keymap, attempt, scopes);
+      let attempt = [...pending, chord];
+      let result = matchSequence(keymap, attempt, scopes);
+      if (result.status === "none") {
+        // The character a modifier produced is bound to nothing; the key itself may be.
+        const physical = physicalChordFromEvent(event);
+        const retry = physical ? matchSequence(keymap, [...pending, physical], scopes) : null;
+        if (retry && retry.status !== "none") {
+          attempt = [...pending, physical];
+          result = retry;
+        }
+      }
 
       if (result.status === "run") {
         return ran(result.binding);

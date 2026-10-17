@@ -58,6 +58,8 @@ def main() -> int:
     parser.add_argument("--long-chat-messages", type=int, default=120,
                         help="messages in the newest chat, for chat-open cost")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--notes", type=int, default=0,
+                        help="notes to create (one of them about 20 KB, for typing cost)")
     args = parser.parse_args()
 
     # `database_url_for` creates the directory it names, so an id that is not a
@@ -88,8 +90,59 @@ def main() -> int:
             db.commit()
     finally:
         engine.dispose()
-    print(json.dumps({"profile_id": args.profile_id, "chat_ids": created}))
+    note_ids = seed_notes(args.profile_id, args.notes, rng) if args.notes else []
+    print(json.dumps({"profile_id": args.profile_id, "chat_ids": created, "note_ids": note_ids}))
     return 0
+
+
+#: Markdown of the kinds people keep in notes: headings, lists, checklists, tables, code.
+NOTE_PARTS = [
+    "## Plan\n\n- Draft the outline\n- Review with the team\n  - Collect feedback\n- Ship",
+    "- [ ] Book the venue\n- [x] Send invitations\n- [ ] Order food",
+    "| Item | Owner | Due |\n| --- | --- | --- |\n"
+    "| Budget | Sam | Friday |\n| Slides | Ana | Monday |",
+    "1. Measure\n2. Compare\n3. Decide",
+    "```js\nconst total = items.reduce((sum, item) => sum + item.price, 0);\n```",
+    "> Keep the scope small and the feedback loop short.",
+    "Thoughts on the quarter: **revenue** is up, the [roadmap](https://example.com) moved,"
+    " and #planning continues.",
+]
+
+
+def seed_notes(profile_id: str, count: int, rng: random.Random) -> list[str]:
+    """Notes through the notes service itself, as Markdown (what imports and legacy notes are)."""
+
+    from app.services.notes.service import NotesService
+    from app.services.notes.store import initialize_notes_tables
+    from app.services.notes.types import NoteCreate, NoteFolderCreate
+    from app.services.profile_accounts import profile_database
+
+    ids: list[str] = []
+    with profile_database(profile_id):
+        initialize_notes_tables()
+        service = NotesService()
+        folders = [
+            service.create_folder(NoteFolderCreate(name=name)).id for name in ("Work", "Home")
+        ]
+        for number in range(1, count + 1):
+            if number == count:
+                # One long note: about 20 KB of mixed blocks, for keystroke cost.
+                parts = [NOTE_PARTS[i % len(NOTE_PARTS)] for i in range(300)]
+                title = "Long bench note"
+            else:
+                parts = rng.sample(NOTE_PARTS, k=rng.randint(1, 4))
+                title = f"Bench note {number:03d}"
+            note = service.create_note(
+                NoteCreate(
+                    title=title,
+                    body="\n\n".join(parts),
+                    tags=["bench"] if number % 3 == 0 else [],
+                    summary="Seeded summary that edits must keep" if number == 2 else None,
+                    folder_id=folders[number % 2] if number % 4 == 0 else None,
+                )
+            )
+            ids.append(note.id)
+    return ids
 
 
 if __name__ == "__main__":

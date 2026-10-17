@@ -13,6 +13,7 @@ import BackgroundTurnToast, {
   notificationsEnabled,
   shouldNotify,
 } from "./BackgroundTurnToast.jsx";
+import { MobileNavBar, shellTitle, useNarrowShell, useNavDrawer } from "./MobileShell.jsx";
 import { registerModal } from "./modalStack.js";
 import { visibleSystemNav } from "./systemNav.js";
 import { replaceRange } from "./voice/insertion.js";
@@ -738,8 +739,19 @@ export const Sidebar = memo(function Sidebar({
   onSwitchProfile,
   collapsed = false,
   onToggleCollapsed,
+  //: On a phone the sidebar is a drawer: { open, onClose }, or null beside a screen.
+  drawer = null,
+  //: Opens the command palette. Shown only on touch screens (CSS), where there
+  //: is no keyboard shortcut for it and it is the way to screens like Tasks.
+  onOpenPalette,
 }) {
   const [projectName, setProjectName] = useState("");
+  const asideRef = useRef(null);
+  // A closed drawer is off screen; inert keeps it out of the tab order and away
+  // from screen readers too.
+  useLayoutEffect(() => {
+    if (asideRef.current) asideRef.current.inert = Boolean(drawer && !drawer.open);
+  }, [drawer]);
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [chatsCollapsed, setChatsCollapsed] = useState(false);
   const [search, setSearch] = useState("");
@@ -831,8 +843,9 @@ export const Sidebar = memo(function Sidebar({
   ]);
 
   // Minimised, the sidebar keeps only what you would reopen it for: the way
-  // home, a new chat, settings, and the control that brings it back.
-  if (collapsed) {
+  // home, a new chat, settings, and the control that brings it back. A drawer
+  // is never minimised; it is either open in full or out of the way.
+  if (collapsed && !drawer) {
     return (
       <aside className="neo-sidebar neo-sidebar-rail">
         <button className="sidebar-rail-brand" type="button" onClick={onOpenChatHome} title="Neo" aria-label="Open chat home">
@@ -857,6 +870,14 @@ export const Sidebar = memo(function Sidebar({
         >
           +
         </button>
+        {onOpenPalette && (
+          <button className="sidebar-palette-button" type="button" onClick={onOpenPalette} aria-label="Go to a screen or run a command" title="Go to a screen or run a command">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="m16 16 4.5 4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
         <div className="sidebar-spacer" />
         <button
           className="sidebar-rail-button"
@@ -872,22 +893,41 @@ export const Sidebar = memo(function Sidebar({
   }
 
   return (
-    <aside className="neo-sidebar">
+    <aside
+      ref={asideRef}
+      className={drawer ? `neo-sidebar is-drawer${drawer.open ? " open" : ""}` : "neo-sidebar"}
+      id={drawer ? "neo-nav-drawer" : undefined}
+      aria-label={drawer ? "Navigation" : undefined}
+    >
       <div className="sidebar-brand-row">
         <button className="sidebar-brand" type="button" onClick={onOpenChatHome} aria-label="Open chat home">
           <NeoLogo />
           <span>neo</span>
         </button>
-        <button
-          className="sidebar-collapse-button"
-          type="button"
-          onClick={onToggleCollapsed}
-          aria-label="Minimise sidebar"
-          aria-expanded
-          title="Minimise sidebar"
-        >
-          {"\u00ab"}
-        </button>
+        {onOpenPalette && !drawer && (
+          <button className="sidebar-palette-button" type="button" onClick={onOpenPalette} aria-label="Go to a screen or run a command" title="Go to a screen or run a command">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="m16 16 4.5 4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+        {drawer ? (
+          <button className="sidebar-collapse-button" type="button" onClick={drawer.onClose} aria-label="Close navigation" title="Close navigation">
+            {"\u00d7"}
+          </button>
+        ) : (
+          <button
+            className="sidebar-collapse-button"
+            type="button"
+            onClick={onToggleCollapsed}
+            aria-label="Minimise sidebar"
+            aria-expanded
+            title="Minimise sidebar"
+          >
+            {"\u00ab"}
+          </button>
+        )}
       </div>
       <div className="sidebar-primary-action">
         <NeoButton className="w-full" onClick={() => onNewChat(selectedProjectId)}>
@@ -5424,6 +5464,14 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   // The sidebar's handlers as stable wrappers, the same arrangement as the
   // transcript's below: each always calls the latest committed handler, and
   // none changes identity, so the memoized sidebar skips unrelated renders.
+  const narrowShell = useNarrowShell();
+  const openPalette = useCallback(() => setShowCommandPalette(true), []);
+  // Where you are, in the tab and for screen readers, in every layout.
+  const screenTitle = shellTitle(activeView, activeChat?.title);
+  useEffect(() => {
+    document.title = screenTitle === "Neo" ? "Neo" : `${screenTitle} \u00b7 Neo`;
+  }, [screenTitle]);
+  const navDrawer = useNavDrawer(narrowShell);
   const sidebarActions = useStableActions({
     onToggleProjectForm: () => setShowNewProjectForm((visible) => !visible),
     onCreateProject: handleCreateProject,
@@ -5447,6 +5495,21 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     onSwitchProfile: () => setConfirmingSignOut(true),
     onToggleCollapsed: toggleSidebar,
   });
+  // In the phone drawer, going anywhere closes it first. Actions that act in
+  // place (renaming, pinning, the project form) leave it open.
+  const closeDrawer = navDrawer.close;
+  const drawerActions = useMemo(() => {
+    if (!narrowShell) return sidebarActions;
+    return Object.fromEntries(Object.entries(sidebarActions).map(([name, action]) => [
+      name,
+      /^onOpen|^onNewChat$|^onSwitchProfile$/.test(name) && typeof action === "function"
+        ? (...args) => {
+            closeDrawer();
+            return action(...args);
+          }
+        : action,
+    ]));
+  }, [narrowShell, sidebarActions, closeDrawer]);
 
   const transcriptActions = useStableActions({
     onCancelEdit: () => { setEditingMessageId(null); setEditingValue(""); },
@@ -5471,7 +5534,16 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   });
 
   return (
-    <div className={`neo-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <div className={`neo-app${sidebarCollapsed && !narrowShell ? " sidebar-collapsed" : ""}${navDrawer.open ? " nav-open" : ""}`}>
+      {narrowShell && (
+        <MobileNavBar
+          title={screenTitle}
+          open={navDrawer.open}
+          onToggle={navDrawer.toggle}
+          buttonRef={navDrawer.button}
+          onOpenPalette={openPalette}
+        />
+      )}
       <Sidebar
         sidebar={sidebar}
         activeChatId={pendingChatId ?? activeChat?.id ?? null}
@@ -5482,8 +5554,13 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         activeView={activeView}
         profile={profile}
         collapsed={sidebarCollapsed}
-        {...sidebarActions}
+        drawer={navDrawer.drawer}
+        onOpenPalette={openPalette}
+        {...drawerActions}
       />
+      {narrowShell && navDrawer.open && (
+        <button type="button" className="neo-nav-scrim" aria-label="Close navigation" tabIndex={-1} onClick={navDrawer.close} />
+      )}
 
       {showProjects ? (
         <Projects
@@ -5536,6 +5613,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         />
       ) : showNotes ? (
         <Notes
+          profile={profile}
           initialNoteId={initialNoteId}
           onOpenTask={(taskId) => {
             closeWorkspaces(); setInitialTaskId(taskId); setInitialTaskProjectId(null); setShowTasks(true);
@@ -5904,7 +5982,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 // boots pointing at rows that only exist in the previous profile's store.
 // An agent run is a turn of a chat, so the chat id is the only thing worth
 // remembering: reopening it reattaches to a run still executing on the server.
-export const PROFILE_SCOPED_STORAGE_KEYS = ["neo-active-chat-id"];
+// The last Notes view can name a folder or tags of this profile
+// (LAST_VIEW_KEY in notes/notesController.js, not imported to keep Notes lazy).
+export const PROFILE_SCOPED_STORAGE_KEYS = ["neo-active-chat-id", "neo-notes-last-view"];
 
 export function clearProfileScopedState() {
   // Rendered message text is the previous profile's; it must not linger.

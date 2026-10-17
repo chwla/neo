@@ -345,7 +345,9 @@ def list_files(
 ) -> tuple[list[dict], int]:
     conn = _connect()
     try:
-        where = ["1 = 1"]
+        # Locked notes' attachments are ciphertext that only the note can read;
+        # listing them as files would show opaque blobs nobody can open.
+        where = ["coalesce(f.source_type, '') != 'note_encrypted'"]
         params: list = []
         if not include_deleted:
             where.append("f.deleted = 0")

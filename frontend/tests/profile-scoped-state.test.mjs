@@ -32,6 +32,10 @@ describe("profile-scoped storage", () => {
     assert.ok(PROFILE_SCOPED_STORAGE_KEYS.includes("neo-active-chat-id"));
   });
 
+  test("the last Notes view is profile-scoped, since it can name a folder", () => {
+    assert.ok(PROFILE_SCOPED_STORAGE_KEYS.includes("neo-notes-last-view"));
+  });
+
   test("a run is not remembered separately from the chat it happened in", () => {
     // A run is a turn of a chat now, so remembering its id as well would be a
     // second pointer into profile data that the first one already covers -- and

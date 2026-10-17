@@ -55,6 +55,12 @@ def _root() -> Path:
     return Path("data/profiles").resolve()
 
 
+def profiles_root() -> Path:
+    """Where account profiles, guests, the registry and backups live."""
+
+    return _root()
+
+
 def _registry_path() -> Path:
     root = _root()
     root.mkdir(parents=True, exist_ok=True)

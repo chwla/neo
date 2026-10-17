@@ -262,3 +262,55 @@ describe("reset", () => {
     assert.deepEqual(keys.pending, ["g"]);
   });
 });
+
+describe("a key whose character a modifier changed", () => {
+  // Bound the way Notes binds its styles and lists.
+  const catalogue = [
+    command("n.title", { keys: "mod+alt+1" }),
+    command("n.bullets", { keys: "mod+shift+7" }),
+    command("n.table", { keys: "mod+alt+t" }),
+    command("n.amp", { keys: "mod+shift+&" }),
+    command("n.optionC", { keys: "alt+c" }),
+  ];
+  const on = (platform) => createDispatcher({ keymap: buildKeymap(catalogue, [], { platform }) });
+
+  test("Cmd+Option+1 on a Mac runs mod+alt+1 whether it arrives as ¡ or 1", () => {
+    for (const key of ["¡", "1"]) {
+      const result = on("mac").feed(press(key, { code: "Digit1", metaKey: true, altKey: true }), loose);
+      assert.equal(result.commandId, "n.title", key);
+    }
+    assert.equal(on("mac").feed(press("†", { code: "KeyT", metaKey: true, altKey: true }), loose).commandId, "n.table");
+  });
+
+  test("Cmd+Shift+7 reaches mod+shift+7 as & as well as 7", () => {
+    assert.equal(on("mac").feed(press("7", { code: "Digit7", metaKey: true, shiftKey: true }), loose).commandId, "n.bullets");
+    // A binding for the character itself still wins over the key it came from.
+    assert.equal(on("mac").feed(press("&", { code: "Digit7", metaKey: true, shiftKey: true }), loose).commandId, "n.amp");
+    const unbound = createDispatcher({ keymap: buildKeymap(catalogue.filter((c) => c.id !== "n.amp"), [], { platform: "mac" }) });
+    assert.equal(unbound.feed(press("&", { code: "Digit7", metaKey: true, shiftKey: true }), loose).commandId, "n.bullets");
+  });
+
+  test("Ctrl+Shift+7 elsewhere reaches mod+shift+7 too", () => {
+    const keymap = buildKeymap(catalogue.filter((c) => c.id !== "n.amp"), [], { platform: "windows" });
+    const result = createDispatcher({ keymap }).feed(press("&", { code: "Digit7", ctrlKey: true, shiftKey: true }), loose);
+    assert.equal(result.commandId, "n.bullets");
+  });
+
+  test("AltGr typing is never a command: German } is AltGr+0, { is AltGr+7", () => {
+    const windows = on("windows");
+    const typed = { ctrlKey: true, altKey: true, getModifierState: (name) => name === "AltGraph" };
+    assert.equal(windows.feed(press("}", { code: "Digit0", ...typed }), loose).action, "none");
+    // Reported without AltGraph, Ctrl+Alt is still treated as AltGr.
+    assert.equal(windows.feed(press("{", { code: "Digit7", ctrlKey: true, altKey: true }), loose).action, "none");
+    assert.equal(windows.feed(press("€", { code: "KeyE", ctrlKey: true, altKey: true }), loose).action, "none");
+  });
+
+  test("Option alone keeps typing its characters on a Mac", () => {
+    assert.equal(on("mac").feed(press("ç", { code: "KeyC", altKey: true }), loose).action, "none");
+  });
+
+  test("an input method's keystroke is never read as its physical key", () => {
+    const result = on("mac").feed(press("¡", { code: "Digit1", metaKey: true, altKey: true, isComposing: true }), loose);
+    assert.equal(result.action, "none");
+  });
+});

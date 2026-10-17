@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import { registerModal } from "./modalStack.js";
 
 const SORT_OPTIONS = [
   ["newest", "Newest First"],
@@ -262,6 +263,11 @@ export default function MemoryDialog({
   const [sortOrder, setSortOrder] = useState("newest");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // On the modal stack like every other dialog: Escape closes it, and keyboard
+  // shortcuts wait until it is gone.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => registerModal(() => closeRef.current?.()), []);
 
   const refresh = useCallback(async () => {
     setLoading(true);

@@ -55,7 +55,12 @@ async function request(path, options = {}) {
     if (response.status === 500 && !detail) {
       throw new Error("Backend API is not running on http://127.0.0.1:8000.");
     }
-    throw new Error(errorDetail(detail, `Request failed with ${response.status}`));
+    const error = new Error(errorDetail(detail, `Request failed with ${response.status}`));
+    // Callers that must tell a conflict from an outage read these; the message
+    // above is unchanged for everyone else.
+    error.status = response.status;
+    error.detail = detail;
+    throw error;
   }
 
   return body;
@@ -951,22 +956,88 @@ export const api = {
   continuityExport: (payload) => request("/continuity/export", {method:"POST",body:JSON.stringify(payload)}),
   continuityReport: (id) => request(`/continuity/bundles/${encodeURIComponent(id)}/report`),
 
-  notesList: (params = {}) => {
+  notesList: (params = {}, { signal } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
     if (params.tag) search.set("tag", params.tag);
+    if (params.tags?.length) search.set("tags", params.tags.join(","));
+    if (params.tagsMode) search.set("tags_mode", params.tagsMode);
+    if (params.view) search.set("view", params.view);
+    if (params.folderId) search.set("folder_id", params.folderId);
+    if (params.smartId) search.set("smart_id", params.smartId);
+    if (params.tzOffset !== undefined) search.set("tz_offset", String(params.tzOffset));
+    if (params.sort) search.set("sort", params.sort);
+    if (params.order) search.set("order", params.order);
+    if (params.includeBody === false) search.set("include_body", "false");
     if (params.includeArchived) search.set("include_archived", "true");
     if (params.pinnedFirst === false) search.set("pinned_first", "false");
     search.set("limit", String(params.limit ?? 50));
     search.set("offset", String(params.offset ?? 0));
-    return request(`/notes?${search.toString()}`);
+    return request(`/notes?${search.toString()}`, signal ? { signal } : {});
   },
   notesTags: () => request("/notes/tags"),
-  note: (noteId) => request(`/notes/${noteId}`),
-  createNote: (payload) =>
-    request("/notes", { method: "POST", body: JSON.stringify(payload) }),
+  notesSidebar: ({ signal, tzOffset } = {}) =>
+    request(`/notes/sidebar${tzOffset !== undefined ? `?tz_offset=${tzOffset}` : ""}`, signal ? { signal } : {}),
+  createSmartFolder: (payload) =>
+    request("/notes/smart-folders", { method: "POST", body: JSON.stringify(payload) }),
+  updateSmartFolder: (id, payload) =>
+    request(`/notes/smart-folders/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteSmartFolder: (id) => request(`/notes/smart-folders/${id}`, { method: "DELETE" }),
+  renameNoteTag: (tag, name) =>
+    request(`/notes/tags/${encodeURIComponent(tag)}/rename`, { method: "POST", body: JSON.stringify({ name }) }),
+  deleteNoteTag: (tag) => request(`/notes/tags/${encodeURIComponent(tag)}`, { method: "DELETE" }),
+  note: (noteId, { signal, includeDeleted } = {}) =>
+    request(
+      `/notes/${noteId}${includeDeleted ? "?include_deleted=true" : ""}`,
+      signal ? { signal } : {},
+    ),
+  createNote: (payload, { keepalive } = {}) =>
+    request("/notes", { method: "POST", body: JSON.stringify(payload), keepalive }),
   updateNote: (noteId, payload) =>
     request(`/notes/${noteId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  // Whole-content write on top of `base_revision`; a 409 carries the captured conflict.
+  writeNoteContent: (noteId, payload, { keepalive } = {}) =>
+    request(`/notes/${noteId}/content`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+      keepalive,
+    }),
+  moveNote: (noteId, folderId) =>
+    request(`/notes/${noteId}/move`, {
+      method: "POST",
+      body: JSON.stringify({ folder_id: folderId || null }),
+    }),
+  restoreNote: (noteId, folderId = null) =>
+    request(`/notes/${noteId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ folder_id: folderId }),
+    }),
+  duplicateNote: (noteId) => request(`/notes/${noteId}/duplicate`, { method: "POST" }),
+  deleteNotePermanently: (noteId) =>
+    request(`/notes/${noteId}?permanent=true`, { method: "DELETE" }),
+  emptyNotesTrash: () => request("/notes/trash", { method: "DELETE" }),
+  noteVersions: (noteId) => request(`/notes/${noteId}/versions`),
+  noteVersion: (noteId, versionId) => request(`/notes/${noteId}/versions/${versionId}`),
+  restoreNoteVersion: (noteId, versionId, payload) =>
+    request(`/notes/${noteId}/versions/${versionId}/restore`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  noteConflicts: (noteId, { includeResolved = false } = {}) =>
+    request(`/notes/${noteId}/conflicts${includeResolved ? "?include_resolved=true" : ""}`),
+  resolveNoteConflict: (noteId, conflictId, payload) =>
+    request(`/notes/${noteId}/conflicts/${conflictId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  noteSettings: () => request("/notes/settings"),
+  updateNoteSettings: (payload) =>
+    request("/notes/settings", { method: "PATCH", body: JSON.stringify(payload) }),
+  createNoteFolder: (payload) =>
+    request("/notes/folders", { method: "POST", body: JSON.stringify(payload) }),
+  updateNoteFolder: (folderId, payload) =>
+    request(`/notes/folders/${folderId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteNoteFolder: (folderId) => request(`/notes/folders/${folderId}`, { method: "DELETE" }),
   pinNote: (noteId, pinned) =>
     request(`/notes/${noteId}/pin`, {
       method: "POST",
@@ -978,6 +1049,46 @@ export const api = {
       body: JSON.stringify({ archived }),
     }),
   deleteNote: (noteId) => request(`/notes/${noteId}`, { method: "DELETE" }),
+  // A picture or file for a note; the note's next save is what references it.
+  uploadNoteAttachment: (file, name = file.name) => {
+    const form = new FormData();
+    form.append("file", file, name);
+    return request("/notes/attachments", { method: "POST", body: form });
+  },
+  // An attachment for a locked note, already encrypted here: stored as opaque bytes.
+  uploadEncryptedNoteAttachment: (blob) => {
+    const form = new FormData();
+    form.append("file", blob, "encrypted");
+    return request("/notes/attachments?encrypted=true", { method: "POST", body: form });
+  },
+  /** A stored file's bytes (an attachment to encrypt, decrypt or check). */
+  fileBytes: async (fileId) => {
+    const response = await fetch(`${API_BASE}/files/${encodeURIComponent(fileId)}/download`);
+    if (!response.ok) {
+      const error = new Error(`Couldn't read an attachment (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  },
+
+  // Locked notes: the profile password opens their keys (the key itself is unwrapped here).
+  noteKeyState: () => request("/notes/keys"),
+  setupNoteKeys: (password) => request("/notes/keys/setup", { method: "POST", body: JSON.stringify({ password }) }),
+  unlockNoteKeys: (password) => request("/notes/keys/unlock", { method: "POST", body: JSON.stringify({ password }) }),
+  rewrapNoteKeys: (password, earlierPassword) =>
+    request("/notes/keys/rewrap", { method: "POST", body: JSON.stringify({ password, earlier_password: earlierPassword }) }),
+  beginNoteTransition: (noteId, payload) =>
+    request(`/notes/${noteId}/transitions`, { method: "POST", body: JSON.stringify(payload) }),
+  stageNoteTransitionFile: (noteId, transitionId, blob, name) => {
+    const form = new FormData();
+    form.append("file", blob, name || "attachment");
+    return request(`/notes/${noteId}/transitions/${transitionId}/files`, { method: "POST", body: form });
+  },
+  commitNoteTransition: (noteId, transitionId, payload) =>
+    request(`/notes/${noteId}/transitions/${transitionId}/commit`, { method: "POST", body: JSON.stringify(payload) }),
+  abortNoteTransition: (noteId, transitionId) =>
+    request(`/notes/${noteId}/transitions/${transitionId}/abort`, { method: "POST" }),
 
   projectsList: (params = {}) => {
     const search = new URLSearchParams();

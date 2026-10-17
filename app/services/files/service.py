@@ -31,6 +31,7 @@ class WorkspaceFilesService:
         mime_type: str | None = None,
         links: list[tuple[str, str]] | None = None,
         deduplicate: bool = True,
+        source_type: str = "upload",
     ) -> dict:
         """Store bytes, reusing the row that already holds them.
 
@@ -38,6 +39,10 @@ class WorkspaceFilesService:
         The gallery uses it for the duplicate-uploads preference: identical bytes
         then get their own file, and so their own gallery item and id, rather
         than collapsing into the first copy.
+
+        ``source_type`` records who made the file. Notes' encrypted attachments
+        (``note_encrypted``) are opaque bytes: they are never deduplicated and
+        no text is extracted from them.
         """
 
         if not content:
@@ -46,6 +51,8 @@ class WorkspaceFilesService:
             raise ValueError(f"File exceeds the {self.max_bytes}-byte upload limit.")
         safe_name = sanitize_filename(original_filename)
         digest = hashlib.sha256(content).hexdigest()
+        if source_type == "note_encrypted":
+            deduplicate = False
         existing = store.get_file_by_sha(digest) if deduplicate else None
         if existing:
             for link_type, target_id in links or []:
@@ -58,7 +65,10 @@ class WorkspaceFilesService:
         internal_name = f"{file_id}_{safe_name}"
         self.storage_root.mkdir(parents=True, exist_ok=True)
         path = safe_storage_path(self.storage_root, internal_name)
-        extracted, metadata = extract_text(safe_name, content, self.max_chars)
+        if source_type == "note_encrypted":
+            extracted, metadata = None, {}
+        else:
+            extracted, metadata = extract_text(safe_name, content, self.max_chars)
         # This is the only disk write path: a generated name inside the configured workspace.
         path.write_bytes(content)
         now = store.now_iso()
@@ -75,7 +85,7 @@ class WorkspaceFilesService:
                 "storage_path": str(path),
                 "extracted_text": extracted,
                 "summary": None,
-                "source_type": "upload",
+                "source_type": source_type,
                 "source_id": None,
                 "metadata": metadata,
                 "deleted": False,

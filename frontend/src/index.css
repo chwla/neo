@@ -456,12 +456,8 @@ html { --neo-press: opacity(.75); }
   .llm-model-row, .lm-chip, .lm-disclosure, .lm-goal, .lm-more, .lm-rescan, .lm-row-main,
   .memory-card-edit, .memory-tabs button, .message-actions button,
   .message-actions-menu button, .modal-header > button, .neo-button,
-  .neo-dialog :not(.dialog-title-row):not(.modal-header) > button, .notes-danger-btn,
-  .notes-item, .notes-new-btn, .nw-action, .nw-chip button,
-  .nw-detail .file-attachment-list button, .nw-detail .file-attachments-actions button,
-  .nw-detail-attach button, .nw-detail-head button, .nw-detail-list button, .nw-link,
-  .nw-menu button, .nw-new, .nw-row, .nw-save, .nw-search-clear, .nw-segment button,
-  .nw-tagchip, .nw-toggle, .open-folder-crumb button, .open-folder-item, .open-folder-select,
+  .neo-dialog :not(.dialog-title-row):not(.modal-header) > button,
+  .nw-banner button, .nw-blank-new, .nw-fold, .nw-format-row button, .nw-link-editor button, .nw-menu button, .nw-note-link, .nw-side-item, .nw-side-new, .nw-sketch, .nw-sketch-color, .nw-sketch-edit, .nw-sketch-size, .nw-sketch-text, .nw-sketch-tool, .nw-smart-add, .nw-tag-chip, .nw-original header button, .nw-row, .nw-style, .nw-suggest-item, .nw-tablebar button, .nw-tool, .open-folder-crumb button, .open-folder-item, .open-folder-select,
   .password-reveal, .patch-application-list > button, .patch-apply-controls button,
   .profile-card, .profile-danger-button, .project-chat-link, .project-folder-delete,
   .project-folder-new-chat, .projects-danger-btn, .projects-item, .projects-new-btn,
@@ -519,7 +515,10 @@ select:not([multiple]):not(.chat-llm-picker select):not(.agent-chip select) {
 select:not([multiple]):hover:not(:disabled), select:not([multiple]):focus { --select-caret: var(--neo-green); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 
-.neo-app { --neo-sidebar-width: 256px; display: flex; width: 100%; height: 100vh; overflow: hidden; background: var(--neo-bg); }
+/* Heights use 100dvh, the height actually visible, after a 100vh fallback: on
+   phones and tablets 100vh is the height with the browser's bars hidden, so a
+   100vh shell is taller than the screen and the page itself scrolls. */
+.neo-app { --neo-sidebar-width: 256px; display: flex; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; background: var(--neo-bg); }
 .neo-app.sidebar-collapsed { --neo-sidebar-width: 56px; }
 .neo-sidebar {
   position: relative;
@@ -528,7 +527,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   flex: 0 0 var(--neo-sidebar-width);
   flex-direction: column;
   width: var(--neo-sidebar-width);
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   overflow: hidden auto;
   border-right: 1px solid var(--neo-line);
   background: var(--neo-sidebar);
@@ -775,16 +774,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .sidebar-profile img { width: 100%; height: 100%; object-fit: cover; }
 .sidebar-profile:hover { border-color: var(--neo-green); color: var(--neo-green); }
 
-.neo-main, .project-page, .task-page, .notes-page, .files-page, .repos-page, .research-page {
+.neo-main, .project-page, .task-page, .files-page, .repos-page, .research-page {
   display: flex;
   min-width: 0;
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   flex: 1;
   flex-direction: column;
   overflow: hidden;
   background: var(--neo-bg);
 }
-.project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header {
+.project-page > header, .task-page > header, .files-page > header, .repos-page > header, .research-page > header {
   display: flex;
   min-height: 48px;
   align-items: center;
@@ -1312,7 +1311,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 @media (max-width: 800px) { .coding-agent-selectors { grid-template-columns:1fr 1fr; } }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: auto; background: var(--neo-shadow-a78); padding: 28px; }
-.neo-dialog { width: min(620px, 100%); max-height: calc(100vh - 56px); overflow: auto; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-bg); box-shadow: 0 24px 80px var(--neo-shadow-a70); padding: 0 24px 24px; }
+.neo-dialog { width: min(620px, 100%); max-height: calc(100vh - 56px); max-height: calc(100dvh - 56px); overflow: auto; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-bg); box-shadow: 0 24px 80px var(--neo-shadow-a70); padding: 0 24px 24px; }
 .neo-dialog-wide { width: min(1120px, 100%); }
 .dialog-title-row { position: sticky; top: 0; z-index: 4; display: flex; min-height: 48px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--neo-line); }
 .dialog-title-row h2 { margin: 0; color: var(--neo-text); font-size: 14px; font-weight: 600; }
@@ -1381,7 +1380,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 /* The Sort label stacks above its select (dialog-wide rule), so the bar aligns to the
    bottom edge and the buttons match the select's 34px height. */
 .memory-sort-bar .neo-button { min-height:34px; }
-.memory-scroll { display:grid; gap:12px; max-height:calc(100vh - 255px); overflow:auto; padding:14px 0 4px; }
+.memory-scroll { display:grid; gap:12px; max-height:calc(100vh - 255px); max-height:calc(100dvh - 255px); overflow:auto; padding:14px 0 4px; }
 .memory-card, .memory-item { border:1px solid var(--neo-line); background:var(--neo-panel); padding:14px; }
 .memory-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
 .memory-add-toggle { margin-left:auto; }
@@ -1398,9 +1397,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .memory-project-group h3 { margin:0; color:var(--neo-green); font:600 11px "JetBrains Mono", monospace; text-transform:uppercase; }
 
 /* Existing full-page workspaces retain their real controls but use the redesign's flat visual language. */
-.project-page, .task-page, .notes-page, .files-page, .repos-page, .research-page { padding-left: 0 !important; }
-.project-page > main, .task-page > main, .notes-page > main, .files-page > main, .repos-page > main, .research-page > main,
-.projects-layout, .tasks-layout, .notes-layout, .files-layout, .repos-layout, .research-layout, .calendar-layout { flex: 1; overflow: auto; padding: 24px 40px; }
+.project-page, .task-page, .files-page, .repos-page, .research-page { padding-left: 0 !important; }
+.project-page > main, .task-page > main, .files-page > main, .repos-page > main, .research-page > main,
+.projects-layout, .tasks-layout, .files-layout, .repos-layout, .research-layout, .calendar-layout { flex: 1; overflow: auto; padding: 24px 40px; }
 [class$="-toolbar"], [class$="-actions"] { gap: 8px; }
 [class$="-card"], [class$="-panel"], [class$="-item"] { border-color: var(--neo-line) !important; border-radius: 2px !important; box-shadow: none !important; }
 [class$="-card"], [class$="-panel"] { background: var(--neo-panel) !important; }
@@ -1410,7 +1409,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 [class$="-kicker"], [class$="-meta"], [class$="-status"], [class$="-help"] { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .feature-shell, .settings-shell, .tools-shell, .agentic-shell, .coding-shell { color: var(--neo-body); }
 
-.profile-picker { min-height: 100vh; display: grid; place-items: center; overflow: auto; background: var(--neo-bg); padding: 32px; }
+.profile-picker { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; overflow: auto; background: var(--neo-bg); padding: 32px; }
 .profile-picker-card { width: min(720px, 100%); border: 1px solid var(--neo-line-bright); border-radius: 2px; background: var(--neo-sidebar); padding: clamp(24px, 5vw, 44px); }
 .profile-kicker { margin: 0 0 8px; color: var(--neo-green); font: 600 10px "JetBrains Mono", monospace; letter-spacing: .12em; }
 .profile-picker-card h1, .profile-picker-card h2 { margin: 0; color: var(--neo-text); font-size: 24px; }
@@ -1441,29 +1440,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .profile-picker-error { border-left: 2px solid var(--neo-danger); background: var(--neo-danger-bg); padding: 10px; color: var(--neo-danger-text); font-size: 12px; }
 
 /* Data workspaces */
-.projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout {
+.projects-layout, .tasks-layout, .files-layout, .calendar-layout {
   display: grid;
   grid-template-columns: minmax(260px, 34%) minmax(0, 1fr);
   width: 100%;
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   flex: 1;
   overflow: hidden;
   padding: 0;
   background: var(--neo-bg);
 }
 .calendar-layout { grid-template-columns: minmax(430px, 58%) minmax(280px, 1fr); }
-.projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane, .calendar-grid-pane {
+.projects-list-pane, .tasks-list-pane, .files-list-pane, .calendar-grid-pane {
   min-width: 0;
   overflow: auto;
   border-right: 1px solid var(--neo-line);
   padding: 0 20px 24px;
 }
-.projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane, .calendar-detail-pane {
+.projects-editor-pane, .tasks-editor-pane, .files-detail-pane, .calendar-detail-pane {
   min-width: 0;
   overflow: auto;
   padding: 20px 28px 36px;
 }
-.projects-header, .tasks-pane-header, .notes-header, .files-header, .research-header, .repos-title-row {
+.projects-header, .tasks-pane-header, .files-header, .research-header, .repos-title-row {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -1477,18 +1476,18 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   background: var(--neo-bg);
   padding: 0 20px;
 }
-.projects-title, .notes-title, .files-header h2, .tasks-pane-header h2, .research-title, .repos-title-row h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+.projects-title, .files-header h2, .tasks-pane-header h2, .research-title, .repos-title-row h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
 .research-back { border: 0; background: transparent; padding: 0; color: var(--neo-fg-12); font: 10px "JetBrains Mono", monospace; }
 .research-back:hover { color: var(--neo-green); }
-.projects-new-btn, .notes-new-btn, .research-start-btn, .research-cancel-btn, .repos-register button:not(.neo-button), .files-detail-pane button:not(.neo-button) { min-height: 30px; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: transparent; padding: 0 10px; color: var(--neo-fg-8); font: 10px "JetBrains Mono", monospace; }
-.projects-new-btn:hover, .notes-new-btn:hover, .research-start-btn:hover { border-color: var(--neo-green); color: var(--neo-green); }
-.projects-search, .notes-search, .tasks-search, .files-list-pane > input:not([type="file"]), .files-list-pane > select { width: 100%; min-height: 32px; margin-bottom: 8px; padding: 6px 9px; }
-.projects-filters, .notes-filters, .tasks-filters, .repos-filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
-.projects-filters select, .notes-filters select, .tasks-filters select, .repos-filters input, .repos-filters select { min-height: 30px; min-width: 0; flex: 1; padding: 5px 7px; }
-.projects-archived-toggle, .notes-archived-toggle, .tasks-check { display: flex; align-items: center; gap: 6px; margin: 8px 0; color: var(--neo-fg-12); font: 10px "JetBrains Mono", monospace; }
-.projects-list-meta, .notes-list-meta { margin: 14px 0 7px; color: var(--neo-fg-14); font: 10px "JetBrains Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
-.projects-list, .notes-list, .tasks-list, .files-list { display: grid; gap: 2px; }
-.projects-item, .notes-item, .task-card, .files-list button, .repos-list button, .repo-file-list button {
+.projects-new-btn, .research-start-btn, .research-cancel-btn, .repos-register button:not(.neo-button), .files-detail-pane button:not(.neo-button) { min-height: 30px; border: 1px solid var(--neo-line-bright); border-radius: 2px; background: transparent; padding: 0 10px; color: var(--neo-fg-8); font: 10px "JetBrains Mono", monospace; }
+.projects-new-btn:hover, .research-start-btn:hover { border-color: var(--neo-green); color: var(--neo-green); }
+.projects-search, .tasks-search, .files-list-pane > input:not([type="file"]), .files-list-pane > select { width: 100%; min-height: 32px; margin-bottom: 8px; padding: 6px 9px; }
+.projects-filters, .tasks-filters, .repos-filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+.projects-filters select, .tasks-filters select, .repos-filters input, .repos-filters select { min-height: 30px; min-width: 0; flex: 1; padding: 5px 7px; }
+.projects-archived-toggle, .tasks-check { display: flex; align-items: center; gap: 6px; margin: 8px 0; color: var(--neo-fg-12); font: 10px "JetBrains Mono", monospace; }
+.projects-list-meta { margin: 14px 0 7px; color: var(--neo-fg-14); font: 10px "JetBrains Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
+.projects-list, .tasks-list, .files-list { display: grid; gap: 2px; }
+.projects-item, .task-card, .files-list button, .repos-list button, .repo-file-list button {
   display: grid;
   width: 100%;
   gap: 4px;
@@ -1500,30 +1499,30 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   color: var(--neo-fg-10);
   text-align: left;
 }
-.projects-item:hover, .notes-item:hover, .task-card:hover, .files-list button:hover, .repos-list button:hover, .repo-file-list button:hover { background: var(--neo-lift-a02); }
-.projects-item.active, .notes-item.active, .task-card.selected, .files-list button.selected, .repos-list button.selected { background: var(--neo-accent-a04); }
-.projects-item-title, .notes-item-title, .task-card-title, .files-list strong, .repos-list strong, .repo-file-list strong { color: var(--neo-fg-4); font-size: 12px; font-weight: 500; }
-.projects-item-preview, .notes-item-preview { overflow: hidden; color: var(--neo-fg-12); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.projects-item-meta, .notes-item-time, .task-card-meta, .files-list span, .files-list small, .repos-list span, .repos-list small, .repo-file-list span { color: var(--neo-fg-14); font: 9px "JetBrains Mono", monospace; }
-.projects-item-tags, .notes-item-tags, .task-tags { display: flex; flex-wrap: wrap; gap: 4px; color: var(--neo-fg-12); font: 9px "JetBrains Mono", monospace; }
-.projects-pin, .notes-pin { color: var(--neo-green); }
-.projects-empty, .notes-empty, .tasks-empty, .files-empty, .projects-editor-empty, .notes-editor-empty { display: grid; min-height: 160px; place-items: center; color: var(--neo-fg-14); font-size: 12px; text-align: center; }
-.projects-editor-toolbar, .notes-editor-toolbar, .task-actions, .files-detail-header, .repos-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
-.projects-save-state, .notes-save-state { color: var(--neo-fg-14); font: 9px "JetBrains Mono", monospace; }
-.projects-save-state.dirty, .notes-save-state.dirty { color: var(--neo-green); }
-.projects-danger-btn, .notes-danger-btn { border: 0; background: transparent; color: var(--neo-fg-12); font: 9px "JetBrains Mono", monospace; }
-.projects-danger-btn:hover, .notes-danger-btn:hover { color: var(--neo-danger); }
-.projects-title-input, .notes-title-input, .task-title-input { width: 100%; min-height: 42px; margin-bottom: 10px; background: transparent; padding: 7px 9px; color: var(--neo-text); font-size: 18px; }
-.projects-description-input, .notes-summary-input, .notes-body-input, .task-editor textarea, .agent-objective-input, .patch-proposal-form textarea { width: 100%; min-height: 90px; margin-bottom: 10px; padding: 10px; resize: vertical; }
+.projects-item:hover, .task-card:hover, .files-list button:hover, .repos-list button:hover, .repo-file-list button:hover { background: var(--neo-lift-a02); }
+.projects-item.active, .task-card.selected, .files-list button.selected, .repos-list button.selected { background: var(--neo-accent-a04); }
+.projects-item-title, .task-card-title, .files-list strong, .repos-list strong, .repo-file-list strong { color: var(--neo-fg-4); font-size: 12px; font-weight: 500; }
+.projects-item-preview { overflow: hidden; color: var(--neo-fg-12); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.projects-item-meta, .task-card-meta, .files-list span, .files-list small, .repos-list span, .repos-list small, .repo-file-list span { color: var(--neo-fg-14); font: 9px "JetBrains Mono", monospace; }
+.projects-item-tags, .task-tags { display: flex; flex-wrap: wrap; gap: 4px; color: var(--neo-fg-12); font: 9px "JetBrains Mono", monospace; }
+.projects-pin { color: var(--neo-green); }
+.projects-empty, .tasks-empty, .files-empty, .projects-editor-empty { display: grid; min-height: 160px; place-items: center; color: var(--neo-fg-14); font-size: 12px; text-align: center; }
+.projects-editor-toolbar, .task-actions, .files-detail-header, .repos-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.projects-save-state { color: var(--neo-fg-14); font: 9px "JetBrains Mono", monospace; }
+.projects-save-state.dirty { color: var(--neo-green); }
+.projects-danger-btn { border: 0; background: transparent; color: var(--neo-fg-12); font: 9px "JetBrains Mono", monospace; }
+.projects-danger-btn:hover { color: var(--neo-danger); }
+.projects-title-input, .task-title-input { width: 100%; min-height: 42px; margin-bottom: 10px; background: transparent; padding: 7px 9px; color: var(--neo-text); font-size: 18px; }
+.projects-description-input, .task-editor textarea, .agent-objective-input, .patch-proposal-form textarea { width: 100%; min-height: 90px; margin-bottom: 10px; padding: 10px; resize: vertical; }
 .projects-editor-grid, .task-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .projects-editor-grid label, .task-field-grid label, .task-editor > label { display: grid; gap: 5px; color: var(--neo-fg-12); font-size: 10px; }
-.projects-editor-grid input, .projects-editor-grid select, .task-field-grid input, .task-field-grid select, .projects-tags-input, .notes-tags-input { width: 100%; min-height: 34px; padding: 6px 8px; }
-.projects-linked-notes, .task-notes-section, .task-subtasks-section, .agent-runs-section, .notes-projects-box, .files-detail-pane > section { margin-top: 16px; border-top: 1px solid var(--neo-line); background: transparent !important; padding: 14px 0 0; }
-.projects-section-title, .task-section-title, .notes-projects-title { margin-bottom: 8px; color: var(--neo-fg-14); font: 600 10px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
-.projects-attach-row, .notes-projects-attach, .patch-proposal-form > div { display: flex; flex-wrap: wrap; gap: 7px; }
-.projects-attach-row select, .notes-projects-attach select, .patch-proposal-form select { min-height: 32px; flex: 1; padding: 5px 7px; }
+.projects-editor-grid input, .projects-editor-grid select, .task-field-grid input, .task-field-grid select, .projects-tags-input { width: 100%; min-height: 34px; padding: 6px 8px; }
+.projects-linked-notes, .task-notes-section, .task-subtasks-section, .agent-runs-section, .files-detail-pane > section { margin-top: 16px; border-top: 1px solid var(--neo-line); background: transparent !important; padding: 14px 0 0; }
+.projects-section-title, .task-section-title { margin-bottom: 8px; color: var(--neo-fg-14); font: 600 10px "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase; }
+.projects-attach-row, .patch-proposal-form > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.projects-attach-row select, .patch-proposal-form select { min-height: 32px; flex: 1; padding: 5px 7px; }
 .projects-linked-note, .task-linked-row, .agent-step { border-bottom: 1px solid var(--neo-panel-raised); padding: 9px 0; color: var(--neo-fg-10); font-size: 11px; }
-.projects-error, .notes-error, .task-error, .research-error { margin-top: 10px; border-left: 2px solid var(--neo-danger); background: var(--neo-danger-bg); padding: 9px; color: var(--neo-danger-text); font-size: 11px; }
+.projects-error, .task-error, .research-error { margin-top: 10px; border-left: 2px solid var(--neo-danger); background: var(--neo-danger-bg); padding: 9px; color: var(--neo-danger-text); font-size: 11px; }
 .task-editor { display: grid; gap: 10px; }
 .task-status, .task-priority, .agent-status, .research-status-badge { color: var(--neo-green); font: 9px "JetBrains Mono", monospace; text-transform: uppercase; }
 .task-help { color: var(--neo-fg-14); font: 10px/1.5 "JetBrains Mono", monospace; }
@@ -1623,7 +1622,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .calendar-event-pill { font-size: 8.5px; }
 }
 
-.research-layout { display: grid; grid-template-columns: minmax(0,1fr) 280px; width: 100%; height: 100vh; overflow: hidden; padding: 0; }
+.research-layout { display: grid; grid-template-columns: minmax(0,1fr) 280px; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; padding: 0; }
 .research-main { min-width: 0; overflow: auto; padding: 0 32px 32px; }
 .research-header { margin: 0 -32px 16px; padding: 0 32px; }
 .research-input-area { display: grid; gap: 8px; }
@@ -1639,7 +1638,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .research-report { margin-top: 18px; }
 .research-report-body { color: var(--neo-fg-4); font-size: 13px; line-height: 1.65; }
 
-.repos-layout { width: 100%; height: 100vh; overflow: auto; padding: 0 32px 36px; }
+.repos-layout { width: 100%; height: 100vh; height: 100dvh; overflow: auto; padding: 0 32px 36px; }
 .repos-title-row { margin: 0 -32px 16px; padding: 0 32px; }
 .repos-register form { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 8px; align-items: center; }
 .repos-register input, .repos-register select { min-height: 34px; padding: 6px 8px; }
@@ -1660,9 +1659,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .neo-app { --neo-sidebar-width: 220px; }
   .neo-app.sidebar-collapsed { --neo-sidebar-width: 56px; }
   .chat-input-wrap { padding-right: 22px; padding-left: 22px; }
-  .neo-shell, .project-page > header, .task-page > header, .notes-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
+  .neo-shell, .project-page > header, .task-page > header, .files-page > header, .repos-page > header, .research-page > header { padding-right: 22px; padding-left: 22px; }
   .settings-menu, .llm-settings-layout, .agent-settings-grid, .tools-settings-grid { grid-template-columns: 1fr; }
-  .projects-layout, .tasks-layout, .notes-layout, .files-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
+  .projects-layout, .tasks-layout, .files-layout { grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
   .research-layout { grid-template-columns: 1fr; overflow: auto; }
   .research-sidebar { border-top: 1px solid var(--neo-line); border-left: 0; }
   .repos-browser { grid-template-columns: 1fr; }
@@ -1671,12 +1670,73 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .repos-register form { grid-template-columns: 1fr 1fr; }
 }
 
+/* A phone (MobileShell.jsx): a bar on top, the screen under it at full height,
+   and the whole sidebar as a drawer from the left. Every screen keeps its own
+   layout below; only its height comes from here. */
+.neo-mobile-bar, .neo-nav-scrim { display: none; }
+/* The palette from the sidebar, for touch screens wide enough to keep the
+   sidebar (tablets): with no keyboard, it is the way to Tasks and the rest. */
+.sidebar-palette-button { display: none; }
+@media (pointer: coarse) and (min-width: 641px), (hover: none) and (min-width: 641px) {
+  .sidebar-palette-button {
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--neo-fg-9);
+  }
+  .neo-sidebar-rail .sidebar-palette-button { margin-left: 0; }
+  .sidebar-palette-button svg { width: 20px; height: 20px; }
+}
+@media (max-width: 640px) and (prefers-reduced-motion: reduce) { .neo-app > .neo-sidebar, .neo-app.nav-open > .neo-sidebar { transition: none; } }
 @media (max-width: 640px) {
-  .neo-app { display: block; overflow: auto; }
-  .neo-sidebar { position: relative; width: 100%; height: auto; max-height: 44vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
-  .sidebar-brand { padding: 16px; }
-  .sidebar-spacer, .system-nav, .sidebar-footer, .sidebar-section:has(+ .system-nav) { display: none; }
-  .neo-main, .project-page, .task-page, .notes-page, .files-page, .repos-page, .research-page { height: 56vh; }
+  .neo-app { flex-direction: column; height: 100vh; height: 100dvh; }
+  .neo-mobile-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    min-height: 48px;
+    padding: env(safe-area-inset-top, 0px) 8px 0 max(4px, env(safe-area-inset-left, 0px));
+    border-bottom: 1px solid var(--neo-line);
+    background: var(--neo-sidebar);
+  }
+  .neo-mobile-menu {
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--neo-fg-9);
+  }
+  .neo-mobile-menu svg { width: 22px; height: 22px; }
+  .neo-mobile-title { flex: 1; min-width: 0; overflow: hidden; margin: 0; color: var(--neo-text); font-size: 15px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+  .neo-app > :not(.neo-sidebar):not(.neo-mobile-bar):not(.neo-nav-scrim) { flex: 1 1 auto; height: auto; min-height: 0; }
+  .neo-app > .neo-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 70;
+    width: min(320px, 86vw);
+    height: auto;
+    max-height: none;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 0 40px var(--neo-shadow-a50);
+    transform: translateX(-102%);
+    visibility: hidden;
+    transition: transform 200ms ease, visibility 0s linear 200ms;
+  }
+  .neo-app.nav-open > .neo-sidebar { transform: none; visibility: visible; transition: transform 200ms ease; }
+  .neo-nav-scrim { display: block; position: fixed; inset: 0; z-index: 69; border: 0; background: var(--neo-scrim-a70); }
+  .sidebar-collapse-button { min-width: 44px; min-height: 44px; }
   .neo-shell { padding: 18px 16px 150px; }
   .chat-input-wrap { right: 0; bottom: 0; left: 0; padding: 16px 12px 8px; }
   .chat-input-shell { border-radius: 20px; padding: 14px 14px 12px; }
@@ -1684,588 +1744,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .modal-backdrop { padding: 10px; }
   .neo-dialog { max-height: calc(100vh - 20px); padding: 0 16px 18px; }
   .profile-picker { padding: 16px; }
-  .projects-layout, .tasks-layout, .notes-layout, .files-layout, .calendar-layout { display: block; height: auto; min-height: 56vh; overflow: auto; }
-  .projects-list-pane, .tasks-list-pane, .notes-list-pane, .files-list-pane { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
+  .projects-layout, .tasks-layout, .files-layout, .calendar-layout { display: block; height: auto; min-height: 56vh; overflow: auto; }
+  .projects-list-pane, .tasks-list-pane, .files-list-pane { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--neo-line); }
   .calendar-grid-pane { max-height: none; border-right: 0; border-bottom: 1px solid var(--neo-line); }
-  .projects-editor-pane, .tasks-editor-pane, .notes-editor-pane, .files-detail-pane, .calendar-detail-pane { min-height: 320px; }
+  .projects-editor-pane, .tasks-editor-pane, .files-detail-pane, .calendar-detail-pane { min-height: 320px; }
   .repos-register form { grid-template-columns: 1fr; }
   .projects-editor-grid, .task-field-grid { grid-template-columns: 1fr; }
-}
-
-/* ---------------------------------------------------------------------------
-   Notes workspace (.nw-*). Self-contained so the shared .notes-* rules above
-   keep serving Projects, Tasks and Files unchanged.
-
-   Three zones: a rail that narrows, a page that is written on, and a panel for
-   everything that is *about* the note rather than *in* it. The editor chrome is
-   deliberately quiet -- one accent, one weight of border -- because the words
-   are the only thing on this screen that should draw the eye.
-   --------------------------------------------------------------------------- */
-.nw {
-  --nw-rail: 304px;
-  --nw-edge: var(--neo-line);
-  --nw-edge-lit: var(--neo-line-bright);
-  display: grid;
-  grid-template-columns: var(--nw-rail) minmax(0, 1fr);
-  width: 100%;
-  height: 100vh;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  background: var(--neo-bg);
-}
-
-/* --- rail ---------------------------------------------------------------- */
-.nw-rail {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border-right: 1px solid var(--nw-edge);
-  background: var(--neo-sidebar);
-}
-.nw-rail-head { padding: 20px 16px 0; }
-.nw-rail-top { display: flex; align-items: center; margin-bottom: 16px; }
-.nw-rail-count { color: var(--neo-faint); font: 10px "JetBrains Mono", monospace; letter-spacing: .06em; }
-.nw-rail-title { margin: 0 0 14px; color: var(--neo-text); font-size: 22px; font-weight: 600; letter-spacing: -.025em; }
-.nw-new {
-  display: flex;
-  width: 100%;
-  min-height: 36px;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--neo-accent-a28);
-  border-radius: 5px;
-  background: var(--neo-accent-a08);
-  padding: 0 12px;
-  color: var(--neo-green);
-  font: 600 11px "JetBrains Mono", monospace;
-  letter-spacing: .05em;
-  transition: background .12s ease, border-color .12s ease;
-}
-.nw-new:hover { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
-.nw-new kbd {
-  margin-left: auto;
-  border-radius: 3px;
-  background: var(--neo-accent-a10);
-  padding: 1px 5px;
-  color: var(--neo-accent-a60);
-  font: 9.5px "JetBrains Mono", monospace;
-}
-
-.nw-filters { display: grid; gap: 10px; padding: 16px 16px 12px; }
-.nw-search { position: relative; display: flex; align-items: center; }
-.nw-search > .ws-icon { position: absolute; left: 10px; color: var(--neo-fg-13); pointer-events: none; }
-.nw .nw-search input {
-  width: 100%;
-  min-height: 34px;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 5px;
-  background: var(--neo-panel);
-  padding: 6px 30px 6px 30px;
-  font-size: 12.5px;
-}
-.nw-search-clear {
-  position: absolute;
-  right: 6px;
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  padding: 0;
-  color: var(--neo-fg-12);
-}
-.nw-search-clear:hover { background: var(--neo-lift-a06); color: var(--neo-danger); }
-.nw-kbd {
-  position: absolute;
-  right: 9px;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 3px;
-  padding: 0 5px;
-  color: var(--neo-fg-14);
-  font: 10px "JetBrains Mono", monospace;
-  pointer-events: none;
-}
-
-.nw-tagbar { display: flex; flex-wrap: wrap; gap: 4px; }
-.nw-tagchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid transparent;
-  border-radius: 20px;
-  background: var(--neo-lift-a04);
-  padding: 3px 9px;
-  color: var(--neo-fg-10);
-  font-size: 11px;
-  transition: background .12s ease, color .12s ease, border-color .12s ease;
-}
-.nw-tagchip:hover { background: var(--neo-lift-a08); color: var(--neo-fg-5); transition-duration: 0s; }
-.nw-tagchip em { color: var(--neo-fg-13); font: 9.5px "JetBrains Mono", monospace; font-style: normal; }
-.nw-tagchip.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
-.nw-tagchip.on em { color: var(--neo-accent-a60); }
-
-.nw-toggle {
-  display: flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 5px;
-  background: transparent;
-  padding: 0 10px;
-  color: var(--neo-fg-11);
-  font-size: 11px;
-  transition: border-color .12s ease, background .12s ease, color .12s ease;
-}
-.nw-toggle:hover { color: var(--neo-fg-7); transition-duration: 0s; }
-.nw-toggle.on { border-color: var(--neo-accent-a35); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
-
-/* --- rows ---------------------------------------------------------------- */
-.nw-list { display: grid; align-content: start; gap: 2px; overflow-y: auto; padding: 4px 10px 28px; }
-.nw-group {
-  margin: 12px 0 4px;
-  padding: 0 8px;
-  color: var(--neo-fg-13);
-  font: 600 9.5px "JetBrains Mono", monospace;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-}
-.nw-group:first-child { margin-top: 2px; }
-.nw-row {
-  position: relative;
-  display: grid;
-  width: 100%;
-  gap: 5px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  padding: 10px 11px;
-  color: inherit;
-  text-align: left;
-  transition: background .12s ease, border-color .12s ease;
-}
-.nw-row::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  border-radius: 2px;
-  background: transparent;
-  transition: background .12s ease;
-}
-.nw-row:hover { background: var(--neo-lift-a03); transition-duration: 0s; }
-.nw-row.active { border-color: var(--neo-accent-a20); background: var(--neo-accent-a06); transition-duration: 0s; }
-.nw-row.active::before { background: var(--neo-green); transition-duration: 0s; }
-.nw-row.archived { opacity: .5; }
-.nw-row-head { display: flex; min-width: 0; align-items: center; gap: 6px; }
-.nw-row-pin { width: 11px; height: 11px; color: var(--neo-green); }
-.nw-row-title {
-  overflow: hidden;
-  flex: 1;
-  color: var(--neo-fg-4);
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: -.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.nw-row.active .nw-row-title { color: var(--neo-fg-1); }
-.nw-row-time { flex: 0 0 auto; color: var(--neo-faint); font: 9.5px "JetBrains Mono", monospace; }
-.nw-row-excerpt {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  color: var(--neo-fg-11);
-  font-size: 11.5px;
-  line-height: 1.55;
-}
-.nw-row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.nw-row-more { color: var(--neo-faint); font: 9.5px "JetBrains Mono", monospace; }
-
-.nw-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 20px;
-  padding: 2px 8px;
-  color: var(--neo-fg-9);
-  font-size: 11px;
-}
-.nw-chip.small { border-color: transparent; background: var(--neo-lift-a05); padding: 1px 7px; font-size: 10px; }
-.nw-chip button { border: 0; background: transparent; padding: 0; color: var(--neo-fg-12); font-size: 13px; line-height: 1; }
-.nw-chip button:hover { color: var(--neo-danger); }
-
-.nw-list-empty { display: grid; justify-items: center; gap: 8px; padding: 56px 12px; color: var(--neo-fg-13); font-size: 12px; text-align: center; }
-.nw-list-empty p { margin: 0; }
-.nw-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  color: var(--neo-green);
-  font: 10.5px "JetBrains Mono", monospace;
-  text-decoration: none;
-}
-.nw-link:hover { text-decoration: underline; text-underline-offset: 2px; }
-
-/* --- main ---------------------------------------------------------------- */
-.nw-main { display: flex; min-width: 0; flex-direction: column; overflow: hidden; }
-.nw-blank { display: grid; height: 100%; align-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; }
-.nw-blank-mark {
-  display: grid;
-  width: 52px;
-  height: 52px;
-  place-items: center;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 12px;
-  background: var(--neo-panel);
-  color: var(--neo-fg-14);
-}
-.nw-blank-mark .ws-icon { width: 22px; height: 22px; }
-.nw-blank h2 { margin: 4px 0 0; color: var(--neo-fg-8); font-size: 16px; font-weight: 600; }
-.nw-blank p { margin: 0; max-width: 360px; color: var(--neo-fg-13); font-size: 12.5px; line-height: 1.6; }
-.nw-blank .nw-new { width: auto; margin-top: 8px; padding: 0 18px; }
-.nw-blank .nw-new kbd { display: none; }
-
-.nw-toolbar {
-  display: flex;
-  min-height: 48px;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  border-bottom: 1px solid var(--nw-edge);
-  padding: 8px 22px;
-}
-.nw-toolbar-state { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
-.nw-toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
-.nw-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--neo-success-deep); }
-.nw-dot.dirty { background: var(--neo-warn-text); box-shadow: 0 0 6px var(--neo-warn-a50); }
-.nw-dot.busy { background: var(--neo-green); animation: nw-pulse 1s ease-in-out infinite; }
-@keyframes nw-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-.nw-state-text { color: var(--neo-fg-9); font: 10.5px "JetBrains Mono", monospace; }
-.nw-meta { color: var(--neo-faint); font-size: 11px; white-space: nowrap; }
-.nw-badge {
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 20px;
-  padding: 2px 8px;
-  color: var(--neo-fg-11);
-  font: 9.5px "JetBrains Mono", monospace;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.nw-badge.accent { border-color: var(--neo-accent-a28); color: var(--neo-green); }
-
-.nw-segment { display: flex; overflow: hidden; border: 1px solid var(--nw-edge-lit); border-radius: 5px; }
-.nw-segment button {
-  display: flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 5px;
-  border: 0;
-  background: transparent;
-  padding: 0 10px;
-  color: var(--neo-fg-11);
-  font-size: 11px;
-  transition: background .12s ease, color .12s ease;
-}
-.nw-segment button + button { border-left: 1px solid var(--nw-edge-lit); }
-.nw-segment button:hover { background: var(--neo-lift-a04); color: var(--neo-fg-6); transition-duration: 0s; }
-.nw-segment button.on { background: var(--neo-accent-a10); color: var(--neo-green); transition-duration: 0s; }
-
-.nw-action {
-  display: flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  padding: 0 9px;
-  color: var(--neo-fg-10);
-  font-size: 11px;
-  white-space: nowrap;
-  transition: border-color .12s ease, background .12s ease, color .12s ease;
-}
-.nw-action:hover { border-color: var(--nw-edge-lit); background: var(--neo-lift-a03); color: var(--neo-fg-4); transition-duration: 0s; }
-.nw-action.on { border-color: var(--neo-accent-a28); background: var(--neo-accent-a08); color: var(--neo-green); transition-duration: 0s; }
-.nw-action.icon { width: 28px; justify-content: center; padding: 0; }
-.nw-action.danger:hover { border-color: var(--neo-danger-a40); color: var(--neo-danger); transition-duration: 0s; }
-.nw-action.danger.on { border-color: var(--neo-danger-a50); background: var(--neo-danger-a12); color: var(--neo-danger-bright); transition-duration: 0s; }
-
-.nw-save {
-  min-height: 28px;
-  border: 1px solid var(--neo-accent-a32);
-  border-radius: 5px;
-  background: var(--neo-accent-a08);
-  padding: 0 15px;
-  color: var(--neo-green);
-  font: 600 10.5px "JetBrains Mono", monospace;
-  letter-spacing: .06em;
-  white-space: nowrap;
-  transition: background .12s ease, border-color .12s ease;
-}
-.nw-save:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
-.nw-save:disabled { border-color: var(--nw-edge-lit); background: transparent; color: var(--neo-fg-14); opacity: 1; }
-
-.nw-menu-wrap { position: relative; }
-.nw-menu-scrim { position: fixed; inset: 0; z-index: 40; border: 0; background: transparent; padding: 0; }
-.nw-menu {
-  position: absolute;
-  z-index: 41;
-  top: calc(100% + 6px);
-  right: 0;
-  display: grid;
-  min-width: 178px;
-  gap: 1px;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 8px;
-  background: var(--neo-panel-raised);
-  padding: 5px;
-  box-shadow: 0 12px 32px var(--neo-shadow-a60);
-}
-.nw-menu button {
-  display: flex;
-  min-height: 30px;
-  align-items: center;
-  gap: 9px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  padding: 0 9px;
-  color: var(--neo-fg-6);
-  font-size: 12px;
-  text-align: left;
-}
-.nw-menu button:hover { background: var(--neo-lift-a06); color: var(--neo-fg-1); }
-.nw-menu button.danger { color: var(--neo-danger-dim); }
-.nw-menu button.danger:hover { background: var(--neo-danger-a12); color: var(--neo-danger-bright); }
-
-.nw-confirm {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border-bottom: 1px solid var(--neo-danger-a24);
-  background: var(--neo-danger-a08);
-  padding: 10px 22px;
-  color: var(--neo-danger-soft);
-  font-size: 12px;
-}
-.nw-confirm .ws-icon { color: var(--neo-danger); }
-.nw-confirm span { flex: 1; }
-
-/* --- document ------------------------------------------------------------ */
-.nw-stage { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
-.nw-stage.with-details { grid-template-columns: minmax(0, 1fr) 296px; }
-.nw-doc { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 28px 24px 20px; }
-.nw-doc > * { width: 100%; max-width: 800px; margin-right: auto; margin-left: auto; }
-.nw-doc.view-split > * { max-width: 1280px; }
-
-.nw-source { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; color: var(--neo-fg-11); font-size: 11.5px; }
-.nw-doc-head { margin-bottom: 14px; }
-.nw input.nw-title-input,
-.nw input.nw-summary-input,
-.nw input.nw-tag-input {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-}
-.nw input.nw-title-input:focus,
-.nw input.nw-summary-input:focus,
-.nw input.nw-tag-input:focus { border: 0; }
-.nw input.nw-title-input {
-  width: 100%;
-  margin-bottom: 8px;
-  color: var(--neo-text);
-  font-size: 27px;
-  font-weight: 600;
-  letter-spacing: -.03em;
-  line-height: 1.2;
-}
-.nw input.nw-title-input::placeholder { color: var(--neo-fg-15); }
-.nw input.nw-summary-input {
-  width: 100%;
-  margin-bottom: 12px;
-  color: var(--neo-fg-9);
-  font-size: 14px;
-  line-height: 1.5;
-}
-.nw input.nw-summary-input::placeholder { color: var(--neo-fg-14); }
-.nw-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 10px; border-top: 1px solid var(--nw-edge); }
-.nw-tags-icon { color: var(--neo-fg-14); }
-.nw input.nw-tag-input { min-width: 90px; flex: 1; color: var(--neo-fg-7); font-size: 11.5px; }
-.nw input.nw-tag-input::placeholder { color: var(--neo-fg-14); }
-
-.nw-panes { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr); }
-.nw-doc.view-split .nw-panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; }
-.nw textarea.nw-body-input {
-  min-height: 0;
-  border: 0;
-  border-top: 1px solid var(--nw-edge);
-  border-radius: 0;
-  background: transparent;
-  padding: 18px 0 24px;
-  color: var(--neo-fg-3);
-  font-size: 15px;
-  line-height: 1.78;
-  resize: none;
-  overflow-y: auto;
-}
-.nw textarea.nw-body-input:focus { border-top-color: var(--nw-edge-lit); }
-.nw textarea.nw-body-input::placeholder { color: var(--neo-fg-15); }
-.nw-doc.view-split textarea.nw-body-input { border-right: 1px solid var(--nw-edge); padding-right: 26px; margin-right: -26px; }
-
-.nw-preview { min-height: 0; overflow-y: auto; border-top: 1px solid var(--nw-edge); padding: 18px 0 24px; }
-.nw-preview-empty { color: var(--neo-fg-14); font-size: 13px; }
-.nw-preview-body { color: var(--neo-fg-3); font-size: 15px; line-height: 1.78; }
-.nw-preview-body h1, .nw-preview-body h2, .nw-preview-body h3,
-.nw-preview-body h4, .nw-preview-body h5, .nw-preview-body h6 {
-  margin: 26px 0 10px;
-  color: var(--neo-text);
-  font-weight: 600;
-  letter-spacing: -.02em;
-}
-.nw-preview-body h1 { font-size: 21px; }
-.nw-preview-body h2 { font-size: 18px; }
-.nw-preview-body h3 { font-size: 15.5px; }
-.nw-preview-body h4, .nw-preview-body h5, .nw-preview-body h6 { font-size: 13.5px; }
-.nw-preview-body > *:first-child { margin-top: 0; }
-.nw-preview-body p { margin: 0 0 14px; white-space: pre-wrap; }
-.nw-preview-body ul, .nw-preview-body ol { margin: 0 0 14px; padding-left: 22px; }
-.nw-preview-body ul { list-style: disc; }
-.nw-preview-body ol { list-style: decimal; }
-.nw-preview-body li::marker { color: var(--neo-fg-12); }
-.nw-preview-body li { margin-bottom: 6px; }
-.nw-preview-body blockquote {
-  margin: 0 0 14px;
-  border-left: 2px solid var(--neo-line-bright);
-  padding: 2px 0 2px 14px;
-  color: var(--neo-fg-8);
-}
-.nw-preview-body hr { border: 0; border-top: 1px solid var(--nw-edge); margin: 22px 0; }
-.nw-preview-body a { color: var(--neo-green); text-decoration: underline; text-underline-offset: 2px; }
-.nw-preview-body code { border-radius: 3px; background: var(--neo-lift-a06); padding: 1px 5px; font: 12.5px "JetBrains Mono", monospace; }
-.nw-preview-body pre {
-  overflow-x: auto;
-  margin: 0 0 14px;
-  border: 1px solid var(--nw-edge);
-  border-radius: 6px;
-  background: var(--neo-panel);
-  padding: 12px 14px;
-}
-.nw-preview-body pre code { background: transparent; padding: 0; font-size: 12.5px; line-height: 1.65; }
-.nw-preview-body table { width: 100%; border-collapse: collapse; margin: 0 0 14px; font-size: 13px; }
-.nw-preview-body th, .nw-preview-body td { border: 1px solid var(--nw-edge); padding: 7px 10px; text-align: left; }
-.nw-preview-body th { background: var(--neo-lift-a03); color: var(--neo-fg-6); font-weight: 600; }
-
-.nw-error {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 12px;
-  border: 1px solid var(--neo-danger-a28);
-  border-radius: 6px;
-  background: var(--neo-danger-a08);
-  padding: 10px 12px;
-  color: var(--neo-danger-text);
-  font-size: 12px;
-}
-
-/* --- links panel --------------------------------------------------------- */
-.nw-detail { overflow-y: auto; border-left: 1px solid var(--nw-edge); background: var(--neo-sidebar); padding: 16px 16px 24px; }
-.nw-detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
-.nw-detail-head h2 { margin: 0; color: var(--neo-text); font-size: 13px; font-weight: 600; }
-.nw-detail-head button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 4px; background: transparent; padding: 0; color: var(--neo-fg-12); }
-.nw-detail-head button:hover { background: var(--neo-lift-a06); color: var(--neo-fg-4); }
-.nw-detail > section, .nw-detail .file-attachments { margin-bottom: 22px; }
-.nw-detail h3, .nw-detail .file-attachments-title {
-  margin: 0 0 9px;
-  color: var(--neo-fg-13);
-  font: 600 9.5px "JetBrains Mono", monospace;
-  letter-spacing: .13em;
-  text-transform: uppercase;
-}
-.nw-detail-empty, .nw-detail .task-help { margin: 0 0 9px; color: var(--neo-fg-14); font-size: 11.5px; }
-.nw-detail-list { display: grid; gap: 4px; margin-bottom: 9px; }
-.nw-detail-list span, .nw-detail-list button, .nw-detail .file-attachment-list button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--nw-edge);
-  border-radius: 6px;
-  background: var(--neo-panel);
-  padding: 8px 10px;
-  color: var(--neo-fg-7);
-  font-size: 11.5px;
-  text-align: left;
-}
-.nw-detail-list button:hover, .nw-detail .file-attachment-list button:hover { border-color: var(--neo-accent-a28); color: var(--neo-fg-3); }
-.nw-detail-list em, .nw-detail .file-attachment-list span {
-  margin-left: auto;
-  color: var(--neo-faint);
-  font: 9.5px "JetBrains Mono", monospace;
-  font-style: normal;
-  white-space: nowrap;
-}
-.nw-detail .file-attachment-list { display: grid; gap: 4px; margin-bottom: 9px; }
-.nw-detail .file-attachment-list strong { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.nw-detail-attach, .nw-detail .file-attachments-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; }
-.nw-detail .file-attachments-actions { grid-template-columns: minmax(0, 1fr); }
-.nw-detail .file-attachments-actions > button:first-of-type { grid-column: 1 / -1; }
-.nw .nw-detail-attach select, .nw .nw-detail .file-attachments-actions select {
-  min-width: 0;
-  min-height: 30px;
-  border-radius: 5px;
-  padding: 4px 7px;
-  font-size: 11.5px;
-}
-.nw-detail-attach button, .nw-detail .file-attachments-actions button {
-  min-height: 30px;
-  border: 1px solid var(--nw-edge-lit);
-  border-radius: 5px;
-  background: transparent;
-  padding: 0 12px;
-  color: var(--neo-fg-10);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.nw-detail-attach button:hover:not(:disabled), .nw-detail .file-attachments-actions button:hover:not(:disabled) {
-  border-color: var(--neo-accent-a40);
-  color: var(--neo-green);
-}
-.nw-detail .task-error { margin-top: 8px; color: var(--neo-danger-text); font-size: 11px; }
-
-@media (max-width: 1240px) {
-  .nw-doc.view-split .nw-panes { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .nw-doc.view-split textarea.nw-body-input { border-right: 0; padding-right: 0; margin-right: 0; }
-}
-@media (max-width: 1100px) {
-  .nw-stage.with-details { grid-template-columns: minmax(0, 1fr) 256px; }
-  .nw-toolbar .nw-meta { display: none; }
-}
-@media (max-width: 900px) {
-  .nw { grid-template-columns: 256px minmax(0, 1fr); }
-  .nw-stage.with-details { grid-template-columns: minmax(0, 1fr); }
-  .nw-detail { display: none; }
-}
-@media (max-width: 640px) {
-  .nw { display: block; height: auto; min-height: 56vh; overflow: auto; }
-  .nw-rail { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--nw-edge); }
-  .nw-main { min-height: 420px; }
-  .nw-doc { padding: 20px 16px; }
-  .nw-toolbar, .nw-confirm { padding-right: 16px; padding-left: 16px; }
 }
 
 /* ===========================================================================
@@ -2278,7 +1762,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   width: 100%;
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -3870,7 +3354,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   width: 100%;
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -4340,7 +3824,7 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
   width: 100%;
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   flex: 1;
   min-width: 0;
   overflow: hidden;

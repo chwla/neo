@@ -42,6 +42,12 @@
  *   touchPress, tapPress       finger presses: raw touch events, a tap gesture
  *   visual                     class tokens and screenshots per screen
  *   longTasks                  long tasks and frames over a sweep, a panel, typing
+ *   notesTyping, notesOpen,    Notes: keystroke cost on a 20 KB note, row highlight
+ *   notesRace, notesSave,      behind a held reply, out-of-order opens, typing during
+ *   notesSwitchSave,           held and failed saves, switching right after typing,
+ *   notesMetaRace,             pin, move and archive while typing with replies held,
+ *   notesOffline, notesCrash,  recovery after offline reloads and a crashed tab, and
+ *   notesConflict              two tabs editing one note (seeds BENCH_NOTES, 40)
  *
  * The account-profile it creates is deleted through the API when the run ends,
  * whether it passed or failed. Its credentials sit in BENCH_STATE (default
@@ -372,14 +378,25 @@ function createInterceptor(cdp) {
   };
   cdp.on("Network.loadingFinished", ({ requestId }) => finish(requestId, "ok"));
   cdp.on("Network.loadingFailed", ({ requestId, canceled }) => finish(requestId, canceled ? "canceled" : "failed"));
-  cdp.on("Fetch.requestPaused", async ({ requestId, request, networkId }) => {
+  cdp.on("Fetch.requestPaused", async ({ requestId, request, networkId, responseStatusCode, responseErrorReason }) => {
     const { pathname } = new URL(request.url);
+    // A rule with stage "Response" holds the reply after the server has acted,
+    // which is how a slow network delivers replies out of order.
+    const stage = responseStatusCode !== undefined || responseErrorReason !== undefined ? "Response" : "Request";
     let rule = null;
     for (const candidate of rules) {
+      if ((candidate.stage ?? "Request") !== stage) continue;
       if ((candidate.method && candidate.method !== request.method) || !candidate.path.test(pathname)) continue;
       const seen = (counts.get(candidate) || 0) + 1;
       counts.set(candidate, seen);
       if (!rule && (!candidate.nth || candidate.nth === seen)) rule = candidate;
+    }
+    if (stage === "Response") {
+      try {
+        if (rule?.delayMs) await sleep(rule.delayMs);
+        await cdp.send("Fetch.continueResponse", { requestId });
+      } catch { /* the page navigated away, or the request was cancelled */ }
+      return;
     }
     const entry = { method: request.method, path: pathname, start: Date.now(), end: null, outcome: null, rule: Boolean(rule) };
     log.push(entry);
@@ -394,7 +411,9 @@ function createInterceptor(cdp) {
     async set(next) {
       rules = next;
       counts.clear();
-      if (next.length) await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*/api/*", requestStage: "Request" }] });
+      const patterns = [{ urlPattern: "*/api/*", requestStage: "Request" }];
+      if (next.some((rule) => rule.stage === "Response")) patterns.push({ urlPattern: "*/api/*", requestStage: "Response" });
+      if (next.length) await cdp.send("Fetch.enable", { patterns });
       else await cdp.send("Fetch.disable");
     },
     log,
@@ -1281,6 +1300,447 @@ async function scenarioSend(cdp) {
 const STATE = process.env.BENCH_STATE || join(tmpdir(), "neo-interaction-profile.json");
 
 //: Deleted from Node, not from the page: it has to work when the browser is gone.
+/* ------------------------------------------------------ notes scenarios -- */
+
+//: Notes scenarios seed their own notes (BENCH_NOTES, default 40 when any runs).
+const NOTES_SCENARIOS = new Set(["notesTyping", "notesOpen", "notesRace", "notesSave", "notesSwitchSave", "notesMetaRace", "notesOffline", "notesCrash", "notesConflict"]);
+
+async function waitUntil(cdp, expression, timeoutMs = 10_000) {
+  const begun = Date.now();
+  while (Date.now() - begun < timeoutMs) {
+    try { if (await evaluate(cdp, expression)) return true; } catch { /* navigating */ }
+    await sleep(120);
+  }
+  return false;
+}
+
+async function openNotesView(cdp) {
+  if (await evaluate(cdp, `document.querySelectorAll(".nw-row[data-note-id]").length >= 5`)) return;
+  const index = await evaluate(cdp, `[...document.querySelectorAll(".system-nav button")].findIndex((b) => /Notes/.test(b.textContent))`);
+  if (index < 0) throw new Error("Notes is hidden in this profile");
+  await click(cdp, await centerOf(cdp, ".system-nav button", index));
+  if (!await waitUntil(cdp, `document.querySelectorAll(".nw-row[data-note-id]").length >= 5`, 20_000)) {
+    throw new Error("Notes never listed the seeded notes");
+  }
+}
+
+async function noteRows(cdp) {
+  return evaluate(cdp, `[...document.querySelectorAll(".nw-row[data-note-id]")].map((row) => ({
+    id: row.dataset.noteId, title: row.querySelector(".nw-row-title").textContent.trim(),
+    selected: row.classList.contains("selected"),
+  }))`);
+}
+
+const SHOWS = (title) => `document.querySelector(".nw-prose h1")?.textContent.trim() === ${JSON.stringify(title)}`;
+const SEEDED_NOTE_TITLE = /^Bench note \d{3}$/;
+
+async function openNoteRow(cdp, row) {
+  await click(cdp, await centerOf(cdp, `.nw-row[data-note-id="${row.id}"]`));
+  if (!await waitUntil(cdp, SHOWS(row.title), 10_000)) {
+    const shows = await evaluate(cdp, `({ h1: document.querySelector(".nw-prose h1")?.textContent || null,
+      first: document.querySelector(".nw-prose")?.firstElementChild?.outerHTML.slice(0, 200) || null,
+      selected: document.querySelector(".nw-row.selected")?.dataset.noteId || null,
+      blank: document.querySelector(".nw-blank")?.textContent || null })`);
+    throw new Error(`note ${row.title} (${row.id}) never opened: ${JSON.stringify(shows)}`);
+  }
+}
+
+//: Caret at the very end of the note, as a click after the last line puts it.
+async function caretToEnd(cdp) {
+  await evaluate(cdp, `(() => {
+    const prose = document.querySelector(".nw-prose");
+    prose.focus();
+    const range = document.createRange();
+    range.selectNodeContents(prose.lastElementChild || prose);
+    range.collapse(false);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  })()`);
+  await sleep(60);
+}
+
+async function serverNote(cdp, id) {
+  return evaluate(cdp, `fetch("/api/notes/${id}?include_deleted=true").then((r) => r.json()).then((d) => d.note)`);
+}
+
+async function serverHas(cdp, id, token, timeoutMs = 10_000) {
+  const begun = Date.now();
+  while (Date.now() - begun < timeoutMs) {
+    const note = await serverNote(cdp, id).catch(() => null);
+    if (note?.body?.includes(token)) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+function acceptDialogs(cdp) {
+  cdp.on("Page.javascriptDialogOpening", () => {
+    cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+  });
+}
+
+async function reloadApp(cdp) {
+  await cdp.send("Page.reload", { ignoreCache: false });
+  if (!await waitUntil(cdp, `Boolean(document.querySelector(".system-nav"))`, 30_000)) throw new Error("the app did not come back after reload");
+  await sleep(300);
+}
+
+async function scenarioNotesTyping(cdp) {
+  await openNotesView(cdp);
+  const long = (await noteRows(cdp)).find((row) => row.title === "Long bench note");
+  if (!long) return { skipped: "the long note was not seeded" };
+  await openNoteRow(cdp, long);
+  await caretToEnd(cdp);
+  await evaluate(cdp, "window.__bench.reset()");
+  const text = "the quick brown fox jumps over the lazy dog ";
+  const rounds = Math.max(1, Math.round(REPEATS / 5));
+  for (let i = 0; i < rounds; i += 1) await typeText(cdp, text, 45);
+  // The save that follows the burst is part of what typing costs.
+  await sleep(1500);
+  const seen = await collect(cdp);
+  const keyEvents = seen.events.filter((e) => ["keydown", "keypress", "keyup", "beforeinput", "input"].includes(e.name));
+  return {
+    noteBytes: await evaluate(cdp, `document.querySelector(".nw-prose").textContent.length`),
+    keystrokes: text.length * rounds,
+    slowKeyEntries: keyEvents.length,
+    keyEventMs: summary(keyEvents.map((e) => e.duration)),
+    longTasks: seen.longTasks.length,
+    longTasksOver50: seen.longTasks.filter((t) => t.duration > 50).length,
+    longTaskMaxMs: quantile(seen.longTasks.map((t) => t.duration), 1),
+    longFrames: seen.frames.filter((f) => f.duration > 50).length,
+  };
+}
+
+async function scenarioNotesOpen(cdp, intercept) {
+  await openNotesView(cdp);
+  const runs = [];
+  try {
+    const rows = (await noteRows(cdp)).filter((row) => SEEDED_NOTE_TITLE.test(row.title)).slice(0, Math.max(3, REPEATS));
+    for (const row of rows) {
+      await intercept.set([{ method: "GET", path: new RegExp(`^/api/notes/${row.id}$`), delayMs: 300 }]);
+      await evaluate(cdp, "window.__bench.reset()");
+      const lit = evaluate(cdp, `window.__bench.until(() => document.querySelector('.nw-row[data-note-id="${row.id}"]')?.classList.contains("selected"), 3000, "click")`);
+      const shown = evaluate(cdp, `window.__bench.until(() => ${SHOWS(row.title)}, 5000, "click")`);
+      const at = await centerOf(cdp, `.nw-row[data-note-id="${row.id}"]`);
+      const under = `(() => { const r = document.elementFromPoint(${at.x}, ${at.y})?.closest(".nw-row"); return r ? (r.dataset.noteId === ${JSON.stringify(row.id)} ? "target" : r.querySelector(".nw-row-title")?.textContent.trim()) : (document.elementFromPoint(${at.x}, ${at.y})?.className || "nothing"); })()`;
+      const before = await evaluate(cdp, under);
+      await click(cdp, at);
+      const justAfter = await evaluate(cdp, under);
+      const [highlight, content] = await Promise.all([lit, shown]);
+      const after = content.ms === null
+        ? await evaluate(cdp, `({ h1: document.querySelector(".nw-prose h1")?.textContent || null, selected: document.querySelector(".nw-row.selected .nw-row-title")?.textContent.trim() || null, underPointerBefore: ${JSON.stringify(before)}, underPointerAfterClick: ${JSON.stringify(justAfter)}, rowNow: (() => { const r = document.querySelector('.nw-row[data-note-id="${row.id}"]')?.getBoundingClientRect(); return r ? [Math.round(r.top), Math.round(r.height)] : null; })(), clickedAt: ${JSON.stringify(at)} })`)
+        : null;
+      runs.push({ title: row.title, highlightMs: highlight.ms, highlightFrames: highlight.frames, contentMs: content.ms, after });
+    }
+  } finally {
+    await intercept.set([]);
+  }
+  return {
+    runs: runs.length,
+    highlightMs: summary(runs.map((r) => r.highlightMs)),
+    highlightFrames: summary(runs.map((r) => r.highlightFrames)),
+    contentMsBehind300msServer: summary(runs.map((r) => r.contentMs)),
+    misses: runs.filter((r) => r.contentMs === null),
+  };
+}
+
+async function scenarioNotesRace(cdp, intercept) {
+  await openNotesView(cdp);
+  const runs = [];
+  try {
+    const pool = (await noteRows(cdp)).filter((row) => SEEDED_NOTE_TITLE.test(row.title));
+    let offset = 0;
+    for (const delays of [[900, 500, 150], [150, 500, 900], [600, 600, 0]]) {
+      const rows = pool.slice(offset, offset + 3);
+      offset += 3;
+      if (rows.length < 3) break;
+      await intercept.set(rows.map((row, k) => ({ method: "GET", path: new RegExp(`^/api/notes/${row.id}$`), delayMs: delays[k] })));
+      for (const row of rows) {
+        await click(cdp, await centerOf(cdp, `.nw-row[data-note-id="${row.id}"]`));
+        await sleep(40);
+      }
+      const last = rows[2];
+      await sleep(Math.max(...delays) + 900);
+      const final = await evaluate(cdp, `({
+        selected: document.querySelector(".nw-row.selected")?.dataset.noteId || null,
+        title: document.querySelector(".nw-prose h1")?.textContent.trim() || null,
+      })`);
+      runs.push({ delays: delays.join("/"), endedOnLast: final.selected === last.id && final.title === last.title, final });
+    }
+  } finally {
+    await intercept.set([]);
+  }
+  return { runs: runs.length, endedOnLastClick: runs.filter((r) => r.endedOnLast).length, detail: runs };
+}
+
+async function scenarioNotesSave(cdp, intercept) {
+  await openNotesView(cdp);
+  const row = (await noteRows(cdp)).find((r) => r.title === "Bench note 002");
+  await openNoteRow(cdp, row);
+  const content = new RegExp(`^/api/notes/${row.id}/content$`);
+  const delayedToken = `held-${Date.now().toString(36)}`;
+  const failedToken = `retried-${Date.now().toString(36)}`;
+  try {
+    await intercept.set([{ method: "PUT", path: content, delayMs: 1500 }]);
+    await caretToEnd(cdp);
+    await typeText(cdp, ` ${delayedToken} and more words typed while the save is held`, 45);
+    const delayedSaved = await serverHas(cdp, row.id, `${delayedToken} and more words typed while the save is held`, 12_000);
+    await intercept.set([
+      { method: "PUT", path: content, fail: true, nth: 1 },
+      { method: "PUT", path: content, fail: true, nth: 2 },
+    ]);
+    await caretToEnd(cdp);
+    await typeText(cdp, ` ${failedToken}`, 45);
+    await sleep(1200);
+    const bannerWhileFailing = await evaluate(cdp, `document.querySelector(".nw-banner")?.textContent || null`);
+    const retriedSaved = await serverHas(cdp, row.id, failedToken, 15_000);
+    const editorText = await evaluate(cdp, `document.querySelector(".nw-prose").textContent`);
+    const summaryKept = (await serverNote(cdp, row.id))?.summary === "Seeded summary that edits must keep";
+    return {
+      summaryKeptThroughEdits: summaryKept,
+      typingDuringHeldSaveKept: delayedSaved,
+      failedSavesRetriedAndKept: retriedSaved,
+      bannerWhileFailing,
+      editorStillHasBoth: editorText.includes(delayedToken) && editorText.includes(failedToken),
+    };
+  } finally {
+    await intercept.set([]);
+  }
+}
+
+async function scenarioNotesSwitchSave(cdp) {
+  await openNotesView(cdp);
+  const rows = (await noteRows(cdp)).filter((r) => SEEDED_NOTE_TITLE.test(r.title));
+  const results = [];
+  for (let i = 0; i < Math.max(1, Math.round(REPEATS / 3)); i += 1) {
+    const [from, to] = [rows[3 + i * 2], rows[4 + i * 2]];
+    if (!from || !to) break;
+    await openNoteRow(cdp, from);
+    await caretToEnd(cdp);
+    const token = `switch-${i}-${Date.now().toString(36)}`;
+    await typeText(cdp, ` ${token}`, 30);
+    await click(cdp, await centerOf(cdp, `.nw-row[data-note-id="${to.id}"]`));
+    results.push(await serverHas(cdp, from.id, token, 8_000));
+  }
+  return { switches: results.length, keptOnServer: results.filter(Boolean).length };
+}
+
+//: Right-click a note's row and choose `labels` in turn (a submenu path).
+async function noteRowMenu(cdp, id, labels) {
+  const at = await centerOf(cdp, `.nw-row[data-note-id="${id}"]`);
+  if (!at) throw new Error(`no row for note ${id}`);
+  await mouse(cdp, "mouseMoved", at.x, at.y);
+  await mouse(cdp, "mousePressed", at.x, at.y, { button: "right", clickCount: 1 });
+  await mouse(cdp, "mouseReleased", at.x, at.y, { button: "right", clickCount: 1 });
+  await chooseMenu(cdp, labels);
+}
+
+async function chooseMenu(cdp, labels) {
+  for (const label of labels) {
+    const find = `[...document.querySelectorAll(".nw-menu [role=menuitem]")].filter((b) => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled).at(-1)`;
+    if (!await waitUntil(cdp, `Boolean(${find})`, 3000)) throw new Error(`no menu item ${label}`);
+    await click(cdp, await evaluate(cdp, `(() => { const r = ${find}.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`));
+    await sleep(80);
+  }
+}
+
+/*
+ * Pin, move and archive while typing, with replies held so they arrive out of
+ * order. Each run checks the server and the screen agree with what was done
+ * last: no metadata change undone by a stale reply, no typing lost to one.
+ */
+async function scenarioNotesMetaRace(cdp, intercept) {
+  await openNotesView(cdp);
+  const rows = (await noteRows(cdp)).filter((r) => SEEDED_NOTE_TITLE.test(r.title));
+  const [pinRow, moveRow, archiveRow] = [rows[6], rows[7], rows[8]];
+  const folders = (await evaluate(cdp, `fetch("/api/notes/sidebar").then((r) => r.json())`)).folders;
+  const stamp = Date.now().toString(36);
+  const out = {};
+  try {
+    // A save the server has stored, whose reply is held, then a pin: the late
+    // save reply carries pinned=false from before the pin.
+    await openNoteRow(cdp, pinRow);
+    await intercept.set([{ method: "PUT", path: new RegExp(`^/api/notes/${pinRow.id}/content$`), stage: "Response", delayMs: 2000 }]);
+    await caretToEnd(cdp);
+    const pinToken = `pin-${stamp}`;
+    await typeText(cdp, ` ${pinToken}`, 40);
+    await sleep(900);
+    await noteRowMenu(cdp, pinRow.id, ["Pin Note"]);
+    await sleep(3000);
+    const pinned = await serverNote(cdp, pinRow.id);
+    out.pinDuringHeldSave = {
+      serverPinned: pinned.pinned === true,
+      serverKeptTyping: pinned.body.includes(pinToken),
+      rowShowsPin: await evaluate(cdp, `Boolean(document.querySelector('.nw-row[data-note-id="${pinRow.id}"] .nw-row-pin'))`),
+    };
+
+    // Moving while typing, the move held in the network.
+    await intercept.set([{ method: "POST", path: new RegExp(`^/api/notes/${moveRow.id}/move$`), delayMs: 1500 }]);
+    await openNoteRow(cdp, moveRow);
+    await caretToEnd(cdp);
+    const before = `before-move-${stamp}`;
+    const after = `after-move-${stamp}`;
+    await typeText(cdp, ` ${before}`, 40);
+    const from = (await serverNote(cdp, moveRow.id)).folder_id;
+    const target = folders.find((folder) => folder.id !== from);
+    await noteRowMenu(cdp, moveRow.id, ["Move to", target.name]);
+    await caretToEnd(cdp);
+    await typeText(cdp, ` ${after}`, 40);
+    await sleep(2500);
+    const moved = await serverNote(cdp, moveRow.id);
+    out.moveWhileTyping = {
+      serverFolderMoved: moved.folder_id === target.id,
+      serverKeptBoth: moved.body.includes(before) && moved.body.includes(after),
+      editorKeptBoth: await evaluate(cdp, `(() => { const t = document.querySelector(".nw-prose").textContent; return t.includes(${JSON.stringify(before)}) && t.includes(${JSON.stringify(after)}); })()`),
+      rowFolder: await evaluate(cdp, `document.querySelector('.nw-row[data-note-id="${moveRow.id}"] .nw-row-folder')?.textContent.trim() ?? "not listed"`),
+    };
+
+    // Archive, then Unarchive before the first reply is back, typing between.
+    await intercept.set([{ method: "POST", path: new RegExp(`^/api/notes/${archiveRow.id}/archive$`), delayMs: 1200, nth: 1 }]);
+    await openNoteRow(cdp, archiveRow);
+    await noteRowMenu(cdp, archiveRow.id, ["Archive"]);
+    await caretToEnd(cdp);
+    const between = `between-${stamp}`;
+    await typeText(cdp, ` ${between}`, 40);
+    await click(cdp, await centerOf(cdp, '.nw-toolbar [aria-label="More"]'));
+    await chooseMenu(cdp, ["Unarchive"]);
+    await sleep(2500);
+    const archived = await serverNote(cdp, archiveRow.id);
+    out.archiveThenUnarchive = {
+      serverUnarchived: archived.archived === false,
+      serverKeptTyping: archived.body.includes(between),
+      rowBack: await evaluate(cdp, `Boolean(document.querySelector('.nw-row[data-note-id="${archiveRow.id}"]'))`),
+    };
+  } finally {
+    await intercept.set([]);
+  }
+  const checks = Object.values(out).flatMap((run) => Object.entries(run).filter(([key]) => key !== "rowFolder").map(([, value]) => value));
+  return { ...out, allHeld: checks.every(Boolean) };
+}
+
+async function scenarioNotesOffline(cdp, intercept) {
+  acceptDialogs(cdp);
+  await openNotesView(cdp);
+  const row = (await noteRows(cdp)).find((r) => r.title === "Bench note 005");
+  await openNoteRow(cdp, row);
+  const token = `offline-${Date.now().toString(36)}`;
+  try {
+    await intercept.set([
+      { method: "PUT", path: /^\/api\/notes\// , fail: true },
+      { method: "POST", path: /^\/api\/notes$/, fail: true },
+    ]);
+    await caretToEnd(cdp);
+    await typeText(cdp, ` ${token}`, 40);
+    await sleep(800);
+    const offlineBanner = await evaluate(cdp, `document.querySelector(".nw-banner")?.textContent || null`);
+    // Reload while still offline: the content must survive in the journal.
+    await reloadApp(cdp);
+    await openNotesView(cdp);
+    await sleep(800);
+    const savedWhileOffline = (await serverNote(cdp, row.id))?.body?.includes(token) ?? false;
+    await intercept.set([]);
+    // Back online, next start: the journal replays.
+    await reloadApp(cdp);
+    await openNotesView(cdp);
+    const recovered = await serverHas(cdp, row.id, token, 15_000);
+    return { offlineBanner, savedWhileOffline, recoveredAfterReload: recovered };
+  } finally {
+    await intercept.set([]);
+  }
+}
+
+async function secondTab(url) {
+  const created = await (await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(url)}`, { method: "PUT" })).json();
+  const tab = connect(created.webSocketDebuggerUrl);
+  await tab.ready;
+  await tab.send("Page.enable");
+  await tab.send("Runtime.enable");
+  await tab.send("Page.addScriptToEvaluateOnNewDocument", { source: INSTRUMENT });
+  acceptDialogs(tab);
+  await tab.send("Page.navigate", { url });
+  if (!await waitUntil(tab, `Boolean(document.querySelector(".system-nav"))`, 30_000)) throw new Error("second tab never loaded the app");
+  return { tab, id: created.id };
+}
+
+async function closeTab(id) {
+  await fetch(`http://127.0.0.1:${PORT}/json/close/${id}`).catch(() => {});
+}
+
+async function scenarioNotesCrash(cdp) {
+  acceptDialogs(cdp);
+  await openNotesView(cdp);
+  const row = (await noteRows(cdp)).find((r) => r.title === "Bench note 006");
+  const token = `crash-${Date.now().toString(36)}`;
+  const { tab, id } = await secondTab(ORIGIN);
+  try {
+    await openNotesView(tab);
+    await openNoteRow(tab, row);
+    // The second tab may not reach the server: only its journal can save this.
+    await tab.send("Fetch.enable", { patterns: [{ urlPattern: "*/api/notes*", requestStage: "Request" }] });
+    tab.on("Fetch.requestPaused", ({ requestId, request }) => {
+      const blocked = request.method !== "GET";
+      tab.send(blocked ? "Fetch.failRequest" : "Fetch.continueRequest", blocked ? { requestId, errorReason: "Failed" } : { requestId }).catch(() => {});
+    });
+    await caretToEnd(tab);
+    await typeText(tab, ` ${token}`, 40);
+    await sleep(700);
+    await tab.send("Page.crash").catch(() => {});
+  } finally {
+    tab.close();
+    await closeTab(id);
+  }
+  const notSavedBeforeCrash = !((await serverNote(cdp, row.id))?.body?.includes(token));
+  await reloadApp(cdp);
+  await openNotesView(cdp);
+  const recovered = await serverHas(cdp, row.id, token, 15_000);
+  return { notSavedBeforeCrash, recoveredFromJournalAfterCrash: recovered };
+}
+
+async function scenarioNotesConflict(cdp) {
+  acceptDialogs(cdp);
+  await openNotesView(cdp);
+  const row = (await noteRows(cdp)).find((r) => r.title === "Bench note 007");
+  await openNoteRow(cdp, row);
+  const { tab, id } = await secondTab(ORIGIN);
+  const tokens = { a: `tabA-${Date.now().toString(36)}`, b: `tabB-${Date.now().toString(36)}` };
+  try {
+    await openNotesView(tab);
+    await openNoteRow(tab, row);
+    // Both type before either has saved: one save wins, the other conflicts.
+    await caretToEnd(tab);
+    await typeText(tab, ` ${tokens.b}`, 20);
+    await caretToEnd(cdp);
+    await typeText(cdp, ` ${tokens.a}`, 20);
+    await sleep(4000);
+    const banner = (target) => evaluate(target, `document.querySelector(".nw-banner")?.textContent || ""`);
+    const shown = { a: await banner(cdp), b: await banner(tab) };
+    const conflicted = /another window/.test(shown.a) ? "a" : /another window/.test(shown.b) ? "b" : null;
+    const server = await serverNote(cdp, row.id);
+    const conflicts = await evaluate(cdp, `fetch("/api/notes/${row.id}/conflicts").then((r) => r.json())`);
+    const result = {
+      conflictShownIn: conflicted,
+      winnerOnServer: server.body.includes(tokens.a) ? "a" : server.body.includes(tokens.b) ? "b" : null,
+      capturedLoser: conflicts.some((c) => (c.body || "").includes(conflicted === "a" ? tokens.a : tokens.b)),
+    };
+    if (conflicted) {
+      const target = conflicted === "a" ? cdp : tab;
+      const index = await evaluate(target, `[...document.querySelectorAll(".nw-banner button")].findIndex((b) => /Keep both/.test(b.textContent))`);
+      await click(target, await centerOf(target, ".nw-banner button", index));
+      await sleep(2500);
+      const copies = await evaluate(cdp, `fetch("/api/notes?q=conflict%20copy&include_body=true").then((r) => r.json()).then((d) => d.notes)`);
+      const loser = conflicted === "a" ? tokens.a : tokens.b;
+      result.copyHasLoser = copies.some((note) => note.body.includes(loser));
+      result.originalKeptWinner = (await serverNote(cdp, row.id)).body.includes(conflicted === "a" ? tokens.b : tokens.a);
+      result.bannerGone = !(/another window/.test(await banner(target)));
+    }
+    return result;
+  } finally {
+    tab.close();
+    await closeTab(id);
+  }
+}
+
 async function deleteProfile({ origin, profileId, password }) {
   const response = await fetch(new URL(`api/account-profiles/${profileId}`, origin), {
     method: "DELETE",
@@ -1386,7 +1846,8 @@ async function main() {
     if (!created?.profile?.id) throw new Error(`could not create the benchmark profile: ${JSON.stringify(created)}`);
     profile = { origin: ORIGIN, profileId: created.profile.id, password, username };
     await writeFile(STATE, JSON.stringify(profile));
-    const seeded = await run(PYTHON, [join(HERE, "seed_profile.py"), profile.profileId, "--chats", String(CHATS), "--long-chat-messages", String(LONG_CHAT_MESSAGES)], { cwd: REPO, maxBuffer: 16 * 1024 * 1024 });
+    const notes = SCENARIOS.some((name) => NOTES_SCENARIOS.has(name)) ? Number(process.env.BENCH_NOTES || 40) : 0;
+    const seeded = await run(PYTHON, [join(HERE, "seed_profile.py"), profile.profileId, "--chats", String(CHATS), "--long-chat-messages", String(LONG_CHAT_MESSAGES), "--notes", String(notes)], { cwd: REPO, maxBuffer: 16 * 1024 * 1024 });
     report.seed = JSON.parse(seeded.stdout).chat_ids.length;
 
     for (const rate of CPU_RATES) {
@@ -1428,6 +1889,15 @@ async function main() {
           newChatDuringOpen: () => scenarioNewChatDuringOpen(cdp, intercept),
           navDuringRefresh: () => scenarioNavDuringRefresh(cdp, intercept),
           longTasks: () => scenarioLongTasks(cdp),
+          notesTyping: () => scenarioNotesTyping(cdp),
+          notesOpen: () => scenarioNotesOpen(cdp, intercept),
+          notesRace: () => scenarioNotesRace(cdp, intercept),
+          notesSave: () => scenarioNotesSave(cdp, intercept),
+          notesSwitchSave: () => scenarioNotesSwitchSave(cdp),
+          notesMetaRace: () => scenarioNotesMetaRace(cdp, intercept),
+          notesOffline: () => scenarioNotesOffline(cdp, intercept),
+          notesCrash: () => scenarioNotesCrash(cdp),
+          notesConflict: () => scenarioNotesConflict(cdp),
         }[name];
         if (!fn) throw new Error(`unknown scenario ${name}`);
         results[name] = await fn();

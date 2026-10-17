@@ -1,0 +1,1168 @@
+/* ===========================================================================
+   Notes (.nw). Apple Notes' layout and behaviour in Neo's theme.
+
+   Scoped: every rule starts at .nw, and the only colours are Neo's tokens, so
+   each theme (dark ones and paper) carries through. Imported by Notes.jsx, so
+   it ships with the Notes chunk rather than in the app's main stylesheet.
+   =========================================================================== */
+
+/* Apple's five text colours, tuned for dark themes... (also on the drawing
+   screen, which sits outside .nw, over the whole page) */
+.nw, .nw-sketch-editor {
+  --nw-ink-purple: #bb9af7;
+  --nw-ink-pink: #f38ab8;
+  --nw-ink-orange: #f2a65e;
+  --nw-ink-mint: #63d5b4;
+  --nw-ink-blue: #74b9ff;
+}
+/* ...and for the light one. */
+[data-theme="paper"] .nw, [data-theme="paper"] .nw-sketch-editor {
+  --nw-ink-purple: #6f3cc4;
+  --nw-ink-pink: #b8226a;
+  --nw-ink-orange: #a85200;
+  --nw-ink-mint: #0b7d5f;
+  --nw-ink-blue: #1b5fc1;
+}
+.nw {
+  --nw-list-width: 320px;
+  --nw-gutter: clamp(18px, 4cqi, 48px);
+  container: notes / inline-size;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--neo-bg);
+  color: var(--neo-text);
+}
+
+.nw-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--nw-list-width) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+.nw button { font: inherit; color: inherit; }
+.nw :focus-visible { outline: 2px solid var(--neo-accent-a65); outline-offset: 1px; }
+.nw .nw-prose:focus-visible { outline: none; }
+
+/* --- note list ------------------------------------------------------------ */
+.nw-listpane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--neo-line);
+  background: var(--neo-sidebar);
+}
+.nw-listhead { padding: 16px 14px 8px; padding-top: max(16px, env(safe-area-inset-top, 0px)); }
+.nw-listhead-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nw-listhead h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.nw-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 0 10px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--neo-lift-a06);
+  color: var(--neo-fg-8);
+}
+.nw-search .ws-icon { width: 15px; height: 15px; flex: none; }
+.nw .nw-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--neo-text);
+  font-size: 14px;
+}
+.nw-count { margin: 10px 2px 0; color: var(--neo-fg-8); font-size: 12px; }
+.nw-notice { margin: 4px 14px 8px; padding: 8px 10px; border-radius: 8px; background: var(--neo-warn-a06); color: var(--neo-warn-text); font-size: 12px; }
+.nw-rows {
+  --nw-section-head: 36px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px calc(16px + env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: contain;
+  /* A row brought into view (arrow keys, focus, search) stops below the sticky
+     section label rather than under it. */
+  scroll-padding-top: var(--nw-section-head);
+}
+/* Rows have one exact height, as in Apple Notes. content-visibility skips rows
+   off screen; if their estimated height differed from their real one, the
+   list would shift as they render and a click could land on the next note. */
+.nw-row {
+  --nw-row-height: 60px;
+  position: relative;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  width: 100%;
+  height: var(--nw-row-height);
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--nw-row-height);
+  -webkit-touch-callout: none;
+}
+.nw-row.with-folder { --nw-row-height: 76px; }
+.nw-row.with-thumb { padding-right: 68px; }
+.nw-row-thumb {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 46px;
+  height: 46px;
+  margin-top: -23px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--neo-lift-a06);
+}
+/* A hairline between rows, inset like Apple's, and gone beside the row under
+   the pointer or the selected one. */
+.nw-row + .nw-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 12px;
+  left: 12px;
+  height: 1px;
+  background: var(--neo-line);
+}
+.nw-row:hover { background: var(--neo-lift-a04); }
+.nw-row:hover::before,
+.nw-row:hover + .nw-row::before,
+.nw-row.selected::before,
+.nw-row.selected + .nw-row::before { display: none; }
+.nw-row.selected { background: var(--neo-lift-a08); }
+.nw-rows:focus-within .nw-row.selected { background: var(--neo-accent-a20); }
+.nw-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--neo-text);
+  font-size: 14.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.nw-row-pin { width: 12px; height: 12px; flex: none; color: var(--neo-accent); }
+.nw-row-line { display: flex; gap: 8px; overflow: hidden; font-size: 13px; white-space: nowrap; }
+.nw-row-line time { flex: none; color: var(--neo-fg-8); }
+.nw-row-preview { overflow: hidden; color: var(--neo-fg-8); text-overflow: ellipsis; }
+.nw-empty { margin: 32px 16px; color: var(--neo-fg-8); font-size: 13px; text-align: center; }
+
+/* --- editor pane ---------------------------------------------------------- */
+.nw-editorpane { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.nw-editor { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.nw-blank { display: grid; flex: 1; place-items: center; color: var(--neo-fg-8); }
+.nw-blank-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 10px;
+  background: var(--neo-panel);
+  cursor: pointer;
+}
+.nw-blank-new .ws-icon { width: 16px; height: 16px; }
+
+.nw-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--neo-line);
+}
+.nw-tool-group { display: flex; align-items: center; gap: 2px; }
+.nw-tool {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--neo-body);
+  cursor: pointer;
+}
+.nw-tool .ws-icon { width: 18px; height: 18px; }
+.nw-tool:hover:not(:disabled) { background: var(--neo-lift-a06); color: var(--neo-text); }
+.nw-tool.on { background: var(--neo-lift-a08); color: var(--neo-accent); }
+.nw-tool:disabled { opacity: 0.4; cursor: default; }
+
+.nw-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 12px;
+  z-index: 30;
+  width: min(320px, calc(100% - 24px));
+  padding: 10px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 14px;
+  background: var(--neo-panel-menu);
+  box-shadow: 0 18px 40px var(--neo-shadow-a35);
+}
+.nw-format-styles { display: grid; gap: 2px; margin-bottom: 8px; }
+.nw-style {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.nw-style:hover { background: var(--neo-lift-a06); }
+.nw-style.on { background: var(--neo-accent-a16); color: var(--neo-text); }
+.nw-style-title { font-size: 20px; font-weight: 700; }
+.nw-style-heading { font-size: 17px; font-weight: 700; }
+.nw-style-subheading { font-size: 15px; font-weight: 650; }
+.nw-style-body { font-size: 14px; }
+.nw-style-mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; }
+.nw-format-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 0; border-top: 1px solid var(--neo-line); }
+.nw-format-row button {
+  display: inline-grid;
+  min-width: 34px;
+  height: 32px;
+  place-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--neo-line);
+  border-radius: 8px;
+  background: var(--neo-lift-a03);
+  cursor: pointer;
+}
+.nw-format-row button .ws-icon { width: 17px; height: 17px; }
+.nw-format-row button.on { border-color: var(--neo-accent-a50); background: var(--neo-accent-a16); }
+.nw-format-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--neo-line); }
+.nw-format-row .nw-swatch { min-width: 26px; width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid transparent; }
+.nw-format-row .nw-swatch.on { border-color: var(--neo-text); }
+.nw-swatch-purple { background: var(--nw-ink-purple) !important; }
+.nw-swatch-pink { background: var(--nw-ink-pink) !important; }
+.nw-swatch-orange { background: var(--nw-ink-orange) !important; }
+.nw-swatch-mint { background: var(--nw-ink-mint) !important; }
+.nw-swatch-blue { background: var(--nw-ink-blue) !important; }
+.nw-link-editor { display: flex; gap: 6px; }
+.nw .nw-link-editor input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 8px;
+  background: var(--neo-bg);
+  color: var(--neo-text);
+}
+.nw-link-editor button { padding: 0 12px; border: 0; border-radius: 8px; background: var(--neo-accent); color: var(--neo-on-accent); cursor: pointer; }
+
+.nw-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 12px var(--nw-gutter) 0;
+  padding: 10px 12px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 10px;
+  background: var(--neo-lift-a04);
+  font-size: 13px;
+}
+.nw-banner span { flex: 1 1 260px; }
+.nw-banner.warn { border-color: var(--neo-warn-a35); background: var(--neo-warn-a06); }
+.nw-banner button {
+  padding: 6px 10px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 8px;
+  background: var(--neo-panel);
+  cursor: pointer;
+}
+.nw-original { margin: 10px var(--nw-gutter) 0; border: 1px solid var(--neo-line-bright); border-radius: 10px; background: var(--neo-panel-raised); }
+.nw-original header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--neo-line); font-size: 12px; color: var(--neo-fg-8); }
+.nw-original header button { border: 0; background: transparent; cursor: pointer; }
+.nw-original pre { max-height: 40vh; margin: 0; padding: 12px; overflow: auto; font: 12.5px/1.5 "JetBrains Mono", ui-monospace, monospace; white-space: pre-wrap; }
+.nw-tablebar { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px var(--nw-gutter) 0; }
+.nw-tablebar button { padding: 4px 9px; border: 1px solid var(--neo-line); border-radius: 7px; background: var(--neo-lift-a03); font-size: 12px; cursor: pointer; }
+.nw-tablebar .danger { color: var(--neo-danger-text); }
+
+/* --- the page -------------------------------------------------------------- */
+.nw-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--nw-gutter) calc(80px + env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: contain;
+}
+.nw-date { margin: 16px 0 14px; color: var(--neo-fg-8); font-size: 12.5px; text-align: center; }
+.nw-content { max-width: 760px; margin: 0 auto; }
+.nw-prose {
+  min-height: 60vh;
+  outline: none;
+  color: var(--neo-text);
+  font-size: 16px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  caret-color: var(--neo-accent);
+}
+.nw-prose > * + * { margin-top: 0.15em; }
+.nw-prose p { margin: 0; }
+.nw-prose h1, .nw-prose h2, .nw-prose h3, .nw-prose h4, .nw-prose h5, .nw-prose h6 {
+  position: relative;
+  margin: 0.55em 0 0.15em;
+  color: var(--neo-fg-1);
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+.nw-prose > :first-child { margin-top: 0; }
+.nw-prose h1 { font-size: 28px; font-weight: 700; }
+.nw-prose h2 { font-size: 22px; font-weight: 700; }
+.nw-prose h3, .nw-prose h4, .nw-prose h5, .nw-prose h6 { font-size: 18px; font-weight: 650; }
+.nw-prose strong { font-weight: 700; }
+.nw-prose a { color: var(--neo-accent-soft); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.nw-prose code { padding: 0.1em 0.3em; border-radius: 4px; background: var(--neo-lift-a08); font: 0.9em "JetBrains Mono", ui-monospace, monospace; }
+.nw-prose pre {
+  margin: 0.4em 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--neo-panel-raised);
+  font: 13.5px/1.5 "JetBrains Mono", ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+.nw-prose pre code { padding: 0; background: transparent; font: inherit; }
+.nw-prose blockquote { margin: 0.4em 0; padding-left: 14px; border-left: 3px solid var(--neo-line-bright); color: var(--neo-body); }
+.nw-prose hr { margin: 1em 0; border: 0; border-top: 1px solid var(--neo-line-bright); }
+.nw-prose img { display: block; max-width: 100%; height: auto; margin: 0.4em 0; border-radius: 8px; }
+.nw-prose .nw-tag { color: var(--neo-accent-soft); font-weight: 600; }
+.nw-prose .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--neo-faint);
+  pointer-events: none;
+}
+
+/* lists: bulleted, dashed (Apple's "–"), numbered */
+.nw-prose ul, .nw-prose ol { margin: 0.15em 0; padding-left: 1.5em; }
+.nw-prose ul { list-style: disc; }
+.nw-prose ul ul { list-style: circle; }
+.nw-prose ol { list-style: decimal; }
+.nw-prose li::marker { color: var(--neo-muted); }
+.nw-prose li > p { margin: 0; }
+.nw-prose ul[data-variant="dash"] { list-style: none; }
+.nw-prose ul[data-variant="dash"] > li { position: relative; }
+.nw-prose ul[data-variant="dash"] > li::before {
+  content: "–";
+  position: absolute;
+  left: -1.1em;
+  color: var(--neo-muted);
+}
+
+/* checklists: round, Apple style, filled with the theme accent.
+   TaskItem's node view renders li[data-checked] > label > (input, visually
+   hidden label text) and div; the circle is the input itself, the tick is the
+   label's ::after (Firefox draws no pseudo-elements on inputs). */
+.nw-prose ul[data-type="taskList"] { list-style: none; padding-left: 0.1em; }
+.nw-prose ul[data-type="taskList"] > li { display: flex; align-items: flex-start; gap: 10px; }
+.nw-prose ul[data-type="taskList"] > li > label {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-top: calc((1.55em - 22px) / 2);
+  place-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+/* A 44px target around the 22px circle, for fingers. */
+.nw-prose ul[data-type="taskList"] > li > label::before { content: ""; position: absolute; inset: -11px; }
+.nw-prose ul[data-type="taskList"] > li > label > input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: 1.5px solid var(--neo-fg-10);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.nw-prose ul[data-type="taskList"] > li[data-checked="true"] > label > input {
+  border-color: var(--neo-accent);
+  background: var(--neo-accent);
+}
+/* The tick is painted in the theme's on-accent colour through a mask, so it
+   contrasts with whatever the accent is (a bright one gets a dark tick). */
+.nw-prose ul[data-type="taskList"] > li[data-checked="true"] > label::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--neo-on-accent);
+  pointer-events: none;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5.5 10.5 3 3 6-7' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5.5 10.5 3 3 6-7' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 15px no-repeat;
+}
+.nw-prose ul[data-type="taskList"] > li > label > input:focus-visible { outline: 2px solid var(--neo-accent-a65); outline-offset: 2px; }
+.nw-prose ul[data-type="taskList"] > li > div { flex: 1; min-width: 0; }
+.nw-prose ul[data-type="taskList"] > li[data-checked="true"] > div { color: var(--neo-fg-8); }
+
+/* tables */
+.nw-prose .tableWrapper { margin: 0.5em 0; overflow-x: auto; }
+.nw-prose table { border-collapse: collapse; table-layout: fixed; min-width: 100%; }
+.nw-prose td, .nw-prose th {
+  min-width: 90px;
+  padding: 7px 10px;
+  border: 1px solid var(--neo-line-bright);
+  vertical-align: top;
+}
+.nw-prose th { background: var(--neo-lift-a04); font-weight: 650; text-align: left; }
+.nw-prose .selectedCell { background: var(--neo-accent-a12); }
+
+/* pictures and files */
+.nw-prose img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+  border-radius: 10px;
+}
+.nw-prose img.ProseMirror-selectednode { outline: 3px solid var(--neo-accent-a65); outline-offset: 2px; }
+.nw-file { margin: 8px 0; }
+.nw .nw-prose .nw-file-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(380px, 100%);
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 12px;
+  background: var(--neo-lift-a04);
+  color: var(--neo-text);
+  text-decoration: none;
+}
+.nw-file.ProseMirror-selectednode .nw-file-link { outline: 3px solid var(--neo-accent-a65); outline-offset: 2px; }
+.nw-file-icon {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 42px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--neo-accent-a12);
+  color: var(--neo-accent);
+  font: 700 9px/1 "JetBrains Mono", monospace;
+}
+.nw-file-text { display: grid; gap: 2px; min-width: 0; }
+.nw-file-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.nw-file-meta { color: var(--neo-fg-8); font-size: 12px; }
+.nw-uploading {
+  margin: 8px 0;
+  padding: 12px;
+  border: 1px dashed var(--neo-line-bright);
+  border-radius: 12px;
+  color: var(--neo-fg-8);
+  font-size: 13px;
+  animation: nw-pulse 1.4s ease-in-out infinite;
+}
+@keyframes nw-pulse { 50% { opacity: 0.55; } }
+
+/* sketches */
+.nw-sketch {
+  position: relative;
+  width: 100%;
+  margin: 8px 0;
+  overflow: hidden;
+  border: 1px solid var(--neo-line);
+  border-radius: 12px;
+  background: var(--neo-lift-a04);
+  cursor: pointer;
+}
+.nw-sketch svg { display: block; width: 100%; height: 100%; }
+.nw-sketch.ProseMirror-selectednode { outline: 3px solid var(--neo-accent-a65); outline-offset: 2px; }
+.nw-sketch-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--neo-fg-8); font-size: 13px; }
+.nw-sketch-empty[hidden] { display: none; }
+.nw-sketch-edit {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 8px;
+  background: var(--neo-panel-menu);
+  color: var(--neo-text);
+  font: inherit;
+  font-size: 12.5px;
+  opacity: 0;
+}
+.nw-sketch:hover .nw-sketch-edit, .nw-sketch-edit:focus-visible { opacity: 1; }
+@media (hover: none) { .nw-sketch-edit { opacity: 1; min-height: 44px; } }
+
+.nw-sketch-editor {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  background: var(--neo-bg);
+  color: var(--neo-text);
+}
+.nw-sketch-probe { position: absolute; width: 0; height: 0; overflow: hidden; }
+.nw-sketch-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--neo-line); }
+.nw-sketch-history { display: flex; gap: 4px; }
+.nw-sketch-text { min-height: 44px; padding: 0 12px; border: 0; background: transparent; color: var(--neo-text); font: inherit; font-size: 15px; }
+.nw-sketch-done { color: var(--neo-accent); font-weight: 650; }
+.nw-sketch-editor:focus { outline: none; }
+.nw-sketch-area { display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; padding: 12px; }
+.nw-sketch-surface { position: relative; border-radius: 12px; background: var(--neo-lift-a04); box-shadow: inset 0 0 0 1px var(--neo-line); }
+.nw-sketch-canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 12px; }
+/* Drawing, not scrolling or zooming, wherever a finger or pen touches. */
+.nw-sketch-input { touch-action: none; cursor: crosshair; }
+.nw-sketch-tools { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 18px; padding: 10px 12px; border-top: 1px solid var(--neo-line); }
+.nw-sketch-group { display: flex; align-items: center; gap: 6px; }
+.nw-sketch-tool {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--neo-line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--neo-text);
+  font: inherit;
+  font-size: 13.5px;
+}
+.nw-sketch-tool.on { border-color: var(--neo-accent); background: var(--neo-accent-a12); color: var(--neo-accent); }
+.nw-sketch-color, .nw-sketch-size {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+}
+.nw-sketch-color::before { content: ""; width: 26px; height: 26px; border-radius: 50%; background: var(--swatch); }
+.nw-sketch-size::before { content: ""; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--neo-text); }
+.nw-sketch-color.on, .nw-sketch-size.on { border-color: var(--neo-accent); }
+.nw-sketch-color:disabled, .nw-sketch-size:disabled { opacity: 0.35; }
+
+/* links between notes */
+.nw-note-link {
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--neo-accent-a12);
+  color: var(--neo-accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.nw-note-link:hover { background: var(--neo-accent-a20); }
+.nw-note-link.missing { background: transparent; color: var(--neo-fg-8); text-decoration: line-through; cursor: default; }
+.nw-suggest {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 12px;
+  background: var(--neo-panel-menu);
+  box-shadow: 0 18px 40px var(--neo-shadow-a50);
+  color: var(--neo-text);
+  font-size: 13.5px;
+}
+.nw-suggest-item {
+  overflow: hidden;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nw-suggest-item.active, .nw-suggest-item:hover { background: var(--neo-accent-a20); }
+.nw-suggest-empty { padding: 8px 10px; color: var(--neo-fg-8); }
+/* Touch-first screens: a coarse pointer, or no hover (some touch devices, stylus
+   phones among them, report their pointer as fine). */
+@media (pointer: coarse), (hover: none) { .nw-suggest-item { min-height: 44px; } }
+
+/* collapsible sections */
+.nw-prose .nw-folded { display: none; }
+.nw-fold {
+  position: absolute;
+  top: 50%;
+  left: -30px;
+  width: 24px;
+  height: 24px;
+  margin-top: -12px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+.nw-fold::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--neo-muted);
+  border-bottom: 2px solid var(--neo-muted);
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+.nw-fold[aria-expanded="false"]::before { transform: rotate(-45deg); top: 8px; left: 7px; }
+.nw-prose h1:hover .nw-fold, .nw-prose h2:hover .nw-fold, .nw-prose h3:hover .nw-fold,
+.nw-prose h4:hover .nw-fold, .nw-prose h5:hover .nw-fold, .nw-prose h6:hover .nw-fold,
+.nw-fold:hover,
+.nw-fold:focus-visible,
+.nw-fold[aria-expanded="false"] { opacity: 1; }
+@media (hover: none) {
+  .nw-fold { opacity: 0.7; }
+  /* A 44 px target around the small chevron. */
+  .nw-fold::after { content: ""; position: absolute; inset: -10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nw * { transition: none !important; animation: none !important; }
+}
+
+/* --- layout modes (set from the Notes area's own width) ----------------------- */
+.nw[data-mode="wide"] .nw-shell[data-sidebar="shown"] { grid-template-columns: 230px var(--nw-list-width) minmax(0, 1fr); }
+.nw[data-mode="wide"] .nw-shell[data-info="open"] { grid-template-columns: var(--nw-list-width) minmax(0, 1fr) 300px; }
+.nw[data-mode="wide"] .nw-shell[data-sidebar="shown"][data-info="open"] { grid-template-columns: 230px 290px minmax(0, 1fr) 300px; }
+.nw[data-mode="medium"] .nw-shell { grid-template-columns: 300px minmax(0, 1fr); }
+.nw[data-mode="medium"] .nw-sidebar,
+.nw[data-mode="medium"] .nw-info {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 25;
+  width: min(300px, 85%);
+  box-shadow: 0 0 40px var(--neo-shadow-a50);
+}
+.nw[data-mode="medium"] .nw-sidebar { left: 0; }
+.nw[data-mode="medium"] .nw-info { right: 0; }
+.nw-overlay-scrim { position: absolute; inset: 0; z-index: 24; border: 0; background: var(--neo-scrim-a70); cursor: default; }
+.nw[data-mode="narrow"] .nw-shell { grid-template-columns: minmax(0, 1fr); }
+.nw[data-mode="narrow"] .nw-listpane, .nw[data-mode="narrow"] .nw-sidebar { border-right: 0; }
+.nw[data-mode="narrow"] .nw-info { position: absolute; inset: 0; z-index: 30; }
+.nw[data-mode="narrow"] .nw-row { --nw-row-height: 68px; }
+.nw[data-mode="narrow"] .nw-row.with-folder { --nw-row-height: 84px; }
+.nw[data-mode="narrow"] .nw-tool { width: 44px; height: 44px; }
+.nw[data-mode="narrow"] .nw-search { height: 44px; }
+.nw[data-mode="narrow"] .nw-side-item, .nw[data-mode="narrow"] .nw-side-new { min-height: 44px; }
+.nw[data-mode="narrow"] .nw-tag-chip { min-height: 44px; }
+@media (pointer: coarse), (hover: none) {
+  .nw .nw-side-item, .nw .nw-side-new, .nw .nw-tag-chip { min-height: 44px; }
+  .nw .nw-tool, .nw-sketch-editor .nw-tool, .nw-scrim .nw-tool { width: 44px; height: 44px; }
+  .nw .nw-search { height: 44px; }
+}
+.nw[data-mode="narrow"] .nw-toolbar { padding-top: max(6px, env(safe-area-inset-top, 0px)); }
+/* While an on-screen keyboard is up (only touch screens have one), the
+   formatting bar rides above it. Without this the browser pans the page to the
+   caret and the bar, at the top, scrolls out of sight: on a tablet as much as
+   on a phone. */
+.nw[data-keyboard="open"] .nw-toolbar {
+  position: fixed;
+  right: 0;
+  bottom: var(--nw-keyboard, 0px);
+  left: 0;
+  z-index: 40;
+  border-top: 1px solid var(--neo-line);
+  border-bottom: 0;
+  background: var(--neo-panel);
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+/* Room to scroll any line, the last one included, above the keyboard and the bar. */
+.nw[data-keyboard="open"] .nw-page { padding-bottom: calc(var(--nw-keyboard, 0px) + 80px); }
+/* Docked above the keyboard, panels open upwards, into what can be seen, and
+   scroll rather than reach under it. */
+.nw[data-keyboard="open"] .nw-popover {
+  top: auto;
+  bottom: calc(100% + 6px);
+  max-height: calc(100vh - var(--nw-keyboard, 0px) - 140px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.nw[data-mode="narrow"] .nw-fold { left: -22px; }
+
+/* Undo, redo and Done: for touch, where there is no Cmd+Z. Undo and redo sit
+   beside the other tools on a touch tablet. While the keyboard is up, on any
+   touch screen, all three replace the note's navigation in the docked bar
+   (a phone has no room for them otherwise). */
+.nw-touch-edit { display: none; }
+.nw .nw-tool.nw-done { width: auto; padding: 0 12px; color: var(--neo-accent); font-weight: 650; }
+@media (pointer: coarse), (hover: none) {
+  .nw:not([data-mode="narrow"]) .nw-touch-edit { display: flex; }
+  .nw .nw-tool.nw-done { display: none; }
+}
+.nw[data-keyboard="open"] .nw-touch-edit { display: flex; }
+.nw[data-keyboard="open"] .nw-tool.nw-done { display: inline-grid; }
+.nw[data-keyboard="open"] .nw-nav-tool { display: none; }
+
+/* Secondary text uses --neo-fg-8, the dimmest token that keeps 4.5:1 against
+   these backgrounds in every Neo theme (WCAG AA for text this size). --neo-muted
+   is kept for marks that are not text: list markers, chevrons. */
+/* --- sidebar ------------------------------------------------------------------- */
+.nw-sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--neo-line);
+  background: var(--neo-sidebar);
+}
+.nw-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 6px;
+  padding-top: max(16px, env(safe-area-inset-top, 0px));
+  color: var(--neo-fg-8);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.nw-side-tags .nw-side-head { padding-top: 16px; }
+.nw-side-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 12px; }
+.nw-side-entry { display: flex; align-items: center; padding-left: calc(var(--depth, 0) * 14px); border-radius: 8px; }
+.nw-side-entry.drop { box-shadow: inset 0 0 0 2px var(--neo-accent-a65); }
+.nw-side-item {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--neo-body);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-touch-callout: none;
+}
+.nw-side-item .ws-icon { width: 17px; height: 17px; flex: none; color: var(--neo-accent); }
+.nw-side-item:hover { background: var(--neo-lift-a04); }
+.nw-side-entry.active .nw-side-item { background: var(--neo-accent-a16); color: var(--neo-text); }
+.nw-side-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nw-side-count { color: var(--neo-fg-8); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.nw-side-chevron, .nw-side-chevron-space { flex: none; width: 18px; height: 18px; }
+.nw-side-chevron { position: relative; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.nw-side-chevron::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--neo-muted);
+  border-bottom: 1.5px solid var(--neo-muted);
+  transform: rotate(45deg);
+}
+.nw-side-chevron[aria-expanded="false"]::before { transform: rotate(-45deg); top: 6px; left: 4px; }
+.nw-side-mode { padding: 2px 6px; border: 0; border-radius: 6px; background: var(--neo-lift-a06); font-size: 11px; cursor: pointer; }
+.nw-tag-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 8px 8px; }
+.nw-tag-chip {
+  padding: 4px 9px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--neo-body);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.nw-tag-chip:hover { border-color: var(--neo-accent-a50); }
+.nw-tag-chip.on { border-color: var(--neo-accent); background: var(--neo-accent-a16); color: var(--neo-text); }
+.nw-side-foot { padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--neo-line); }
+.nw-side-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--neo-body);
+  cursor: pointer;
+}
+.nw-side-new:hover { background: var(--neo-lift-a04); }
+.nw-side-new .ws-icon { width: 16px; height: 16px; color: var(--neo-accent); }
+
+/* --- list header and sections ----------------------------------------------------- */
+.nw-listhead h1 { margin: 6px 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nw-listhead-spacer { flex: 1; }
+.nw-listhead-top { gap: 2px; }
+.nw-section-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  height: var(--nw-section-head);
+  margin: 0;
+  padding: 12px 12px 6px;
+  background: var(--neo-sidebar);
+  color: var(--neo-fg-1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+}
+.nw-row mark, .nw-card mark { border-radius: 3px; background: var(--neo-accent-a32); color: inherit; }
+.nw-row-folder { display: flex; align-items: center; gap: 4px; color: var(--neo-fg-8); font-size: 12px; }
+.nw-row-folder .ws-icon { width: 12px; height: 12px; }
+.nw-deleted-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 14px 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--neo-lift-a04);
+  color: var(--neo-fg-8);
+  font-size: 12px;
+}
+.nw-deleted-info p { margin: 0; }
+.nw-deleted-info button { flex: none; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--neo-danger-text); cursor: pointer; }
+.nw-deleted-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--neo-line);
+  color: var(--neo-fg-8);
+  font-size: 13px;
+}
+.nw-deleted-bar button { padding: 6px 12px; border: 1px solid var(--neo-line-bright); border-radius: 8px; background: var(--neo-panel); cursor: pointer; }
+
+/* gallery */
+.nw-gallery { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 12px 20px; }
+.nw-gallery .nw-section { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 14px 12px; }
+.nw-gallery .nw-section-label { grid-column: 1 / -1; }
+.nw-card {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: center;
+  cursor: pointer;
+}
+.nw-card-page {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 10px;
+  background: var(--neo-panel);
+  text-align: left;
+}
+.nw-card.selected .nw-card-page { border-color: var(--neo-accent); box-shadow: 0 0 0 2px var(--neo-accent-a50); }
+.nw-card-title { color: var(--neo-fg-1); font-size: 11px; font-weight: 700; }
+.nw-card-page.with-cover { padding: 0; }
+.nw-card-cover { width: 100%; height: 100%; object-fit: cover; }
+.nw-card-excerpt { color: var(--neo-fg-8); font-size: 9.5px; line-height: 1.35; white-space: pre-line; }
+.nw-card-caption { display: grid; gap: 1px; font-size: 12px; }
+.nw-card-name { overflow: hidden; color: var(--neo-text); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.nw-card-caption time { color: var(--neo-fg-8); font-size: 11.5px; }
+
+/* in-note search hits */
+.nw-prose .nw-hit { border-radius: 2px; background: var(--neo-warn-a40); color: inherit; }
+
+/* --- menus, dialogs, toast (portaled to <body>, so not under .nw) ----------------- */
+.nw-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 210px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 12px;
+  background: var(--neo-panel-menu);
+  box-shadow: 0 18px 40px var(--neo-shadow-a50);
+  color: var(--neo-text);
+  font-size: 13.5px;
+}
+.nw-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px 5px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.nw-menu button:hover:not(:disabled), .nw-menu button:focus-visible { background: var(--neo-accent-a16); outline: none; }
+.nw-menu button:disabled { opacity: 0.4; cursor: default; }
+.nw-menu button.danger { color: var(--neo-danger-text); }
+.nw-menu button.has-sub::after { content: ""; width: 6px; height: 6px; margin-left: auto; border-top: 1.5px solid currentColor; border-right: 1.5px solid currentColor; transform: rotate(45deg); }
+.nw-menu-check { width: 14px; flex: none; color: var(--neo-accent); text-align: center; }
+.nw-menu-sep { height: 1px; margin: 4px 6px; background: var(--neo-line); }
+@media (pointer: coarse), (hover: none) {
+  .nw-menu button { min-height: 44px; }
+}
+.nw-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--neo-scrim-a70);
+}
+/* Kept to what the browser shows (ui.jsx, useVisibleArea): scrolls inside if taller. */
+.nw-scrim > .nw-dialog { max-height: 100%; overflow-y: auto; }
+/* With a keyboard up there is little height: tighter, and the lock's picture goes. */
+.nw-scrim[data-keyboard="open"] { padding: 8px 16px; }
+.nw-scrim[data-keyboard="open"] .nw-dialog { padding: 14px; }
+.nw-scrim[data-keyboard="open"] .nw-lock-dialog-icon { display: none; }
+.nw-dialog {
+  width: min(380px, 100%);
+  padding: 18px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 14px;
+  background: var(--neo-panel-menu);
+  box-shadow: 0 24px 60px var(--neo-shadow-a60);
+  color: var(--neo-text);
+}
+.nw-dialog h2 { margin: 0 0 8px; font-size: 16px; }
+.nw-dialog p { margin: 0 0 16px; color: var(--neo-body); font-size: 13.5px; line-height: 1.5; }
+.nw-dialog-field { display: grid; gap: 6px; margin-bottom: 16px; font-size: 12.5px; color: var(--neo-fg-8); }
+.nw-dialog .nw-dialog-field input { height: 36px; padding: 0 10px; border-radius: 8px; font-size: 14px; }
+.nw-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.nw-row-lock { width: 12px; height: 12px; margin-left: 6px; flex: none; color: var(--neo-fg-8); vertical-align: -1px; }
+.nw-card-lock { width: 28px; height: 28px; margin: 18px auto 0; display: block; color: var(--neo-fg-8); }
+/* Locked notes: the lock screen, and the password dialog. */
+.nw-locked {
+  display: grid;
+  flex: 1;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 24px var(--nw-gutter);
+  text-align: center;
+}
+.nw-locked h2 { margin: 6px 0 0; font-size: 20px; font-weight: 700; color: var(--neo-text); overflow-wrap: anywhere; }
+.nw-locked p { margin: 0; color: var(--neo-fg-8); font-size: 14px; }
+.nw-locked .nw-locked-why { max-width: 360px; margin-top: 6px; }
+.nw-locked-icon, .nw-lock-dialog-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: var(--neo-lift-a06); color: var(--neo-accent); }
+.nw-locked-icon .ws-icon, .nw-lock-dialog-icon .ws-icon { width: 24px; height: 24px; }
+.nw-locked-open {
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 0 22px;
+  border: 1px solid var(--neo-accent);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--neo-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.nw-lock-dialog { display: grid; gap: 10px; }
+.nw-lock-dialog-icon { justify-self: center; width: 44px; height: 44px; }
+.nw-lock-dialog h2 { text-align: center; }
+.nw-lock-dialog p { margin: 0; }
+.nw-lock-dialog .password-field { display: grid; gap: 6px; font-size: 12.5px; color: var(--neo-fg-8); }
+.nw-lock-dialog .password-field input { min-height: 40px; }
+.nw-lock-note { color: var(--neo-fg-8) !important; font-size: 12.5px !important; }
+.nw-lock-error { color: var(--neo-danger) !important; font-size: 13px !important; }
+.nw-lock-dialog .nw-dialog-actions { margin-top: 6px; }
+/* A locked note's picture, while it is decrypted. */
+.nw-prose img.nw-image-opening { min-height: 120px; min-width: 160px; border-radius: 8px; background: var(--neo-lift-a04); }
+
+/* the smart folder editor */
+.nw-dialog.nw-smart-dialog { width: min(520px, calc(100vw - 24px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
+.nw-smart-match { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.nw-smart-rules { display: grid; gap: 10px; margin: 0 0 12px; padding: 0; list-style: none; }
+.nw-smart-rule { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--neo-line); border-radius: 10px; }
+.nw-smart-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto; gap: 8px; align-items: center; }
+.nw-smart-dialog select, .nw-smart-dialog input[type="number"], .nw-smart-dialog input[type="date"] {
+  min-height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 8px;
+  background: var(--neo-panel);
+  color: var(--neo-text);
+  font: inherit;
+  font-size: 13.5px;
+}
+.nw-smart-inline { display: flex; align-items: center; gap: 8px; color: var(--neo-fg-8); }
+.nw-smart-inline input { width: 96px; }
+.nw-smart-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.nw-smart-empty { margin: 0; color: var(--neo-fg-8); font-size: 13px; }
+.nw-smart-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  margin-bottom: 16px;
+  padding: 0 10px;
+  border: 1px dashed var(--neo-line-bright);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--neo-accent);
+  font: inherit;
+}
+.nw-smart-add .ws-icon { width: 15px; height: 15px; }
+@media (pointer: coarse), (hover: none) {
+  .nw-smart-dialog select, .nw-smart-dialog input[type="number"], .nw-smart-dialog input[type="date"], .nw-smart-add { min-height: 44px; }
+}
+.nw-dialog-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 9px;
+  background: var(--neo-panel);
+  color: var(--neo-text);
+  font: inherit;
+  cursor: pointer;
+}
+@media (pointer: coarse), (hover: none) { .nw-dialog-actions button { min-height: 44px; } }
+.nw-dialog-actions button.primary { border-color: var(--neo-accent); background: var(--neo-accent); color: var(--neo-on-accent); }
+.nw-dialog-actions button.danger { border-color: var(--neo-danger); background: var(--neo-danger); color: #fff; }
+.nw-dialog-actions button:disabled { opacity: 0.45; cursor: default; }
+.nw-toast {
+  position: fixed;
+  bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  z-index: 1002;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 12px;
+  background: var(--neo-panel-menu);
+  box-shadow: 0 14px 34px var(--neo-shadow-a50);
+  color: var(--neo-text);
+  font-size: 13.5px;
+  transform: translateX(-50%);
+}
+.nw-toast button { padding: 4px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--neo-accent); font: inherit; font-weight: 650; cursor: pointer; }
+
+/* --- info panel ------------------------------------------------------------------- */
+.nw-info {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 0 16px 24px;
+  border-left: 1px solid var(--neo-line);
+  background: var(--neo-sidebar);
+  font-size: 13px;
+}
+.nw-info-head { display: flex; align-items: center; justify-content: space-between; padding-top: max(10px, env(safe-area-inset-top, 0px)); }
+.nw-info-head h2 { margin: 0; font-size: 15px; }
+.nw-info-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
+.nw-info-facts dt { color: var(--neo-fg-8); }
+.nw-info-facts dd { margin: 0; overflow-wrap: anywhere; }
+.nw-info-facts a { color: var(--neo-accent-soft); }
+.nw-info-summary { display: grid; gap: 6px; color: var(--neo-fg-8); }
+.nw .nw-info-summary textarea { width: 100%; padding: 8px; border-radius: 8px; resize: vertical; font: inherit; color: var(--neo-text); }
+.nw-info-section { display: grid; gap: 6px; }
+.nw-info-section h3 { margin: 0; color: var(--neo-fg-8); font-size: 12px; font-weight: 650; }
+.nw-info-section ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.nw-info-section li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nw-info-section li span { display: grid; min-width: 0; }
+.nw-info-section li small { color: var(--neo-fg-8); font-size: 11.5px; }
+.nw-info-section li button { flex: none; padding: 3px 8px; border: 1px solid var(--neo-line); border-radius: 6px; background: transparent; font-size: 12px; cursor: pointer; }
+.nw-info-section li .nw-info-link { flex: 1; min-width: 0; overflow: hidden; border: 0; padding: 0; color: var(--neo-accent-soft); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.nw .nw-info-section select { width: 100%; height: 32px; border-radius: 8px; padding: 0 8px; }
+.nw-info-empty { margin: 0; color: var(--neo-fg-8); }
+.nw-info-error { margin: 0; color: var(--neo-danger-text); }
+.nw-info-files .file-attachments { display: grid; gap: 6px; }
+.nw-info-files .file-attachments-title { color: var(--neo-fg-8); font-size: 12px; font-weight: 650; }
+.nw-info-files .file-attachments-actions { display: grid; grid-template-columns: 1fr auto; gap: 5px; }
+.nw-info-files .file-attachments-actions > button:first-of-type { grid-column: 1 / -1; }
+.nw-info-files button { padding: 5px 8px; border: 1px solid var(--neo-line); border-radius: 7px; background: transparent; font-size: 12px; cursor: pointer; }
+.nw-info-files .file-attachment-list { display: grid; gap: 4px; }
+.nw-info-files .file-attachment-list button { display: grid; text-align: left; }
+.nw-info-files .file-attachment-list span { color: var(--neo-fg-8); font-size: 11px; }
+
+/* --- printing: only the note -------------------------------------------------------- */
+/* Print (the note's "..." menu): only the note, dark on white, whatever the theme. */
+@media print {
+  /* Neo's own navigation, while Notes is what is on screen. */
+  body:has(.nw) :is(.neo-sidebar, .neo-mobile-bar, .neo-nav-scrim) { display: none !important; }
+  .nw .nw-sidebar, .nw .nw-listpane, .nw .nw-toolbar, .nw .nw-banner, .nw .nw-info, .nw .nw-deleted-bar, .nw .nw-notice, .nw-toast, .nw-menu { display: none !important; }
+  .nw, .nw-shell, .nw-editorpane, .nw-editor, .nw-page { display: block !important; height: auto !important; overflow: visible !important; }
+  .nw {
+    --neo-text: #111;
+    --neo-fg-1: #000;
+    --neo-body: #222;
+    --neo-fg-8: #555;
+    --neo-fg-10: #555;
+    --neo-muted: #666;
+    --neo-faint: #777;
+    --neo-accent: #1b6b34;
+    --neo-accent-soft: #1b6b34;
+    --neo-green: #1b6b34;
+    --neo-line: #ccc;
+    --neo-line-bright: #bbb;
+    --neo-bg: #fff;
+    --neo-panel: #fff;
+    --neo-panel-raised: #f4f4f4;
+    --neo-lift-a04: rgba(0, 0, 0, 0.04);
+    --neo-lift-a08: rgba(0, 0, 0, 0.06);
+    /* The light theme's inks: a drawing reads on paper as it does on screen. */
+    --nw-ink-purple: #6f3cc4;
+    --nw-ink-pink: #b8226a;
+    --nw-ink-orange: #a85200;
+    --nw-ink-mint: #0b7d5f;
+    --nw-ink-blue: #1b5fc1;
+    background: #fff !important;
+    color: #111 !important;
+  }
+  .nw .nw-prose { min-height: 0; }
+  .nw .nw-fold, .nw .nw-sketch-edit, .nw .nw-sketch-empty { display: none !important; }
+  .nw .nw-sketch, .nw .nw-prose img, .nw .nw-prose table, .nw .nw-prose pre { break-inside: avoid; }
+  .nw .nw-page { padding: 0 !important; }
+}

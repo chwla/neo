@@ -173,6 +173,39 @@ export function chordFromEvent(event) {
   return [...orderModifiers(modifiers), aliasKey(event.key)].join("+");
 }
 
+/** The character each physical key prints on a US layout, by `event.code`. */
+const PHYSICAL_KEYS = {
+  Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\",
+  Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`",
+};
+
+/**
+ * The same chord spelled from the physical key rather than the character, or
+ * null when that adds nothing. Shift and Option change the character on a Mac
+ * (Cmd+Shift+7 can arrive as "&", Cmd+Option+1 as "¡"), so a binding written as
+ * "mod+shift+7" needs this to be reachable at all. The dispatcher asks for it
+ * only when the character spelling is bound to nothing.
+ *
+ * Only with Cmd held, or Ctrl without Alt. Ctrl+Alt is how Windows and Linux
+ * report AltGr, which types characters ("}" is AltGr+0 on a German keyboard),
+ * and Option alone types them on a Mac; neither may ever become a command.
+ */
+export function physicalChordFromEvent(event) {
+  if (!event || typeof event.code !== "string" || event.isComposing || event.keyCode === 229) return null;
+  if (!(event.metaKey || (event.ctrlKey && !event.altKey))) return null;
+  if (event.getModifierState?.("AltGraph")) return null;
+  const letter = /^Key([A-Z])$/.exec(event.code);
+  const digit = /^Digit([0-9])$/.exec(event.code);
+  const key = letter ? letter[1].toLowerCase() : digit ? digit[1] : PHYSICAL_KEYS[event.code];
+  if (!key) return null;
+  const chord = chordFromEvent({ ...pick(event), key });
+  return chord && chord !== chordFromEvent(event) ? chord : null;
+}
+
+function pick(event) {
+  return { altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey };
+}
+
 /**
  * The canonical form of a chord someone wrote down -- a default in `commands.js`,
  * or a sequence read back from a profile's stored overrides. Accepts the spellings

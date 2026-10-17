@@ -8,6 +8,7 @@ from threading import Lock
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from app.services.notes import keys as note_keys
 from app.services.profile_accounts import (
     authenticate,
     create_guest,
@@ -16,6 +17,7 @@ from app.services.profile_accounts import (
     delete_guest,
     delete_profile,
     list_profiles,
+    profile_database,
     profile_for_session,
     revoke_profile_session,
     revoke_profile_sessions,
@@ -150,14 +152,33 @@ def update_current_profile(
             status_code=400, detail="Guest sessions cannot be edited. Create a profile first."
         )
 
-    updated = update_profile_account(
-        profile["id"],
-        username=payload.username,
-        avatar_data=payload.avatar_data,
-        clear_avatar=payload.clear_avatar,
-        current_password=payload.current_password,
-        new_password=payload.new_password,
-    )
+    # Locked notes' keys follow the password in three crash-safe steps
+    # (services/notes/keys.py): a pending wrap under the new password, then the
+    # password itself, then the pending wrap made current.
+    staged: list[str] = []
+    if payload.new_password is not None:
+        authenticate(profile["id"], payload.current_password or "")
+        if len(payload.new_password) < 4:
+            raise HTTPException(
+                status_code=422, detail="Password must contain at least 4 characters."
+            )
+        with profile_database(profile["id"]):
+            staged = note_keys.stage_password_change(payload.current_password, payload.new_password)
+    try:
+        updated = update_profile_account(
+            profile["id"],
+            username=payload.username,
+            avatar_data=payload.avatar_data,
+            clear_avatar=payload.clear_avatar,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+        )
+    except BaseException:
+        with profile_database(profile["id"]):
+            note_keys.discard_pending(staged)
+        raise
+    with profile_database(profile["id"]):
+        note_keys.promote_pending(staged)
 
     if payload.new_password is not None:
         # A password change signs every other device out; this one keeps working.

@@ -17,7 +17,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 
-const CSS = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+// Notes ships its own stylesheet with its chunk; it is held to the same rules.
+const CSS = ["../src/index.css", "../src/notes/notes.css"]
+  .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+  .join("\n");
 const SOURCE = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
 
 //: Innermost declaration blocks, as in backgrounds.test.mjs.
@@ -156,6 +159,8 @@ describe("press feedback", () => {
       [".ws-tile", "button.ws-tile"], [".gal-card .gal-card-pin", ".gal-card-pin"],
       [".settings-section li > button", ".settings-section li button"],
       [".row-actions-menu .row-actions-danger", ".row-actions-menu button"],
+      // Hovering a heading only reveals its fold button; the heading is text, not a control.
+      ...["h1", "h2", "h3", "h4", "h5", "h6"].map((tag) => [`.nw-prose ${tag}`, null]),
     ]);
     const uncovered = new Set();
     for (const rule of RULES) {

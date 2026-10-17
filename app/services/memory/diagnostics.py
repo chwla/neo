@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -15,6 +14,7 @@ from sqlalchemy import func, inspect, select, text
 from sqlalchemy.engine import Engine
 
 from app.core.identifiers import canonical_uuid
+from app.core.sqlite_backup import backup_sqlite_file
 from app.models.memory import (
     MemoryCandidate,
     MemoryOperation,
@@ -109,42 +109,16 @@ def run_sqlite_integrity_check(engine: Engine) -> tuple[str, ...]:
     return tuple(str(row[0]) for row in rows)
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def create_sqlite_backup(engine: Engine, destination: Path) -> SQLiteBackupManifest:
     identity = identify_database_owner(engine)
-    source_path = Path(identity.database_path)
-    destination = destination.expanduser().resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination == source_path:
-        raise ValueError("backup_destination_must_differ_from_source")
-    if destination.exists():
-        raise FileExistsError(destination)
-
-    source = sqlite3.connect(source_path)
-    target = sqlite3.connect(destination)
-    try:
-        source.backup(target)
-        target.commit()
-        integrity = tuple(str(row[0]) for row in target.execute("PRAGMA integrity_check"))
-    finally:
-        target.close()
-        source.close()
-    if integrity != ("ok",):
-        raise RuntimeError("backup_integrity_check_failed")
+    backup = backup_sqlite_file(Path(identity.database_path), destination)
     return SQLiteBackupManifest(
         owner_id=identity.owner_id,
         database_identity=identity.database_identity,
-        source_path=str(source_path),
-        destination_path=str(destination),
-        sha256=_file_sha256(destination),
-        integrity_result=integrity,
+        source_path=backup.source_path,
+        destination_path=backup.destination_path,
+        sha256=backup.sha256,
+        integrity_result=backup.integrity_result,
     )
 
 

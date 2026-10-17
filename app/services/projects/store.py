@@ -437,6 +437,10 @@ def _row_to_project(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
 
 def _row_to_note_with_tags(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     data = dict(row)
+    # A linked-note row only needs what a list shows; the document and any
+    # ciphertext stay out of these responses.
+    data.pop("doc_json", None)
+    data.pop("cipher_json", None)
     raw_metadata = data.pop("source_metadata_json", None)
     data["source_metadata"] = json.loads(raw_metadata) if raw_metadata else {}
     data["pinned"] = bool(data["pinned"])
