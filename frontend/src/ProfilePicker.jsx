@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import NeoLogo from "./NeoLogo.jsx";
 import PasswordField from "./PasswordField.jsx";
 
 function InitialsAvatar({ profile, large = false }) {
@@ -13,6 +14,7 @@ function InitialsAvatar({ profile, large = false }) {
 
 export default function ProfilePicker({ onSignedIn }) {
   const [profiles, setProfiles] = useState([]);
+  const [loadingProfiles, setLoadingProfiles] = useState(true);
   const [mode, setMode] = useState("choose");
   const [selected, setSelected] = useState(null);
   const [username, setUsername] = useState("");
@@ -23,16 +25,17 @@ export default function ProfilePicker({ onSignedIn }) {
   const passwordInput = useRef(null);
 
   async function loadProfiles() {
+    setLoadingProfiles(true);
     try {
       const data = await api.accountProfiles();
       setProfiles(data.profiles || []);
     } catch (requestError) {
       setError(requestError.message || "Could not load profiles.");
-    }
+    } finally { setLoadingProfiles(false); }
   }
 
   useEffect(() => { loadProfiles(); }, []);
-  useEffect(() => { if (mode === "unlock") passwordInput.current?.focus(); }, [mode]);
+  useEffect(() => { if (mode === "unlock" || mode === "delete") passwordInput.current?.focus(); }, [mode]);
 
   async function chooseGuest() {
     setBusy(true); setError("");
@@ -79,50 +82,87 @@ export default function ProfilePicker({ onSignedIn }) {
     reader.readAsDataURL(file);
   }
 
-  return <main className="profile-picker">
-    <section className="profile-picker-card" aria-live="polite">
-      <p className="profile-kicker">LOCAL PROFILES</p>
-      <h1>Welcome to Neo</h1>
-      <p className="profile-picker-copy">Choose a profile to open its private workspace.</p>
-      {error && <p className="profile-picker-error">{error}</p>}
+  return <main className={`profile-picker profile-picker-${mode}`}>
+    <section className={`profile-shell profile-shell-${mode}`}>
+      <div className="profile-brand" aria-label="Neo"><NeoLogo /><span>neo</span></div>
+
+      {mode !== "choose" && <button type="button" className="profile-back" onClick={() => {
+        setPassword(""); setError(""); setMode(mode === "delete" ? "unlock" : "choose");
+      }}><span aria-hidden="true">←</span>{mode === "delete" ? "Keep profile" : "All profiles"}</button>}
 
       {mode === "choose" && <>
-        <div className="profile-grid">
-          {profiles.map((profile) => <button className="profile-card" key={profile.id} onClick={() => { setSelected(profile); setPassword(""); setError(""); setMode("unlock"); }}>
-            <InitialsAvatar profile={profile} large /><span>{profile.username}</span><small>Password protected</small>
+        <header className="profile-intro">
+          <h1>Choose a profile</h1>
+          <p>Select a local workspace to continue.</p>
+        </header>
+        {error && <p className="profile-picker-error" role="alert">{error}</p>}
+        {loadingProfiles ? <p className="profile-empty" role="status">Loading profiles…</p> : profiles.length > 0 ? <div className="profile-grid">
+          {profiles.map((profile) => <button type="button" className="profile-option" key={profile.id} disabled={busy} onClick={() => {
+            setSelected(profile); setPassword(""); setError(""); setMode("unlock");
+          }} aria-label={`Open ${profile.username} profile`}>
+            <InitialsAvatar profile={profile} />
+            <span className="profile-option-name">{profile.username}</span>
+            <span className="profile-option-arrow" aria-hidden="true">→</span>
           </button>)}
-          <button className="profile-card profile-card-add" onClick={() => { setError(""); setMode("create"); }}>
-            <span className="profile-add-icon">+</span><span>New profile</span><small>Saved on this device</small>
+        </div> : !error && <p className="profile-empty">No profiles on this device yet. Create one to get started.</p>}
+        <div className="profile-actions">
+          <button type="button" className="profile-create-action" disabled={busy} onClick={() => { setError(""); setMode("create"); }}>
+            <span className="profile-create-icon" aria-hidden="true">+</span>Create profile
           </button>
-          <button className="profile-card profile-card-guest" onClick={chooseGuest} disabled={busy}>
-            <span className="profile-guest-icon">◌</span><span>Guest</span><small>Deleted when Neo closes</small>
-          </button>
+          <div className="profile-guest-action">
+            <button type="button" onClick={chooseGuest} disabled={busy} aria-describedby="profile-guest-note">Continue as guest <span aria-hidden="true">→</span></button>
+            <small id="profile-guest-note">Cleared when Neo closes</small>
+          </div>
         </div>
       </>}
 
-      {mode === "unlock" && selected && <form className="profile-form" onSubmit={unlock}>
-        <button type="button" className="profile-back" onClick={() => setMode("choose")}>← All profiles</button>
-        <div className="profile-unlock-heading"><InitialsAvatar profile={selected} large /><div><h2>{selected.username}</h2><p>Enter your password to continue.</p></div></div>
-        <PasswordField label="Password" inputRef={passwordInput} value={password} onChange={setPassword} autoComplete="current-password" required />
-        <button className="neo-button" type="submit" disabled={busy}>{busy ? "Unlocking…" : "Unlock profile"}</button>
-        <button type="button" className="profile-danger-link" onClick={() => { setPassword(""); setError(""); setMode("delete"); }} disabled={busy}>Delete this account</button>
-      </form>}
+      {mode === "unlock" && selected && <>
+        <div className="profile-identity">
+          <InitialsAvatar profile={selected} large />
+          <h1>{selected.username}</h1>
+          <p>Enter your password to continue.</p>
+        </div>
+        {error && <p className="profile-picker-error" role="alert">{error}</p>}
+        <form className="profile-form" onSubmit={unlock}>
+          <PasswordField label="Password" inputRef={passwordInput} value={password} onChange={setPassword} autoComplete="current-password" required />
+          <button className="profile-submit" type="submit" disabled={busy}>{busy ? "Unlocking…" : "Unlock profile"}<span aria-hidden="true">→</span></button>
+        </form>
+        <details className="profile-options">
+          <summary>Profile options <span aria-hidden="true">⌄</span></summary>
+          <button type="button" onClick={() => { setPassword(""); setError(""); setMode("delete"); }} disabled={busy}>Delete this profile</button>
+        </details>
+      </>}
 
-      {mode === "delete" && selected && <form className="profile-form" onSubmit={deleteAccount}>
-        <button type="button" className="profile-back" onClick={() => { setPassword(""); setMode("unlock"); }}>← Keep account</button>
-        <div className="profile-unlock-heading"><InitialsAvatar profile={selected} large /><div><h2>Delete {selected.username}?</h2><p>This permanently removes its chats, memories, files, settings, and local credentials from this device.</p></div></div>
-        <PasswordField label="Enter password to confirm" inputRef={passwordInput} value={password} onChange={setPassword} autoComplete="current-password" required />
-        <button className="neo-button profile-danger-button" type="submit" disabled={busy}>{busy ? "Deleting…" : "Delete account permanently"}</button>
-      </form>}
+      {mode === "delete" && selected && <>
+        <div className="profile-identity profile-delete-intro">
+          <InitialsAvatar profile={selected} large />
+          <h1>Delete {selected.username}?</h1>
+          <p>This permanently removes its chats, memories, files, settings, and local credentials from this device.</p>
+        </div>
+        {error && <p className="profile-picker-error" role="alert">{error}</p>}
+        <form className="profile-form" onSubmit={deleteAccount}>
+          <PasswordField label="Enter password to confirm" inputRef={passwordInput} value={password} onChange={setPassword} autoComplete="current-password" required />
+          <button className="profile-submit profile-danger-button" type="submit" disabled={busy}>{busy ? "Deleting…" : "Delete profile permanently"}</button>
+        </form>
+      </>}
 
-      {mode === "create" && <form className="profile-form" onSubmit={create}>
-        <button type="button" className="profile-back" onClick={() => setMode("choose")}>← All profiles</button>
-        <h2>Create a profile</h2><p>No email or verification needed. This profile stays only on this device.</p>
-        <label className="profile-picture-input"><span>{avatarData ? <img src={avatarData} alt="Selected profile picture" className="profile-avatar profile-avatar-large" /> : "Add picture"}</span><input type="file" accept="image/*" onChange={handleAvatar} /> <em>Optional profile picture</em></label>
-        <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" maxLength="48" required /></label>
-        <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="new-password" minLength={4} required hint="Use at least 4 characters." />
-        <button className="neo-button" type="submit" disabled={busy}>{busy ? "Creating…" : "Create profile"}</button>
-      </form>}
+      {mode === "create" && <>
+        <header className="profile-intro profile-form-intro">
+          <h1>Create a profile</h1>
+          <p>Your private workspace stays on this device.</p>
+        </header>
+        {error && <p className="profile-picker-error" role="alert">{error}</p>}
+        <form className="profile-form" onSubmit={create}>
+          <label className="profile-picture-input">
+            <span className="profile-picture-preview">{avatarData ? <img src={avatarData} alt="" className="profile-avatar profile-avatar-large" /> : <span aria-hidden="true">+</span>}</span>
+            <span className="profile-picture-copy">{avatarData ? "Change photo" : "Add a photo"}<small>Optional</small></span>
+            <input type="file" accept="image/*" onChange={handleAvatar} aria-label="Profile picture" />
+          </label>
+          <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" maxLength={48} required /></label>
+          <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="new-password" minLength={4} required hint="Use at least 4 characters." />
+          <button className="profile-submit" type="submit" disabled={busy}>{busy ? "Creating…" : "Create profile"}<span aria-hidden="true">→</span></button>
+        </form>
+      </>}
     </section>
   </main>;
 }

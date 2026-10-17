@@ -24,8 +24,8 @@ export default function PasswordField({
   const fieldId = id || generatedId;
 
   return (
-    <label className="password-field" htmlFor={fieldId}>
-      {label ? <span className="password-field-label">{label}</span> : null}
+    <div className="password-field">
+      {label ? <label className="password-field-label" htmlFor={fieldId}>{label}</label> : null}
       <span className="password-field-control">
         <input
           id={fieldId}
@@ -37,6 +37,7 @@ export default function PasswordField({
           minLength={minLength}
           required={required}
           disabled={disabled}
+          aria-describedby={hint ? `${fieldId}-hint` : undefined}
         />
         <button
           type="button"
@@ -45,7 +46,6 @@ export default function PasswordField({
           aria-label={visible ? "Hide password" : "Show password"}
           aria-pressed={visible}
           title={visible ? "Hide password" : "Show password"}
-          tabIndex={-1}
         >
           <svg
             viewBox="0 0 24 24"
@@ -60,7 +60,7 @@ export default function PasswordField({
           </svg>
         </button>
       </span>
-      {hint ? <small className="password-field-hint">{hint}</small> : null}
-    </label>
+      {hint ? <small className="password-field-hint" id={`${fieldId}-hint`}>{hint}</small> : null}
+    </div>
   );
 }
