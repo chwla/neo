@@ -8,11 +8,11 @@
  */
 
 const LOW =
-  "Low: fast, concise answers without extended reasoning. Searches the web and uses Neo's tools automatically when a question needs them.";
+  "Quick: shorter answers, usually faster. Neo searches for current information when web search is on.";
 const HIGH =
-  "High: reasons before answering and gives fuller answers, and researches more sources when a question needs current information. Slower.";
+  "Detailed: fuller answers and more sources when web search is on. This takes longer.";
 
-export const ALWAYS_REASONS_NOTE = "This model always reasons, so Low is slower with it.";
+export const ALWAYS_REASONS_NOTE = "This model takes time to think even in Quick mode.";
 
 /**
  * Whether the latest Low reply from `modelName` reasoned although Low asked it

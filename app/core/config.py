@@ -284,6 +284,16 @@ class Settings(BaseSettings):
             "NEO_WEB_SEARCH_FALLBACK_PROVIDERS",
         ),
     )
+    #: Try Wikipedia's search API after every configured provider has failed.
+    #: It needs no key and is published for programs, so it still answers on
+    #: networks that block or degrade the scraped general web providers.
+    web_search_wikipedia_fallback: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "WEB_SEARCH_WIKIPEDIA_FALLBACK",
+            "NEO_WEB_SEARCH_WIKIPEDIA_FALLBACK",
+        ),
+    )
     tavily_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("TAVILY_API_KEY", "NEO_TAVILY_API_KEY"),

@@ -2502,21 +2502,6 @@ export const ChatComposer = memo(function ChatComposer({
                   </>
                 ) : (
                   <>
-                    {/* Replies only. An agent run leans on the model's reasoning
-                        for tool choice, planning and knowing when it is done, so
-                        it is always given it -- and a setting that governed runs
-                        from a menu that does not show it would be worse than no
-                        setting at all. */}
-                    <label className="agent-chip">
-                      <span className="agent-chip-label">Effort</span>
-                      <select value={effort} onChange={(event) => onEffortChange(event.target.value)}
-                        disabled={disabled} aria-label="Select effort"
-                        title={effortTooltip(effortAlwaysReasons)}>
-                        {/* Default first, as the other chips do. */}
-                        <option value="low">Low · faster replies</option>
-                        <option value="high">High · more thorough</option>
-                      </select>
-                    </label>
                     <AttachFilesAction
                       attaching={attaching}
                       disabled={disabled}
@@ -2612,11 +2597,24 @@ export const ChatComposer = memo(function ChatComposer({
           <div className="composer-foot">
             {/* What the next turn will be, kept away from the button that sends
                 it: the choice is made before typing, the send after it. */}
-            <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
-              <button type="button" role="tab" aria-selected={mode === "chatbot"}
-                className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
-              <button type="button" role="tab" aria-selected={mode === "agent"}
-                className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
+            <div className="composer-choice-group">
+              <div className="chat-mode-switch" role="tablist" aria-label="Interaction mode">
+                <button type="button" role="tab" aria-selected={mode === "chatbot"}
+                  className={mode === "chatbot" ? "active" : ""} onClick={() => onModeChange("chatbot")}>Chat</button>
+                <button type="button" role="tab" aria-selected={mode === "agent"}
+                  className={mode === "agent" ? "active" : ""} onClick={() => onModeChange("agent")}>Agent</button>
+              </div>
+              {mode === "chatbot" ? (
+                <label className="agent-chip chat-answer-style">
+                  <span className="agent-chip-label">Answer</span>
+                  <select value={effort} onChange={(event) => onEffortChange(event.target.value)}
+                    disabled={disabled} aria-label="Choose answer style"
+                    title={effortTooltip(effortAlwaysReasons)}>
+                    <option value="low">Quick</option>
+                    <option value="high">Detailed</option>
+                  </select>
+                </label>
+              ) : null}
             </div>
             <div className="composer-actions">
               {/* One slot, three jobs, in the order of what is happening rather than

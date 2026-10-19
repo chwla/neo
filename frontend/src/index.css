@@ -922,6 +922,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .chat-content th { background: var(--neo-panel); color: var(--neo-green); font: 600 11px "JetBrains Mono", monospace; letter-spacing: .04em; }
 .chat-content tbody tr:nth-child(even) { background: var(--neo-lift-a015); }
 .message-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: inherit; }
+@media (max-width: 640px) {
+  .neo-chat-message.assistant .message-meta { display: none; }
+}
 .message-actions { position: relative; display: flex; }
 .message-actions button { border: 0; background: transparent; padding: 0; color: inherit; font: 9px "JetBrains Mono", monospace; letter-spacing: .04em; }
 .message-actions button:hover:not(:disabled) { color: var(--neo-green); }
@@ -1104,6 +1107,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 
 /* Control row: mode switch left, send right. */
 .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.composer-choice-group { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.chat-answer-style { min-height: 36px; border-color: var(--neo-accent-a28); }
+.chat-answer-style .agent-chip-label { color: var(--neo-body); font-size: 12px; }
+.chat-answer-style select { height: 34px; color: var(--neo-text); font-size: 13px; }
 .composer-tools { display: flex; align-items: center; gap: 10px; }
 .composer-actions { display: flex; align-items: center; gap: 12px; }
 .composer-tool {
@@ -1777,7 +1784,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   .neo-shell { padding: 18px 16px 150px; }
   .chat-input-wrap { right: 0; bottom: 0; left: 0; padding: 16px 12px 8px; }
   .chat-input-shell { border-radius: 20px; padding: 14px 14px 12px; }
-  .chat-llm-picker select { max-width: 40vw; }
+  .chat-llm-picker select { max-width: 30vw; font-size: 11px; }
   .modal-backdrop { padding: 10px; }
   .neo-dialog { max-height: calc(100vh - 20px); padding: 0 16px 18px; }
   .profile-picker { align-items: flex-start; padding: 24px 18px; }

@@ -30,6 +30,7 @@ from app.services.calendar.service import (
 from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
 from app.services.context import ContextPackage
+from app.services.current_time import today_for_prompt
 from app.services.files.service import WorkspaceFilesService
 from app.services.gallery.chat_lookup import GalleryMatches, wants_gallery
 from app.services.gallery.chat_lookup import lookup as gallery_lookup
@@ -83,8 +84,6 @@ from app.services.symbol_awareness.service import SymbolAwarenessService
 from app.services.tasks import TaskContextService
 from app.services.test_runner.service import TestRunnerContextService
 from app.services.web_search import (
-    EXTRACTION_FAILURE_MESSAGE,
-    GROUNDING_FAILURE_MESSAGE,
     WebContext,
     WebSearchService,
 )
@@ -177,16 +176,22 @@ _PROMPT_CORE = (
     "unknown to you, say so in one sentence instead of guessing, and still give "
     "whatever help you can. Never reply with only an offer to search. Never say or "
     "imply that you searched, checked or verified anything unless web context below "
-    "shows that a search ran. "
+    "shows that a search ran. If the user asks for a list of things, name the things "
+    "and briefly explain each choice. Number ranked lists; do not replace them with "
+    "generic categories or advice. Use simple words unless the user asks for detail. "
 )
 
 #: How Low answers. Low is the default: fast, useful, and short by design.
 _PROMPT_LOW = (
-    "Reply concisely: lead with the answer, then only the details that matter. If the "
+    "Reply concisely: lead with the answer, then only the details that matter. "
+    "For an ordinary explanation, use two to four short sentences and everyday "
+    "words. Do not write a step-by-step technical breakdown unless the user asks "
+    "for one. If the user asks for a number of items, give the items even when "
+    "that takes more space. If the "
     "answer depends on information that may have changed since your training and no "
-    "web context is provided, give your best answer, say in one short clause that it "
-    "may be out of date, and offer to search the web. When web context is provided, do "
-    "not add that disclaimer. "
+    "web search has run, give your best answer, say in one short clause that it "
+    "may be out of date, and offer to search the web. When a web search has run, "
+    "add no such disclaimer and do not offer to search again. "
 )
 
 #: How High answers. It reasons first; this is about what the answer contains.
@@ -194,18 +199,31 @@ _PROMPT_HIGH = (
     "Give a complete, well-organized answer suited to the task. Work through difficult "
     "problems carefully and state key assumptions, trade-offs and edge cases when they "
     "matter. Keep simple answers short; do not pad. If the answer depends on "
-    "information that may have changed since your training and no web context is "
-    "provided, say which parts may be out of date and offer to search the web. "
+    "information that may have changed since your training and no web search has "
+    "run, say which parts may be out of date and offer to search the web. When a "
+    "web search has run, add no such disclaimer and do not offer to search again. "
 )
 
 #: Used only when a search ran and returned nothing usable: the answer must say
 #: so first, then help from general knowledge without presenting anything
 #: time-sensitive as current.
 _PROMPT_WEB_UNAVAILABLE = (
-    "A web search ran for this message and returned no usable sources. Start with one "
-    "short sentence saying current information could not be verified. Then help from "
-    "general knowledge where the answer does not depend on current information. Do not "
-    "present time-sensitive facts as current or verified, and do not cite sources. "
+    "A web search ran for this message and returned no usable sources. Start with "
+    "one short sentence saying you could not check current information online. Then "
+    "still answer as usefully as you can from general knowledge: if the user asked "
+    "for recommendations or a list, name specific items with a short reason for "
+    "each; if they asked for a current fact, give the most recent answer you know "
+    "and say it may have changed since. Do not just tell the user to look it up "
+    "elsewhere. Do not present what you know as confirmed or current, and do not "
+    "cite sources. "
+)
+#: Used whenever web search is switched off. Nothing can be checked online, so
+#: the answer must not pretend it was, or offer a search that cannot run.
+_PROMPT_WEB_DISABLED = (
+    "Web search is turned off. If the answer depends on current information, say in "
+    "one short clause that you could not check it online, then answer as usefully "
+    "as you can from general knowledge. Do not offer to search the web, and do not "
+    "claim you searched or verified anything. "
 )
 
 #: How to use and cite retrieved evidence. Meaningless on a turn that
@@ -219,8 +237,12 @@ _PROMPT_WEB = (
     "your answer. For web-grounded prompts, do not use memory, conversation history, "
     "or general knowledge to fill gaps in the retrieved web evidence. The web context "
     "contains extracted evidence only; do not infer beyond it. "
+    "The web evidence is newer than your training data: when it disagrees with what you "
+    "remember, follow the evidence and do not mention the older version as current. "
     "For time-sensitive facts, answer only from the web evidence. If the web evidence "
-    "does not contain the answer, say only: I searched the web but could not find "
+    "supports only part of a multi-item request, give the supported items and say "
+    "how many you could verify; do not invent the rest. If it does not contain "
+    "the answer at all, say only: I searched the web but could not find "
     "sufficiently reliable current sources. Do NOT add general knowledge or filler "
     "after that statement. Do NOT answer from your training data for time-sensitive "
     "questions. "
@@ -228,6 +250,9 @@ _PROMPT_WEB = (
     "results by entity. Do not merge unrelated entities into one answer. "
     "When the evidence covers several variants of what was asked, say which variant "
     "each figure applies to. "
+    "For a list request, each numbered entry must name one specific item the evidence "
+    "supports, with a short reason in everyday words and a citation. Never number "
+    "categories, source names or headings as if they were items. "
     "Do NOT generate a Sources or References block yourself. The backend will "
     "append verified sources automatically. Do NOT invent URLs or cite pages that "
     "were not provided in the web context. "
@@ -345,6 +370,7 @@ class NeoChatService:
         else:
             self.helper_llm = self.calendar_llm = self.quick_llm = ollama
         self._timings: dict[str, Any] = {}
+        self._turn_timezone: str | None = None
         self.memory_enabled = (
             bool(
                 self.settings.memory_enabled
@@ -444,12 +470,23 @@ class NeoChatService:
         web_unavailable = bool(
             web_context is not None and web_context.needed and not web_context.citations
         )
+        # Every turn, not only a web-routed one: with search off, the effort
+        # prompts' "offer to search" would promise something that cannot run.
+        web_disabled = not self.settings.web_search_enabled
         carries_workspace = bool(project_context or task_context)
         # What never changes within a conversation comes first and what changes
         # per turn comes last. A runtime with prefix caching then reuses the
         # whole stable part from one turn to the next instead of re-reading it;
-        # on a turn that searched, the evidence rules no longer split it.
-        stable = [_PROMPT_CORE]
+        # on a turn that searched, the evidence rules no longer split it. The
+        # date changes once a day, so it belongs with the stable part. Without
+        # it a model assumes its training year is the present and calls the
+        # actual current year "the future".
+        stable = [
+            _PROMPT_CORE,
+            f"Today's date is {today_for_prompt(self._turn_timezone)}. Treat it as the "
+            "present, even when it is later than your training data: this year and earlier "
+            "years are not in the future. ",
+        ]
         if carries_workspace:
             stable.append(_PROMPT_WORKSPACE)
         stable.append(_PROMPT_HIGH if self.reasoning else _PROMPT_LOW)
@@ -457,6 +494,8 @@ class NeoChatService:
         per_turn = []
         if has_evidence:
             per_turn.append(_PROMPT_WEB)
+        elif web_disabled:
+            per_turn.append(_PROMPT_WEB_DISABLED)
         elif web_unavailable:
             per_turn.append(_PROMPT_WEB_UNAVAILABLE)
         if gallery_context:
@@ -752,6 +791,7 @@ class NeoChatService:
         locale: str | None = None,
     ) -> str:
         self._begin_turn()
+        self._turn_timezone = timezone
         self.calendar_execution = "none"
         persisted_messages = self.store.list_chat_messages(chat_id)
         history = self._history_turns(persisted_messages)
@@ -991,7 +1031,7 @@ class NeoChatService:
                 chat_id,
                 "assistant",
                 web_failure,
-                response_kind="web_search",
+                response_kind=self._web_response_kind(web_context),
                 provider_name=(
                     web_context.search.provider if web_context.search is not None else None
                 ),
@@ -1017,7 +1057,7 @@ class NeoChatService:
                 chat_id,
                 "assistant",
                 direct_web_reply,
-                response_kind="web_search",
+                response_kind=self._web_response_kind(web_context),
                 provider_name=(
                     web_context.search.provider if web_context.search is not None else None
                 ),
@@ -1064,14 +1104,25 @@ class NeoChatService:
             generation_started = time.perf_counter()
             result = self._generate_complete(messages, num_predict=budget, llm=answer_llm)
             self._timings["generation_ms"] = int((time.perf_counter() - generation_started) * 1000)
-            if web_context.citations and not self._has_web_citation_marker(
-                result.content, web_context
-            ):
-                reply = self._web_generation_fallback(
-                    prompt,
-                    web_context,
-                    RuntimeError("generated web answer lacked citation markers"),
+            if web_context.citations:
+                cited = self._cited_web_reply(
+                    prompt, result.content, web_context, messages, budget=budget
                 )
+                if cited is None:
+                    web_context = _without_usable_evidence(web_context)
+                    messages = self.build_messages(
+                        prompt,
+                        history,
+                        context,
+                        web_context,
+                        project_context,
+                        task_context,
+                        calendar_execution=self.calendar_execution,
+                        gallery_context=gallery.prompt_block() if gallery is not None else None,
+                    )
+                    result = self._generate_complete(messages, num_predict=budget, llm=answer_llm)
+                    cited = self._with_web_citations(result.content, web_context)
+                reply = cited
             else:
                 reply = self._with_web_citations(result.content, web_context)
             failure = self._classify_answer_failure(
@@ -1093,6 +1144,7 @@ class NeoChatService:
                     task_context=task_context,
                     llm=answer_llm,
                     budget=budget,
+                    web_context=web_context,
                 )
                 recovery = {"kind": failure, **recovered["recovery"]}
                 if recovered.get("reply") is not None:
@@ -1152,7 +1204,7 @@ class NeoChatService:
             total_tokens=total_tokens,
             duration_ms=self._turn_duration_ms(),
             thinking=thinking,
-            response_kind="web_search" if web_context.needed else "normal_chat",
+            response_kind=self._web_response_kind(web_context),
             provider_name=provider_name,
             model_name=model_name,
             route_name=route_name,
@@ -1286,6 +1338,7 @@ class NeoChatService:
         generation_id: str | None = None,
         generation_lease_token: str | None = None,
     ) -> Iterator[dict[str, Any]]:
+        self._turn_timezone = timezone
         self.calendar_execution = "none"
 
         def persist_assistant(content: str, **metadata) -> ChatMessage:
@@ -1639,7 +1692,8 @@ class NeoChatService:
             SearchIntentKind.RELEASE_DATE,
         }:
             web_query, web_hint = self._web_query_for(prompt, search_intent)
-            yield {"type": "status", "content": "Searching the web"}
+            if self.settings.web_search_enabled:
+                yield {"type": "status", "content": "Searching the web"}
             web_context = self.web_search.build_context_forced(
                 web_query, hint=web_hint, options=self._search_options()
             )
@@ -1694,7 +1748,7 @@ class NeoChatService:
                 final_answer=web_failure,
             )
             web_metadata = {
-                "response_kind": "web_search",
+                "response_kind": self._web_response_kind(web_context),
                 "provider_name": (
                     web_context.search.provider if web_context.search is not None else None
                 ),
@@ -1736,7 +1790,7 @@ class NeoChatService:
                 final_answer=direct_web_reply,
             )
             web_metadata = {
-                "response_kind": "web_search",
+                "response_kind": self._web_response_kind(web_context),
                 "provider_name": (
                     web_context.search.provider if web_context.search is not None else None
                 ),
@@ -1815,6 +1869,8 @@ class NeoChatService:
         buffer_for_validation = bool(web_context.needed and web_context.citations)
         if buffer_for_validation:
             yield {"type": "status", "content": _writing_from_sources(web_context)}
+        elif web_context.needed and not self.settings.web_search_enabled:
+            yield {"type": "status", "content": "Web search is off; answering from what I know"}
         output_budget = self._num_predict(
             prompt, context, reasoning=self._answer_reasons(search_intent)
         )
@@ -1844,7 +1900,7 @@ class NeoChatService:
                 final_answer=reply,
             )
             fallback_metadata = {
-                "response_kind": "web_search",
+                "response_kind": self._web_response_kind(web_context),
                 "provider_name": (
                     web_context.search.provider if web_context.search is not None else None
                 ),
@@ -1890,15 +1946,47 @@ class NeoChatService:
                 "Please narrow the request or increase the model output limit."
             )
             final_metadata["finish_reason"] = "incomplete_length"
-        elif web_context.citations and not self._has_web_citation_marker(
-            cleaned_reply,
-            web_context,
-        ):
-            reply = self._web_generation_fallback(
-                prompt,
-                web_context,
-                RuntimeError("generated web answer lacked citation markers"),
+        elif web_context.citations:
+            if (
+                cleaned_reply.strip()
+                and not _SOURCES_LACK_ANSWER.search(cleaned_reply)
+                and not self._has_web_citation_marker(cleaned_reply, web_context)
+            ):
+                yield {"type": "status", "content": "Adding sources to the answer"}
+            cited = self._cited_web_reply(
+                prompt, cleaned_reply, web_context, messages, budget=output_budget
             )
+            if cited is None:
+                yield {
+                    "type": "status",
+                    "content": "The sources didn't answer this; answering from what I know",
+                }
+                web_context = _without_usable_evidence(web_context)
+                messages = self.build_messages(
+                    prompt,
+                    history,
+                    context,
+                    web_context,
+                    project_context,
+                    task_context,
+                    calendar_execution=self.calendar_execution,
+                    gallery_context=gallery.prompt_block() if gallery is not None else None,
+                )
+                (
+                    general_raw,
+                    general_metadata,
+                    streamed_reply,
+                    general_thinking,
+                ) = yield from self._stream_answer(
+                    answer_llm, messages, output_budget, buffer_content=False
+                )
+                final_metadata = _merge_generation_metadata(final_metadata, general_metadata)
+                if general_thinking.strip():
+                    streamed_thinking = f"{streamed_thinking}\n\n{general_thinking}".strip()
+                cited = self._with_web_citations(
+                    answer_llm.clean_response(general_raw), web_context
+                )
+            reply = cited
         else:
             reply = self._with_web_citations(cleaned_reply, web_context)
         failure = (
@@ -2011,7 +2099,7 @@ class NeoChatService:
             total_tokens=final_metadata.get("total_tokens"),
             duration_ms=final_metadata.get("duration_ms"),
             thinking=thinking,
-            response_kind="web_search" if web_context.needed else "normal_chat",
+            response_kind=self._web_response_kind(web_context),
             provider_name=final_metadata.get("provider_name") or final_metadata.get("provider"),
             model_name=final_metadata.get("model_name") or final_metadata.get("model"),
             route_name=final_metadata.get("route_name") or "chat",
@@ -2082,7 +2170,7 @@ class NeoChatService:
             "completion_tokens": final_metadata.get("completion_tokens"),
             "total_tokens": final_metadata.get("total_tokens"),
             "duration_ms": final_metadata.get("duration_ms"),
-            "response_kind": "web_search" if web_context.needed else "normal_chat",
+            "response_kind": self._web_response_kind(web_context),
             "provider_name": final_metadata.get("provider_name") or final_metadata.get("provider"),
             "model_name": final_metadata.get("model_name") or final_metadata.get("model"),
             "route_name": final_metadata.get("route_name") or "chat",
@@ -2795,7 +2883,12 @@ class NeoChatService:
         return False
 
     def _search_options(self) -> SearchOptions:
-        """Research depth for this turn's effort. Routing is unaffected."""
+        """Research depth for this turn's effort. Routing is unaffected.
+
+        ``max_seconds`` bounds the whole search, providers and page fetches
+        together, so an unreachable or slow provider cannot hold a turn for
+        minutes; whatever was found by then is used.
+        """
 
         settings = self.settings
         if self.reasoning:
@@ -2803,11 +2896,13 @@ class NeoChatService:
                 max_results=settings.web_search_max_results_high,
                 max_pages=settings.web_fetch_max_pages_high,
                 max_context_tokens=settings.web_context_max_tokens_high,
+                max_seconds=35,
             )
         return SearchOptions(
             max_results=settings.web_search_max_results,
             max_pages=settings.web_fetch_max_pages,
             max_context_tokens=settings.web_context_max_tokens,
+            max_seconds=25,
         )
 
     def _web_query_for(self, prompt: str, intent: ResolvedSearchIntent) -> tuple[str, str | None]:
@@ -3323,6 +3418,8 @@ class NeoChatService:
         if web_context is None or not web_context.needed:
             return "No web context loaded."
         if web_context.warning and not web_context.context_text:
+            if "disabled" in web_context.warning.lower():
+                return "Web search is disabled; no search was run."
             return f"Web search attempted but unavailable: {web_context.warning}"
         if not web_context.context_text:
             return "Web search ran, but no usable page text was fetched."
@@ -3333,12 +3430,21 @@ class NeoChatService:
             return None
         if web_context.citations:
             return None
-        reason = web_context.warning or "No fetched web sources were available."
-        if reason == GROUNDING_FAILURE_MESSAGE:
-            return GROUNDING_FAILURE_MESSAGE
-        if reason == EXTRACTION_FAILURE_MESSAGE:
-            return EXTRACTION_FAILURE_MESSAGE
-        return f"I tried to search the web, but could not build a cited answer: {reason}"
+        if "disabled" in (web_context.warning or "").lower():
+            return "I can't check that online right now because web search is turned off."
+        return "I searched the web, but couldn't find enough reliable information to answer that."
+
+    def _web_response_kind(self, web_context: WebContext | None) -> str:
+        """Only label a reply as web search when a search could actually run."""
+
+        if (
+            web_context is not None
+            and web_context.needed
+            and self.settings.web_search_enabled
+            and "disabled" not in (web_context.warning or "").lower()
+        ):
+            return "web_search"
+        return "normal_chat"
 
     def _with_web_citations(self, reply: str, web_context: WebContext | None) -> str:
         body = _strip_llm_sources_block(reply)
@@ -3380,13 +3486,72 @@ class NeoChatService:
         return cleaned.strip()
 
     def _has_web_citation_marker(self, reply: str, web_context: WebContext) -> bool:
+        # Markers must be in the answer itself; a Sources block the model wrote
+        # proves nothing about which claims the evidence supports.
         validation = validate_citation_markers(
-            reply,
+            _strip_llm_sources_block(reply),
             web_context.citations,
             supported_indices={chunk.source_index for chunk in web_context.evidence_chunks},
             require_marker=True,
         )
+        if not validation.valid:
+            self._timings.setdefault("citation_errors", validation.errors)
         return validation.valid
+
+    def _cited_web_reply(
+        self,
+        prompt: str,
+        draft: str,
+        web_context: WebContext,
+        messages: list[LLMMessage],
+        *,
+        budget: int,
+    ) -> str | None:
+        """A web answer whose claims carry verified citations, or what to do instead.
+
+        A small model often answers correctly from the evidence but leaves out
+        the [n] markers that tie each claim to its source. That is a citation
+        failure, not a knowledge failure, so the recovery is to ask for the
+        citations -- once, without reasoning, since nothing new is being worked
+        out -- before giving up on the answer.
+
+        ``None`` means the sources found do not answer the question: the model
+        said so, or could not tie its answer to them even when asked. Anything
+        but a single-fact lookup is then answered as though the search found
+        nothing usable, which says so and still helps; showing the user raw
+        passages from off-topic pages helps no one.
+        """
+
+        if self._has_web_citation_marker(draft, web_context):
+            return self._with_web_citations(draft, web_context)
+        sources_lack_answer = bool(_SOURCES_LACK_ANSWER.search(draft))
+        if draft.strip() and not sources_lack_answer:
+            started = time.perf_counter()
+            repair = [
+                *messages,
+                LLMMessage(role="assistant", content=draft),
+                LLMMessage(role="user", content=_CITATION_REPAIR_REQUEST),
+            ]
+            try:
+                result = self._generate_complete(repair, num_predict=budget, llm=self.quick_llm)
+                repaired = self.quick_llm.clean_response(result.content)
+            except Exception:
+                repaired = ""
+            cited = bool(repaired.strip()) and self._has_web_citation_marker(repaired, web_context)
+            self._timings["citation_repair"] = {
+                "result": "cited" if cited else "failed",
+                "ms": int((time.perf_counter() - started) * 1000),
+            }
+            if cited:
+                return self._with_web_citations(repaired, web_context)
+        if draft.strip() and web_context.answer_mode != "fact_lookup":
+            self._timings["sources_unused"] = (
+                "model_said_unanswered" if sources_lack_answer else "uncitable"
+            )
+            return None
+        return self._web_generation_fallback(
+            prompt, web_context, RuntimeError("generated web answer lacked citation markers")
+        )
 
     def _web_generation_fallback(
         self, prompt: str, web_context: WebContext, error: Exception
@@ -3460,6 +3625,7 @@ class NeoChatService:
         task_context: str | None,
         llm: LLMClient,
         budget: int,
+        web_context: WebContext,
     ) -> dict[str, Any]:
         """The one bounded recovery for a failed answer, on the non-streaming path.
 
@@ -3493,7 +3659,8 @@ class NeoChatService:
                 calendar_execution=self.calendar_execution,
             )
         else:
-            web_context = None
+            # Same inputs, same evidence: an empty answer on a turn that searched
+            # is regenerated from that search, and keeps its citations.
             recovery_messages = messages
         try:
             result = self._generate_complete(recovery_messages, num_predict=budget, llm=llm)
@@ -3940,6 +4107,14 @@ _EMPTY_ANSWER_REPLY = (
     "I couldn't produce an answer to that just now. Please try again, or rephrase the question."
 )
 
+#: The one follow-up for a web answer that left out its citation markers.
+_CITATION_REPAIR_REQUEST = (
+    "Rewrite your answer above so that every fact taken from the web context is followed "
+    "by the bracket number of the source it came from, like [1]. Use only the numbered "
+    "sources in the web context, and leave out anything they do not support. Keep the "
+    "answer otherwise the same, and do not add a list of sources."
+)
+
 
 def _searched_for(prompt: str, web_context: WebContext | None) -> str | None:
     """What the turn searched, when that is not the user's message itself.
@@ -4019,6 +4194,28 @@ def _append_without_overlap(existing: str, continuation: str) -> str:
     return existing + separator + continuation
 
 
+#: The sentence ``_PROMPT_WEB`` tells the model to write when the evidence does
+#: not contain the answer. Being an instruction followed, not a failure to cite,
+#: it is never sent back for citations.
+_SOURCES_LACK_ANSWER = re.compile(
+    r"\bI searched the web but could not find sufficiently reliable current sources\b",
+    re.IGNORECASE,
+)
+
+
+def _without_usable_evidence(web_context: WebContext) -> WebContext:
+    """The same search, recorded as having found nothing the answer can use."""
+
+    return web_context.model_copy(
+        update={
+            "citations": [],
+            "evidence_chunks": [],
+            "context_text": "",
+            "warning": "The pages found did not answer the question.",
+        }
+    )
+
+
 def _merge_generation_metadata(
     first: dict[str, Any],
     second: dict[str, Any],
@@ -4047,9 +4244,15 @@ _LLM_SOURCES_HEADER = re.compile(
     r"(?:^|\n)[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?(?:Sources|References|Citations)(?:\*\*|__)?"
     r"[ \t]*:"
     r"|\s(?:\*\*|__)?(?:Sources|References|Citations)(?:\*\*|__)?[ \t]*:"
-    r"(?=\s*(?:\[\d|https?://|\n|$))",
+    r"(?=\s*(?:\[\d|https?://|\n|$))"
+    # A heading line on its own, in any Markdown dress and with or without a
+    # colon: "**Sources**", "*Sources:*", "### References".
+    r"|(?:^|\n)[ \t]*(?:#{1,6}[ \t]*)?[*_]{0,3}[ \t]*(?:Sources|References|Citations)"
+    r"[ \t]*:?[ \t]*[*_]{0,3}[ \t]*:?[ \t]*(?=\n|$)",
     re.IGNORECASE,
 )
+#: A Markdown rule left dangling once a model-written Sources block is removed.
+_TRAILING_RULE = re.compile(r"\n[ \t]*(?:\*{3,}|-{3,}|_{3,})[ \t]*$")
 
 
 def _strip_llm_sources_block(reply: str) -> str:
@@ -4065,6 +4268,7 @@ def _strip_llm_sources_block(reply: str) -> str:
         r"\n{1,3}(?:Sources|References|Citations)\s*:\s*$", "", cleaned, flags=re.IGNORECASE
     )
     cleaned = re.sub(r"\s*[\[(]\s*$", "", cleaned)
+    cleaned = _TRAILING_RULE.sub("", cleaned.rstrip())
     return cleaned.strip()
 
 
@@ -4106,6 +4310,11 @@ def _clean_snippet_text(text: str) -> str:
     cleaned = re.sub(r"^Search result title:\s*", "", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"\.\s*Search result snippet:\s*", ". ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"^Search result snippet:\s*", "", cleaned, flags=re.IGNORECASE)
+    # Evidence-extraction labels tell the model what kind of passage it is
+    # reading; to a person they are noise.
+    cleaned = re.sub(
+        r"^(?:Article pick|Page description|Infobox):\s*", "", cleaned, flags=re.IGNORECASE
+    )
     return cleaned.strip()
 
 

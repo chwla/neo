@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from app.services.current_time import today_for_prompt
 from app.services.llm import LLMMessage
 
 if TYPE_CHECKING:
@@ -259,14 +260,17 @@ Return exactly one JSON object on one line, with no Markdown and no extra text:
 
 Fields:
 - q: the keywords a person would type into a search box. Drop question words,
-  politeness and filler. Keep proper nouns, product names and version numbers
-  exactly as written. Never invent an entity the user did not mention. Never add
-  words like "official" or "release date" unless the user asked for a date.
+  politeness and filler. Keep proper nouns, product names, years and version
+  numbers exactly as written. Never invent an entity the user did not mention. Never add
+  words like "official" or "release date" unless the user asked for a date. When the
+  user asks for the latest, newest, last, current or most recent one of something,
+  add the current year to q, so that pages about older ones rank lower.
 - terms: the 1-3 lowercase nouns naming the topic. Only words that would
   plausibly appear in the title of a correct result. Never include words like
   changed, latest, new, recent, official, version, update.
 - mode: fact for a single fact (a date, price, number or name); news for what is
-  new or what happened recently; overview for an explanation, plot or summary.
+  new or what happened recently; overview for an explanation, plot, summary, or
+  a list of recommendations.
 - window: day or week only when an older answer would be wrong. Use null for
   changelogs, documentation and anything historical.
 
@@ -281,6 +285,10 @@ USER: how many <units> does <work> have
 JSON: {"q":"<work> number of <units>","terms":["<work>"],"mode":"fact","window":null}
 USER: tell me about the story of <work>
 JSON: {"q":"<work> plot summary","terms":["<work>"],"mode":"overview","window":null}
+USER: what are the best <things> for <purpose>
+JSON: {"q":"best <things> for <purpose>","terms":["<things>"],"mode":"overview","window":null}
+USER: who won the most recent <event>
+JSON: {"q":"<event> winner <current year>","terms":["<event>"],"mode":"fact","window":null}
 """
 
 _PLAN_JSON = re.compile(r"\{\s*\"q\".*?\}", re.DOTALL)
@@ -344,7 +352,7 @@ class QueryPlanner:
     """Turn a user turn into a provider query via the selected chat model."""
 
     def __init__(self) -> None:
-        self._cache: OrderedDict[tuple[str, str], SearchPlan] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, str, str], SearchPlan] = OrderedDict()
 
     def plan(
         self,
@@ -370,7 +378,7 @@ class QueryPlanner:
         if llm is None or not query.strip():
             return fallback
 
-        cache_key = (" ".join(query.lower().split()), getattr(llm, "model", ""))
+        cache_key = (" ".join(query.lower().split()), getattr(llm, "model", ""), today_for_prompt())
         cached = self._cache.get(cache_key)
         if cached is not None:
             self._cache.move_to_end(cache_key)
@@ -386,10 +394,21 @@ class QueryPlanner:
     @staticmethod
     def _request_plan(query: str, llm: LLMClient, hint: str | None) -> dict[str, object] | None:
         user_content = query if not hint or hint == query else f"{query}\n\n(topic: {hint})"
+        today = today_for_prompt()
         try:
             raw = llm.chat(
                 [
-                    LLMMessage(role="system", content=_QUERY_PLAN_SYSTEM_PROMPT),
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            _QUERY_PLAN_SYSTEM_PROMPT
+                            + f"\nToday's date is {today}, so the current year is {today[:4]}. "
+                            "Resolve words like today, this week and this year relative to "
+                            "this date. Your own memory of recent events stops earlier, so "
+                            "never put a year you remember as the latest into q; use the "
+                            "current year.\n"
+                        ),
+                    ),
                     LLMMessage(role="user", content=user_content),
                 ],
                 temperature=0.0,
@@ -414,6 +433,23 @@ class QueryPlanner:
         # topic (or hallucinated an entity); the deterministic cleanup is safer.
         asked = content_tokens(query)
         if asked and not (asked & content_tokens(provider_query)):
+            return None
+        # A year can be the whole point of a buying or release question. A
+        # small planner may omit it while still keeping the product name,
+        # yielding a plausible but stale set of results.
+        requested_years = set(re.findall(r"\b(?:19|20)\d{2}\b", query))
+        planned_years = set(re.findall(r"\b(?:19|20)\d{2}\b", provider_query))
+        if requested_years - planned_years:
+            return None
+        # The opposite failure: a year the user never wrote, older than last
+        # year, can only come from the model's memory -- which ends at its
+        # training data. Asked who won "the last" contest, a small planner
+        # searches for the one it remembers and finds only stale pages.
+        oldest_resolvable = int(today_for_prompt()[:4]) - 1
+        for year in planned_years - requested_years:
+            if int(year) < oldest_resolvable:
+                provider_query = " ".join(re.sub(rf"\b{year}\b", " ", provider_query).split())
+        if not provider_query:
             return None
 
         raw_terms = payload.get("terms")
@@ -441,7 +477,7 @@ class QueryPlanner:
             source="model",
         )
 
-    def _remember(self, key: tuple[str, str], plan: SearchPlan) -> None:
+    def _remember(self, key: tuple[str, str, str], plan: SearchPlan) -> None:
         self._cache[key] = plan
         self._cache.move_to_end(key)
         while len(self._cache) > _PLAN_CACHE_MAX_ENTRIES:

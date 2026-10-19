@@ -170,6 +170,7 @@ class QueryRelevanceProfile(BaseModel):
 class SearchOptions(BaseModel):
     max_results: int | None = None
     max_pages: int | None = None
+    max_seconds: float | None = Field(default=None, gt=0, le=120)
     #: Evidence budget for the model context, in tokens. Unset uses the
     #: ``web_context_max_tokens`` setting.
     max_context_tokens: int | None = None

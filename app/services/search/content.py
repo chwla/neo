@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import codecs
 import io
 import json
 import re
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
@@ -829,7 +830,7 @@ class WebPageFetcher:
                 http_status=getattr(response, "status_code", None),
             )
 
-        encoding = response.encoding or "utf-8"
+        encoding = _body_encoding(response.headers.get("content-type") or "", bytes(body))
         raw = bytes(body).decode(encoding, errors="replace")
         if content_type in {"application/json", "text/plain"}:
             text = normalize_text(raw)
@@ -923,27 +924,85 @@ def parse_html_page(
     return page
 
 
-def fetch_pages(results: list[SearchResult], max_pages: int) -> list[FetchedPage]:
+_HEADER_CHARSET = re.compile(r"charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+
+
+def _body_encoding(content_type: str, body: bytes) -> str:
+    """The character encoding a page declares, or UTF-8 when it declares none.
+
+    ``requests`` assumes ISO-8859-1 for any text type whose header names no
+    charset, following an old HTTP rule. Nearly every such page is UTF-8, and
+    reading it as Latin-1 turns each curly quote into "â€™" in the evidence the
+    model reads and the text the user sees. A page's own ``<meta charset>``
+    comes next after the header, then UTF-8.
+    """
+
+    declared = _HEADER_CHARSET.search(content_type)
+    if declared:
+        name = declared.group(1)
+    else:
+        meta = _META_CHARSET.search(body[:4096])
+        name = meta.group(1).decode("ascii", errors="ignore") if meta else "utf-8"
+    try:
+        codecs.lookup(name)
+    except LookupError:
+        return "utf-8"
+    return name
+
+
+def fetch_pages(
+    results: list[SearchResult], max_pages: int, *, deadline: float | None = None
+) -> list[FetchedPage]:
+    if max_pages <= 0 or (deadline is not None and time.monotonic() >= deadline):
+        return []
     fetcher = WebPageFetcher()
     pages: list[FetchedPage] = []
-    with ThreadPoolExecutor(max_workers=min(max_pages or 1, 4)) as executor:
-        future_to_result = {
-            executor.submit(fetcher.fetch, result.url): result
-            for result in results[: max(max_pages * 3, max_pages)]
-        }
-        for future in as_completed(future_to_result):
-            result = future_to_result[future]
-            try:
-                page = future.result()
-            except Exception as exc:
-                page = FetchedPage(
-                    url=result.url, title=result.title, domain=result.source, error=str(exc)
-                )
-            if not page.title:
-                page.title = result.title
-            pages.append(page)
-            if sum(1 for item in pages if item.fetched and item.text) >= max_pages:
+    # Start with just the pages needed, then try at most two replacements for
+    # failed fetches. An eagerly queued batch of three times max_pages made
+    # every search wait for pages it never used.
+    candidates = results[: max_pages + 2]
+    executor = ThreadPoolExecutor(max_workers=min(max_pages, 4))
+    pending = {}
+    next_candidate = 0
+    fetched_count = 0
+    try:
+        while next_candidate < min(max_pages, len(candidates)):
+            result = candidates[next_candidate]
+            pending[executor.submit(fetcher.fetch, result.url)] = result
+            next_candidate += 1
+        while pending and fetched_count < max_pages:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if remaining == 0:
                 break
+            completed, _ = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+            if not completed:
+                break
+            for future in completed:
+                result = pending.pop(future)
+                try:
+                    page = future.result()
+                except Exception as exc:
+                    page = FetchedPage(
+                        url=result.url, title=result.title, domain=result.source, error=str(exc)
+                    )
+                if not page.title:
+                    page.title = result.title
+                pages.append(page)
+                if page.fetched and page.text:
+                    fetched_count += 1
+            while (
+                next_candidate < len(candidates)
+                and fetched_count + len(pending) < max_pages
+                and (deadline is None or time.monotonic() < deadline)
+            ):
+                result = candidates[next_candidate]
+                pending[executor.submit(fetcher.fetch, result.url)] = result
+                next_candidate += 1
+    finally:
+        # A completed evidence set should not wait for spare fetches. Pending
+        # requests have their own timeout and cannot affect the returned pages.
+        executor.shutdown(wait=False, cancel_futures=True)
     return pages
 
 
@@ -958,6 +1017,11 @@ def extract_evidence_chunks(
     pages: list[FetchedPage],
 ) -> list[EvidenceChunk]:
     chunks: list[EvidenceChunk] = []
+    # An overview -- a summary, or a list of recommendations -- draws on many
+    # short sections of one page, where a single fact needs only its best few.
+    # The evidence pack's token budget still bounds what reaches the model.
+    per_page_limit = 8 if answer_mode == "overview" else 3
+    total_limit = 16 if answer_mode == "overview" else 8
     for page in pages:
         if not page.fetched or not page.text:
             continue
@@ -980,8 +1044,10 @@ def extract_evidence_chunks(
                     relevance_score=score,
                 )
             )
-        chunks.extend(sorted(scored, key=lambda chunk: chunk.relevance_score, reverse=True)[:3])
-    return sorted(chunks, key=lambda chunk: chunk.relevance_score, reverse=True)[:8]
+        chunks.extend(
+            sorted(scored, key=lambda chunk: chunk.relevance_score, reverse=True)[:per_page_limit]
+        )
+    return sorted(chunks, key=lambda chunk: chunk.relevance_score, reverse=True)[:total_limit]
 
 
 def _candidate_chunks(page: FetchedPage) -> list[str]:
@@ -997,14 +1063,16 @@ def _candidate_chunks(page: FetchedPage) -> list[str]:
         return [chunk for chunk in line_chunks if chunk.startswith("Upcoming match:")]
 
     meta_chunks = _meta_and_infobox_chunks(page.text)
+    # META is already returned as its own chunk. Leaving the same line at the
+    # start of the readable body gives a search snippet two chances to outrank
+    # the actual article content, especially on overview questions.
+    readable_text = re.sub(r"^META:[^\r\n]*(?:\r?\n|$)", "", page.text)
 
-    listing_chunks: list[str] = []
-    if listing_chunks:
-        return meta_chunks + listing_chunks
+    listing_chunks = _article_pick_chunks(page)
 
     sentences = [
         _clean_chunk(sentence)
-        for sentence in re.split(r"(?<=[.!?])\s+", page.text)
+        for sentence in re.split(r"(?<=[.!?])\s+", readable_text)
         if _clean_chunk(sentence)
     ]
     chunks: list[str] = []
@@ -1021,12 +1089,63 @@ def _candidate_chunks(page: FetchedPage) -> list[str]:
     if current:
         chunks.append(" ".join(current))
     if chunks:
-        return meta_chunks + chunks
+        return meta_chunks + listing_chunks + chunks
 
-    words = page.text.split()
-    return meta_chunks + [
-        _clean_chunk(" ".join(words[index : index + 85])) for index in range(0, len(words), 65)
-    ]
+    words = readable_text.split()
+    return (
+        meta_chunks
+        + listing_chunks
+        + [_clean_chunk(" ".join(words[index : index + 85])) for index in range(0, len(words), 65)]
+    )
+
+
+#: Headings that frame an article rather than name one of its items: page
+#: furniture, method notes, and reader questions.
+_NON_PICK_HEADING = re.compile(
+    r"^(?:faq|frequently asked|related|"
+    r"more stories|about|methodology|"
+    r"how we|why we|conclusion|introduction|the best|top \d+|read more)\b|"
+    r"^(?:what|when|which|who|where|is|are)\b.*\?$",
+    re.IGNORECASE,
+)
+
+#: Marks an evidence chunk that pairs one of an article's item headings with
+#: its paragraph. The page title is already in the source's header in the
+#: model's context, so it is not repeated on every pick.
+ARTICLE_PICK_PREFIX = "Article pick: "
+
+
+def _article_pick_chunks(page: FetchedPage) -> list[str]:
+    """Pair a listicle's item heading with its own descriptive paragraph."""
+    if not page.blocks:
+        return []
+    picks: list[str] = []
+    for position, block in enumerate(page.blocks):
+        if (
+            block.kind != "heading"
+            or block.level < 2
+            or not block.heading_path
+            or len(block.text) < 4
+            or len(block.text) > 100
+            or _NON_PICK_HEADING.search(block.text)
+        ):
+            continue
+        for following in page.blocks[position + 1 : position + 7]:
+            if block.text not in following.heading_path:
+                break
+            if (
+                following.kind == "paragraph"
+                and len(following.text) >= 70
+                and following.link_chars < len(following.text) * 0.5
+                and not re.search(
+                    r"\b(?:photograph|view image|image credit)\b",
+                    following.text[:100],
+                    re.IGNORECASE,
+                )
+            ):
+                picks.append(f"{ARTICLE_PICK_PREFIX}{block.text}. {following.text[:450]}")
+                break
+    return picks[:30]
 
 
 def _meta_and_infobox_chunks(text: str) -> list[str]:
@@ -1085,8 +1204,22 @@ def _score_chunk(profile: QueryRelevanceProfile, answer_mode: str, chunk: str) -
         score += 2.0
     if re.search(r"\b(?:\d{1,2}\s+[a-z]{3,9}\s+20\d{2}|20\d{2}-\d{2}-\d{2})\b", normalized):
         score += 3.0
-    if chunk.startswith("Page description:") or chunk.startswith("Infobox:"):
+    if chunk.startswith("Infobox:") or (
+        answer_mode == "fact_lookup" and chunk.startswith("Page description:")
+    ):
         score += 4.0
+    if answer_mode == "overview" and chunk.startswith("Page description:"):
+        score -= 3.0
+    if answer_mode == "overview" and chunk.startswith(ARTICLE_PICK_PREFIX):
+        score += 8.0
+    if answer_mode == "overview" and re.search(
+        r"\b(?:related posts|related articles|you may also like)\b", normalized
+    ):
+        score -= 5.0
+    if answer_mode == "overview" and re.search(
+        r"\b(?:chat with us now|table of contents)\b", normalized
+    ):
+        score -= 5.0
     # A single fact is usually a figure, a quantity, a version or a date, in
     # whatever domain; a chunk that carries one is more likely to answer it.
     if answer_mode == "fact_lookup" and _EVIDENCE_SHAPE.search(chunk):

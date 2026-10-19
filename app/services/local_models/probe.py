@@ -317,6 +317,17 @@ def _total_memory_gb(scan: _Scan) -> float:
         output = scan.run(["sysctl", "-n", "hw.memsize"])
         if output and output.isdigit():
             total = int(output) / _GIB
+        if not total:
+            # macOS can deny the sysctl subprocess inside an app sandbox even
+            # though the process can read the same physical-page count through
+            # libc. Keep the model-sizing figure available in that case.
+            try:
+                pages = os.sysconf("SC_PHYS_PAGES")
+                page_size = os.sysconf("SC_PAGE_SIZE")
+                if pages > 0 and page_size > 0:
+                    total = pages * page_size / _GIB
+            except (OSError, ValueError):
+                pass
     elif system == "Windows":
         payload = _windows_payload(scan)
         if payload:

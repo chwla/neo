@@ -295,9 +295,11 @@ def build_relevance_profile(
         if token not in QUERY_STOPWORDS and len(token) > 1
     ]
     tokens = list(dict.fromkeys(raw_tokens))
+    subject = [term for term in (subject_terms or []) if term in tokens]
     aliases: list[str] = []
     seen: set[str] = set()
-    for token in tokens:
+    # A term the plan names as the subject is one even when it is a year.
+    for token in dict.fromkeys([*_topic_terms(tokens), *subject]):
         for alias in expanded_aliases(token):
             if alias not in seen:
                 aliases.append(alias)
@@ -317,7 +319,7 @@ def build_relevance_profile(
         terms=tokens,
         aliases=aliases,
         requires_freshness=requires_freshness,
-        subject_terms=[term for term in (subject_terms or []) if term in tokens],
+        subject_terms=subject,
         entity_terms=_entity_terms(query),
     )
 
@@ -345,13 +347,18 @@ def minimum_term_hits_for(profile: QueryRelevanceProfile) -> int:
     demanding two matches would reject every correct result, because no page
     about it says "changed" or "official" in its title.
     """
-    counted = profile.subject_terms or [
-        term for term in profile.terms if term not in NON_DISCRIMINATIVE_TERMS
-    ]
+    counted = _topic_terms(
+        profile.subject_terms
+        or [term for term in profile.terms if term not in NON_DISCRIMINATIVE_TERMS]
+    )
     # Names the user wrote are part of the subject even when the plan left them
     # out: for "population of <city> vs <city>" a plan naming only "population"
     # let a world-population page through on that one word.
-    names = [term for term in profile.entity_terms if term in profile.terms and term not in counted]
+    names = [
+        term
+        for term in _topic_terms(profile.entity_terms)
+        if term in profile.terms and term not in counted
+    ]
     return 2 if len(counted) + len(names) >= 3 else 1
 
 
@@ -363,6 +370,7 @@ def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) ->
         for result in scored
         if result.relevance_score >= MIN_FETCH_RELEVANCE_SCORE
         and has_alias_hit(profile, f"{result.title} {result.url} {result.snippet or ''}")
+        and mentions_subject(profile, f"{result.title} {result.url} {result.snippet or ''}")
         and term_hit_count(profile, f"{result.title} {result.url} {result.snippet or ''}")
         >= minimum_term_hits
         and not is_low_quality_result(result, profile)
@@ -483,9 +491,16 @@ def relevant_fetched_page(
 
 
 def expanded_aliases(token: str) -> list[str]:
-    """Kept for callers that expand terms; matching is separator-insensitive in
-    ``has_alias_hit`` instead of relying on a list of known spellings."""
+    """A term and its singular, for a plain English plural.
 
+    Matching is by substring, so the singular also finds the plural: asked for
+    "phones", a page titled "the best cheap phone" is on topic. Separator
+    differences are handled in ``has_alias_hit`` rather than by a list of
+    known spellings.
+    """
+
+    if len(token) >= 4 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return [token, token[:-1]]
     return [token]
 
 
@@ -504,7 +519,44 @@ def has_alias_hit(profile: QueryRelevanceProfile, value: str) -> bool:
 
 def term_hit_count(profile: QueryRelevanceProfile, value: str) -> int:
     normalized = normalize_for_relevance(value)
-    return sum(1 for term in set(profile.terms) if term in normalized)
+    counted = {*_topic_terms(profile.terms), *profile.subject_terms}
+    return sum(1 for term in counted if any(form in normalized for form in expanded_aliases(term)))
+
+
+def mentions_subject(profile: QueryRelevanceProfile, value: str) -> bool:
+    """Whether a result names the subject the search plan identified.
+
+    The plan's subject terms are the words a correct result's title would
+    contain. Without this a result could reach the hit threshold on side words
+    alone: "mobile" from "best budget mobile phones" let an identity-card page
+    about updating a registered mobile number through.
+    """
+
+    if not profile.subject_terms:
+        return True
+    normalized = normalize_for_relevance(value)
+    squashed = compact(value)
+    for term in profile.subject_terms:
+        for form in expanded_aliases(term):
+            if form in normalized or (len(form) >= 4 and compact(form) in squashed):
+                return True
+    return False
+
+
+_YEAR_TERM = re.compile(r"(?:19|20)\d{2}")
+
+
+def _topic_terms(terms: list[str]) -> list[str]:
+    """The terms that say what a result is about, leaving out bare years.
+
+    A year says when, not what: nearly every page published this year mentions
+    it, so it counted as a topic match for any question that named the year --
+    an identity-card page passed for "best budget mobile phones 2026" on
+    "mobile" and "2026". A question whose only subject is a year keeps it.
+    """
+
+    topical = [term for term in terms if not _YEAR_TERM.fullmatch(term)]
+    return topical or list(terms)
 
 
 def has_freshness_hit(value: str) -> bool:

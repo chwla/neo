@@ -4,7 +4,10 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import { ChatComposer } from "../src/App.jsx";
 import { ALWAYS_REASONS_NOTE, effortTooltip, modelAlwaysReasons } from "../src/chatEffort.js";
 
 const reply = (effort, flag, model = "m:latest") => ({
@@ -33,7 +36,30 @@ test("High replies and other models say nothing about Low", () => {
 
 test("without the flag the tooltip is the plain Low and High description", () => {
   const text = effortTooltip(false);
-  assert.ok(text.startsWith("Low: fast, concise answers"));
-  assert.ok(text.includes("High: reasons before answering"));
+  assert.ok(text.startsWith("Quick: shorter answers"));
+  assert.ok(text.includes("Detailed: fuller answers"));
   assert.ok(!text.includes(ALWAYS_REASONS_NOTE));
+});
+
+test("Quick and Detailed are visible beside Chat, not hidden in the composer menu", () => {
+  const html = renderToStaticMarkup(createElement(ChatComposer, {
+    disabled: false,
+    value: "",
+    onChange() {},
+    onSubmit() {},
+    llms: [{ id: "local", name: "Local", model: "model", enabled: true }],
+    llmId: "local",
+    onLlmChange() {},
+    mode: "chatbot",
+    onModeChange() {},
+    effort: "low",
+    onEffortChange() {},
+    repos: [],
+    agentDefinitions: [],
+  }));
+  const footer = html.slice(html.indexOf('class="composer-foot"'));
+  assert.ok(footer.includes('class="agent-chip chat-answer-style"'));
+  assert.ok(footer.includes('aria-label="Choose answer style"'));
+  assert.ok(footer.includes('>Quick</option>'));
+  assert.ok(footer.includes('>Detailed</option>'));
 });

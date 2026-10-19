@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -9,6 +10,7 @@ from app.services.llm import LLMClient, get_llm_client
 from app.services.llm import LLMMessage as OllamaMessage
 from app.services.search.citations import validate_citation_markers
 from app.services.search.content import (
+    ARTICLE_PICK_PREFIX,
     WebPageFetcher,
     extract_evidence_chunks,
     extract_release_date,
@@ -182,6 +184,7 @@ class WebSearchService:
                     else self.settings.web_fetch_max_pages
                 ),
                 max_context_tokens=options.max_context_tokens if options else None,
+                max_seconds=options.max_seconds if options else None,
             ),
             llm=self.llm,
             hint=hint,
@@ -306,6 +309,7 @@ def comprehensive_web_search(
 ) -> ComprehensiveSearchResult:
     settings = get_settings()
     opts = options if isinstance(options, SearchOptions) else SearchOptions(**(options or {}))
+    deadline = time.monotonic() + opts.max_seconds if opts.max_seconds else None
     max_results = min(opts.max_results or settings.web_search_max_results, 10)
     max_pages = min(
         opts.max_pages if opts.max_pages is not None else settings.web_fetch_max_pages, 5
@@ -338,18 +342,37 @@ def comprehensive_web_search(
     last_provider = "disabled"
     last_raw_results: list[SearchResult] = []
     last_ranked_results: list[SearchResult] = []
+    providers = _skip_unreachable(list(ProviderRegistry().chain()), provider_attempts)
+    retry_scheduled = False
+    attempt_counts: dict[str, int] = {}
 
-    for provider in ProviderRegistry().chain():
+    for provider in providers:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         last_provider = provider.name
+        attempt_counts[provider.name] = attempt_counts.get(provider.name, 0) + 1
+        is_retry = attempt_counts[provider.name] > 1
         provider_started = time.perf_counter()
         try:
-            search = provider.search(rewritten_query, max_results, time_filter)
+            search = provider.search(
+                rewritten_query, max(max_results, _CANDIDATE_POOL), time_filter
+            )
         except Exception as exc:
+            if not _retryable_provider_error(str(exc)):
+                _mark_unreachable(provider.name)
+            elif (
+                not retry_scheduled
+                and deadline is not None
+                and deadline - time.monotonic() >= settings.web_fetch_timeout_seconds
+            ):
+                providers.append(provider)
+                retry_scheduled = True
             attempted[provider.name] = f"search failed: {exc}"
             provider_attempts.append(
                 {
                     "provider": provider.name,
                     "status": "search_failed",
+                    "retry": is_retry,
                     "duration_ms": int((time.perf_counter() - provider_started) * 1000),
                     "rejection_reason": str(exc),
                 }
@@ -357,11 +380,22 @@ def comprehensive_web_search(
             continue
         last_raw_results = search.results
         if search.error or not search.results:
+            if search.error and not _retryable_provider_error(search.error):
+                _mark_unreachable(provider.name)
+            elif (
+                search.error
+                and not retry_scheduled
+                and deadline is not None
+                and deadline - time.monotonic() >= settings.web_fetch_timeout_seconds
+            ):
+                providers.append(provider)
+                retry_scheduled = True
             attempted[provider.name] = search.error or "Search returned no results."
             provider_attempts.append(
                 {
                     "provider": provider.name,
                     "status": "search_failed" if search.error else "empty",
+                    "retry": is_retry,
                     "duration_ms": int((time.perf_counter() - provider_started) * 1000),
                     "raw_result_count": len(search.results),
                     "rejection_reason": search.error or "no_results",
@@ -369,7 +403,7 @@ def comprehensive_web_search(
             )
             continue
 
-        ranked_results = rank_results(profile, search.results)
+        ranked_results = rank_results(profile, search.results)[:max_results]
         last_ranked_results = ranked_results
         if not ranked_results:
             attempted[provider.name] = f"unusable ({len(search.results)} raw results)"
@@ -377,6 +411,7 @@ def comprehensive_web_search(
                 {
                     "provider": provider.name,
                     "status": "ranking_rejected",
+                    "retry": is_retry,
                     "duration_ms": int((time.perf_counter() - provider_started) * 1000),
                     "raw_result_count": len(search.results),
                     "ranked_result_count": 0,
@@ -396,6 +431,7 @@ def comprehensive_web_search(
             answer_mode=answer_mode,
             max_pages=max_pages,
             time_filter=time_filter,
+            deadline=deadline,
         )
         if not candidate.citations or not candidate.evidence_chunks:
             attempted[provider.name] = (
@@ -405,6 +441,7 @@ def comprehensive_web_search(
                 {
                     "provider": provider.name,
                     "status": "evidence_rejected",
+                    "retry": is_retry,
                     "duration_ms": int((time.perf_counter() - provider_started) * 1000),
                     "raw_result_count": len(search.results),
                     "ranked_result_count": len(ranked_results),
@@ -426,6 +463,7 @@ def comprehensive_web_search(
                 {
                     "provider": provider.name,
                     "status": "release_evidence_rejected",
+                    "retry": is_retry,
                     "duration_ms": int((time.perf_counter() - provider_started) * 1000),
                     "raw_result_count": len(search.results),
                     "ranked_result_count": len(ranked_results),
@@ -443,6 +481,7 @@ def comprehensive_web_search(
             {
                 "provider": provider.name,
                 "status": "accepted",
+                "retry": is_retry,
                 "duration_ms": int((time.perf_counter() - provider_started) * 1000),
                 "raw_result_count": len(search.results),
                 "ranked_result_count": len(ranked_results),
@@ -498,6 +537,71 @@ def comprehensive_web_search(
     )
 
 
+#: How many results each provider is asked for. Relevance ranking then keeps
+#: the best ``max_results``: an aggregator can list on-topic results below
+#: unrelated ones, and cutting the list before ranking threw those away.
+_CANDIDATE_POOL = 20
+
+#: How long a provider that timed out, refused or rate-limited a search is left
+#: out of the chain. A network that blocks one provider would otherwise charge
+#: its full timeout to every search, and a rate limit is a request to back off.
+_UNREACHABLE_COOLDOWN_SECONDS = 300.0
+_UNREACHABLE_UNTIL: dict[str, float] = {}
+_UNREACHABLE_LOCK = threading.Lock()
+
+
+def _mark_unreachable(provider_name: str) -> None:
+    with _UNREACHABLE_LOCK:
+        _UNREACHABLE_UNTIL[provider_name] = time.monotonic() + _UNREACHABLE_COOLDOWN_SECONDS
+
+
+def _skip_unreachable(
+    providers: list[WebSearchProvider], provider_attempts: list[dict[str, object]]
+) -> list[WebSearchProvider]:
+    """The chain without providers that recently failed outright.
+
+    When every provider is cooling down the whole chain is tried anyway: a
+    search that cannot succeed is no better than one that probably will not.
+    """
+
+    now = time.monotonic()
+    with _UNREACHABLE_LOCK:
+        cooling = {name for name, until in _UNREACHABLE_UNTIL.items() if until > now}
+    usable = [provider for provider in providers if provider.name not in cooling]
+    if not usable:
+        return providers
+    for provider in providers:
+        if provider.name in cooling:
+            provider_attempts.append(
+                {
+                    "provider": provider.name,
+                    "status": "skipped",
+                    "duration_ms": 0,
+                    "rejection_reason": "failed_recently",
+                }
+            )
+    return usable
+
+
+def reset_unreachable_providers() -> None:
+    """Forget every provider failure, so a test starts from a clean chain."""
+
+    with _UNREACHABLE_LOCK:
+        _UNREACHABLE_UNTIL.clear()
+
+
+def _retryable_provider_error(error: str) -> bool:
+    """A second attempt helps brief faults, not another full timeout or block."""
+    return not bool(
+        re.search(
+            r"\b(?:timed? out|timeout|too many requests|rate limit|captcha|forbidden|"
+            r"access denied|http 40[1239])\b",
+            error,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _build_verified_search_result(
     *,
     query: str,
@@ -509,12 +613,13 @@ def _build_verified_search_result(
     answer_mode: str,
     max_pages: int,
     time_filter: str | None,
+    deadline: float | None = None,
     max_context_tokens: int | None = None,
 ) -> ComprehensiveSearchResult:
     """Build evidence exclusively from successfully fetched, relevant page bodies."""
 
     fetched_pages: list[FetchedPage] = []
-    for page in fetch_pages(ranked_results, max_pages):
+    for page in fetch_pages(ranked_results, max_pages, deadline=deadline):
         result = next((item for item in ranked_results if item.url == page.url), None)
         if result is None:
             result = next(
@@ -644,7 +749,19 @@ def build_evidence_pack(
     chunks_by_source: dict[int, list[EvidenceChunk]] = {}
     for chunk in chunks:
         chunks_by_source.setdefault(chunk.source_index, []).append(chunk)
-    for source_index in sorted(chunks_by_source):
+    source_order = sorted(chunks_by_source)
+    if answer_mode == "overview":
+        # A page with individual item descriptions is more useful for a ranked
+        # answer than a search result that merely repeats several names in
+        # navigation or an introduction. Keep citation indices unchanged.
+        source_order.sort(
+            key=lambda index: (
+                -sum(
+                    chunk.text.startswith(ARTICLE_PICK_PREFIX) for chunk in chunks_by_source[index]
+                )
+            )
+        )
+    for source_index in source_order:
         source_chunks = chunks_by_source[source_index]
         first = source_chunks[0]
         passages = "\n".join(

@@ -6,6 +6,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
+from app.services.current_time import today_for_prompt
 from app.services.llm import LLMMessage
 from app.services.search.types import ResolvedSearchIntent, SearchIntentKind
 
@@ -233,7 +234,9 @@ _ROUTE_EXAMPLES: dict[str, str] = {
 }
 
 
-def route_decision_prompt(routes: tuple[str, ...] | list[str] = ROUTER_ROUTES) -> str:
+def route_decision_prompt(
+    routes: tuple[str, ...] | list[str] = ROUTER_ROUTES, *, today: str | None = None
+) -> str:
     """The router's system prompt, listing only the routes that can run.
 
     The router decides from what an accurate answer requires. It is not asked
@@ -246,7 +249,8 @@ def route_decision_prompt(routes: tuple[str, ...] | list[str] = ROUTER_ROUTES) -
     return (
         "You are Neo's request router. Choose the capability that should handle the "
         "user's latest message. You get the message and, when present, a short excerpt of "
-        "the conversation before it.\n\n"
+        "the conversation before it.\n"
+        f"Today's date is {today or today_for_prompt()}. Interpret years relative to this date.\n\n"
         "Return exactly one JSON object and nothing else:\n"
         f'{{"route": "{choices}", "query": "<standalone web search query, only when route '
         'is web, otherwise empty>", "place": "<the place named for weather, only when route '
@@ -632,7 +636,10 @@ class SearchIntentResolver:
             else f"LATEST MESSAGE: {cleaned}"
         )
         messages = [
-            LLMMessage(role="system", content=route_decision_prompt(enabled)),
+            LLMMessage(
+                role="system",
+                content=route_decision_prompt(enabled, today=today_for_prompt(timezone)),
+            ),
             LLMMessage(role="user", content=user_content),
         ]
         finish_reason: str | None = None

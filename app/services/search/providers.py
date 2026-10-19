@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from base64 import urlsafe_b64decode
+from html import unescape
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 
 import requests
 
@@ -22,6 +24,7 @@ PROVIDER_INFO = {
     "duckduckgo": ("DuckDuckGo", False, False),
     "bing_html": ("Bing HTML", False, False),
     "serper": ("Serper", True, False),
+    "wikipedia": ("Wikipedia", False, False),
     "disabled": ("Disabled", False, False),
 }
 
@@ -541,6 +544,72 @@ class SerperSearchProvider(WebSearchProvider):
         return _results_response(query, self.name, raw, max_results)
 
 
+class WikipediaSearchProvider(WebSearchProvider):
+    """Wikipedia's own search API: keyless, and published for programs to call.
+
+    The last fallback in the chain. The general web providers above it scrape
+    pages that block, rate-limit or degrade scripted requests on some networks,
+    and when every one of them fails a question with an encyclopedic answer
+    should still find one. Wikimedia asks API clients to identify themselves,
+    which the configured user agent does.
+    """
+
+    name = "wikipedia"
+    endpoint = "https://en.wikipedia.org/w/api.php"
+    article_base = "https://en.wikipedia.org/wiki/"
+
+    def __init__(self, timeout_seconds: float | None = None, user_agent: str | None = None) -> None:
+        settings = get_settings()
+        self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
+        self.user_agent = user_agent or settings.web_search_user_agent
+
+    def search(
+        self,
+        query: str,
+        max_results: int,
+        time_filter: str | None = None,
+        vertical: str | None = None,
+    ) -> WebSearchResponse:
+        try:
+            response = requests.get(
+                self.endpoint,
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": max(1, min(max_results, 20)),
+                    "srprop": "snippet|timestamp",
+                    "format": "json",
+                    "formatversion": 2,
+                },
+                headers={"Accept": "application/json", "User-Agent": self.user_agent},
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except requests.Timeout:
+            return WebSearchResponse(
+                query=query, provider=self.name, error="Search provider timed out."
+            )
+        except (requests.RequestException, ValueError) as exc:
+            return WebSearchResponse(query=query, provider=self.name, error=f"Search failed: {exc}")
+
+        raw = [
+            {
+                "title": item["title"],
+                "url": self.article_base + quote(item["title"].replace(" ", "_"), safe="_(),'"),
+                # Snippets mark matched words with <span> tags.
+                "snippet": unescape(re.sub(r"<[^>]+>", "", item.get("snippet") or "")),
+                # The last edit: how current the article is, which is what a
+                # freshness check needs to know.
+                "published_date": item.get("timestamp"),
+            }
+            for item in (payload.get("query") or {}).get("search", [])
+            if item.get("title")
+        ]
+        return _results_response(query, self.name, raw, max_results)
+
+
 class DisabledSearchProvider(WebSearchProvider):
     name = "disabled"
 
@@ -582,6 +651,8 @@ class ProviderRegistry:
             return BingHTMLSearchProvider()
         if normalized == "serper":
             return SerperSearchProvider()
+        if normalized == "wikipedia":
+            return WikipediaSearchProvider()
         return DisabledSearchProvider()
 
     def primary_provider(self) -> WebSearchProvider:
@@ -602,6 +673,8 @@ class ProviderRegistry:
         for name in fallback_names:
             if name not in names and name != "disabled":
                 names.append(name)
+        if self.settings.web_search_wikipedia_fallback and "wikipedia" not in names:
+            names.append("wikipedia")
         return [self.provider(name) for name in names]
 
     def list_providers(self) -> list[dict[str, object]]:
