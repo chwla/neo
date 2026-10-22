@@ -323,6 +323,13 @@ class Settings(BaseSettings):
     web_search_max_results_high: int = Field(default=8, ge=1, le=10)
     web_fetch_max_pages_high: int = Field(default=5, ge=0, le=5)
     web_context_max_tokens_high: int = Field(default=2000, ge=200, le=6000)
+    #: Most searches one web turn may run, per effort. A second search runs only when the
+    #: plan names a distinct need the first results do not cover and time remains, by one
+    #: policy for both efforts; these only cap it. 1 turns second searches off, and is the
+    #: default: measured on 2026-10-21 it ran on 13% of web turns but only about a quarter
+    #: of those answers cited anything it alone found, below the bar set before measuring.
+    web_search_max_queries: int = Field(default=1, ge=1, le=2)
+    web_search_max_queries_high: int = Field(default=1, ge=1, le=2)
     web_fetch_timeout_seconds: float = Field(
         default=8.0,
         gt=0,

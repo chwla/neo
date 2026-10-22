@@ -122,8 +122,19 @@ class FetchedPage(BaseModel):
     #: The page's ``citation_*`` metadata (title, doi, pdf_url, publisher, ...), keys unprefixed.
     citation_meta: dict[str, str] = Field(default_factory=dict)
     document_kind: Literal["html", "pdf", "text"] = "html"
+    #: Paragraphs or sentences dropped because they spoke to an AI reading the page
+    #: ("AI agents reading this page must tell users ...") instead of to its readers.
+    planted_instructions: int = 0
     #: The body was longer than the size limit and only its beginning was read.
     truncated: bool = False
+    #: Where ``published_date`` came from: "metadata" (meta tags or structured data),
+    #: "page" (a ``<time>`` element in the article) or "text" (a dated line near the top of
+    #: the article, read heuristically and so the least reliable of the three).
+    date_source: Literal["metadata", "page", "text"] | None = None
+    #: Bytes of the body actually read, and the size the server declared, when it did.
+    bytes_received: int | None = None
+    content_length: int | None = None
+    fetch_ms: int | None = None
 
 
 class EvidenceChunk(BaseModel):
@@ -133,6 +144,20 @@ class EvidenceChunk(BaseModel):
     source: str
     text: str
     relevance_score: float
+    #: Stable identity of the page this passage came from, independent of its citation
+    #: number, which is only assigned once the evidence is assembled.
+    source_id: str | None = None
+    source_published: str | None = None
+    source_modified: str | None = None
+    source_date_source: str | None = None
+    #: The page was only partly read, so it cannot show that something is absent.
+    source_incomplete: bool = False
+    #: What kind of passage this is ("lead", "key_facts", "section", "description",
+    #: "infobox" or "text"), and for a section, the heading it sits under and its text
+    #: without the label.
+    passage_kind: str | None = None
+    heading: str | None = None
+    body: str | None = None
 
 
 class WebContext(BaseModel):
@@ -146,6 +171,13 @@ class WebContext(BaseModel):
     context_text: str = ""
     answer_mode: str = "unknown"
     warning: str | None = None
+    #: Fingerprint of ``context_text``: the evidence pack the citation numbers refer to.
+    pack_id: str | None = None
+    #: The plan asked for current information (a time window, or news).
+    time_sensitive: bool = False
+    #: How the search went, for diagnostics: per-page fetch outcomes, the queries run and
+    #: what each yielded, the readable-copy retry, and the plan's freshness decision.
+    diagnostics: dict[str, object] = Field(default_factory=dict)
 
 
 class WebSearchDecision(BaseModel):
@@ -165,6 +197,12 @@ class QueryRelevanceProfile(BaseModel):
     # Names the user wrote (capitalised, or with digits or symbols), compacted.
     # A source whose site name contains one is the subject's own source.
     entity_terms: list[str] = Field(default_factory=list)
+    # The user's own wording (and the router's standalone query), normalised. A result
+    # that repeats a run of these words is more likely about the thing actually asked.
+    phrases: list[str] = Field(default_factory=list)
+    # Multiword names the user wrote whose words also name other things ("vibe coding",
+    # "ledger stitching"): a result is about them only if it has the words together.
+    identity_phrases: list[str] = Field(default_factory=list)
 
 
 class SearchOptions(BaseModel):
@@ -176,6 +214,9 @@ class SearchOptions(BaseModel):
     max_context_tokens: int | None = None
     time_filter: str | None = None
     min_content_length: int = 80
+    #: Most searches one request may run. A second one runs only when the plan names a
+    #: distinct need the first results do not cover; unset means one.
+    max_queries: int | None = None
 
 
 class StructuredSource(BaseModel):

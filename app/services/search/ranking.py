@@ -278,6 +278,7 @@ def build_relevance_profile(
     *,
     subject_terms: list[str] | None = None,
     requires_freshness: bool | None = None,
+    phrases: list[str] | None = None,
 ) -> QueryRelevanceProfile:
     """What a relevant result must mention, derived from the query alone.
 
@@ -295,7 +296,18 @@ def build_relevance_profile(
         if token not in QUERY_STOPWORDS and len(token) > 1
     ]
     tokens = list(dict.fromkeys(raw_tokens))
-    subject = [term for term in (subject_terms or []) if term in tokens]
+    # A plan that names its subject in several words ("ember lattice", "halvorsen kite")
+    # cannot be matched term by term: the words as a phrase reject pages that answer
+    # ("Halvorsen delays the Kite again"), and the words one by one change what coverage
+    # rewards (measured: reaction pages outranked reviews). Such a plan leaves the subject
+    # to the query's own words, as one made only of several-word terms always did; keeping
+    # its one-word terms alone let "kiln" reject a review roundup that named the others.
+    planned = subject_terms or []
+    subject = (
+        []
+        if any(len(term.split()) > 1 for term in planned)
+        else [term for term in planned if term in tokens]
+    )
     aliases: list[str] = []
     seen: set[str] = set()
     # A term the plan names as the subject is one even when it is a year.
@@ -313,6 +325,7 @@ def build_relevance_profile(
                 re.IGNORECASE,
             )
         )
+    wording = [query, provider_query, *(phrases or [])]
     return QueryRelevanceProfile(
         query=query,
         provider_query=provider_query,
@@ -320,8 +333,88 @@ def build_relevance_profile(
         aliases=aliases,
         requires_freshness=requires_freshness,
         subject_terms=subject,
-        entity_terms=_entity_terms(query),
+        entity_terms=_entity_terms(" ".join([query, *(phrases or [])])),
+        phrases=list(dict.fromkeys(" ".join(_words(text)) for text in wording if _words(text))),
+        identity_phrases=identity_phrases(" ".join([query, *(phrases or [])])),
     )
+
+
+_QUOTED_PHRASE = re.compile(r"[\"'\u2018\u201c]([^\"'\u2019\u201d\n]{3,60})[\"'\u2019\u201d]")
+
+
+def quoted_phrases(text: str) -> list[str]:
+    """Runs of two to six words the user put in quotes: the name of something."""
+
+    found = []
+    for match in _QUOTED_PHRASE.finditer(text or ""):
+        words = _words(match.group(1))
+        if 2 <= len(words) <= 6 and _content_count(words) >= 2:
+            found.append(" ".join(words))
+    return list(dict.fromkeys(found))
+
+
+def identity_phrases(text: str) -> list[str]:
+    """Multiword names the user marked as one name by putting them in quotes.
+
+    Only quotes count: words that merely stand next to each other ("the halvorsen kite")
+    often appear apart on the right pages ("Halvorsen delays the Kite"), and lowering those
+    cost answers in evaluation.
+    """
+
+    return quoted_phrases(text)
+
+
+def _phrase_stem(words: list[str]) -> str:
+    """The phrase without separators, its last word cut to a stem so plurals still match."""
+
+    last = words[-1]
+    if len(last) > 4 and last.endswith("ies"):
+        last = last[:-3]
+    elif len(last) > 4 and last.endswith("es"):
+        last = last[:-2]
+    elif len(last) > 3 and last.endswith("s") and not last.endswith("ss"):
+        last = last[:-1]
+    return compact(" ".join([*words[:-1], last]))
+
+
+def holds_identity_phrase(profile: QueryRelevanceProfile, text: str) -> bool:
+    squashed = compact(text)
+    return any(_phrase_stem(phrase.split()) in squashed for phrase in profile.identity_phrases)
+
+
+#: Taken off a result that has only the separate words of a multiword name others hold.
+_LACKS_PHRASE_PENALTY = 4.0
+
+
+def _with_identity_preference(
+    profile: QueryRelevanceProfile, results: list[SearchResult]
+) -> list[SearchResult]:
+    """Lower results that share a multiword name's words but not the name itself.
+
+    "Mistral Vibe ... coding agent" has both words of "vibe coding" and is about something
+    else. Applied only when at least two results do hold the name, so a pool that phrases
+    it differently is never emptied by this.
+    """
+
+    if not profile.identity_phrases or len(results) < 3:
+        return results
+    holds = [
+        holds_identity_phrase(profile, f"{result.title} {result.url} {result.snippet or ''}")
+        for result in results
+    ]
+    if sum(holds) < 2:
+        return results
+    return [
+        result
+        if held
+        else result.model_copy(
+            update={
+                "relevance_score": result.relevance_score - _LACKS_PHRASE_PENALTY,
+                "relevance_reasons": [*result.relevance_reasons, "lacks_phrase"],
+            }
+        )
+        for result, held in zip(results, holds, strict=True)
+    ]
 
 
 def _entity_terms(query: str) -> list[str]:
@@ -363,7 +456,9 @@ def minimum_term_hits_for(profile: QueryRelevanceProfile) -> int:
 
 
 def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) -> list[SearchResult]:
-    scored = [score_result(profile, result) for result in results]
+    scored = _with_identity_preference(
+        profile, _with_phrase_bonus(profile, [score_result(profile, result) for result in results])
+    )
     minimum_term_hits = minimum_term_hits_for(profile)
     relevant = [
         result
@@ -371,8 +466,13 @@ def rank_results(profile: QueryRelevanceProfile, results: list[SearchResult]) ->
         if result.relevance_score >= MIN_FETCH_RELEVANCE_SCORE
         and has_alias_hit(profile, f"{result.title} {result.url} {result.snippet or ''}")
         and mentions_subject(profile, f"{result.title} {result.url} {result.snippet or ''}")
-        and term_hit_count(profile, f"{result.title} {result.url} {result.snippet or ''}")
-        >= minimum_term_hits
+        and (
+            term_hit_count(profile, f"{result.title} {result.url} {result.snippet or ''}")
+            >= minimum_term_hits
+            # A result repeating a rare run of the user's own words names the thing asked
+            # about even when a rewritten query dropped those words.
+            or _DISTINCTIVE in result.relevance_reasons
+        )
         and not is_low_quality_result(result, profile)
         and not (is_video_or_social_result(result) and not _asks_for_video(profile.query))
         and (
@@ -401,6 +501,14 @@ def score_result(profile: QueryRelevanceProfile, result: SearchResult) -> Search
     if has_alias_hit(profile, result.title):
         score += 4.0
         reasons.append("title")
+    # How much of what was asked a result names, not only whether it names some of it:
+    # without this most on-topic results tied on the fixed bonuses, and the order they
+    # were read in was the provider's.
+    title_coverage = _coverage(profile, result.title)
+    snippet_coverage = _coverage(profile, result.snippet or "")
+    if title_coverage or snippet_coverage:
+        score += round(3.0 * title_coverage + 1.5 * snippet_coverage, 2)
+        reasons.append("coverage")
     if has_alias_hit(profile, f"{result.source} {result.url}"):
         score += 3.0
         reasons.append("url")
@@ -437,6 +545,146 @@ def score_result(profile: QueryRelevanceProfile, result: SearchResult) -> Search
     return result.model_copy(update={"relevance_score": score, "relevance_reasons": reasons})
 
 
+#: Most a shared phrase adds to a result's score.
+_PHRASE_BONUS_MAX = 4.0
+#: A run of the user's words is distinctive when at most this share of results repeat it.
+_DISTINCTIVE_SHARE = 0.34
+_DISTINCTIVE = "distinctive_phrase"
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9][a-z0-9+#]*", (text or "").lower())
+
+
+def _content_count(words: list[str]) -> int:
+    return sum(1 for word in words if word not in QUERY_STOPWORDS and len(word) > 1)
+
+
+def _longest_shared_run(phrase: list[str], text: list[str]) -> list[str]:
+    """The longest run of consecutive words that ``phrase`` and ``text`` share."""
+
+    best: tuple[int, int] = (0, 0)
+    previous = [0] * (len(text) + 1)
+    for i in range(1, len(phrase) + 1):
+        current = [0] * (len(text) + 1)
+        for j in range(1, len(text) + 1):
+            if phrase[i - 1] == text[j - 1]:
+                current[j] = previous[j - 1] + 1
+                if current[j] > best[0]:
+                    best = (current[j], i)
+        previous = current
+    length, end = best
+    return phrase[end - length : end]
+
+
+def _contains_run(text: list[str], run: list[str]) -> bool:
+    size = len(run)
+    return any(text[i : i + size] == run for i in range(len(text) - size + 1))
+
+
+def _with_phrase_bonus(
+    profile: QueryRelevanceProfile, results: list[SearchResult]
+) -> list[SearchResult]:
+    """Raise results that repeat a run of the user's own words, by how rare the run is.
+
+    A name the user typed ("some new thing everyone mentions") is usually a run of
+    ordinary words; the result that repeats it is more likely about that thing than one that
+    only shares the words. A run most results share says nothing about which one to read,
+    so the bonus shrinks with the share of the pool that contains it.
+    """
+
+    phrases = [_words(phrase) for phrase in profile.phrases]
+    phrases = [phrase for phrase in phrases if _content_count(phrase) >= 2]
+    if not phrases or not results:
+        return results
+    texts = [_words(f"{result.title} {result.snippet or ''}") for result in results]
+    runs: list[list[str]] = []
+    for text in texts:
+        best: list[str] = []
+        for phrase in phrases:
+            run = _longest_shared_run(phrase, text)
+            if _content_count(run) > _content_count(best):
+                best = run
+        runs.append(best if _content_count(best) >= 2 else [])
+    updated = []
+    for result, run in zip(results, runs, strict=True):
+        if not run:
+            updated.append(result)
+            continue
+        share = sum(1 for text in texts if _contains_run(text, run)) / len(texts)
+        bonus = round(min(_PHRASE_BONUS_MAX, 1.5 * _content_count(run)) * (1.0 - share), 2)
+        if bonus <= 0:
+            updated.append(result)
+            continue
+        reasons = [*result.relevance_reasons, "phrase"]
+        if share <= _DISTINCTIVE_SHARE:
+            reasons.append(_DISTINCTIVE)
+        updated.append(
+            result.model_copy(
+                update={
+                    "relevance_score": result.relevance_score + bonus,
+                    "relevance_reasons": reasons,
+                }
+            )
+        )
+    return updated
+
+
+def _coverage(profile: QueryRelevanceProfile, text: str) -> float:
+    """Share of the question's topic terms (and the names the user wrote) that ``text`` names."""
+
+    terms = _topic_terms(
+        profile.subject_terms
+        or [term for term in profile.terms if term not in NON_DISCRIMINATIVE_TERMS]
+    )
+    terms = list(dict.fromkeys([*terms, *(t for t in profile.entity_terms if t in profile.terms)]))
+    if not terms or not text:
+        return 0.0
+    normalized = normalize_for_relevance(text)
+    squashed = compact(text)
+    hits = sum(
+        1
+        for term in terms
+        if any(
+            form in normalized or (len(form) >= 4 and compact(form) in squashed)
+            for form in expanded_aliases(term)
+        )
+    )
+    return hits / len(terms)
+
+
+def diversify_by_title(results: list[SearchResult], *, weight: float = 0.35) -> list[SearchResult]:
+    """The same results, reordered so near-duplicate titles do not all come first.
+
+    Greedy: each next result is the one whose score, relative to the best, minus its title's
+    similarity to titles already placed, is highest. Nothing is dropped, and ties keep the
+    ranking's order, so the reordering is deterministic.
+    """
+
+    if len(results) < 3:
+        return list(results)
+    top = max(result.relevance_score for result in results) or 1.0
+    remaining = list(enumerate(results))
+    placed: list[set[str]] = []
+    ordered: list[SearchResult] = []
+    while remaining:
+
+        def value(item: tuple[int, SearchResult]) -> tuple[float, int]:
+            index, result = item
+            words = set(_words(result.title)) - QUERY_STOPWORDS
+            similarity = max(
+                (len(words & other) / len(words | other) for other in placed if words | other),
+                default=0.0,
+            )
+            return (result.relevance_score / top - weight * similarity, -index)
+
+        best = max(remaining, key=value)
+        remaining.remove(best)
+        ordered.append(best[1])
+        placed.append(set(_words(best[1].title)) - QUERY_STOPWORDS)
+    return ordered
+
+
 def _asks_for_video(query: str) -> bool:
     return bool(re.search(r"\b(video|videos|trailer|clip|clips|watch)\b", query, re.IGNORECASE))
 
@@ -458,18 +706,101 @@ def _age_in_days(published: str) -> int | None:
     return None
 
 
-def relevant_fetched_page(
-    profile: QueryRelevanceProfile,
-    result: SearchResult,
-    page: FetchedPage,
-) -> FetchedPage | None:
-    if not page.fetched or not page.text or len(page.text.strip()) < MIN_READABLE_TEXT_CHARS:
-        return None
-    if is_language_mismatch(profile.query, page.text):
-        return None
-    if is_low_quality_page(page, profile):
-        return None
+#: Wording of pages that stand between a reader and the content: bot checks, script
+#: walls, sign-in walls and refusals. Only looked for on short pages, so an article that
+#: mentions a captcha is never mistaken for one.
+_ACCESS_BARRIERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "challenge",
+        re.compile(
+            r"\b(?:verify|confirm)(?:ing)?\s+(?:that\s+)?you(?:'re| are)\s+(?:a\s+)?human\b|"
+            r"\bare you a robot\b|\bcaptcha\b|\bclient challenge\b|"
+            r"\bchecking (?:your browser|if the site connection is secure)\b|"
+            r"\bunusual traffic\b|\bpress\s+(?:and|&)\s+hold\b|"
+            r"\bbot (?:check|protection|detection)\b|"
+            r"\bsecurity check\b|\bjust a moment\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "javascript",
+        re.compile(
+            r"\b(?:enable|turn on|activate)\s+javascript\b|"
+            r"\bjavascript\s+(?:is\s+)?(?:disabled|required|must be enabled|is not enabled)\b|"
+            r"\brequires?\s+javascript\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "denied",
+        re.compile(
+            r"\baccess (?:denied|forbidden)\b|\b403 forbidden\b|"
+            r"\byou (?:don't|do not) have permission\b|\bnot authori[sz]ed to (?:view|access)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "login",
+        re.compile(
+            r"\b(?:sign|log)\s*in\s+(?:to (?:continue|view|read|see)|required)\b|"
+            r"\b(?:create an account|subscribe) to (?:continue|read|keep reading)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+#: A page this short with barrier wording is a barrier, whatever else it says.
+_BARRIER_SHORT_CHARS = 600
+#: Up to this length, barrier wording counts only on a page that does not name the subject:
+#: a short article that mentions a captcha is still an article.
+_BARRIER_MAX_CHARS = 2_000
 
+
+def access_barrier(text: str, *, names_subject: bool = False) -> str | None:
+    """Which kind of barrier a short page is (bot check, script wall, refusal, sign-in), if any."""
+
+    body = (text or "").strip()
+    if not body or len(body) > _BARRIER_MAX_CHARS:
+        return None
+    if names_subject and len(body) > _BARRIER_SHORT_CHARS:
+        return None
+    for kind, pattern in _ACCESS_BARRIERS:
+        if pattern.search(body):
+            return kind
+    return None
+
+
+def page_usability(profile: QueryRelevanceProfile, result: SearchResult, page: FetchedPage) -> str:
+    """``"usable"``, or why a fetched page cannot serve as evidence for this question.
+
+    A successful request is not a successful read: a bot check, a sign-in wall or a page
+    about something else answers with HTTP 200 like any other. Reasons: ``http_<status>``,
+    ``timeout``, ``unreadable``, ``empty``, ``challenge``, ``javascript``, ``denied``,
+    ``login``, ``language``, ``navigation``, ``off_topic`` and ``not_current``.
+    """
+
+    if not page.fetched or page.error:
+        error = (page.error or "").lower()
+        if page.http_status:
+            return f"http_{page.http_status}"
+        if "timed out" in error:
+            return "timeout"
+        return "unreadable"
+    text = page.text or ""
+    if len(text.strip()) < MIN_READABLE_TEXT_CHARS:
+        return "empty"
+    body = text[:20_000]
+    # The subject has to be in the page's own text: a title or address that names it
+    # belongs to the search result, and a shell, a wall or an index page carries it too.
+    names_subject = has_alias_hit(profile, body) and mentions_subject(profile, body)
+    barrier = access_barrier(text, names_subject=names_subject)
+    if barrier:
+        return barrier
+    if is_language_mismatch(profile.query, text):
+        return "language"
+    if is_low_quality_page(page, profile):
+        return "navigation"
+    if not names_subject:
+        return "off_topic"
     page_text = f"{page.title or ''} {page.url} {page.text[:8000]}"
     score = float(result.relevance_score)
     if has_alias_hit(profile, page.title or ""):
@@ -484,10 +815,18 @@ def relevant_fetched_page(
         or is_primary_source(profile, page.url)
         or result.published_date
     ):
-        return None
+        return "not_current"
     if score < MIN_CONTEXT_RELEVANCE_SCORE:
-        return None
-    return page
+        return "off_topic"
+    return "usable"
+
+
+def relevant_fetched_page(
+    profile: QueryRelevanceProfile,
+    result: SearchResult,
+    page: FetchedPage,
+) -> FetchedPage | None:
+    return page if page_usability(profile, result, page) == "usable" else None
 
 
 def expanded_aliases(token: str) -> list[str]:

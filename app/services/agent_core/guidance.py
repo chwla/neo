@@ -7,8 +7,11 @@ _AGENT_RUN_REQUEST = re.compile(
     r"\bstart\s+working\s+on\s+(?:the|this)?\s*task\b)",
     re.IGNORECASE,
 )
+# The patch, diff or proposal has to be named. "It" alone matched any question that
+# ends "...do people actually use it?" or "should I install it?" and answered it with
+# patch instructions.
 _PATCH_APPLY_REQUEST = re.compile(
-    r"\b(?:apply|install|use)\b.{0,30}\b(?:patch|diff|proposal|it)\b",
+    r"\b(?:apply|install|use)\b.{0,30}\b(?:patch(?:es)?|diffs?|(?:patch\s+)?proposals?)\b",
     re.IGNORECASE,
 )
 _INFORMATIONAL_REQUEST = re.compile(

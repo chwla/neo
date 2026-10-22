@@ -70,6 +70,36 @@ def _is_single_request(query: str) -> bool:
     return len(text) <= _SINGLE_REQUEST_MAX_CHARS and text.count("\n") <= 1
 
 
+#: Words that ask how things stand at present ("... yet?", "these days", "this year").
+_CURRENT_STATUS = re.compile(
+    r"\b(?:yet|so far|these days|nowadays|lately|recently|right now|currently|at the moment|"
+    r"this (?:year|month|week|season|summer|winter|spring|fall|autumn)|latest|newest|"
+    r"most recent|any new|anything new)\b",
+    re.IGNORECASE,
+)
+#: The user speaking about themselves: "a friend I haven't seen recently", "the latest time
+#: I can drink coffee", "why hasn't my starter risen yet" are not about the world now.
+_FIRST_PERSON = re.compile(r"\b(?:i|i'm|im|i've|ive|i'd|my|me|mine|we|our|us)\b", re.IGNORECASE)
+_CLAUSE_EDGE = re.compile(r"[.?!;,]")
+
+
+def current_status_cue(text: str) -> str | None:
+    """The word asking about the present state of the world, if ``text`` has one.
+
+    A cue counts only in a clause that is not about the user, so personal and
+    hypothetical uses of the same words are left to the router.
+    """
+
+    for match in _CURRENT_STATUS.finditer(text or ""):
+        edges = [edge.end() for edge in _CLAUSE_EDGE.finditer(text, 0, match.start())]
+        start = edges[-1] if edges else 0
+        after = _CLAUSE_EDGE.search(text, match.end())
+        clause = text[start : after.start() if after else len(text)]
+        if not _FIRST_PERSON.search(clause):
+            return match.group(0)
+    return None
+
+
 def is_bare_search_command(query: str) -> bool:
     """Whether ``query`` only asks to search, without saying for what."""
 
@@ -213,7 +243,11 @@ ROUTER_ROUTES: tuple[str, ...] = tuple(_ROUTE_LINES)
 _ROUTE_EXAMPLES: dict[str, str] = {
     "web": (
         "USER: <asks for a value that changes over time>\n"
-        'JSON: {"route":"web","query":"<the thing> <the value>","place":""}'
+        'JSON: {"route":"web","query":"<the thing> <the value>","place":""}\n'
+        "USER: <says they keep seeing some name or phrase everywhere and asks what it is>\n"
+        'JSON: {"route":"web","query":"<the exact name or phrase>","place":""}\n'
+        "USER: <asks what is going on with something lately>\n"
+        'JSON: {"route":"web","query":"<the thing> latest news","place":""}'
     ),
     "direct": (
         "USER: <asks to explain a well-established concept>\n"
@@ -260,17 +294,32 @@ def route_decision_prompt(
         "- If it depends on information that is live, current, local, niche, or likely to "
         "have changed since you were trained, choose the capability that provides it.\n"
         "- If sources would materially improve factual correctness, choose web.\n"
+        "- If the user says they keep seeing or hearing about something, or calls it new, "
+        "trending, viral or recent, they want current information about a specific thing: "
+        "choose web.\n"
+        "- A name or phrase you do not recognise, or one that could be a recent product, "
+        "tool, project, title or event, needs web.\n"
+        "- Asking what is up, going on, new or happening with something asks for its latest "
+        "news, releases and plans, not its background or history: choose web.\n"
+        "- Asking whether something the user saw or heard about is real, current or common "
+        "needs web.\n"
+        "- If any part of the message needs current information (whether something exists "
+        "or is in use yet, its latest status, recent approvals or releases), choose web, even "
+        "when the rest asks for an explanation.\n"
         "- If it can be answered reliably from general knowledge or the conversation, "
-        "choose direct.\n"
+        "choose direct. Explaining a well-established concept stays direct.\n"
         "- Whether the request is an action or a question matters: actions on the user's "
         "own schedule are calendar.\n"
         "- Your own uncertainty is not a reason to choose or to avoid any route.\n"
         "- Never choose a route because of a single topic word.\n\n"
         'Use the excerpt to resolve references such as "it", "that one", "what '
         'about ..." and short agreements; agreeing to an offer to search means web, about '
-        "the earlier question. For web, write a query that stands alone, keep names and "
-        "numbers exactly, and include no personal details unless the user asked to search "
-        "for them.\n\n"
+        "the earlier question. A follow-up continues the earlier request: after a question "
+        'about the latest releases, news or developments of one thing, "what about" '
+        "another thing asks the same about it. For web, write a query that stands alone. "
+        "Keep the exact name or phrase the user uses for the thing they ask about, even when "
+        "it looks like ordinary words, fixing only obvious typos; keep numbers exactly; and "
+        "include no personal details unless the user asked to search for them.\n\n"
         "Examples (placeholders stand for whatever the user actually says):\n"
         + "\n".join(_ROUTE_EXAMPLES[route] for route in enabled if route in _ROUTE_EXAMPLES)
         + "\n"
@@ -706,6 +755,23 @@ class SearchIntentResolver:
                 _MODEL_CONFIDENCE,
                 **common,
             )
+        # Only a message that is one short request: pasted code or a document may use the
+        # same words ("currently", "latest") without asking about the world.
+        if route == "direct" and _is_single_request(query):
+            cue = current_status_cue(cleaned)
+            if cue is not None:
+                # A message that also asks how things stand now ("... and whether any cars
+                # use them yet") cannot be answered from training data, however much of it
+                # is explanation; a small router often lets the explanation decide.
+                self.last_router = {**self.last_router, "current_cue": cue}
+                return self._result(
+                    SearchIntentKind.GENERAL_WEB,
+                    query,
+                    cleaned,
+                    f"Asks how things stand now ({cue!r}); the answer needs sources.",
+                    _MODEL_CONFIDENCE,
+                    **{**common, "route": "web"},
+                )
         reason = (
             "Router: the user asks about their own saved information."
             if route == "memory"

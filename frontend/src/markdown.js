@@ -10,6 +10,14 @@ function safeUrl(raw) {
   return /^(https?:\/\/|mailto:)/i.test(url) ? url : null;
 }
 
+// Bold text may hold italic text: models write "**1. *Title***" and "**Explain *why*:**".
+// Each piece of bold content is either a character that is not a star or a whole
+// "*italic*" run. The two start differently, so a line with an unclosed "**" is still
+// scanned in linear time. Emphasis never crosses a line break.
+const BOLD_ITALIC = /\*\*\*([^*\n]+)\*\*\*/g;
+const BOLD = /\*\*((?:[^*\n]|\*[^*\n]+\*)+?)\*\*/g;
+const ITALIC = /(^|[^*])\*([^*\n]+)\*/g;
+
 /** Code spans are split out first so their contents never pick up bold or italic. */
 function renderInline(escaped) {
   return escaped
@@ -25,8 +33,9 @@ function renderInline(escaped) {
             ? `<a href="${url}" target="_blank" rel="noreferrer noopener">${label}</a>`
             : match;
         })
-        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+        .replace(BOLD_ITALIC, "<strong><em>$1</em></strong>")
+        .replace(BOLD, "<strong>$1</strong>")
+        .replace(ITALIC, "$1<em>$2</em>");
     })
     .join("");
 }

@@ -9,6 +9,10 @@ class SourceCitation(BaseModel):
     url: str
     source: str
     fetched: bool = False
+    #: Stable identity of the cited page; the index is only its number in one evidence pack.
+    source_id: str | None = None
+    #: Only part of the page was read.
+    incomplete: bool = False
 
 
 class CitationFormatter:

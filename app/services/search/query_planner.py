@@ -253,42 +253,60 @@ _CONTENT_STOPWORDS = {
 }
 
 _QUERY_PLAN_SYSTEM_PROMPT = """You are Neo's search query planner.
-Rewrite one user message into a web search query.
+Rewrite one user message into web search queries.
 
 Return exactly one JSON object on one line, with no Markdown and no extra text:
-{"q":"search keywords","terms":["topic"],"mode":"fact|news|overview","window":"day"|"week"|null}
+{"q":"search keywords","q2":"","terms":["topic"],"mode":"fact|news|overview",\
+"window":"day"|"week"|"month"|"year"|null}
 
 Fields:
 - q: the keywords a person would type into a search box. Drop question words,
-  politeness and filler. Keep proper nouns, product names, years and version
-  numbers exactly as written. Never invent an entity the user did not mention. Never add
-  words like "official" or "release date" unless the user asked for a date. When the
-  user asks for the latest, newest, last, current or most recent one of something,
-  add the current year to q, so that pages about older ones rank lower.
+  politeness and filler. Keep names, titles, product names, distinctive phrases,
+  years and version numbers exactly as the user wrote them, fixing only obvious typos,
+  even when a name looks like ordinary words. Never invent an entity the user did not
+  mention. Never add words like "official" or "release date" unless the user asked for a
+  date. When the user asks for the latest, newest, last, current or most recent one of
+  something, add the current year to q, so that pages about older ones rank lower.
+- q2: a second, different query only when the message asks for two distinct things that
+  one search would not find together (two separate subjects, or what already happened
+  and what is planned next). Otherwise "".
 - terms: the 1-3 lowercase nouns naming the topic. Only words that would
   plausibly appear in the title of a correct result. Never include words like
   changed, latest, new, recent, official, version, update.
 - mode: fact for a single fact (a date, price, number or name); news for what is
-  new or what happened recently; overview for an explanation, plot, summary, or
-  a list of recommendations.
-- window: day or week only when an older answer would be wrong. Use null for
-  changelogs, documentation and anything historical.
+  new, happening or planned with something, or its current state; overview for an
+  explanation, plot, summary, or a list of recommendations.
+- window: day or week only when an older answer would be wrong; month or year when the
+  question is about the current state of something, the latest or upcoming ones, or
+  this year, and older pages would be out of date. Use null for changelogs,
+  documentation and anything historical.
+
+When a line "USER'S OWN WORDS:" follows the message, the message is a rewrite of what the
+user said. Keep the names and phrases the user used.
 
 Examples (placeholders stand for whatever the user actually names):
 USER: what changed in the newest release of <software>
-JSON: {"q":"<software> release notes changelog","terms":["<software>"],"mode":"news","window":null}
+JSON: {"q":"<software> release notes changelog","q2":"","terms":["<software>"],"mode":"news",\
+"window":null}
 USER: when does <title> come out in <country>
-JSON: {"q":"<title> <country> release date","terms":["<title>"],"mode":"fact","window":null}
+JSON: {"q":"<title> <country> release date","q2":"","terms":["<title>"],"mode":"fact","window":null}
 USER: what is the price of <product> right now
-JSON: {"q":"<product> price","terms":["<product>"],"mode":"fact","window":"day"}
+JSON: {"q":"<product> price","q2":"","terms":["<product>"],"mode":"fact","window":"day"}
 USER: how many <units> does <work> have
-JSON: {"q":"<work> number of <units>","terms":["<work>"],"mode":"fact","window":null}
+JSON: {"q":"<work> number of <units>","q2":"","terms":["<work>"],"mode":"fact","window":null}
 USER: tell me about the story of <work>
-JSON: {"q":"<work> plot summary","terms":["<work>"],"mode":"overview","window":null}
+JSON: {"q":"<work> plot summary","q2":"","terms":["<work>"],"mode":"overview","window":null}
 USER: what are the best <things> for <purpose>
-JSON: {"q":"best <things> for <purpose>","terms":["<things>"],"mode":"overview","window":null}
+JSON: {"q":"best <things> for <purpose>","q2":"","terms":["<things>"],"mode":"overview",\
+"window":null}
 USER: who won the most recent <event>
-JSON: {"q":"<event> winner <current year>","terms":["<event>"],"mode":"fact","window":null}
+JSON: {"q":"<event> winner <current year>","q2":"","terms":["<event>"],"mode":"fact","window":null}
+USER: what is going on with <thing> lately
+JSON: {"q":"<thing> latest news <current year>","q2":"","terms":["<thing>"],"mode":"news",\
+"window":"month"}
+USER: what are the latest <things> from <maker> and what is coming next
+JSON: {"q":"<maker> latest <things> <current year>","q2":"<maker> upcoming <things>",\
+"terms":["<maker>"],"mode":"news","window":"year"}
 """
 
 _PLAN_JSON = re.compile(r"\{\s*\"q\".*?\}", re.DOTALL)
@@ -302,6 +320,9 @@ class SearchPlan(BaseModel):
     answer_mode: str = "unknown"
     time_filter: str | None = None
     source: str = "fallback"
+    #: A second query for a distinct part of the question, when the planner named one
+    #: and it passed validation. Whether it is run is decided after the first search.
+    secondary_query: str | None = None
 
 
 def content_tokens(value: str) -> set[str]:
@@ -360,12 +381,16 @@ class QueryPlanner:
         *,
         llm: LLMClient | None = None,
         hint: str | None = None,
+        user_text: str | None = None,
     ) -> SearchPlan:
         """Plan ``query``.
 
         ``hint`` is the structured resolver's rewritten query (for example the
         entity it pulled out of a release-date question).  It is offered to the
         model as extra context but never used as the search string on its own.
+        ``user_text`` is the user's own message when ``query`` is a rewrite of it
+        (the router's standalone query): the planner sees both, so a name or
+        phrase the rewrite dropped is not lost.
         """
         # subject_terms is deliberately left empty on the fallback path: it is a
         # narrow claim ("these 1-3 nouns are the topic") that only the model is in
@@ -378,22 +403,31 @@ class QueryPlanner:
         if llm is None or not query.strip():
             return fallback
 
-        cache_key = (" ".join(query.lower().split()), getattr(llm, "model", ""), today_for_prompt())
+        cache_key = (
+            " ".join(query.lower().split()),
+            " ".join((user_text or "").lower().split()),
+            getattr(llm, "model", ""),
+            today_for_prompt(),
+        )
         cached = self._cache.get(cache_key)
         if cached is not None:
             self._cache.move_to_end(cache_key)
             return cached
 
-        payload = self._request_plan(query, llm, hint)
-        plan = self._validate(payload, query) if payload is not None else None
+        payload = self._request_plan(query, llm, hint, user_text)
+        plan = self._validate(payload, query, user_text) if payload is not None else None
         result = plan or fallback
         if plan is not None:
             self._remember(cache_key, plan)
         return result
 
     @staticmethod
-    def _request_plan(query: str, llm: LLMClient, hint: str | None) -> dict[str, object] | None:
+    def _request_plan(
+        query: str, llm: LLMClient, hint: str | None, user_text: str | None = None
+    ) -> dict[str, object] | None:
         user_content = query if not hint or hint == query else f"{query}\n\n(topic: {hint})"
+        if user_text and " ".join(user_text.split()) != " ".join(query.split()):
+            user_content = f"{user_content}\nUSER'S OWN WORDS: {' '.join(user_text.split())[:400]}"
         today = today_for_prompt()
         try:
             raw = llm.chat(
@@ -421,35 +455,15 @@ class QueryPlanner:
         return payload if isinstance(payload, dict) else None
 
     @staticmethod
-    def _validate(payload: dict[str, object], query: str) -> SearchPlan | None:
+    def _validate(
+        payload: dict[str, object], query: str, user_text: str | None = None
+    ) -> SearchPlan | None:
         raw_query = payload.get("q")
         if not isinstance(raw_query, str):
             return None
-        provider_query = " ".join(raw_query.split())
-        if not provider_query or len(provider_query) > MAX_PROVIDER_QUERY_CHARS:
-            return None
-
-        # A rewrite that shares no content word with the question has drifted off
-        # topic (or hallucinated an entity); the deterministic cleanup is safer.
-        asked = content_tokens(query)
-        if asked and not (asked & content_tokens(provider_query)):
-            return None
-        # A year can be the whole point of a buying or release question. A
-        # small planner may omit it while still keeping the product name,
-        # yielding a plausible but stale set of results.
-        requested_years = set(re.findall(r"\b(?:19|20)\d{2}\b", query))
-        planned_years = set(re.findall(r"\b(?:19|20)\d{2}\b", provider_query))
-        if requested_years - planned_years:
-            return None
-        # The opposite failure: a year the user never wrote, older than last
-        # year, can only come from the model's memory -- which ends at its
-        # training data. Asked who won "the last" contest, a small planner
-        # searches for the one it remembers and finds only stale pages.
-        oldest_resolvable = int(today_for_prompt()[:4]) - 1
-        for year in planned_years - requested_years:
-            if int(year) < oldest_resolvable:
-                provider_query = " ".join(re.sub(rf"\b{year}\b", " ", provider_query).split())
-        if not provider_query:
+        asked_text = f"{query} {user_text or ''}"
+        provider_query = _validated_query(raw_query, asked_text)
+        if provider_query is None:
             return None
 
         raw_terms = payload.get("terms")
@@ -469,12 +483,20 @@ class QueryPlanner:
         raw_window = payload.get("window")
         window = raw_window if isinstance(raw_window, str) and raw_window in TIME_FILTERS else None
 
+        secondary: str | None = None
+        raw_secondary = payload.get("q2")
+        if isinstance(raw_secondary, str) and raw_secondary.strip():
+            candidate = _validated_query(raw_secondary, asked_text)
+            if candidate is not None and _distinct_need(provider_query, candidate, subject_terms):
+                secondary = candidate
+
         return SearchPlan(
             provider_query=provider_query,
             subject_terms=subject_terms,
             answer_mode=mode or "unknown",
             time_filter=window,
             source="model",
+            secondary_query=secondary,
         )
 
     def _remember(self, key: tuple[str, str, str], plan: SearchPlan) -> None:
@@ -484,9 +506,76 @@ class QueryPlanner:
             self._cache.popitem(last=False)
 
 
+def _validated_query(raw: str, asked: str) -> str | None:
+    """A planned query, or ``None`` when it drifted, is too long, or lost a requested year.
+
+    A rewrite that shares no content word with what was asked has drifted off topic (or
+    hallucinated an entity). A year can be the whole point of a buying or release question,
+    so one the user asked for must survive. A year older than last year that the user never
+    wrote can only come from the model's memory, which ends at its training data, so it is
+    removed.
+    """
+
+    provider_query = " ".join(raw.split())
+    if not provider_query or len(provider_query) > MAX_PROVIDER_QUERY_CHARS:
+        return None
+    asked_tokens = content_tokens(asked)
+    if asked_tokens and not (asked_tokens & content_tokens(provider_query)):
+        return None
+    requested_years = set(re.findall(r"\b(?:19|20)\d{2}\b", asked))
+    planned_years = set(re.findall(r"\b(?:19|20)\d{2}\b", provider_query))
+    if requested_years - planned_years:
+        return None
+    oldest_resolvable = int(today_for_prompt()[:4]) - 1
+    for year in planned_years - requested_years:
+        if int(year) < oldest_resolvable:
+            provider_query = " ".join(re.sub(rf"\b{year}\b", " ", provider_query).split())
+    return provider_query or None
+
+
+def _distinct_need(first: str, second: str, subject_terms: list[str]) -> bool:
+    """Whether ``second`` asks for something ``first`` does not, about the same subject.
+
+    A near-duplicate wording would only repeat the first search; a query that drops the
+    subject searches for something else.
+    """
+
+    first_words, second_words = query_words(first), query_words(second)
+    if not second_words:
+        return False
+    overlap = len(first_words & second_words) / len(first_words | second_words)
+    if overlap >= 0.75:
+        return False
+    subject = {word for term in subject_terms for word in query_words(term)}
+    anchor = subject or content_tokens(first)
+    return bool(anchor & second_words)
+
+
+#: Function words only. Distinctness compares every other word: "latest" and "upcoming"
+#: are exactly what can make a second query ask something the first did not.
+_FUNCTION_WORDS = frozenset(
+    "a an and are as at be by for from how in is it of on or that the this to was what when "
+    "where which who why with".split()
+)
+
+
+def query_words(query: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z0-9][a-z0-9.+#-]*", (query or "").lower())
+        if word not in _FUNCTION_WORDS and not re.fullmatch(r"(?:19|20)\d{2}", word)
+    }
+
+
 _PLANNER = QueryPlanner()
 
 
-def plan_query(query: str, *, llm: LLMClient | None = None, hint: str | None = None) -> SearchPlan:
+def plan_query(
+    query: str,
+    *,
+    llm: LLMClient | None = None,
+    hint: str | None = None,
+    user_text: str | None = None,
+) -> SearchPlan:
     """Plan ``query`` using the process-wide planner (and its cache)."""
-    return _PLANNER.plan(query, llm=llm, hint=hint)
+    return _PLANNER.plan(query, llm=llm, hint=hint, user_text=user_text)
