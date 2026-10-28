@@ -68,7 +68,7 @@ export default function AccountSettings({ profile, onClose, onProfileUpdated, ba
     event.preventDefault();
     setError(""); setNotice("");
     if (newPassword !== confirmPassword) { setError("The new passwords do not match."); return; }
-    if (newPassword.length < 4) { setError("Password must contain at least 4 characters."); return; }
+    if (!newPassword) { setError("Password cannot be empty."); return; }
     setBusy(true);
     try {
       const data = await api.updateAccountProfile({
@@ -165,8 +165,6 @@ export default function AccountSettings({ profile, onClose, onProfileUpdated, ba
                 value={newPassword}
                 onChange={setNewPassword}
                 autoComplete="new-password"
-                minLength={4}
-                hint="Use at least 4 characters."
               />
               <PasswordField
                 label="Confirm new password"

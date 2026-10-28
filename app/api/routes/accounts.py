@@ -35,7 +35,7 @@ _session_lock = Lock()
 
 class ProfileCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=48)
-    password: str = Field(min_length=4, max_length=256)
+    password: str = Field(min_length=1, max_length=256)
     avatar_data: str | None = Field(default=None, max_length=3_000_000)
 
 
@@ -174,7 +174,7 @@ def update_current_profile(
         if len(payload.new_password) < MIN_PASSWORD_LENGTH:
             raise HTTPException(
                 status_code=422,
-                detail=f"Password must contain at least {MIN_PASSWORD_LENGTH} characters.",
+                detail="Password cannot be empty.",
             )
         with profile_database(profile["id"]):
             staged = note_keys.stage_password_change(payload.current_password, payload.new_password)

@@ -9,9 +9,9 @@
    every other token is mixed from them, so adding a theme is a short block
    rather than a hand-tuned palette of ninety values.
 
-   The ramp percentages are solved against the default anchors (ink #fff over
-   bg #0a0a0a), which is why the default reproduces its previous greys exactly --
-   the value each step used to be written as is in the comment beside it.
+   The ramp percentages were solved against Phosphor's anchors (ink #fff over
+   bg #0a0a0a), Neo's original palette -- the grey each step resolves to there
+   is in the comment beside it. The default is now Crimson, which `:root` holds.
 
    Themes are selected by `data-theme` on <html>, set from the profile's stored
    preference before the app first paints (see App.jsx). No attribute means the
@@ -22,25 +22,25 @@
   font-synthesis: none;
 
   /* -- anchors ------------------------------------------------------------ */
-  --neo-accent: #39ff14;
-  --neo-on-accent: #04170a;      /* text drawn on top of a filled accent */
-  --neo-ink: #fff;               /* what the neutral ramp is mixed from */
+  --neo-accent: #ff2d55;
+  --neo-on-accent: #1a0308;      /* text drawn on top of a filled accent */
+  --neo-ink: #ffe9ec;              /* what the neutral ramp is mixed from */
   --neo-shadow: #000;            /* cast shadows; dark under every theme */
-  --neo-chat-ink: #e9edef;       /* chat body text: a touch cooler than the ink */
+  --neo-chat-ink: #ffe9ec;       /* chat body text: a touch cooler than the ink */
 
-  --neo-bg: #0a0a0a;
-  --neo-sidebar: #0d0d0d;
-  --neo-panel: #111;
-  --neo-panel-raised: #141414;
-  --neo-panel-menu: #1c1c1c;     /* popovers and dropdowns */
-  --neo-line: #1a1a1a;
-  --neo-line-bright: #252525;
-  --neo-bubble: #353535;         /* the assistant's message bubble */
+  --neo-bg: #0d0505;
+  --neo-sidebar: #120707;
+  --neo-panel: #170a0a;
+  --neo-panel-raised: #1d0e0e;
+  --neo-panel-menu: #251313;     /* popovers and dropdowns */
+  --neo-line: #2a1414;
+  --neo-line-bright: #3d1f1f;
+  --neo-bubble: #3a1d1d;         /* the assistant's message bubble */
 
-  --neo-danger: #ff3b30;
-  --neo-warn: #e0a020;
-  --neo-success: #79ef8b;
-  --neo-info: #3a6ea5;
+  --neo-danger: #ff8c42;
+  --neo-warn: #ffd166;
+  --neo-success: #6ee7b7;
+  --neo-info: #7dd3fc;
 
   /* -- neutral ramp, brightest to dimmest --------------------------------- */
   --neo-fg-1: color-mix(in srgb, var(--neo-ink) 100%, var(--neo-bg));  /* #fff */
@@ -66,36 +66,6 @@
   --neo-muted: var(--neo-fg-11);
   --neo-faint: var(--neo-fg-14);
   --neo-green: var(--neo-accent);
-
-  /* -- status steps ------------------------------------------------------- */
-  --neo-danger-text: #d97974;
-  --neo-danger-bright: #ff6b62;
-  --neo-danger-soft: #ef9b9b;
-  --neo-danger-dim: #c96a63;
-  --neo-danger-deep: #c0392b;
-  --neo-danger-bg: #160d0d;
-  --neo-danger-line: #3a1515;
-  --neo-warn-bright: #ffb020;
-  --neo-warn-text: #d9a441;
-  --neo-warn-soft: #f0c674;
-  --neo-warn-dim: #b58a34;
-  --neo-warn-line: #6b4a1f;
-  --neo-success-dim: #4f9e52;
-  --neo-success-deep: #2f7a26;
-  --neo-success-muted: #8a9a8a;
-  --neo-accent-pale: #dcffdc;
-  --neo-accent-bg: #082811;
-  --neo-accent-bg-soft: #0d150d;
-  --neo-accent-line: #1f3a1f;
-  /* The accent at four strengths. The composer and the mode switch were written
-     in greens that were never the success colour -- they were the accent, dimmed
-     and lifted -- so they belong here rather than in the status family, which
-     stays green under every theme on purpose. */
-  --neo-accent-soft: #79ef8b;
-  --neo-accent-bright: #5cf07a;
-  --neo-accent-mid: #7ec982;
-  --neo-accent-ink: #4f9e52;
-  --neo-accent-text: #8fbf80;
 
   /* -- accent at alpha. There is no single translucent accent: the sheet uses
         it at two dozen strengths, and before this they were all written out
@@ -185,6 +155,53 @@
   --neo-chatink-a60: color-mix(in srgb, var(--neo-chat-ink) 60%, transparent);
   --neo-chatink-a70: color-mix(in srgb, var(--neo-chat-ink) 70%, transparent);
   --neo-chatink-a80: color-mix(in srgb, var(--neo-chat-ink) 80%, transparent);
+}
+
+/* --- Phosphor ---------------------------------------------------------- */
+/* Neo's original green on ink black. Declares every status step itself, so it
+   stays out of the mixing rule below and renders exactly as it always did. */
+[data-theme="phosphor"] {
+  color-scheme: dark;
+  --neo-accent: #39ff14;
+  --neo-on-accent: #04170a;
+  --neo-ink: #fff;
+  --neo-chat-ink: #e9edef;
+  --neo-bg: #0a0a0a;
+  --neo-sidebar: #0d0d0d;
+  --neo-panel: #111;
+  --neo-panel-raised: #141414;
+  --neo-panel-menu: #1c1c1c;
+  --neo-line: #1a1a1a;
+  --neo-line-bright: #252525;
+  --neo-bubble: #353535;
+  --neo-danger: #ff3b30;
+  --neo-warn: #e0a020;
+  --neo-success: #79ef8b;
+  --neo-info: #3a6ea5;
+  --neo-danger-text: #d97974;
+  --neo-danger-bright: #ff6b62;
+  --neo-danger-soft: #ef9b9b;
+  --neo-danger-dim: #c96a63;
+  --neo-danger-deep: #c0392b;
+  --neo-danger-bg: #160d0d;
+  --neo-danger-line: #3a1515;
+  --neo-warn-bright: #ffb020;
+  --neo-warn-text: #d9a441;
+  --neo-warn-soft: #f0c674;
+  --neo-warn-dim: #b58a34;
+  --neo-warn-line: #6b4a1f;
+  --neo-success-dim: #4f9e52;
+  --neo-success-deep: #2f7a26;
+  --neo-success-muted: #8a9a8a;
+  --neo-accent-pale: #dcffdc;
+  --neo-accent-bg: #082811;
+  --neo-accent-bg-soft: #0d150d;
+  --neo-accent-line: #1f3a1f;
+  --neo-accent-soft: #79ef8b;
+  --neo-accent-bright: #5cf07a;
+  --neo-accent-mid: #7ec982;
+  --neo-accent-ink: #4f9e52;
+  --neo-accent-text: #8fbf80;
 }
 
 /* --- Cyberpunk --------------------------------------------------------- */
@@ -302,27 +319,6 @@
   --neo-chat-ink: #e8e9f7;
 }
 
-/* --- Crimson ----------------------------------------------------------- */
-[data-theme="crimson"] {
-  color-scheme: dark;
-  --neo-accent: #ff2d55;
-  --neo-on-accent: #1a0308;
-  --neo-ink: #ffe9ec;
-  --neo-bg: #0d0505;
-  --neo-sidebar: #120707;
-  --neo-panel: #170a0a;
-  --neo-panel-raised: #1d0e0e;
-  --neo-panel-menu: #251313;
-  --neo-line: #2a1414;
-  --neo-line-bright: #3d1f1f;
-  --neo-bubble: #3a1d1d;
-  --neo-danger: #ff8c42;
-  --neo-warn: #ffd166;
-  --neo-success: #6ee7b7;
-  --neo-info: #7dd3fc;
-  --neo-chat-ink: #ffe9ec;
-}
-
 /* --- Paper ------------------------------------------------------------- */
 [data-theme="paper"] {
   color-scheme: light;
@@ -360,14 +356,16 @@
   --neo-fg-15: color-mix(in srgb, var(--neo-ink) 25%, var(--neo-bg));
 }
 
-/* Every theme but the default takes its status steps by mixing, so a new
-   theme declares fifteen anchors and inherits the rest. */
+/* Every theme but Phosphor (which keeps its original hand-tuned steps) takes
+   its status steps by mixing, so a new theme declares fifteen anchors and
+   inherits the rest. The default is matched as "no attribute" rather than as
+   :root, which would also match -- and override -- Phosphor. */
+:root:not([data-theme]),
 [data-theme="cyberpunk"],
 [data-theme="amber"],
 [data-theme="ice"],
 [data-theme="mono"],
 [data-theme="indigo"],
-[data-theme="crimson"],
 [data-theme="paper"] {
   --neo-danger-text: color-mix(in srgb, var(--neo-danger) 70%, var(--neo-fg-6));
   --neo-danger-bright: color-mix(in srgb, var(--neo-danger) 82%, var(--neo-fg-1));
@@ -1420,7 +1418,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
 .feature-shell, .settings-shell, .tools-shell, .agentic-shell, .coding-shell { color: var(--neo-body); }
 
 .profile-picker { height: 100vh; height: 100dvh; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: var(--neo-bg); padding: 48px 24px; }
-.profile-shell { width: min(100%, 668px); margin: auto; }
+.profile-shell { position: relative; z-index: 1; width: min(100%, 668px); margin: auto; }
 .profile-shell-unlock, .profile-shell-create, .profile-shell-delete { width: min(100%, 420px); }
 .profile-brand { display: flex; align-items: center; gap: 10px; width: max-content; color: var(--neo-fg-2); font-size: 17px; font-weight: 700; letter-spacing: -.04em; }
 .profile-brand .neo-logo-mark { width: 28px; height: 28px; }

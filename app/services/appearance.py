@@ -31,30 +31,29 @@ THEME_KEY = "theme"
 #: The theme a profile that has never chosen one gets, and the value an unknown
 #: stored id falls back to. It is also the palette every screen shown before a
 #: profile is known renders in, because no ``data-theme`` attribute means this.
-DEFAULT_THEME = "default"
+DEFAULT_THEME = "crimson"
 
 #: Every id the stylesheet has a ``[data-theme]`` block for, plus the default.
 VALID_THEMES = (
     DEFAULT_THEME,
+    "phosphor",
     "cyberpunk",
     "amber",
     "ice",
     "mono",
     "indigo",
-    "crimson",
     "paper",
 )
 
 BACKGROUND_KEY = "background"
 
-#: Motion behind the transcript is off unless it is asked for. The default has
-#: to be the one that mounts no canvas at all, so that a profile which has never
-#: chosen pays nothing for the feature existing.
-DEFAULT_BACKGROUND = "none"
+#: A profile that has never chosen gets the jellyfish; "none" remains a real
+#: choice for turning motion off.
+DEFAULT_BACKGROUND = "jellyfish"
 
-#: Every id with an effect module in ``frontend/src/backgrounds/``, plus "none".
+#: Every id with an effect module in ``frontend/src/backgrounds/``, including "none".
 VALID_BACKGROUNDS = (
-    DEFAULT_BACKGROUND,
+    "none",
     "jellyfish",
     "stars",
     "rain",
@@ -73,12 +72,12 @@ SUPERSEDED_BACKGROUNDS = {"waves": "gradient"}
 
 INTENSITY_KEY = "background_intensity"
 
-DEFAULT_INTENSITY = "medium"
+DEFAULT_INTENSITY = "subtle"
 
 #: How strongly the background draws itself. Separate from the choice of effect
 #: because the readable strength depends on the theme underneath it -- the same
 #: alpha that reads as a whisper on Ice is a smear on Paper.
-VALID_INTENSITIES = ("subtle", DEFAULT_INTENSITY, "vivid")
+VALID_INTENSITIES = (DEFAULT_INTENSITY, "medium", "vivid")
 
 
 def _db_path() -> str:

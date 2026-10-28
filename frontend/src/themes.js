@@ -16,12 +16,18 @@
 //: No `data-theme` attribute at all means this one, so that a profile which has
 //: never chosen a theme, and every screen shown before the profile is known,
 //: render in the palette Neo has always had.
-export const DEFAULT_THEME_ID = "default";
+export const DEFAULT_THEME_ID = "crimson";
 
 export const THEMES = [
   {
-    id: "default",
-    name: "Default",
+    id: "crimson",
+    name: "Crimson",
+    description: "Deep red on black. Errors shift to amber so they still read as errors.",
+    swatch: ["#ff2d55", "#0d0505", "#170a0a", "#3d1f1f", "#ffe9ec"],
+  },
+  {
+    id: "phosphor",
+    name: "Phosphor",
     description: "Phosphor green on ink black. Neo's original palette.",
     swatch: ["#39ff14", "#0a0a0a", "#111111", "#252525", "#e8e8e8"],
   },
@@ -54,12 +60,6 @@ export const THEMES = [
     name: "Indigo",
     description: "Periwinkle on neutral graphite, the one dark theme that isn't near-black.",
     swatch: ["#7c83ff", "#16161c", "#202029", "#464657", "#e8e9f7"],
-  },
-  {
-    id: "crimson",
-    name: "Crimson",
-    description: "Deep red on black. Errors shift to amber so they still read as errors.",
-    swatch: ["#ff2d55", "#0d0505", "#170a0a", "#3d1f1f", "#ffe9ec"],
   },
   {
     id: "paper",

@@ -47,11 +47,10 @@ UNLOCK_LOCKOUT_MAX_SECONDS = 15 * 60
 #: absolute ceiling. A cookie that never expires is a permanent key to the profile.
 SESSION_IDLE_DAYS = 14
 SESSION_ABSOLUTE_DAYS = 90
-#: Minimum length for a password being set or changed. Existing passwords are never
-#: re-validated, so raising this never locks anyone out of an account they already
-#: have; it only applies where a new secret is being chosen. Four characters was
-#: brute-forceable in seconds by anything that could reach the unlock endpoint.
-MIN_PASSWORD_LENGTH = 8
+#: Minimum length for a password being set or changed: just non-empty. Existing
+#: passwords are never re-validated, so this only applies where a new secret is
+#: being chosen.
+MIN_PASSWORD_LENGTH = 1
 PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
 PROFILE_SESSION_TOKEN_BYTES = 32
 _registry_initialization_lock = Lock()
@@ -435,7 +434,7 @@ def create_profile(username: str, password: str, avatar_data: str | None = None)
     if len(password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(
             status_code=422,
-            detail=f"Password must contain at least {MIN_PASSWORD_LENGTH} characters.",
+            detail="Password cannot be empty.",
         )
     profile_id = str(uuid.uuid4())
     owner_id = canonical_uuid(profile_id)
@@ -517,7 +516,7 @@ def update_profile_account(
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        f"Password must contain at least {MIN_PASSWORD_LENGTH} characters."
+                        "Password cannot be empty."
                     ),
                 )
             # Memory keys used to be derived from the password hash below, so the

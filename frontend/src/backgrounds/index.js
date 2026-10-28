@@ -15,11 +15,10 @@
  * file with a regular expression.
  */
 
-//: Motion is off unless it is asked for, and "off" has to be a real entry in
-//: the catalogue rather than the absence of one, so the picker has something to
-//: select and a profile has something to go back to. Nothing is mounted for it:
-//: `ChatBackground` renders null, so no canvas and no engine exist.
-export const DEFAULT_BACKGROUND_ID = "none";
+//: A profile that has never chosen gets the jellyfish. "off" is still a real
+//: entry ("none") rather than the absence of one, so the picker has something to
+//: select; nothing is mounted for it: `ChatBackground` renders null.
+export const DEFAULT_BACKGROUND_ID = "jellyfish";
 
 export const BACKGROUNDS = [
   {
@@ -52,7 +51,7 @@ export const BACKGROUNDS = [
 //: Multipliers the effects apply to their own tuned values, not absolute
 //: numbers. What reads as a whisper on Ice is a smear on Paper, so the strength
 //: has to be the reader's choice rather than one constant per effect.
-export const DEFAULT_INTENSITY_ID = "medium";
+export const DEFAULT_INTENSITY_ID = "subtle";
 
 export const INTENSITIES = [
   { id: "subtle", name: "Subtle", alpha: 0.55, density: 0.6 },
@@ -91,7 +90,7 @@ export function isIntensityId(id) {
  * exactly one selector for "no background" and it is the absence of one.
  */
 export function applyBackground(id, root = document.documentElement) {
-  if (id && id !== DEFAULT_BACKGROUND_ID && BY_ID.has(id)) {
+  if (id && id !== "none" && BY_ID.has(id)) {
     root.dataset.chatBg = id;
   } else {
     delete root.dataset.chatBg;

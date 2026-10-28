@@ -94,7 +94,7 @@ describe("the background catalogue", () => {
 
   test("every background but none has a module that can draw it", () => {
     for (const entry of BACKGROUNDS) {
-      if (entry.id === DEFAULT_BACKGROUND_ID) continue;
+      if (entry.id === "none") continue;
       assert.ok(effectById(entry.id), `${entry.id} has a card but nothing draws it`);
     }
   });
@@ -107,8 +107,9 @@ describe("the background catalogue", () => {
     }
   });
 
-  test("none is the default and has no module of its own", () => {
-    assert.equal(DEFAULT_BACKGROUND_ID, "none");
+  test("jellyfish is the default, and none has no module of its own", () => {
+    assert.equal(DEFAULT_BACKGROUND_ID, "jellyfish");
+    assert.ok(effectById(DEFAULT_BACKGROUND_ID));
     // Not an effect that draws nothing -- the absence of an effect, so that
     // choosing it mounts no canvas and starts no loop.
     assert.equal(effectById("none"), undefined);
@@ -132,7 +133,7 @@ describe("the background catalogue", () => {
 
   test("intensities are the three the effects scale by", () => {
     assert.deepEqual(INTENSITIES.map((entry) => entry.id), ["subtle", "medium", "vivid"]);
-    assert.equal(DEFAULT_INTENSITY_ID, "medium");
+    assert.equal(DEFAULT_INTENSITY_ID, "subtle");
     // Medium is the identity, so an effect's own tuned numbers are what it says.
     assert.equal(intensityById("medium").alpha, 1);
     assert.equal(intensityById("medium").density, 1);
@@ -153,7 +154,7 @@ describe("applying a background", () => {
 
   test("none removes the attribute rather than naming itself", () => {
     const root = { dataset: { chatBg: "rain" } };
-    applyBackground(DEFAULT_BACKGROUND_ID, root);
+    applyBackground("none", root);
     assert.equal(root.dataset.chatBg, undefined);
   });
 

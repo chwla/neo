@@ -1009,7 +1009,6 @@
 .nw-lock-dialog p { margin: 0; }
 .nw-lock-dialog .password-field { display: grid; gap: 6px; font-size: 12.5px; color: var(--neo-fg-8); }
 .nw-lock-dialog .password-field input { min-height: 40px; }
-.nw-lock-note { color: var(--neo-fg-8) !important; font-size: 12.5px !important; }
 .nw-lock-error { color: var(--neo-danger) !important; font-size: 13px !important; }
 .nw-lock-dialog .nw-dialog-actions { margin-top: 6px; }
 /* A locked note's picture, while it is decrypted. */

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import ChatBackground from "./ChatBackground.jsx";
+import { DEFAULT_BACKGROUND_ID, DEFAULT_INTENSITY_ID } from "./backgrounds/index.js";
 import NeoLogo from "./NeoLogo.jsx";
 import PasswordField from "./PasswordField.jsx";
 
@@ -82,7 +84,10 @@ export default function ProfilePicker({ onSignedIn }) {
     reader.readAsDataURL(file);
   }
 
+  // No profile is known yet, so there is no stored choice to honour: the
+  // sign-in screens always wear the default background.
   return <main className={`profile-picker profile-picker-${mode}`}>
+    <ChatBackground background={DEFAULT_BACKGROUND_ID} intensity={DEFAULT_INTENSITY_ID} />
     <section className={`profile-shell profile-shell-${mode}`}>
       <div className="profile-brand" aria-label="Neo"><NeoLogo /><span>neo</span></div>
 
@@ -159,7 +164,7 @@ export default function ProfilePicker({ onSignedIn }) {
             <input type="file" accept="image/*" onChange={handleAvatar} aria-label="Profile picture" />
           </label>
           <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" maxLength={48} required /></label>
-          <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="new-password" minLength={4} required hint="Use at least 4 characters." />
+          <PasswordField label="Password" value={password} onChange={setPassword} autoComplete="new-password" required />
           <button className="profile-submit" type="submit" disabled={busy}>{busy ? "Creating…" : "Create profile"}<span aria-hidden="true">→</span></button>
         </form>
       </>}

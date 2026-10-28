@@ -112,9 +112,6 @@ export function LockPrompt({ controller, prompt }) {
         {prompt.mode === "earlier" && (
           <PasswordField label="Earlier password" value={earlier} onChange={setEarlier} autoComplete="off" disabled={prompt.busy} required />
         )}
-        {prompt.mode === "setup" && password && password.length < 8 && (
-          <p className="nw-lock-note">Locked notes are only as strong as your profile password, and this one is short.</p>
-        )}
         {prompt.error && (
           <p className="nw-lock-error" role="alert">
             {prompt.error}

@@ -23,10 +23,10 @@ const INK = "--neo-ink";
 
 //: What the picker falls back to if the document has no computed style yet,
 //: which is the case under `renderToStaticMarkup` in the tests.
-const FALLBACK = { accent: [57, 255, 20], bg: [10, 10, 10], ink: [255, 255, 255] };
+const FALLBACK = { accent: [255, 45, 85], bg: [13, 5, 5], ink: [255, 233, 236] };
 
 /**
- * `#abc` and `#aabbcc` both appear in the stylesheet -- the default theme's ink
+ * `#abc` and `#aabbcc` both appear in the stylesheet -- Phosphor's ink
  * is written `#fff`. Anything else reads as null so the caller can fall back
  * rather than draw in NaN, which paints nothing and gives no clue why.
  */
