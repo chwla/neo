@@ -31,7 +31,7 @@ server.
   attempt/evidence audits. Search-result snippets help discovery only; claims and citations
   require successfully fetched page content.
 - Notes, tasks, projects, files, artifacts, repositories, code indexes, symbol awareness,
-  LSP, patches, sandboxed commands, tests, Git checkpoints, research, agents, recovery,
+  LSP, patches, guarded commands, tests, Git checkpoints, research, agents, recovery,
   evaluation, continuity, and export/import bundles.
 - OpenAPI, manual REST, MCP Streamable HTTP, legacy MCP SSE, and trusted stdio connectors;
   profile-bound AES-GCM credential storage; OAuth 2.0 Authorization Code with PKCE and atomic
@@ -67,6 +67,17 @@ opt-in alternative, and keeps the older guarantee that the user's own files are 
 written: Neo copies the supported text files, the agent edits the copy, and the user
 applies the result themselves.
 
+External coding CLIs have a separate boundary. On a validated macOS installation,
+Neo launches them with a per-run Seatbelt policy and gives them the current task,
+their scoped workspace, and any earlier message or note the user explicitly
+previews and approves. A private disclosure runs in a separate full copy and its
+changes require exact-diff review before delivery. External CLIs refuse to run on
+Linux, Windows and Docker, or when macOS isolation and CLI validation are missing.
+Neo-side commands and tests on unsupported platforms retain their ordinary
+workspace permissions and Git hardening; they are not OS-isolated. The current
+implementation and rollout limits are recorded in
+[`docs/security/audit-report.md`](docs/security/audit-report.md).
+
 ### Reaching your folder
 
 Neo runs on macOS, Linux and Windows from one code path. What differs is only how the
@@ -93,10 +104,9 @@ navigate to the project you want. Everything on disk is listed, hidden folders i
 because `.dotfiles`, `.vscode`, `.config` and a repository's `.git` are ordinary folders
 to a coding agent.
 
-The security boundary is the workspace **you select**, not the picker. Once a folder is
-open, every operation runs through the permission resolver in
-`app/services/agent_core/permissions.py`, which is what governs reads, writes and commands,
-including anything that tries to reach outside the workspace. The picker's own rules
+The selected workspace scopes Neo's internal file tools. Their permission resolver in
+`app/services/agent_core/permissions.py` governs reads, writes and commands; the
+external CLI boundary also needs its operating-system policy and validation. The picker's rules
 (`app/services/repos/safety.py`) are only about what makes a sane *project root*:
 
 - `/workspace` itself is **browse-only**: a root holds projects, it is not one.

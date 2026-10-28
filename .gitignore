@@ -20,6 +20,19 @@ build/
 !.env.example
 
 # Runtime data
+/data/
+/workspaces/
+/agent-state/
+/isolation/
+/engines/
+/run-markers/
+/tmp/
+/voice-models/
+/searxng/
+/.neo-probe-record.json
+/:memory:.ses
+/.claude/
+/.agents/
 data/workspace_files/
 data/workspace_repos/
 data/searxng/
