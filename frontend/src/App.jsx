@@ -838,7 +838,7 @@ export const Sidebar = memo(function Sidebar({
         <button
           className="sidebar-rail-button"
           type="button"
-          onClick={() => onNewChat(selectedProjectId)}
+          onClick={() => onNewChat()}
           aria-label="New chat"
           title="New chat"
         >
@@ -904,7 +904,9 @@ export const Sidebar = memo(function Sidebar({
         )}
       </div>
       <div className="sidebar-primary-action">
-        <NeoButton className="w-full" onClick={() => onNewChat(selectedProjectId)}>
+        {/* Always a chat outside every project, whichever one is open; each
+            project's own "+ New Chat" is how to start one inside it. */}
+        <NeoButton className="w-full" onClick={() => onNewChat()}>
           + New chat
         </NeoButton>
       </div>
