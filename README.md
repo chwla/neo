@@ -280,3 +280,10 @@ pyproject.toml       Python package and tooling configuration
 - [Frontend guide](docs/frontend.md)
 
 The `/docs` directory intentionally contains only these two Markdown files.
+
+## License
+
+Neo is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Soham Chawla.
+
+This license applies to the entire codebase, including every version and commit of Neo
+published in this repository before this notice was added.
