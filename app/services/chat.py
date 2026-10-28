@@ -2401,13 +2401,20 @@ class NeoChatService:
         history: list[ChatMessage],
         transport: str,
     ) -> dict[str, object]:
+        # The reply was stored as "scheduled" before this decision, so a turn
+        # that is not extracted says so; otherwise it read "scheduled" forever.
         if not self.memory_enabled or self.memory_runtime is None:
-            return {"status": "disabled"}
+            return self._record_memory_extraction_not_run(
+                assistant_message_id, {"status": "disabled"}
+            )
         if not turn_may_contain_memory(prompt):
             # A turn made only of questions states nothing to remember, and
             # running extraction on it spent a local model call re-asserting
             # facts read out of the supporting window as new candidates.
-            return {"status": "skipped", "reason": "no_memory_bearing_statement"}
+            return self._record_memory_extraction_not_run(
+                assistant_message_id,
+                {"status": "skipped", "reason": "no_memory_bearing_statement"},
+            )
         database = self.db.get_bind()
         # Snapshot every ORM-backed input while the chat session is still owned
         # by this worker. Background threads must never dereference ChatMessage
@@ -2490,9 +2497,11 @@ class NeoChatService:
         # file.  The agent worker copies its context for exactly this reason
         # (``agent_core/worker.py``); this path was simply missed, and it fires
         # once per turn, so the exposure grows with every concurrent chat.
-        context = contextvars.copy_context()
+        # Named apart from ``context`` above, which ``run`` reads when it runs:
+        # reusing that name handed extraction this Context instead.
+        thread_context = contextvars.copy_context()
         Thread(
-            target=lambda: context.run(run),
+            target=lambda: thread_context.run(run),
             name=f"memory-extraction-{chat_id}-{message_id}",
             daemon=True,
         ).start()
@@ -2613,6 +2622,32 @@ class NeoChatService:
             if not executed:
                 expired.add(index)
         return expired, approved
+
+    def _record_memory_extraction_not_run(
+        self, assistant_message_id: int, status: dict[str, object]
+    ) -> dict[str, object]:
+        factory = sessionmaker(
+            bind=self.db.get_bind(), autoflush=False, expire_on_commit=False, future=True
+        )
+        with factory.begin() as database_session:
+            message = database_session.get(ChatMessage, assistant_message_id)
+            if message is not None and message.role == "assistant":
+                try:
+                    metadata = json.loads(message.metadata_json or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metadata = {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata["memory_extraction"] = {
+                    **status,
+                    **{
+                        key: value
+                        for key, value in (metadata.get("memory_extraction") or {}).items()
+                        if key == "source_message_id"
+                    },
+                }
+                message.metadata_json = json.dumps(metadata, sort_keys=True)
+        return status
 
     def _record_memory_extraction_result(
         self,

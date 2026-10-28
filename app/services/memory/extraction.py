@@ -914,6 +914,9 @@ identity, preference, goal, project, education, employment, activity, event, kno
 
 Use "identity" for who the user durably is: their name, age, origin, employer,
 occupation, or where they currently live.
+Use "preference" only when the user states a liking, a dislike, or how they want
+things done. Something the user owns, has, or uses is "knowledge", not a
+preference.
 When memory_type is "identity", identity_key is exactly one of:
 name, age, origin, employer, occupation, current_location
 For every other memory_type, identity_key is null.
@@ -924,6 +927,8 @@ Fact: "User is a software engineer" -> {"memory_type":"identity","identity_key":
 Fact: "User works at Stripe"          -> {"memory_type":"identity","identity_key":"employer"}
 Fact: "User lives in Berlin" -> {"memory_type":"identity","identity_key":"current_location"}
 Fact: "User prefers dark mode"        -> {"memory_type":"preference","identity_key":null}
+Fact: "User has a Pixel 8"            -> {"memory_type":"knowledge","identity_key":null}
+Fact: "User uses Neovim for coding"   -> {"memory_type":"knowledge","identity_key":null}
 Fact: "User wants to learn Portuguese" -> {"memory_type":"goal","identity_key":null}"""
 
 _FACTS_SCHEMA: dict[str, Any] = {

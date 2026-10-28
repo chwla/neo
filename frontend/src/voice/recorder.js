@@ -5,15 +5,15 @@
  * Safari, and decoding either on the server would mean an ffmpeg dependency for a
  * payload we can just as well send uncompressed at 32 KB a second.
  *
- * The worklet module is loaded from a Blob built out of `?raw` source. Neither of the
- * obvious alternatives works here: `frontend/public/` is served by the SPA catch-all
- * as `index.html`, and `addModule()` rejects a non-JavaScript MIME type; and `?url`
- * lets Vite inline small scripts as `data:` URLs and can pull its module-preload
- * helper into the worklet scope, where it throws. `?raw` behaves identically in dev,
- * in `vite build`, and under the single-origin FastAPI deployment.
+ * The worklet module is a real same-origin file, `public/assets/pcm-recorder.worklet.js`.
+ * Vite copies it into `dist/assets/` untouched, where the FastAPI `/assets` mount
+ * serves it as JavaScript; the dev server serves it at the same path. It used to be
+ * loaded from a Blob of `?raw` source, which the page's `script-src 'self'` policy
+ * refuses -- worklets are governed by `script-src`, and `blob:` is not in it. `?url`
+ * is no better: Vite inlines small scripts as `data:` URLs, which the policy also
+ * refuses, and can pull its module-preload helper into the worklet scope.
  */
 
-import workletSource from "./pcmRecorder.worklet.js?raw";
 import { createResampler, floatToInt16, TARGET_RATE, rms } from "./resampler.js";
 
 export const SAMPLE_RATE = TARGET_RATE;
@@ -122,12 +122,7 @@ export async function startRecording({ onChunk, onLevel, onError } = {}) {
   }
   if (context.state === "suspended") await context.resume();
 
-  const moduleUrl = URL.createObjectURL(new Blob([workletSource], { type: "text/javascript" }));
-  try {
-    await context.audioWorklet.addModule(moduleUrl);
-  } finally {
-    URL.revokeObjectURL(moduleUrl);
-  }
+  await context.audioWorklet.addModule(`${import.meta.env.BASE_URL ?? "/"}assets/pcm-recorder.worklet.js`);
 
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, "pcm-recorder");

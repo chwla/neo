@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.accounts import session_for
 from app.db.session import get_db
-from app.models.memory import MemoryCandidate, MemoryRecord
+from app.models.chat import Chat
+from app.models.memory import MemoryCandidate, MemoryRecord, MemorySource
 from app.models.project import Project
 from app.services.memory.adapters import StructuredMemoryInput
 from app.services.memory.contracts import (
@@ -147,6 +148,34 @@ def _default_slot(payload: MemoryCreateRequest, mutation_id: str) -> tuple[str, 
     return f"{memory_type}:{domain}:item:{entity_id}", Cardinality.ADDITIVE
 
 
+def _learned_in(db: Session, owner_id: str, memory_ids: list[str]) -> dict[str, list[dict[str, str]]]:
+    """The projects whose chats each memory was learned in.
+
+    Separate from scope: personal facts stay global even when said inside a
+    project, so the project a fact came from is provenance, not visibility. A
+    chat's ``conversation_id`` is its id; anything else (agent runs, manual
+    edits) names no chat and contributes nothing.
+    """
+
+    rows = db.execute(
+        select(MemorySource.memory_id, Project.id, Project.name)
+        .join(Chat, Chat.id == MemorySource.conversation_id)
+        .join(Project, Project.id == Chat.project_id)
+        .where(
+            MemorySource.owner_id == owner_id,
+            MemorySource.memory_id.in_(memory_ids),
+            MemorySource.is_active.is_(True),
+        )
+        .order_by(Project.name)
+    )
+    learned: dict[str, list[dict[str, str]]] = {}
+    for memory_id, project_id, name in rows:
+        entries = learned.setdefault(memory_id, [])
+        if all(entry["project_id"] != str(project_id) for entry in entries):
+            entries.append({"project_id": str(project_id), "project_name": name})
+    return learned
+
+
 def _records(runtime: MemoryRuntime, db: Session) -> list[dict[str, Any]]:
     snapshots = runtime.adapter.list_active_memories(_context(runtime, f"list:{uuid4()}"))
     if not snapshots:
@@ -160,6 +189,9 @@ def _records(runtime: MemoryRuntime, db: Session) -> list[dict[str, Any]]:
             )
         )
     }
+    learned = _learned_in(
+        db, runtime.execution.owner_id, [str(item.memory_id) for item in snapshots]
+    )
     result = []
     for item in snapshots:
         row = rows.get(str(item.memory_id))
@@ -172,6 +204,7 @@ def _records(runtime: MemoryRuntime, db: Session) -> list[dict[str, Any]]:
                 "field": memory_field_for_type(item.memory_type).value,
                 "domain": item.domain_key,
                 "scope": _scope_response(row, db),
+                "learned_in": learned.get(str(item.memory_id), []),
                 "slot": item.slot_key,
                 "cardinality": item.cardinality.value,
                 "canonical_value": item.canonical_value,

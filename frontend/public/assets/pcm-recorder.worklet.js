@@ -2,9 +2,9 @@
  * The audio-thread half of dictation capture.
  *
  * Its whole job is to buffer and to measure. It deliberately does **no** resampling,
- * even though the audio thread is where that would be cheapest: this file is loaded
- * through `addModule()` from a Blob URL, which gives it no meaningful base URL to
- * resolve imports against, so anything it used would have to be copied in here. A
+ * even though the audio thread is where that would be cheapest: this file is served
+ * as-is from `public/` -- Vite neither bundles nor transforms it -- so it cannot
+ * import anything, and anything it used would have to be copied in here. A
  * second copy of the anti-aliasing filter -- the one piece of this feature where a
  * subtle bug is inaudible and ruins accuracy -- is not worth the microseconds. The
  * resampling happens once, on the main thread, in the module that has the tests.

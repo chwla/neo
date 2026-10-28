@@ -264,7 +264,13 @@ def _display_text_for(
     what the vector index embeds, so two recordings of one preference compared at
     0.62 instead of the 0.98 their real values share, and the duplicate stood.
 
-    Fall back to the grounded value whenever the hint is not itself supported.
+    When the hint is not itself supported, fall back to the user's own quoted
+    words rather than the bare value, except for identity facts whose slot
+    already names the relation ("age", "employer"). The value alone drops the
+    verb: "I have an iPhone 15 Plus" filed under preferences as "iphone 15 plus"
+    was read back as "You prefer the iPhone 15 Plus", and "I hate X" would have
+    read back the same way. The quote is grounded by definition and invents
+    nothing; dedupe is unaffected, because preference slots derive from the value.
     """
 
     authorized = request.authorized_user_messages()
@@ -277,6 +283,8 @@ def _display_text_for(
     )
     if value_supported(proposal.display_hint, evidence_text, cited):
         return proposal.display_hint
+    if proposal.memory_type_hint is not MemoryType.IDENTITY and evidence_text.strip():
+        return " ".join(evidence_text.split())
     if isinstance(proposal.typed_value, str) and proposal.typed_value.strip():
         return proposal.typed_value
     return proposal.display_hint

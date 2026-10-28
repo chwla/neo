@@ -137,6 +137,13 @@ _IDENTITY_SENTENCE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (_CURRENT_LOCATION, "current_location"),
 )
 _SENTENCE = re.compile(r"[^.!?]+[.!?]*")
+# A value that runs on into another first-person clause ("Priya and I work as a
+# biologist", "Soham, I am 22") is two facts the rules above would file as one,
+# so it is no match: the sentence goes to the model like any it does not know.
+_JOINED_CLAUSE = re.compile(
+    r"(?:[,;]|\b(?:and|but)\b)\s*(?:I|I'm|I've|I'd|my|me)\b",
+    re.IGNORECASE,
+)
 # A named body of work.  Kept deterministic because the projects field controls
 # which chats can read the memory, so it must not depend on a model's judgement.
 _DIRECT_PROJECT = re.compile(
@@ -476,7 +483,7 @@ def _identity_facts(request: ExtractionRequest, text: str) -> PreparseResult | N
         lead = offset + (len(raw_sentence) - len(raw_sentence.lstrip()))
         for pattern, slot in _IDENTITY_SENTENCE_RULES:
             match = pattern.fullmatch(stripped)
-            if match is None:
+            if match is None or _JOINED_CLAUSE.search(match.group("value")):
                 continue
             start, end = match.span("value")
             absolute = base + lead
@@ -608,7 +615,7 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
         )
 
     current_location = _CURRENT_LOCATION.fullmatch(text)
-    if current_location:
+    if current_location and not _JOINED_CLAUSE.search(current_location.group("value")):
         return PreparseResult(
             kind=PreparseKind.DETERMINISTIC_ASSERTION,
             reason="durable_first_person_current_location",
@@ -627,7 +634,7 @@ def preparse(request: ExtractionRequest) -> PreparseResult:
 
     for pattern, slot in _IDENTITY_SENTENCE_RULES:
         single_fact = pattern.fullmatch(text)
-        if single_fact is None:
+        if single_fact is None or _JOINED_CLAUSE.search(single_fact.group("value")):
             continue
         return PreparseResult(
             kind=PreparseKind.DETERMINISTIC_ASSERTION,

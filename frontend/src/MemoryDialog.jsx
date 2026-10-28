@@ -51,6 +51,20 @@ function label(value) {
     .join(" ");
 }
 
+// Scope decides who can read a memory; `learned_in` only says where it was
+// said. Both place a memory under a project in the Projects tab, because a
+// personal fact told inside a project stays global but still came from there.
+export function belongsToProject(record, projectId) {
+  return record.scope?.project_id === projectId
+    || (record.learned_in || []).some((entry) => entry.project_id === projectId);
+}
+
+export function onProjectsTab(record) {
+  return record.scope?.type === "project"
+    || fieldOf(record) === "projects"
+    || (record.learned_in || []).length > 0;
+}
+
 function timestamp(value) {
   const parsed = Date.parse(String(value || ""));
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -118,7 +132,10 @@ function MemoryRecord({ record, refresh, reportError }) {
           <p className="memory-card-summary">{record.display_text}</p>
           <div className="memory-provenance">
             <span>{label(fieldOf(record))}</span>
-            <span>{record.scope?.type === "project" ? `Project: ${record.scope.project_name}` : "Available everywhere"}</span>
+            <span>{record.scope?.type === "project" ? `Only in ${record.scope.project_name}` : "Available everywhere"}</span>
+            {(record.learned_in || []).length > 0 && (
+              <span>Learned in {record.learned_in.map((entry) => entry.project_name).join(", ")}</span>
+            )}
           </div>
         </div>
         <button
@@ -261,6 +278,7 @@ export default function MemoryDialog({
   const [activeTab, setActiveTab] = useState("profile");
   const [adding, setAdding] = useState(false);
   const [sortOrder, setSortOrder] = useState("newest");
+  const [projectFilter, setProjectFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   // On the modal stack like every other dialog: Escape closes it, and keyboard
@@ -287,11 +305,25 @@ export default function MemoryDialog({
   const visibleRecords = useMemo(
     () => sortRecords(
       records.filter((record) => activeTab === "projects"
-        ? record.scope?.type === "project" || fieldOf(record) === "projects"
+        ? onProjectsTab(record)
         : record.scope?.type !== "project" && fieldOf(record) === activeTab),
       sortOrder,
     ),
     [activeTab, records, sortOrder],
+  );
+  // A deleted project, or one picked before a refresh removed it, falls back
+  // to every project rather than to an empty tab with no way back.
+  const activeProjectFilter = projectFilter !== "all"
+    && projects.some((project) => String(project.id) === projectFilter)
+    ? projectFilter
+    : "all";
+  const shownProjects = activeProjectFilter === "all"
+    ? projects
+    : projects.filter((project) => String(project.id) === activeProjectFilter);
+  // Project-field memories saved before scoping existed have no project at
+  // all, so they get their own group rather than disappearing.
+  const unassigned = visibleRecords.filter(
+    (record) => !projects.some((project) => belongsToProject(record, String(project.id))),
   );
 
   return (
@@ -329,6 +361,17 @@ export default function MemoryDialog({
               {SORT_OPTIONS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
             </select>
           </label>
+          {activeTab === "projects" && projects.length > 0 && (
+            <label>
+              <span>Project</span>
+              <select value={activeProjectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
+                <option value="all">All projects</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={String(project.id)}>{project.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <button className="neo-button" type="button" onClick={refresh} disabled={loading}>Refresh</button>
           <button
             className="neo-button memory-add-toggle"
@@ -354,23 +397,29 @@ export default function MemoryDialog({
             <p className="dialog-caption">Loading memories…</p>
           ) : visibleRecords.length === 0 ? (
             <p className="dialog-caption">No saved memories</p>
-          ) : activeTab === "projects" ? projects.map((project) => {
-            const projectRecords = visibleRecords.filter((record) => record.scope?.project_id === String(project.id));
-            return <section className="memory-project-group" key={project.id}><h3>{project.name}</h3>{projectRecords.length ? projectRecords.map((record) => <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />) : <p className="dialog-caption">No private memories yet.</p>}</section>;
-          }).concat((() => {
-            // Project memories saved before scoping was applied have no project
-            // attached, so surface them rather than letting them disappear.
-            const unassigned = visibleRecords.filter((record) => record.scope?.type !== "project");
-            if (!unassigned.length) return [];
-            return [(
-              <section className="memory-project-group" key="__unassigned">
-                <h3>Not linked to a project</h3>
-                {unassigned.map((record) => (
-                  <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />
-                ))}
-              </section>
-            )];
-          })()) : visibleRecords.map((record) => (
+          ) : activeTab === "projects" ? (
+            <>
+              {shownProjects.map((project) => {
+                const projectRecords = visibleRecords.filter((record) => belongsToProject(record, String(project.id)));
+                return (
+                  <section className="memory-project-group" key={project.id}>
+                    <h3>{project.name}</h3>
+                    {projectRecords.length ? projectRecords.map((record) => (
+                      <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />
+                    )) : <p className="dialog-caption">No memories from this project yet.</p>}
+                  </section>
+                );
+              })}
+              {activeProjectFilter === "all" && unassigned.length > 0 && (
+                <section className="memory-project-group" key="__unassigned">
+                  <h3>Not linked to a project</h3>
+                  {unassigned.map((record) => (
+                    <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />
+                  ))}
+                </section>
+              )}
+            </>
+          ) : visibleRecords.map((record) => (
             <MemoryRecord key={record.id} record={record} refresh={refresh} reportError={setError} />
           ))}
         </div>

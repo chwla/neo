@@ -46,7 +46,9 @@ def _slot_label(slot_key: str | None) -> str:
     if not slot_key:
         return ""
     tail = slot_key.rsplit(":", 1)[-1].strip()
-    if not tail or tail == "item":
+    # ``item_<token>`` is the value-derived dimension of a preference that named
+    # no known one, so it is as meaningless to the reader as a uuid.
+    if not tail or tail == "item" or tail.startswith("item_"):
         return ""
     try:
         UUID(tail)
