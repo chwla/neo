@@ -27,7 +27,8 @@ from pathlib import Path
 from app.core import textio
 from app.services.agent_core import store
 from app.services.agent_core.delivery import DeliveryPlan, FileChange
-from app.services.agent_core.workspace import WorkspaceError, repo_root, resolve
+from app.services.agent_core.workspace import repo_root
+from app.services.isolation import fs_ops, safe_fs
 
 #: Bind mounts keep the host's ownership, so a container running as a different
 #: uid than the folder's owner can read every file and write none of them. The
@@ -45,13 +46,22 @@ _PERMISSION_HINT = (
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 
 
-def _read_text(path: Path) -> str | None:
+def _read_raw(root: Path, relative_path: str) -> bytes | None:
     try:
-        if path.stat().st_size > MAX_SNAPSHOT_BYTES:
-            return None
-        return textio.read_text(path)
-    except OSError:
+        raw = safe_fs.read_file(root, relative_path)
+        return raw if len(raw) <= MAX_SNAPSHOT_BYTES else None
+    except FileNotFoundError:
         return None
+
+
+def _read_text(root: Path, relative_path: str) -> str | None:
+    raw = _read_raw(root, relative_path)
+    return textio.decode(raw) if raw is not None else None
+
+
+def _newline(raw: bytes) -> str:
+    index = raw.find(b"\n")
+    return textio.CRLF if index > 0 and raw[index - 1 : index] == b"\r" else textio.LF
 
 
 def _sha256(text: str) -> str:
@@ -68,9 +78,11 @@ def record_before(session_id: str, repo_id: str, root: Path, relative_path: str)
 
     if not session_id or not repo_id:
         return
-    path = root / relative_path
-    existed = path.is_file()
     try:
+        raw = _read_raw(root, relative_path)
+        # A very large file still needs an "existed" snapshot row so undo
+        # knows not to delete it as a file the run created.
+        existed = raw is not None or safe_fs.exists(root, relative_path)
         store.insert_file_snapshot(
             {
                 "id": store.new_id(),
@@ -78,8 +90,8 @@ def record_before(session_id: str, repo_id: str, root: Path, relative_path: str)
                 "repo_id": repo_id,
                 "relative_path": relative_path,
                 "existed_before": existed,
-                "before_text": _read_text(path) if existed else None,
-                "before_newline": textio.detect_newline(path) if existed else textio.LF,
+                "before_text": textio.decode(raw) if raw is not None else None,
+                "before_newline": _newline(raw) if raw is not None else textio.LF,
                 "created_at": store.now_iso(),
             }
         )
@@ -96,7 +108,10 @@ def record_after(session_id: str, root: Path, relative_path: str) -> None:
 
     if not session_id:
         return
-    current = _read_text(root / relative_path)
+    try:
+        current = _read_text(root, relative_path)
+    except OSError:
+        return
     if current is None:
         return
     try:
@@ -117,10 +132,9 @@ def session_changes(session_id: str, repo_id: str) -> DeliveryPlan:
     for record in store.list_file_snapshots(session_id):
         relative = record["relative_path"]
         try:
-            path = resolve(root, relative)
-        except WorkspaceError:
+            current = _read_text(root, relative)
+        except OSError:
             continue
-        current = _read_text(path) if path.is_file() else None
         before = record["before_text"] or ""
         existed = bool(record["existed_before"])
         if current is None:
@@ -164,9 +178,9 @@ def undo(session_id: str, repo_id: str) -> dict:
     for record in store.list_file_snapshots(session_id):
         relative = record["relative_path"]
         try:
-            path = resolve(root, relative)
-        except WorkspaceError as exc:
-            skipped.append({"path": relative, "reason": str(exc)})
+            current_raw = _read_raw(root, relative)
+        except OSError:
+            skipped.append({"path": relative, "reason": "This path is unsafe or unreadable."})
             continue
 
         existed = bool(record["existed_before"])
@@ -179,19 +193,31 @@ def undo(session_id: str, repo_id: str) -> dict:
         # edited it since. Undoing would then destroy work this run never made,
         # so the file is reported and left exactly as it is.
         expected = record["after_sha256"]
-        current = _read_text(path) if path.is_file() else None
-        if expected and current is not None and _sha256(current) != expected:
+        current = textio.decode(current_raw) if current_raw is not None else None
+        if expected and (current is None or _sha256(current) != expected):
+            skipped.append(
+                {"path": relative, "reason": "This file changed after the run finished."}
+            )
+            continue
+        if not expected and current is not None:
             skipped.append(
                 {"path": relative, "reason": "This file changed after the run finished."}
             )
             continue
 
+        # Written through the anchored walk rather than by path. Every component of
+        # this path was under the agent's control a moment ago, so a parent could
+        # now be a symlink pointing out of the folder, and a plain write would
+        # follow it. `safe_fs` opens each component relative to the last and refuses
+        # links, so an undo cannot be redirected into Neo's own data.
         if not existed:
             if current is None:
                 continue  # already gone; nothing to undo
             try:
-                path.unlink()
+                fs_ops.apply(root, relative, replacement=None, expected=current_raw)
                 removed.append(relative)
+            except safe_fs.UnsafePath as exc:
+                skipped.append({"path": relative, "reason": str(exc)})
             except PermissionError:
                 skipped.append({"path": relative, "reason": _PERMISSION_HINT.format(path=relative)})
             except OSError as exc:
@@ -199,9 +225,15 @@ def undo(session_id: str, repo_id: str) -> dict:
             continue
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            textio.write_text(path, before, newline=record["before_newline"] or textio.LF)
+            fs_ops.apply(
+                root,
+                relative,
+                replacement=textio.encode(before, record["before_newline"] or textio.LF),
+                expected=current_raw,
+            )
             restored.append(relative)
+        except safe_fs.UnsafePath as exc:
+            skipped.append({"path": relative, "reason": str(exc)})
         except PermissionError:
             skipped.append({"path": relative, "reason": _PERMISSION_HINT.format(path=relative)})
         except OSError as exc:

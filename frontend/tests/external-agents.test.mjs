@@ -593,3 +593,20 @@ describe("cost is never fabricated", () => {
     );
   });
 });
+
+test("an engine that has not been checked here asks for the check", () => {
+  const row = { id: "claude_code", name: "Claude Code", version: "2.1.0", available: true, validated: false };
+  assert.equal(engineState(row, true), "unvalidated");
+});
+
+test("an engine that passed its check is connected", () => {
+  const row = { id: "claude_code", name: "Claude Code", version: "2.1.0", available: true, validated: true };
+  assert.equal(engineState(row, true), "connected");
+});
+
+test("the check is not offered before sign-in or before the profile opts in", () => {
+  const signedOut = { id: "codex", name: "Codex", version: "1.0", available: false, validated: false };
+  assert.equal(engineState(signedOut, true), "signed_out");
+  const off = { id: "codex", name: "Codex", version: "1.0", available: true, validated: false };
+  assert.equal(engineState(off, false), "off");
+});

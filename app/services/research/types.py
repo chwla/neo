@@ -1065,6 +1065,7 @@ class ResearchMetrics(BaseModel):
 
 
 class ResearchOutcome(BaseModel):
+    source_label_json: str | None = None
     query: str
     depth: DepthMode
     plan: ResearchPlan | None = None

@@ -1,38 +1,78 @@
 from __future__ import annotations
 
-import json
-import os
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+import re
 
+from app.services.disclosure import (
+    Approval,
+    Destination,
+    GrantStore,
+    Label,
+    Labeled,
+    join,
+    label_of,
+    require,
+)
+from app.services.disclosure.egress import EgressTransportError
+from app.services.disclosure.egress import request as http_request
 from app.services.github.redaction import redact
 
 
 class GitHubClient:
-    def __init__(self, token_ref="GITHUB_TOKEN"):
-        self.token = os.getenv(token_ref)
-        self.token_ref = token_ref
+    def __init__(self, connection_id: str, *, token: str | None = None):
+        self.token = token
+        self.connection_id = connection_id
 
-    def get(self, path):
+    def payload(self, path: Labeled) -> Labeled:
+        value = path.value if isinstance(path, Labeled) else path
+        if not isinstance(value, str) or not re.fullmatch(
+            r"/(?:user|repos/[^/?#]+/[^/?#]+/(?:issues|pulls)/[1-9][0-9]*)",
+            value,
+        ):
+            raise RuntimeError("Unsupported GitHub read endpoint.")
         if not self.token:
-            raise RuntimeError(f"Token environment reference {self.token_ref} is not configured.")
-        if self.token == "dummy_validation_token":
-            return _fixture(path)
-        req = Request(
-            f"https://api.github.com{path}",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self.token}",
-                "User-Agent": "Neo",
+            raise RuntimeError("The configured GitHub credential is unavailable.")
+        return Labeled(
+            {
+                "method": "GET",
+                "url": f"https://api.github.com{value}",
+                "headers": {
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {self.token}",
+                    "User-Agent": "Neo",
+                },
             },
+            join(label_of(path), Label.private(f"credential:github:{self.connection_id}")),
         )
+
+    def get(
+        self,
+        path: Labeled,
+        *,
+        destination: Destination | None = None,
+        grants: GrantStore | None = None,
+        approval: Approval | None = None,
+    ) -> Labeled:
+        payload = self.payload(path)
+        destination = destination or Destination("unscoped-github")
+        # The existing offline validation fixture obeys the same authorization.
+        if self.token == "dummy_validation_token":
+            require("http", payload, destination, grants=grants, approval=approval)
+            return Labeled(
+                _fixture(path.value if isinstance(path, Labeled) else path), payload.label,
+            )
         try:
-            with urlopen(req, timeout=10) as res:
-                return redact(json.loads(res.read()))
-        except (HTTPError, URLError) as exc:
-            raise RuntimeError(
-                "GitHub request failed; check connection and token reference."
-            ) from exc
+            result = http_request(
+                payload, destination, grants=grants, approval=approval, timeout=10
+            )
+            response = result.value
+            if response.status_code < 200 or response.status_code >= 300:
+                raise RuntimeError("GitHub rejected the request.")
+            value = response.json()
+            if not isinstance(value, dict):
+                raise ValueError("invalid response")
+            return Labeled(redact(value), result.label)
+        except (EgressTransportError, ValueError):
+            raise RuntimeError("GitHub request failed; check the connection.") from None
 
 
 def _fixture(path: str) -> dict:

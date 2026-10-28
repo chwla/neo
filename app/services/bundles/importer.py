@@ -6,7 +6,9 @@ from io import BytesIO
 
 from app.services.bundles import store
 from app.services.bundles.checksums import sha256_bytes
+from app.services.bundles.labels import store as label_store
 from app.services.bundles.redaction import REDACTED, SENSITIVE, safe_archive_name
+from app.services.disclosure.labels import Label
 
 MAX_SIZE = 50 * 1024 * 1024
 ALLOWED_PREFIXES = ("artifacts/", "patches/", "files/", "reports/")
@@ -62,6 +64,11 @@ class BundleImporter:
             warnings=result["warnings"],
             metadata={"manifest": manifest, "mode": "archive_only"},
             entity_ids=entity_ids,
+        )
+        # A ZIP's manifest is attacker-controlled, including any provenance it
+        # claims. Keep its archive inert and UNKNOWN in the server-side store.
+        label_store().raise_label(
+            f"bundle:import:{record['id']}", Label.unknown("imported_bundle_untrusted")
         )
         (__import__("pathlib").Path(store.bundle_dir()) / f"import-{record['id']}.zip").write_bytes(
             data

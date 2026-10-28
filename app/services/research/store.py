@@ -7,6 +7,7 @@ import sqlite3
 from datetime import UTC, datetime
 
 from app.core.config import get_settings
+from app.services.disclosure.labels import Label, content_hash, from_json, join, label_of, to_json
 
 _JSON_COLUMNS = {
     "plan_json": "plan",
@@ -20,7 +21,12 @@ _JSON_COLUMNS = {
 }
 _LIST_FIELDS = {"generated_queries", "sources", "evidence", "claims", "progress_log"}
 _NULLABLE_FIELDS = {"plan", "trace"}
-_ADDED_COLUMNS = {"claims_json": "TEXT", "trace_json": "TEXT"}
+_ADDED_COLUMNS = {
+    "claims_json": "TEXT",
+    "trace_json": "TEXT",
+    "query_label_json": "TEXT",
+    "query_hash": "TEXT",
+}
 
 
 def _db_path() -> str:
@@ -83,10 +89,37 @@ def initialize_research_tables() -> None:
         conn.close()
 
 
-def save_job(job_dict: dict) -> None:
+def _server_metadata(conn: sqlite3.Connection, job_id: str, candidate: dict | None) -> dict:
+    """Preserve the stored label; never take provenance from a caller's metadata."""
+
+    metadata = dict(candidate or {})
+    metadata.pop("source_label", None)
+    prior = conn.execute(
+        "SELECT metadata_json FROM research_jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    label = Label.private(f"research:{job_id}")
+    if prior is not None:
+        try:
+            prior_metadata = json.loads(prior["metadata_json"] or "{}")
+        except (TypeError, ValueError):
+            prior_metadata = {}
+        previous = from_json(
+            prior_metadata.get("source_label") if isinstance(prior_metadata, dict) else None
+        )
+        label = join(previous, label)
+    metadata["source_label"] = to_json(label)
+    return metadata
+
+
+def save_job(job_dict: dict, *, query_label: Label | None = None) -> None:
     conn = _connect()
     try:
         now = datetime.now(UTC).isoformat()
+        job_id = str(job_dict["id"])
+        is_new = (
+            conn.execute("SELECT 1 FROM research_jobs WHERE id = ?", (job_id,)).fetchone() is None
+        )
+        metadata = _server_metadata(conn, job_id, job_dict.get("metadata"))
         conn.execute(
             """
             INSERT INTO research_jobs (
@@ -144,10 +177,24 @@ def save_job(job_dict: dict) -> None:
                 "trace_json": json.dumps(job_dict.get("trace")) if job_dict.get("trace") else None,
                 "report": job_dict.get("report", ""),
                 "error": job_dict.get("error"),
-                "metadata_json": json.dumps(job_dict.get("metadata", {})),
+                "metadata_json": json.dumps(metadata),
                 "progress_log_json": json.dumps(job_dict.get("progress_log", [])),
             },
         )
+        # Only the initial trusted creation can attach query provenance. Ordinary
+        # job updates cannot upgrade it, including by copying client metadata.
+        if query_label is not None and is_new:
+            conn.execute(
+                "UPDATE research_jobs SET query_label_json = ?, query_hash = ? "
+                "WHERE id = ? AND query_label_json IS NULL AND query_hash IS NULL "
+                "AND created_at = ?",
+                (
+                    to_json(label_of(query_label)),
+                    content_hash(job_dict["user_query"]),
+                    job_id,
+                    job_dict.get("created_at", now),
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -193,6 +240,8 @@ def update_job_status(job_id: str, status: str, **kwargs) -> None:
                 vals.append(val)
             elif key in _JSON_COLUMNS:
                 sets.append(f"{key} = ?")
+                if key == "metadata_json":
+                    val = _server_metadata(conn, job_id, val)
                 vals.append(json.dumps(val) if val is not None else None)
         vals.append(job_id)
         conn.execute(f"UPDATE research_jobs SET {', '.join(sets)} WHERE id = ?", vals)
@@ -272,3 +321,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         else:
             data[field] = {}
     return data
+
+
+def query_label_for(job: dict) -> Label:
+    """A saved query is reusable only with its original server-stored binding."""
+    if job.get("query_hash") != content_hash(job.get("user_query")):
+        return Label.unknown("research_query_changed_or_legacy")
+    return from_json(job.get("query_label_json"))

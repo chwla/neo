@@ -4,6 +4,14 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse, urlunparse
 
+from app.services.disclosure import (
+    Label,
+    Labeled,
+    content_hash,
+    from_json,
+    label_of,
+    to_json,
+)
 from app.services.search import WebSearchService
 from app.services.web_search import store
 from app.services.web_search.planner import plan
@@ -20,11 +28,15 @@ class ReliableWebSearchService:
     def plan(self, query: str, mode: str = "research", freshness_required: bool = False) -> dict:
         return plan(query, mode, freshness_required)
 
-    def run(self, request) -> dict:
+    def run(self, request, *, source_label: Label | None = None) -> dict:
+        source_label = label_of(source_label)
         search_plan = self.plan(request.query, request.mode, request.freshness_required)
-        response = self.search.search(request.query, request.max_sources)
+        response = self.search.search(Labeled(request.query, source_label), request.max_sources)
         run = store.create_run(
-            request.query, request.mode, search_plan, {"provider": response.provider}
+            request.query, request.mode, search_plan, {
+                "provider": response.provider, "query_hash": content_hash(request.query),
+                "source_label_json": to_json(source_label),
+            }
         )
         if response.error or response.provider == "disabled":
             final = store.update_run(
@@ -63,7 +75,8 @@ class ReliableWebSearchService:
                         "freshness_score": breakdown["freshness"],
                         "relevance_score": breakdown["relevance"],
                         "final_score": breakdown["final"],
-                        "metadata": {"provider": response.provider, "score_breakdown": breakdown},
+                        "metadata": {"provider": response.provider, "score_breakdown": breakdown,
+                         "source_label_json": to_json(source_label)},
                         "redaction_summary": {},
                     }
                 ),
@@ -76,7 +89,8 @@ class ReliableWebSearchService:
                     relevance_score=breakdown["relevance"],
                     final_score=breakdown["final"],
                     metadata_json=store.json_text(
-                        {"provider": response.provider, "score_breakdown": breakdown}
+                        {"provider": response.provider, "score_breakdown": breakdown,
+                         "source_label_json": to_json(source_label)}
                     ),
                 )
                 or source
@@ -190,7 +204,8 @@ class ReliableWebSearchService:
 
     def _hydrate_source(self, source: dict, fetch_sources: bool) -> dict:
         cached = store.get_cache(source["canonical_url"])
-        if cached and cached.get("fetched_text"):
+        if (cached and cached.get("fetched_text")
+                and from_json(cached.get("metadata", {}).get("source_label_json")).is_public()):
             return (
                 store.update_source(
                     source["id"],
@@ -205,7 +220,8 @@ class ReliableWebSearchService:
         if not fetch_sources:
             return source
         try:
-            page = self.search.fetch(source["canonical_url"])
+            selection = from_json(source.get("metadata", {}).get("source_label_json"))
+            page = self.search.fetch(Labeled(source["canonical_url"], selection))
             text = self._readable_text(getattr(page, "text", ""))
             if getattr(page, "fetched", False) and text:
                 return (

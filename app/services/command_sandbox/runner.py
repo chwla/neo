@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from app.core.paths import IS_WINDOWS, is_within
+from app.services import isolation
+
+_LOG = logging.getLogger(__name__)
 
 OUTPUT_LIMIT = 64 * 1024
 
@@ -64,6 +69,13 @@ def resolve_program(program: str, cwd: Path, path: str) -> str:
     return str(resolved)
 
 
+def _active_profile_id() -> str:
+    from app.core.config import active_profile_storage_dir
+
+    storage = active_profile_storage_dir.get()
+    return Path(storage).name if storage else ""
+
+
 def run(argv: list[str], cwd: Path, timeout_ms: int) -> dict:
     started = time.monotonic()
     env = _child_env(cwd)
@@ -78,26 +90,72 @@ def run(argv: list[str], cwd: Path, timeout_ms: int) -> dict:
             "output_truncated": False,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
+    # Run inside the isolation launcher. The allowlist above decides *which*
+    # programs may run; it says nothing about what they may then read, and several
+    # allowlisted ones -- `cat`, `grep`, `find` -- will read anything they are
+    # pointed at. `pytest` and `npm run` are worse: they execute the repository's
+    # own code, which on this path is code an agent has just written. Measured:
+    # before this, `cat <neo data dir>/profiles/registry.db` succeeded.
     try:
-        result = subprocess.run(
+        result = isolation.run(
             argv,
-            cwd=cwd,
+            cwd=str(cwd),
             env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
+            purpose="command_sandbox",
+            profile_id=_active_profile_id(),
+            workspace=str(cwd),
             timeout=timeout_ms / 1000,
-            shell=False,
-            check=False,
         )
         stdout, stderr = result.stdout or "", result.stderr or ""
-        timed_out = False
-        exit_code = result.returncode
-    except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
-        timed_out = True
-        exit_code = None
+        timed_out = result.timed_out
+        exit_code = result.exit_code
+        if result.quarantined:
+            # Something the command started is still running. Reported as a failure
+            # rather than a result, because its output cannot be trusted to be
+            # complete and its files may still be changing.
+            return {
+                "status": "failed",
+                "exit_code": None,
+                "stdout_text": stdout[:OUTPUT_LIMIT],
+                "stderr_text": result.quarantine_reason,
+                "output_truncated": False,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            }
+    except isolation.IsolationRefused as exc:
+        return {
+            "status": "failed",
+            "exit_code": None,
+            "stdout_text": "",
+            "stderr_text": str(exc),
+            "output_truncated": False,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        }
+    except isolation.IsolationUnavailable:
+        # No validated backend on this platform. Commands still run -- the feature
+        # predates isolation and the allowlist is its original guard -- but this is
+        # the unsandboxed path, and the contract says so rather than implying
+        # containment that is not there.
+        _LOG.warning("command_sandbox_unisolated platform=%s", sys.platform)
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=timeout_ms / 1000,
+                shell=False,
+                check=False,
+            )
+            stdout, stderr = completed.stdout or "", completed.stderr or ""
+            timed_out = False
+            exit_code = completed.returncode
+        except subprocess.TimeoutExpired as exc:
+            stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+            stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+            timed_out = True
+            exit_code = None
     truncated = len(stdout.encode()) > OUTPUT_LIMIT or len(stderr.encode()) > OUTPUT_LIMIT
     return {
         "status": "timed_out" if timed_out else "completed",

@@ -6,9 +6,10 @@ the worker and the permission model into the operations a caller needs.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.services.agent_core import delivery, journal, store, worker
 from app.services.agent_core.permissions import grant_matches
@@ -20,6 +21,7 @@ from app.services.agent_core.types import (
     PermissionMode,
     ToolCall,
 )
+from app.services.disclosure import Label, public, to_json
 from app.services.repos import store as repos_store
 
 MAX_OBJECTIVE = 20_000
@@ -30,7 +32,14 @@ class AgentCoreValidationError(ValueError):
 
 
 class SessionCreate(BaseModel):
-    objective: str = Field(min_length=1, max_length=MAX_OBJECTIVE)
+    #: What the user typed for this run. Omitted when ``use_task_objective`` asks
+    #: the server to use the linked task's own text instead.
+    objective: str | None = Field(default=None, min_length=1, max_length=MAX_OBJECTIVE)
+    #: Use the linked task's text as the objective. The server loads it, with the
+    #: task's provenance; the browser does not send it back as if it were typed.
+    #: Typed text and stored text are different things to disclose, and only the
+    #: server can tell them apart once both are just strings in a request.
+    use_task_objective: bool = False
     mode: PermissionMode = "normal"
     project_id: str | None = None
     repo_id: str | None = None
@@ -55,6 +64,17 @@ class SessionCreate(BaseModel):
     #: an ordinary single-executor turn.
     handoff: dict[str, Any] | None = None
     client_request_id: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _one_objective_source(self) -> SessionCreate:
+        if self.use_task_objective:
+            if self.objective is not None:
+                raise ValueError("Send either an objective or use_task_objective, not both.")
+            if not self.task_id:
+                raise ValueError("use_task_objective needs a task_id.")
+        elif self.objective is None:
+            raise ValueError("An objective is required.")
+        return self
 
 
 class ApprovalDecision(BaseModel):
@@ -109,6 +129,70 @@ def _session(row: dict) -> AgentSession:
     return AgentSession(**{**row, "budgets": Budgets(**(row.get("budgets") or {}))})
 
 
+def _canonical_skills(requested: list[dict]) -> list[dict]:
+    """The requested skills, as the library has them -- never as the request said.
+
+    A skill entry carries the directory its ``SKILL.md`` is read from, both by the
+    agent's ``load_skill`` and into an external engine's prompt. Taking that path
+    from a request let it aim the agent at any ``SKILL.md`` on disk. Each entry is
+    therefore looked up by slug among installed skills and replaced with the
+    library's own row; anything not installed, or installed outside the library's
+    directory, is dropped.
+    """
+
+    from pathlib import Path
+
+    from app.services.skills import library
+    from app.services.skills import store as skills_store
+
+    root = library.skills_root().resolve()
+    canonical: list[dict] = []
+    seen: set[str] = set()
+    for entry in requested or []:
+        if not isinstance(entry, dict):
+            continue
+        slug = str(entry.get("slug") or "").strip()
+        if not slug or slug in seen:
+            continue
+        row = skills_store.get_skill_by_slug(slug)
+        if row is None:
+            continue
+        directory = Path(row["directory"]).expanduser().resolve()
+        if root not in directory.parents:
+            continue
+        seen.add(slug)
+        canonical.append({
+            "slug": row["slug"],
+            "name": row["name"],
+            "description": row["description"],
+            "directory": str(directory),
+        })
+    return canonical
+
+
+def _task_objective(task_id: str) -> tuple[str, Label]:
+    """The task's own text, and its provenance, loaded by the server."""
+
+    from app.services.tasks.labels import task_label
+    from app.services.tasks.service import TasksService
+
+    task = TasksService().get_task(task_id) if task_id else None
+    if task is None:
+        raise AgentCoreValidationError("That task no longer exists.")
+    text = (task.description or "").strip() or (task.title or "").strip()
+    return text, task_label(task.id)
+
+
+def _egress_tags_for(label: Label) -> list[str]:
+    """The run's starting restriction, in the shape ``AgentLoop._egress`` reads."""
+
+    if label.is_unknown():
+        return ["unknown_context"]
+    if label.is_private():
+        return sorted(label.tags)
+    return []
+
+
 class AgentCoreService:
     def create(self, payload: SessionCreate, *, start: bool = True) -> AgentSession:
         """Create a run, and by default hand it a worker.
@@ -119,13 +203,33 @@ class AgentCoreService:
         the same pump that starts a waiting plain turn starts this one.
         """
 
-        objective = payload.objective.strip()
+        objective_label: Label | None = None
+        if payload.use_task_objective:
+            objective, objective_label = _task_objective(payload.task_id or "")
+            if not objective_label.is_public() and (
+                payload.executor != "neo" or payload.handoff
+            ):
+                # An external engine receives its objective outright. A private
+                # task's text reaching one needs an approval of that exact text,
+                # which this path does not have, so it stops here with the reason.
+                raise AgentCoreValidationError(
+                    "This task's text is private Neo data, so it cannot be sent to an "
+                    "external engine as the objective. Type the objective you want the "
+                    "engine to receive, or run the task with Neo's own agent."
+                )
+        else:
+            objective = (payload.objective or "").strip()
         if not objective:
             raise AgentCoreValidationError("An objective is required.")
         # A run without a repository is allowed: the registry withholds the tools
         # that need one, leaving search, fetch, recall and the checklist. Refusing
         # instead would make the agent unreachable in any conversation that is not
         # about a folder, which is the opposite of one thread doing both.
+
+        refusal = store.conversation_refusal(payload.chat_id, payload.anchor_message_id)
+        if refusal:
+            raise AgentCoreValidationError(refusal)
+        skills = _canonical_skills(payload.skills)
 
         if payload.client_request_id:
             # Idempotent submit: a retried POST must not start a second run.
@@ -154,7 +258,7 @@ class AgentCoreService:
         if not chat_id:
             try:
                 chat_id, anchor_message_id = store.create_chat_for_session(
-                    objective, _title(objective)
+                    objective, _title(objective), objective_label=objective_label
                 )
             except Exception:
                 # A run is still better than no run; it simply will not be
@@ -180,7 +284,7 @@ class AgentCoreService:
                 "agent_definition_id": payload.agent_definition_id,
                 "agent_definition_snapshot": snapshot,
                 "disabled_tools": payload.disabled_tools,
-                "skills": payload.skills,
+                "skills": skills,
                 "executor": payload.executor,
                 "external_models": payload.external_models,
                 "external_efforts": payload.external_efforts,
@@ -191,6 +295,15 @@ class AgentCoreService:
                 "updated_at": now,
             }
         )
+        # Recorded for every new run, and before any worker can pick it up, so the
+        # first model turn and first tool call both see it. Explicit even for typed
+        # text: a NULL then only ever means a run created before this was recorded,
+        # which is the case that has to be read conservatively.
+        stored_label = objective_label or public(f"user_input:{row['id']}")
+        updates: dict[str, Any] = {"objective_label_json": to_json(stored_label)}
+        if objective_label is not None:
+            updates["egress_tags"] = _egress_tags_for(objective_label)
+        row = store.update_session(row["id"], updates) or row
         if start:
             worker.start(row["id"])
         return _session(row)
@@ -228,6 +341,19 @@ class AgentCoreService:
 
         if not session.repo_id or session.status != "completed":
             return None
+        external_meta = (session.external_meta or {}).get(session.executor) or {}
+        if external_meta.get("scoped_workspace"):
+            return {
+                "mode": "private_scoped",
+                "deliverable": [],
+                "blocked": [
+                    {
+                        "path": "*",
+                        "reason": "This run received private context. Its separate copy needs "
+                        "an explicit reviewed delivery before changes enter the original folder.",
+                    }
+                ],
+            }
         try:
             repo = repos_store.get_repo(session.repo_id)
             if repo is None:
@@ -290,7 +416,10 @@ class AgentCoreService:
         session = self.get(session_id)
         if session.status in {"completed", "failed", "cancelled"}:
             raise AgentCoreValidationError("This run has already finished.")
-        store.append_message(session_id, {"role": "user", "content": payload.content.strip()})
+        store.append_message(session_id, {
+            "role": "user", "content": payload.content.strip(),
+            "source_label": public(f"user_input:{session_id}"),
+        })
         # A session waiting on approval must not be restarted here: the loop would
         # resume without executing the approved call, silently dropping it. The
         # message is queued and the approval decision picks it up.
@@ -355,8 +484,28 @@ class AgentCoreService:
 
     def deliver(self, session_id: str, payload: DeliverRequest) -> dict:
         session = self.get(session_id)
+        if ((session.external_meta or {}).get(session.executor) or {}).get("scoped_workspace"):
+            raise AgentCoreValidationError(
+                "This run received private context. Automatic delivery is unavailable "
+                "until its changes are reviewed for disclosure."
+            )
         if not session.repo_id:
             raise AgentCoreValidationError("This session has no repository.")
+        if payload.mode == "working_tree":
+            from app.core.config import active_profile_storage_dir
+            from app.services.disclosure.artifacts import ArtifactLabels
+
+            storage = active_profile_storage_dir.get()
+            if (
+                storage
+                and ArtifactLabels(Path(storage) / "artifact-labels.json")
+                .get(f"repo:{session.repo_id}")
+                .is_private()
+            ):
+                raise AgentCoreValidationError(
+                    "This workspace contains reviewed private context. "
+                    "Use the scoped run's reviewed delivery instead."
+                )
         repo = repos_store.get_repo(session.repo_id)
         if repo is not None and repo.get("access") == repos_store.LIVE:
             # A live run has nothing to move, but "show me what changed" is still
@@ -399,6 +548,10 @@ class AgentCoreService:
         """Reverse what this run wrote into the user's folder."""
 
         session = self.get(session_id)
+        if ((session.external_meta or {}).get(session.executor) or {}).get("scoped_workspace"):
+            raise AgentCoreValidationError(
+                "This run used a separate private copy; the original folder was not changed."
+            )
         if not session.repo_id:
             raise AgentCoreValidationError("This session has no repository.")
         repo = repos_store.get_repo(session.repo_id)
@@ -511,6 +664,21 @@ class AgentCoreService:
         """Promote a finished run into Tasks or a Note, only when asked."""
 
         session = self.get(session_id)
+        from pathlib import Path
+
+        from app.core.config import active_profile_storage_dir
+        from app.services.disclosure.artifacts import ArtifactLabels
+        from app.services.disclosure.labels import Label
+
+        storage = active_profile_storage_dir.get()
+        if not storage:
+            raise AgentCoreValidationError("profile_scope_required_for_export")
+        labels = ArtifactLabels(Path(storage) / "artifact-labels.json")
+        source_tags = {"agent_output", *session.egress_tags}
+        for engine_meta in session.external_meta.values():
+            if isinstance(engine_meta, dict):
+                source_tags.update(str(tag) for tag in engine_meta.get("disclosure_tags") or [])
+        output_label = Label.private(*sorted(source_tags))
         body = session.summary or "The run produced no summary."
         if target == "note":
             from app.services.notes.service import NotesService
@@ -525,6 +693,7 @@ class AgentCoreService:
                     source_id=session.id,
                 )
             )
+            labels.raise_label(f"note:{note.id}", output_label)
             return {
                 "target": "note",
                 "note": note.model_dump() if hasattr(note, "model_dump") else note,
@@ -542,19 +711,20 @@ class AgentCoreService:
                 tags=["agent", "session-export"],
             )
         )
+        labels.raise_label(f"task:{parent.id}", output_label)
         created = [parent]
         for item in session.todo:
-            created.append(
-                service.create_task(
-                    TaskCreate(
-                        title=item.title,
-                        status="done" if item.status == "completed" else "todo",
-                        project_id=session.project_id,
-                        parent_task_id=parent.id,
-                        tags=["agent", "session-export"],
-                    )
+            task = service.create_task(
+                TaskCreate(
+                    title=item.title,
+                    status="done" if item.status == "completed" else "todo",
+                    project_id=session.project_id,
+                    parent_task_id=parent.id,
+                    tags=["agent", "session-export"],
                 )
             )
+            labels.raise_label(f"task:{task.id}", output_label)
+            created.append(task)
         return {"target": "tasks", "tasks": [task.model_dump() for task in created]}
 
 

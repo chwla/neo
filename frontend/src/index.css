@@ -5878,3 +5878,12 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .bg-intensity-option:hover { border-color: var(--neo-line-bright); background: var(--neo-panel-raised); transition-duration: 0s; }
 .bg-intensity-option.is-selected { border-color: var(--neo-accent-a45); background: var(--neo-accent-a06); color: var(--neo-accent); transition-duration: 0s; }
 .bg-intensity-option:focus-visible { outline: 1px solid var(--neo-accent-a55); outline-offset: 1px; }
+.disclosure-preview {
+  max-height: min(50vh, 32rem);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1rem;
+  border: 1px solid var(--border, #555);
+  border-radius: 0.5rem;
+}

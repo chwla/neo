@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.services.agent_core.permissions import PermissionResolver
+from app.services.agent_core.permissions import PRIVATE_READ_TOOLS, PermissionResolver
 from app.services.agent_core.tools import (
     calendar,
     checkpoint,
@@ -29,6 +29,7 @@ from app.services.agent_core.tools import (
 from app.services.agent_core.tools.base import AgentTool, ToolContext
 from app.services.agent_core.types import PermissionMode, ToolCall, ToolResult
 from app.services.agent_core.workspace import is_live
+from app.services.disclosure import Label, join, public, to_json
 
 #: Tools that make no sense once the workspace is the user's own folder, mapped
 #: to what the agent should understand instead. ``deliver_changes`` moved work
@@ -163,6 +164,31 @@ class ToolRegistry:
         return result
 
     def execute(
+        self, call: ToolCall, context: ToolContext, *, disabled: frozenset[str] = frozenset()
+    ) -> ToolResult:
+        """Attach server provenance to every outcome, including errors and denials.
+
+        A connector or handler cannot declare its own output public. New tools
+        default to UNKNOWN until their sources have been classified here.
+        """
+        tool = self.get(call.name)
+        tags = PRIVATE_READ_TOOLS.get(call.name, ())
+        if tool is not None and tool.source == "connector":
+            source = Label.private(f"connector:{tool.origin_id or tool.name}")
+        elif tags:
+            source = Label.private(*tags)
+        elif call.name in {item.name for item in default_tools()}:
+            # Workspace restrictions are included in the explicit input label
+            # by the session boundary before executing any tool.
+            source = public(f"builtin:tool:{call.name}")
+        else:
+            source = Label.unknown("unclassified_tool")
+        result = self._execute(call, context, disabled=disabled)
+        return result.model_copy(update={
+            "source_label_json": to_json(join(context.source_label, source)),
+        })
+
+    def _execute(
         self, call: ToolCall, context: ToolContext, *, disabled: frozenset[str] = frozenset()
     ) -> ToolResult:
         """Run one call, turning any failure into a result the model can react to.

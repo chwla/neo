@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.accounts import session_for
 from app.core.config import get_settings
+from app.services.disclosure import Labeled, content_hash, public
 from app.services.notes import Note, NotesService
 from app.services.notes.service import NotesValidationError
 from app.services.profile_accounts import database_identity_for_profile
@@ -101,7 +102,9 @@ def start_research(req: StartResearchRequest, request: Request):
     is_guest = bool(profile and profile.get("is_guest"))
 
     job = create_job(
-        user_query=req.query.strip(),
+        user_query=Labeled(
+            req.query.strip(), public("user_input:" + content_hash(req.query.strip()))
+        ),
         depth=req.depth,
         project_id=req.project_id,
         task_id=req.task_id,

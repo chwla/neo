@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.db.session import build_engine
 from app.repositories.memory import MemoryRepository
+from app.services.disclosure import Labeled, label_of
 from app.services.memory.prompt import (
     RecallPromptOrchestrator,
     repository_usage_recorder,
@@ -34,6 +35,7 @@ from app.services.research.report import lead_answer
 from app.services.research.store import (
     load_job,
     mark_interrupted_jobs,
+    query_label_for,
     save_job,
     update_job_status,
 )
@@ -216,7 +218,7 @@ def _canonical_research_memory(
 
 
 def create_job(
-    user_query: str,
+    user_query: str | Labeled,
     depth: DepthMode = DepthMode.STANDARD,
     project_id: str | None = None,
     task_id: str | None = None,
@@ -228,6 +230,8 @@ def create_job(
     memory_enabled: bool = True,
     incognito: bool = False,
 ) -> ResearchJob:
+    query_label = label_of(user_query)
+    user_query = user_query.value if isinstance(user_query, Labeled) else user_query
     ceilings = POLICIES[depth].ceilings
     now = datetime.now(UTC).isoformat()
     rule_result = RuleResolver().resolve(
@@ -267,7 +271,7 @@ def create_job(
             "rule_warnings": rule_result["warnings"],
         },
     )
-    save_job(job.model_dump(mode="json"))
+    save_job(job.model_dump(mode="json"), query_label=query_label)
     return job
 
 
@@ -384,13 +388,24 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             return
         user_query = job_data["user_query"]
         depth = DepthMode(job_data["depth"])
-        context, memory_keys = _research_context(job_data, user_query)
         metadata = job_data.get("metadata") or {}
+        # Search queries and page choices are outbound channels. A model that
+        # has seen remembered context or user-written rules can encode it in
+        # either one, even when the literal secret is absent from the query.
+        # Until research has a destination-bound approval flow, its worker sees
+        # only the query the user submitted for this run.
+        context, memory_keys = "", []
+        metadata["memory_recall_diagnostic"] = {
+            "mode": "withheld",
+            "reason_codes": ["external_search_requires_explicit_grant"],
+        }
+        job_data["metadata"] = metadata
+        save_job(job_data)
         route_name = RuleResolver.route_name(
             {
-                "resolved_rules": metadata.get("resolved_rules", {}),
-                "applied_profiles": metadata.get("applied_profiles", []),
-                "warnings": metadata.get("rule_warnings", []),
+                "resolved_rules": {},
+                "applied_profiles": [],
+                "warnings": [],
             },
             "research",
             "research",
@@ -417,7 +432,7 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             )
 
         outcome = run_research(
-            user_query,
+            Labeled(user_query, query_label_for(job_data)),
             depth,
             deps=default_dependencies(route_name),
             progress=on_progress,

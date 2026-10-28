@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 import app.services.notes.store as store
+from app.services.disclosure import Label, from_json, join
 from app.services.notes.content import Derived, derive_from_doc, derive_from_markdown
 from app.services.notes.smart import SmartRules
 from app.services.notes.types import (
@@ -526,6 +527,11 @@ class NotesService:
                 source_metadata={key: val for key, val in metadata.items() if val is not None},
             )
         )
+        # The note is the report's text, so it keeps the report's provenance: what the
+        # report was built from and what its query was bound to. Read from the server's
+        # own job record, never from the object handed in. A job with no record of
+        # either is of unknown origin, and so is its note.
+        _record_note_label(note.id, _research_report_label(job.id))
         store.insert_link(
             {
                 "id": str(uuid.uuid4()),
@@ -642,3 +648,37 @@ def _normalize_tag(tag: str) -> str:
 
 def _research_title(job: ResearchJob) -> str:
     return job.user_query[:MAX_TITLE_LENGTH]
+
+
+def _research_report_label(job_id: str) -> Label:
+    """A research report's provenance, from the server's own job record.
+
+    Two server-written labels: the report's (``research:<id>`` and anything it was
+    conditioned on) and the binding of the query it answered. Either missing -- a job
+    from before they were recorded, or one not in the store at all -- makes the
+    result UNKNOWN rather than an ordinary private note.
+    """
+
+    from app.services.research import store as research_store
+
+    row = research_store.load_job(job_id)
+    if row is None:
+        return Label.unknown("research_report_not_in_store")
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    stored = metadata.get("source_label") if isinstance(metadata, dict) else None
+    report = from_json(stored) if stored else Label.unknown("legacy_research_report")
+    return join(report, research_store.query_label_for(row))
+
+
+def _record_note_label(note_id: str, label: Label) -> None:
+    """Raise the note's provenance record. Monotonic: it never lowers."""
+
+    from pathlib import Path
+
+    from app.core.config import active_profile_storage_dir
+    from app.services.disclosure.artifacts import ArtifactLabels
+    from app.services.isolation.roots import roots
+
+    storage = active_profile_storage_dir.get()
+    base = Path(storage) if storage else roots().data_root
+    ArtifactLabels(base / "artifact-labels.json").raise_label(f"note:{note_id}", label)

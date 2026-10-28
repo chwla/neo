@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, SecretStr
 
 
 class ConnectionCreate(BaseModel):
     name: str
     owner: str
     repo: str
-    token_ref: str = Field(default="GITHUB_TOKEN", pattern=r"^[A-Z][A-Z0-9_]*$")
+    token: SecretStr
     enabled: bool = True
 
 
@@ -15,7 +15,7 @@ class ConnectionUpdate(BaseModel):
     name: str | None = None
     owner: str | None = None
     repo: str | None = None
-    token_ref: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]*$")
+    token: SecretStr | None = None
     enabled: bool | None = None
 
 

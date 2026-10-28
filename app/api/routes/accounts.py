@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.services.notes import keys as note_keys
 from app.services.profile_accounts import (
+    MIN_PASSWORD_LENGTH,
     authenticate,
     create_guest,
     create_profile,
@@ -26,6 +27,7 @@ from app.services.profile_accounts import (
 
 router = APIRouter(prefix="/account-profiles", tags=["account profiles"])
 SESSION_COOKIE = "neo_profile_session"
+CSRF_COOKIE = "neo_csrf"
 PERSISTENT_SESSION_MAX_AGE = 60 * 60 * 24 * 365 * 5
 _sessions: dict[str, dict] = {}
 _session_lock = Lock()
@@ -71,6 +73,16 @@ def session_for(request: Request) -> dict | None:
 
 
 def _start_session(response: Response, profile: dict) -> None:
+    csrf = secrets.token_urlsafe(32)
+    response.set_cookie(
+        CSRF_COOKIE,
+        csrf,
+        max_age=None if profile.get("is_guest") else PERSISTENT_SESSION_MAX_AGE,
+        httponly=False,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
     if profile.get("is_guest"):
         token = secrets.token_urlsafe(32)
         with _session_lock:
@@ -135,6 +147,7 @@ def remove_profile(
     delete_profile(profile_id, payload.password)
     _end_sessions_for_profile(profile_id)
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
     response.status_code = 204
     return response
 
@@ -158,9 +171,10 @@ def update_current_profile(
     staged: list[str] = []
     if payload.new_password is not None:
         authenticate(profile["id"], payload.current_password or "")
-        if len(payload.new_password) < 4:
+        if len(payload.new_password) < MIN_PASSWORD_LENGTH:
             raise HTTPException(
-                status_code=422, detail="Password must contain at least 4 characters."
+                status_code=422,
+                detail=f"Password must contain at least {MIN_PASSWORD_LENGTH} characters.",
             )
         with profile_database(profile["id"]):
             staged = note_keys.stage_password_change(payload.current_password, payload.new_password)
@@ -193,6 +207,15 @@ def update_current_profile(
             secure=False,
             path="/",
         )
+        response.set_cookie(
+            CSRF_COOKIE,
+            secrets.token_urlsafe(32),
+            max_age=PERSISTENT_SESSION_MAX_AGE,
+            httponly=False,
+            samesite="lax",
+            secure=False,
+            path="/",
+        )
     return {"profile": updated}
 
 
@@ -216,5 +239,6 @@ def end_session(request: Request, response: Response) -> Response:
     if profile and profile.get("is_guest"):
         delete_guest(profile["id"])
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
     response.status_code = 204
     return response

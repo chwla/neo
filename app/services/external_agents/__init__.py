@@ -9,11 +9,14 @@ lifecycle a Neo run does.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from app.services.agent_core import events, store
 from app.services.agent_core.types import status_for_stop_reason
+from app.services.disclosure import to_json
 from app.services.external_agents.chain import preset_steps, run_chain
+from app.services.external_agents.provenance import output_label
 from app.services.external_agents.service import STEP_STARTED, run_step
 from app.services.external_agents.types import ExternalAgentError, HandoffStep, RunOutcome
 
@@ -96,7 +99,12 @@ def _finish(session_id: str, stop_reason: str, summary: str, *, error: str | Non
         "failed": events.RUN_FAILED,
         "cancelled": events.RUN_CANCELLED,
     }[status]
-    store.append_event(session_id, event, {"stop_reason": stop_reason, "summary": summary})
+    row = store.get_session(session_id) or {}
+    store.append_event(session_id, event, {
+        "stop_reason": stop_reason,
+        "summary": summary,
+        "source_label": to_json(output_label(row, session_id, row.get("executor") or "external")),
+    })
 
 
 def _backfill_anchor(session_id: str, summary: str) -> None:
@@ -114,7 +122,16 @@ def _backfill_anchor(session_id: str, summary: str) -> None:
     if not anchor_id:
         return
     executor = row.get("executor") or "external"
-    meta = (row.get("external_meta") or {}).get(executor) or {}
+    all_meta = row.get("external_meta") or {}
+    meta = all_meta.get(executor) or {}
+    disclosure_tags = {
+        str(tag)
+        for engine_meta in all_meta.values()
+        if isinstance(engine_meta, dict)
+        for tag in (engine_meta.get("disclosure_tags") or [])
+        if isinstance(tag, str)
+    }
+    source_label = output_label(row, session_id, executor)
     try:
         chunks = [
             event
@@ -135,6 +152,18 @@ def _backfill_anchor(session_id: str, summary: str) -> None:
                 "prompt_tokens": meta.get("prompt_tokens") or None,
                 "completion_tokens": meta.get("completion_tokens") or None,
                 "duration_ms": meta.get("duration_ms") or None,
+                # Provenance for the next turn's disclosure decision. An external
+                # answer is not the user's own words: it is this engine's output on
+                # this thread, and only that engine's own later turns may read it
+                # back without a fresh approval.
+                "metadata_json": json.dumps(
+                    {
+                        "provenance": f"external_agent:{executor}",
+                        "thread_id": session_id,
+                        "label_tags": sorted(disclosure_tags),
+                        "source_label": to_json(source_label),
+                    }
+                ),
             },
         )
     except Exception:  # pragma: no cover

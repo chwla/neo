@@ -21,12 +21,14 @@ because installing it is not Neo's to do.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.api.routes.accounts import SESSION_COOKIE, session_for
 from app.services import chat_prefs
+from app.services.disclosure import approvals as disclosure_approvals
 from app.services.external_agents import chain as external_chain
 from app.services.external_agents import detect, login
 from app.services.external_agents import models as external_models
@@ -34,6 +36,15 @@ from app.services.external_agents import usage as external_usage
 from app.services.external_agents.types import ExternalAgentError
 
 router = APIRouter(tags=["external-agents"])
+
+
+class DisclosurePreviewRequest(BaseModel):
+    chat_id: int = Field(gt=0)
+    request_id: str = Field(min_length=8, max_length=80)
+    engine: Literal["claude_code", "codex", "cursor", "antigravity"]
+    objective: str = Field(min_length=1, max_length=20_000)
+    source_message_id: int | None = Field(default=None, gt=0)
+    source_note_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 #: The sentence the interface has to be able to say. External executors run
@@ -112,6 +123,43 @@ def _blocker(row: dict[str, Any], *, enabled: bool) -> str:
     return "unknown"
 
 
+#: Fields of an engine row that describe the *vendor account* the CLI is signed in
+#: as -- not the engine, the person. They are the user's own identity, read out of
+#: their CLI's credential store, and a guest session has no claim on them.
+_ACCOUNT_FIELDS = ("email", "organization", "plan", "auth_method")
+
+
+def _require_account(request: Request) -> dict:
+    """Refuse a guest session.
+
+    A guest is created by asking: no password, nothing to prove. Running a
+    credentialed coding CLI spends the real account's subscription, acts as them
+    with the vendor, and edits their files, so it is not a privilege a guest gets.
+    """
+
+    profile = session_for(request)
+    if profile is None:
+        raise HTTPException(status_code=401, detail="authenticated_profile_required")
+    if profile.get("is_guest"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "External engines need a profile of your own. A guest session cannot "
+                "run them or see which account a CLI is signed in to."
+            ),
+        )
+    return profile
+
+
+def _is_guest(request: Request) -> bool:
+    profile = session_for(request)
+    return bool(profile and profile.get("is_guest"))
+
+
+def _redact_account(row: dict[str, Any]) -> dict[str, Any]:
+    return {**row, **{field: None for field in _ACCOUNT_FIELDS if field in row}}
+
+
 def _row(row: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
     described = _describe(row)
     return {
@@ -123,6 +171,7 @@ def _row(row: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
 
 @router.get("/external-agents")
 def list_external_agents(
+    request: Request,
     refresh: bool = Query(default=False, description="Re-probe instead of using the cache."),
 ) -> dict[str, Any]:
     """Executors and handoff presets, with availability and the trust boundary.
@@ -133,7 +182,13 @@ def list_external_agents(
     """
 
     enabled = chat_prefs.external_agents_enabled()
-    executors = [_row(row, enabled=enabled) for row in detect.statuses(refresh=refresh)]
+    # A guest still sees which engines exist -- the composer needs that to explain
+    # itself -- but not whose vendor account they are signed in to.
+    guest = _is_guest(request)
+    executors = [
+        _redact_account(_row(row, enabled=enabled)) if guest else _row(row, enabled=enabled)
+        for row in detect.statuses(refresh=refresh)
+    ]
     presets = []
     for preset in external_chain.describe_presets():
         usable, reason = external_chain.available(preset["id"])
@@ -148,6 +203,7 @@ def list_external_agents(
 
 @router.get("/external-agents/setup")
 def external_agent_setup(
+    request: Request,
     refresh: bool = Query(default=False, description="Re-probe instead of using the cache."),
 ) -> dict[str, Any]:
     """Everything Settings > Engines needs, including facts the gate normally hides.
@@ -165,8 +221,18 @@ def external_agent_setup(
     two differ exactly in the case the panel exists to explain.
     """
 
+    # Setting an engine up is an account's job, and this endpoint is the one that
+    # names the signed-in vendor account, so a guest gets no further.
+    _require_account(request)
+    from app.services.external_agents import compat
+
     enabled = chat_prefs.external_agents_enabled()
-    rows = [_row(row, enabled=enabled) for row in detect.inspections(refresh=refresh)]
+    # Whether this engine has passed its check here. The panel needs it to offer the
+    # check, and without it an installed engine would look ready and then refuse.
+    rows = [
+        {**_row(row, enabled=enabled), "validated": compat.load(row.get("id", "")) is not None}
+        for row in detect.inspections(refresh=refresh)
+    ]
     return {
         "enabled": enabled,
         "executors": rows,
@@ -225,7 +291,7 @@ class EnableRequest(BaseModel):
 
 
 @router.post("/external-agents/enable")
-def set_external_agents_enabled(request: EnableRequest) -> dict[str, Any]:
+def set_external_agents_enabled(request: EnableRequest, http_request: Request) -> dict[str, Any]:
     """Turn external engines on or off for this profile.
 
     An opt-in, still: the default remains off and this records a deliberate
@@ -236,6 +302,8 @@ def set_external_agents_enabled(request: EnableRequest) -> dict[str, Any]:
     The detection cache is dropped on the way out. It was populated under the
     old answer, and the next question is being asked under the new one.
     """
+
+    _require_account(http_request)
 
     enabled = chat_prefs.set_external_agents_enabled(request.enabled)
     detect.clear_cache()
@@ -249,7 +317,7 @@ def set_external_agents_enabled(request: EnableRequest) -> dict[str, Any]:
 
 
 @router.post("/external-agents/{executor}/connect")
-def connect_executor(executor: str) -> dict[str, Any]:
+def connect_executor(executor: str, request: Request) -> dict[str, Any]:
     """Do whatever it takes to make this engine usable, and say where it got to.
 
     One call, because every step it performs is a step the person setting an
@@ -271,6 +339,8 @@ def connect_executor(executor: str) -> dict[str, Any]:
     * ``not_installed`` -- nothing Neo can do; say what to install,
     * ``error`` -- it could not be started, with the reason.
     """
+
+    _require_account(request)
 
     if executor not in detect.SPECS:
         raise HTTPException(status_code=404, detail=f"Unknown engine '{executor}'.")
@@ -297,9 +367,46 @@ def connect_executor(executor: str) -> dict[str, Any]:
     return {"state": "signing_in", "engine": described, "login": started}
 
 
+@router.post("/external-agents/{executor}/validate")
+def validate_executor(executor: str, request: Request) -> dict[str, Any]:
+    """Check one engine here, once, and record the result.
+
+    Runs the engine on a throwaway repository with a fixed, harmless instruction --
+    write one file -- under the same isolation a real run gets. It is the only way
+    to know that this engine, as installed on this machine, authenticates and takes
+    its prompt from stdin; without a pass, runs are refused rather than attempted.
+    """
+
+    _require_account(request)
+    from app.services.external_agents import validation
+
+    try:
+        result = validation.validate(executor)
+    except ExternalAgentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "executor": result.executor,
+        "validated": result.ok,
+        "detail": result.detail,
+        "checks": result.checks,
+    }
+
+
+@router.get("/external-agents/compat")
+def external_agent_compat(request: Request) -> dict[str, Any]:
+    """Which engines have been checked here, and when."""
+
+    _require_account(request)
+    from app.services.external_agents import compat
+
+    return {"engines": [compat.describe(name) for name in detect.SPECS]}
+
+
 @router.post("/external-agents/{executor}/login")
-def start_login(executor: str) -> dict[str, Any]:
+def start_login(executor: str, request: Request) -> dict[str, Any]:
     """Start the CLI's own sign-in and return what it is saying so far."""
+
+    _require_account(request)
 
     try:
         return login.start(executor)
@@ -308,8 +415,10 @@ def start_login(executor: str) -> dict[str, Any]:
 
 
 @router.get("/external-agents/{executor}/login")
-def login_state(executor: str) -> dict[str, Any]:
+def login_state(executor: str, request: Request) -> dict[str, Any]:
     """Poll an in-flight sign-in: its URL, whether it wants a code, how it ended."""
+
+    _require_account(request)
 
     if executor not in detect.SPECS:
         raise HTTPException(status_code=404, detail=f"Unknown engine '{executor}'.")
@@ -321,13 +430,17 @@ class LoginCodeRequest(BaseModel):
 
 
 @router.post("/external-agents/{executor}/login/code")
-def submit_login_code(executor: str, request: LoginCodeRequest) -> dict[str, Any]:
+def submit_login_code(
+    executor: str, request: LoginCodeRequest, http_request: Request
+) -> dict[str, Any]:
     """Forward the code from the sign-in page to the waiting CLI.
 
     Claude Code's browser flow ends on a page showing a code rather than on a
     local callback, so this is the one piece of the exchange that has to travel
     back through Neo. It goes to the child's stdin and is stored nowhere.
     """
+
+    _require_account(http_request)
 
     try:
         return login.submit_code(executor, request.code)
@@ -336,9 +449,99 @@ def submit_login_code(executor: str, request: LoginCodeRequest) -> dict[str, Any
 
 
 @router.delete("/external-agents/{executor}/login")
-def cancel_login(executor: str) -> dict[str, Any]:
+def cancel_login(executor: str, request: Request) -> dict[str, Any]:
     """Abandon a sign-in, killing the CLI and freeing its callback port."""
+
+    _require_account(request)
 
     if executor not in detect.SPECS:
         raise HTTPException(status_code=404, detail=f"Unknown engine '{executor}'.")
     return login.cancel(executor)
+
+
+def _disclosure_profile(request: Request) -> str:
+    profile = _require_account(request)
+    return str(profile["id"])
+
+
+def _require_disclosure_origin(request: Request) -> None:
+    """Grant requests require a real same-origin browser write, not an absent Origin."""
+
+    expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    if request.headers.get("origin") != expected:
+        raise HTTPException(status_code=403, detail="disclosure_origin_required")
+
+
+def _require_disclosure_csrf(request: Request, profile_id: str) -> None:
+    _require_disclosure_origin(request)
+    try:
+        disclosure_approvals.check_csrf(
+            profile_id,
+            request.cookies.get(SESSION_COOKIE, ""),
+            request.headers.get("x-neo-disclosure-csrf", ""),
+        )
+    except disclosure_approvals.DisclosureApprovalError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/external-agents/disclosures/csrf")
+def disclosure_csrf(request: Request) -> dict[str, str]:
+    profile_id = _disclosure_profile(request)
+    try:
+        token = disclosure_approvals.csrf_token(profile_id, request.cookies.get(SESSION_COOKIE, ""))
+    except disclosure_approvals.DisclosureApprovalError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"token": token}
+
+
+@router.get("/external-agents/disclosures")
+def list_disclosures(request: Request, chat_id: int = Query(gt=0)) -> list[dict]:
+    profile_id = _disclosure_profile(request)
+    return disclosure_approvals.list_for_chat(profile_id, chat_id)
+
+
+@router.post("/external-agents/disclosures/preview")
+def preview_disclosure(payload: DisclosurePreviewRequest, request: Request) -> dict:
+    profile_id = _disclosure_profile(request)
+    _require_disclosure_csrf(request, profile_id)
+    try:
+        return disclosure_approvals.preview(
+            profile_id=profile_id,
+            chat_id=payload.chat_id,
+            request_id=payload.request_id,
+            engine=payload.engine,
+            objective=payload.objective,
+            source_message_id=payload.source_message_id,
+            source_note_id=payload.source_note_id,
+        )
+    except disclosure_approvals.DisclosureApprovalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/external-agents/disclosures/{approval_id}/approve")
+def approve_disclosure(approval_id: str, request: Request) -> dict[str, bool]:
+    profile_id = _disclosure_profile(request)
+    _require_disclosure_csrf(request, profile_id)
+    try:
+        disclosure_approvals.decide(profile_id, approval_id, approve=True)
+    except disclosure_approvals.DisclosureApprovalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"approved": True}
+
+
+@router.delete("/external-agents/disclosures/{approval_id}")
+def revoke_disclosure(approval_id: str, request: Request) -> dict[str, bool]:
+    profile_id = _disclosure_profile(request)
+    _require_disclosure_csrf(request, profile_id)
+    try:
+        disclosure_approvals.revoke(profile_id, approval_id)
+    except disclosure_approvals.DisclosureApprovalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"revoked": True}
+
+
+@router.post("/external-agents/grants/{approval_id}/revoke")
+def revoke_grant_alias(approval_id: str, request: Request) -> dict[str, bool]:
+    """Contract route for revocation; the composer also uses DELETE above."""
+
+    return revoke_disclosure(approval_id, request)

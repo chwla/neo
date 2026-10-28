@@ -41,9 +41,10 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode, urlparse
 
 from app.core.origins import is_allowed_return_origin
+from app.services.disclosure import Destination, GrantStore, Label, content_hash
 from app.services.integrations import capabilities as capability_vocabulary
 from app.services.integrations import store
-from app.services.integrations.http import request_json
+from app.services.integrations.http import request_json, request_payload
 from app.services.integrations.providers.base import (
     OAuthClient,
     Provider,
@@ -202,18 +203,56 @@ def start_oauth(
     }
 
 
-def _token_request(provider: Provider, grant: dict[str, str]) -> dict:
+def _lifecycle_request(
+    provider: Provider, operation: str, authority: str, *,
+    form: dict[str, str] | None = None, access_token: str | None = None,
+) -> tuple[dict, dict]:
+    """Redeem a verified connection action for one exact credential request.
+
+    Call only after consuming session-bound OAuth state or reading the existing
+    connection's sealed credential. These user-authorized lifecycle operations
+    cannot authorize arbitrary connector data requests or model arguments.
+    Endpoints and methods come exclusively from the installed provider policy.
+    """
+    if operation == "token":
+        method, url = "POST", provider.token_url
+        grant_type = (form or {}).get("grant_type")
+        fields = ({"grant_type", "code", "redirect_uri", "code_verifier"}
+                  if grant_type == "authorization_code" else {"grant_type", "refresh_token"}
+                  if grant_type == "refresh_token" else set())
+        if not fields or not form or set(form) - fields - {"client_id", "client_secret"}:
+            raise IntegrationOAuthError("Invalid credential lifecycle request.")
+    elif operation == "identity" and form is None:
+        method, url = "GET", provider.identity_url
+    elif operation == "revoke" and form and set(form) <= {"token", "client_id"}:
+        method, url = "POST", provider.revoke_url
+    else:
+        raise IntegrationOAuthError("Invalid credential lifecycle request.")
+    if not authority or not url:
+        raise IntegrationOAuthError("Invalid credential lifecycle request.")
+    source = Label.private(scoped_aad(f"connector:{provider.id}:{authority}"))
+    destination = Destination(scoped_aad("oauth"), engine=provider.id, thread_id=authority)
+    fields = {"form": form, "access_token": access_token,
+              "headers": {"Content-Type": "application/x-www-form-urlencoded"} if form else None}
+    payload = request_payload(method, url, source_label=source, **fields)
+    grants = GrantStore()
+    grants.create(
+        profile_id=destination.profile_id, engines=frozenset({provider.id}),
+        thread_scope=authority, tags=payload.label.tags, content_hash=content_hash(payload),
+        sink="http", ttl_seconds=30,
+    )
+    return request_json(
+        method, url, allowed_hosts=provider.allowed_hosts, source_label=source,
+        destination=destination, grants=grants, **fields,
+    )
+
+
+def _token_request(provider: Provider, grant: dict[str, str], *, authority: str) -> dict:
     client = _client(provider)
     form = {**grant, "client_id": client.client_id}
     if client.client_secret:
         form["client_secret"] = client.client_secret
-    payload, _ = request_json(
-        "POST",
-        provider.token_url,
-        allowed_hosts=provider.allowed_hosts,
-        form=form,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    payload, _ = _lifecycle_request(provider, "token", authority, form=form)
     if not payload.get("access_token"):
         # Deliberately says nothing about what the provider returned: on this
         # endpoint the response echoes the request.
@@ -290,13 +329,11 @@ def finish_oauth(*, state: str, code: str, session_token: str | None) -> dict:
             "redirect_uri": record["redirect_uri"],
             "code_verifier": sealed["verifier"],
         },
+        authority=f"state:{state_hash}",
     )
 
-    identity_payload, _ = request_json(
-        "GET",
-        provider.identity_url,
-        allowed_hosts=provider.allowed_hosts,
-        access_token=token["access_token"],
+    identity_payload, _ = _lifecycle_request(
+        provider, "identity", f"state:{state_hash}", access_token=token["access_token"],
     )
     try:
         identity = provider.parse_identity(identity_payload)
@@ -371,7 +408,8 @@ def access_token_for(provider: Provider, connection_id: str) -> str:
             )
 
         token = _token_request(
-            provider, {"grant_type": "refresh_token", "refresh_token": refresh_token}
+            provider, {"grant_type": "refresh_token", "refresh_token": refresh_token},
+            authority=f"connection:{connection_id}",
         )
         try:
             store.write_credential(
@@ -415,12 +453,8 @@ def revoke(provider: Provider, connection_id: str) -> None:
             if client is not None:
                 form["client_id"] = client.client_id
             try:
-                request_json(
-                    "POST",
-                    provider.revoke_url,
-                    allowed_hosts=provider.allowed_hosts,
-                    form=form,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                _lifecycle_request(
+                    provider, "revoke", f"connection:{connection_id}", form=form,
                 )
             except Exception:
                 # Already-revoked and unreachable look the same here, and neither

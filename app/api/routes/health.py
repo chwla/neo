@@ -4,10 +4,11 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import requests
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.api.routes.accounts import session_for
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.services.provider_runtime.service import ProviderRuntimeService
@@ -45,14 +46,18 @@ def _search_available(provider: str, searxng_url: str) -> bool:
 
 
 @router.get("")
-def health() -> dict[str, object]:
+def health(request: Request) -> dict[str, object]:
+    """Basic availability. Reachable without a session, so it says less to one.
+
+    ``data_dir`` is an absolute path into the user's filesystem and a precise
+    pointer at every profile database on the machine. It is still reported -- it is
+    the field used to confirm which installation answered after a restart -- but
+    only to a caller that has signed in. An anonymous probe gets availability only.
+    """
+
     settings = get_settings()
-    data_dir = settings.data_dir
-    if not data_dir and settings.database_url.startswith("sqlite:///"):
-        data_dir = str(Path(settings.database_url.removeprefix("sqlite:///")).resolve().parent)
-    return {
+    body: dict[str, object] = {
         "status": "ok",
-        "data_dir": data_dir or str(Path(".").resolve()),
         "search_provider": settings.web_search_provider,
         "search_available": _search_available(
             settings.web_search_provider, settings.searxng_instance
@@ -61,6 +66,14 @@ def health() -> dict[str, object]:
         "external_agents_enabled": _external_agents_enabled(),
         "external_agents": _external_agents(),
     }
+    if session_for(request) is not None:
+        data_dir = settings.data_dir
+        if not data_dir and settings.database_url.startswith("sqlite:///"):
+            data_dir = str(
+                Path(settings.database_url.removeprefix("sqlite:///")).resolve().parent
+            )
+        body["data_dir"] = data_dir or str(Path(".").resolve())
+    return body
 
 
 def _external_agents_enabled() -> bool:
@@ -200,7 +213,19 @@ def readiness() -> JSONResponse:
 
     checks = _readiness_checks()
     ready = all(check.get("ok") is True for check in checks.values())
-    return JSONResponse(
-        status_code=200 if ready else 503,
-        content={"status": "ready" if ready else "not_ready", "checks": checks},
-    )
+    body: dict[str, object] = {
+        "status": "ready" if ready else "not_ready",
+        "checks": checks,
+    }
+    # Advisory, and not part of readiness: a stray store from an older launch does
+    # not stop Neo working, and refusing traffic over it would be wrong. It is
+    # reported because nobody would otherwise know the data was there.
+    try:
+        from app.services.isolation import hygiene
+
+        report = hygiene.report()
+        if report.get("stray_stores"):
+            body["storage_notices"] = report
+    except Exception:  # pragma: no cover - a notice must never fail a probe
+        pass
+    return JSONResponse(status_code=200 if ready else 503, content=body)

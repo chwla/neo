@@ -194,6 +194,14 @@ class EmbeddedSearXNGProvider(WebSearchProvider):
         time_filter: str | None = None,
         vertical: str | None = None,
     ) -> WebSearchResponse:
+        from app.services.disclosure import Destination, Labeled, require
+
+        # The embedded WSGI app performs outbound engine requests in its own
+        # workers, so gate the exact dispatch before booting or invoking it.
+        require("search", Labeled({
+            "query": query, "max_results": max_results,
+            "time_filter": time_filter, "vertical": vertical,
+        }, self.source_label), Destination("web-search", engine=self.name), grants=self.grants)
         app = _boot()
         if app is None:
             return WebSearchResponse(
@@ -258,4 +266,6 @@ class EmbeddedSearXNGProvider(WebSearchProvider):
             }
             for item in payload.get("results", [])
         ]
-        return _results_response(query, self.name, raw, max_results)
+        return _results_response(
+            query, self.name, raw, max_results, source_label=self.source_label,
+        )

@@ -33,6 +33,8 @@ from app.services.agent_core import store as agent_store
 from app.services.agent_core import worker as agent_worker
 from app.services.agent_core.types import EXTERNAL_EXECUTORS, Executor
 from app.services.chat import NeoChatService
+from app.services.disclosure.chat_rows import derived_metadata, joined_rows
+from app.services.disclosure.labels import Label, public, to_json
 from app.services.llm import (
     LLMClient,
     LLMMessage,
@@ -922,6 +924,9 @@ def _persist_cancelled_partial(
         generation_id=generation.id,
         provider_name=generation.provider_name,
         model_name=generation.model_name,
+        metadata_json=json.dumps({
+            "source_label": to_json(Label.unknown("cancelled_partial_without_call_label"))
+        }),
     )
     db.add(message)
     db.flush()
@@ -2677,7 +2682,9 @@ def fork_chat(chat_id: int, request: ChatForkRequest, store: StoreDependency) ->
                 route_name=message.route_name,
                 finish_reason=message.finish_reason,
                 trace_id=message.trace_id,
-                metadata_json=message.metadata_json,
+                metadata_json=derived_metadata(
+                    message.metadata_json, Label.private(f"chat:{new_chat.id}")
+                ),
                 # A generation row is durable worker state for the original
                 # chat's own turn; the copy has no execution to resume, and the
                 # unique index on generation_id would collide on a literal copy.
@@ -2788,13 +2795,20 @@ def compact_chat(
         f"{message.role.upper()}: {message.content}" for message in to_summarize
     )
     transcript = transcript[-120_000:]
+    summary_label = joined_rows(to_summarize)
     try:
         client = get_llm_client(request.llm_id, num_predict=900, timeout=180, route_name="chat")
         result = client.chat_with_metadata(
             [
-                LLMMessage(role="system", content=_COMPACT_SUMMARY_SYSTEM_PROMPT),
                 LLMMessage(
-                    role="user", content=f"{transcript}\n\nSummarize the conversation above."
+                    role="system",
+                    content=_COMPACT_SUMMARY_SYSTEM_PROMPT,
+                    source_label=public("builtin:chat_compaction"),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=f"{transcript}\n\nSummarize the conversation above.",
+                    source_label=summary_label,
                 ),
             ],
             temperature=0.2,
@@ -2825,6 +2839,7 @@ def compact_chat(
                     "compacted_message_count": len(to_summarize),
                     "kept_message_ids": [message.id for message in to_keep],
                     "preserved_agent_anchor_ids": preserved_ids,
+                    "source_label": to_json(summary_label),
                 },
                 sort_keys=True,
             ),

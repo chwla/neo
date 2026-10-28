@@ -29,10 +29,24 @@ from typing import Any
 from app.services.agent_core import events
 from app.services.external_agents.types import ExternalEvent, Invocation, InvocationContext
 
-#: Sandbox policy by Neo mode. Codex has no interactive approval channel in
-#: `exec` (`-a/--ask-for-approval` is rejected there), so `normal` and `auto`
-#: both land on workspace-write. Neo shows the trace but cannot gate a call.
-_SANDBOX = {"plan": "read-only", "normal": "workspace-write", "auto": "workspace-write"}
+#: Codex's own sandbox is switched **off**, deliberately, and Neo's is the boundary.
+#:
+#: Measured on macOS 26.6.2: a Seatbelt profile cannot be applied inside another one
+#: unless the outer profile is effectively empty, and every policy Neo builds carries
+#: real denies. Codex sandboxes its own file writes and commands through Seatbelt, so
+#: inside Neo's profile its `sandbox_apply` fails -- and the symptom is not a refusal
+#: but a broken run: authentication succeeds, then "Failed to write file".
+#:
+#: So Codex is told not to try. What replaces it is Neo's own profile, which is
+#: strictly tighter than `workspace-write` (it denies reads of Neo's data, the user's
+#: credential stores and other profiles, none of which Codex's mode would have), and
+#: plan mode is enforced by making the workspace read-only in that profile rather
+#: than by asking Codex to.
+_SANDBOX = {
+    "plan": "danger-full-access",
+    "normal": "danger-full-access",
+    "auto": "danger-full-access",
+}
 
 #: Item types that represent the agent doing something, rather than saying it.
 _WORK_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call", "web_search"})
@@ -40,7 +54,6 @@ _WORK_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call", "w
 
 def build_argv(
     binary: str,
-    prompt: str,
     *,
     mode: str,
     cwd: str,
@@ -52,7 +65,7 @@ def build_argv(
     # See the note in the Claude adapter: a restrictive mode wins over an
     # unsafe flag, here too.
     unsafe = unsafe and mode == "auto"
-    sandbox = "danger-full-access" if unsafe else _SANDBOX.get(mode, "workspace-write")
+    sandbox = _SANDBOX.get(mode, "danger-full-access")
 
     if resume_thread_id:
         # No --cd and no -s on this subcommand; the sandbox has to be a config
@@ -72,7 +85,8 @@ def build_argv(
         argv += ["-c", f'model_reasoning_effort="{effort}"']
     if unsafe:
         argv.append("--dangerously-bypass-approvals-and-sandbox")
-    argv.append(prompt)
+    # No PROMPT argument: `codex exec` reads the instructions from stdin when none
+    # is given, which keeps the user's text out of the process table.
     return argv
 
 
@@ -261,7 +275,6 @@ def invocation(context: InvocationContext) -> Invocation:
 
     argv = build_argv(
         context.binary,
-        context.prompt,
         mode=context.mode,
         cwd=context.cwd,
         resume_thread_id=context.resume_id,
@@ -272,7 +285,12 @@ def invocation(context: InvocationContext) -> Invocation:
         effort=context.effort,
         unsafe=context.unsafe,
     )
-    return Invocation(argv=argv, translate=Translator().feed, session_id=None)
+    return Invocation(
+        argv=argv,
+        translate=Translator().feed,
+        session_id=None,
+        stdin_text=context.prompt,
+    )
 
 
 __all__ = ["Translator", "build_argv", "invocation", "translate"]

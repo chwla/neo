@@ -20,12 +20,14 @@ than a pipeline:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from app.services.agent_core import events, store
+from app.services.agent_core import events, permissions, store
 from app.services.agent_core.approvals import arguments_hash
 from app.services.agent_core.completion import CompletionAdjudicator
 from app.services.agent_core.context import context_budget, fit
@@ -48,6 +50,8 @@ from app.services.agent_core.types import (
     status_for_stop_reason,
 )
 from app.services.agent_core.workspace import is_live
+from app.services.disclosure import Label, from_json, join, public, to_json
+from app.services.disclosure.gate import ApprovedCall
 from app.services.llm import LLMMessage
 
 _LOG = logging.getLogger(__name__)
@@ -65,6 +69,9 @@ def _to_llm_messages(rows: list[dict]) -> list[LLMMessage]:
             tool_calls=row.get("tool_calls") or None,
             tool_call_id=row.get("tool_call_id"),
             name=row.get("name"),
+            source_label=row.get("source_label")
+            if isinstance(row.get("source_label"), Label)
+            else Label.unknown("unlabelled_agent_message"),
         )
         for row in rows
     ]
@@ -94,7 +101,12 @@ class AgentLoop:
         return AgentSession(**{**row, "budgets": Budgets(**(row.get("budgets") or {}))})
 
     def _emit(self, session_id: str, event_type: str, payload: dict | None = None) -> None:
-        store.append_event(session_id, event_type, payload or {})
+        body = dict(payload or {})
+        if event_type in {events.CHUNK, events.TOOL_CALL, events.TOOL_RESULT} or (
+            event_type in events.TERMINAL_EVENTS
+        ):
+            body["source_label"] = to_json(self._egress(session_id).label)
+        store.append_event(session_id, event_type, body)
 
     def _cancelled(self, session_id: str) -> bool:
         row = store.get_session(session_id)
@@ -135,6 +147,9 @@ class AgentLoop:
 
         if not session.anchor_message_id:
             return
+        # The caller's session object may predate the last private tool read.
+        # Source tags are recovered from the committed session row at write time.
+        label = self._egress(session.id).label
         try:
             chunks = [
                 event
@@ -159,6 +174,14 @@ class AgentLoop:
                     "model_name": last.get("model_name"),
                     "route_name": last.get("route_name") or "agent",
                     "finish_reason": last.get("finish_reason"),
+                    # Neo's own loop wrote this, and it may have read the user's
+                    # private data on the way. Marked as such so no later turn
+                    # forwards it to an external engine without approval.
+                    "metadata_json": json.dumps({
+                        "provenance": "internal_model",
+                        "label_tags": sorted(label.tags),
+                        "source_label": to_json(label),
+                    }),
                     **{key: value for key, value in totals.items() if value},
                 },
             )
@@ -174,11 +197,18 @@ class AgentLoop:
         if session.status in {"completed", "failed", "cancelled"}:
             return session
 
+
         if session.status == "queued":
+            history = self._chat_history(session)
+            self._mark_initial_context(session, history)
             store.update_session(session_id, {"status": "running", "started_at": store.now_iso()})
             self._emit(session_id, events.RUN_STARTED, {"objective": session.objective})
-            self._seed_transcript(session)
+            self._seed_transcript(session, history)
         else:
+            if not (store.get_session(session_id) or {}).get("egress_tags"):
+                # A pre-upgrade run may have seeded private transcript rows
+                # without provenance. Treat it as restricted on resume.
+                store.update_session(session_id, {"egress_tags": ["legacy_context"]})
             store.update_session(session_id, {"status": "running"})
 
         deadline = time.monotonic() + session.budgets.max_seconds
@@ -204,6 +234,7 @@ class AgentLoop:
                 return self._finish(session, "failed", f"The model call failed: {exc}")
 
             store.update_session(session_id, {"iterations": session.iterations + 1})
+            self._raise_model_label(session_id, turn.source_label)
 
             if turn.content:
                 # The transcript renders the same footer chat does, so the turn's
@@ -215,6 +246,7 @@ class AgentLoop:
                     "role": "assistant",
                     "content": turn.content,
                     "tool_calls": [call.model_dump() for call in turn.tool_calls],
+                    "source_label": turn.source_label,
                 },
             )
 
@@ -233,6 +265,7 @@ class AgentLoop:
                                 "Continue from where you stopped, and call the tool you "
                                 "were about to use rather than describing it."
                             ),
+                            "source_label": public("builtin:continue_prompt"),
                         },
                     )
                     self._emit(session_id, events.STATUS, {"content": "Continuing a cut-off reply"})
@@ -262,7 +295,70 @@ class AgentLoop:
             )
         return None
 
-    def _seed_transcript(self, session: AgentSession) -> None:
+    @staticmethod
+    def _mark_initial_context(session: AgentSession, history: list[dict]) -> None:
+        """Persist private prompt sources before the first model call."""
+
+        tags = set((store.get_session(session.id) or {}).get("egress_tags") or [])
+        if history:
+            tags.add("chat_private")
+        if session.project_id:
+            tags.add("project")
+        if (session.agent_definition_snapshot or {}).get("system_prompt"):
+            tags.add("agent_def")
+        if session.skills:
+            tags.add("skill")
+        if session.repo_id:
+            from app.core.config import active_profile_storage_dir
+            from app.services.disclosure.artifacts import ArtifactLabels
+            from app.services.repos import store as repos_store
+
+            storage = active_profile_storage_dir.get()
+            if not storage:
+                tags.add("unknown_context")
+            else:
+                labels = ArtifactLabels(Path(storage) / "artifact-labels.json")
+                repo_label = labels.get(f"repo:{session.repo_id}")
+                if repo_label.is_private():
+                    tags.update(repo_label.tags)
+                elif repo_label.is_unknown():
+                    tags.add("unknown_context")
+                repo = repos_store.get_repo(session.repo_id)
+                if not repo:
+                    tags.add("unknown_context")
+                else:
+                    # A live folder may have been renamed and registered under a
+                    # different repo id. Its inode record carries the old scope.
+                    for path in {repo.get("workspace_path"), repo.get("original_path")}:
+                        if not path:
+                            continue
+                        try:
+                            identity = Path(path).stat()
+                        except OSError:
+                            tags.add("unknown_context")
+                            continue
+                        identity_label = labels.get(
+                            f"folder:{identity.st_dev}:{identity.st_ino}"
+                        )
+                        if identity_label.is_private():
+                            tags.update(identity_label.tags)
+        if tags:
+            store.update_session(session.id, {"egress_tags": sorted(tags)})
+
+    @staticmethod
+    def _raise_model_label(session_id: str, label: Label) -> None:
+        """Persist the actual model-call provenance before accepting its output."""
+
+        tags = set(label.tags) if label.is_private() else set()
+        if label.is_unknown():
+            tags.add("unknown_context")
+        if not tags:
+            return
+        current = set((store.get_session(session_id) or {}).get("egress_tags") or [])
+        if not tags <= current:
+            store.update_session(session_id, {"egress_tags": sorted(current | tags)})
+
+    def _seed_transcript(self, session: AgentSession, history: list[dict] | None = None) -> None:
         schemas = self.registry.schemas(
             mode=session.mode,
             has_repo=bool(session.repo_id),
@@ -282,11 +378,45 @@ class AgentLoop:
                     native_tools=native,
                     environment=build_environment(session, repo, project),
                 ),
+                "source_label": self._egress(session.id).label,
             },
         )
-        for row in self._chat_history(session):
-            store.append_message(session.id, row)
-        store.append_message(session.id, {"role": "user", "content": session.objective})
+        for row in history if history is not None else self._chat_history(session):
+            stored_label = row.get("source_label")
+            if isinstance(stored_label, Label):
+                source_label = stored_label
+            elif isinstance(stored_label, str):
+                source_label = from_json(stored_label)
+            elif row.get("role") == "user":
+                source_label = Label.private("chat_private")
+            else:
+                source_label = Label.unknown("legacy_chat_assistant")
+            store.append_message(
+                session.id,
+                {**row, "source_label": join(Label.private("chat_private"), source_label)},
+            )
+        store.append_message(session.id, {
+            "role": "user", "content": session.objective,
+            "source_label": self._objective_label(session),
+        })
+
+    @staticmethod
+    def _objective_label(session: AgentSession) -> Label:
+        """The objective's provenance, as the server recorded it.
+
+        Typed this turn, it is the user's own words. Supplied by the server -- a
+        task's text -- it is whatever that text was, and a run must not reword it
+        into something the user typed.
+        """
+
+        stored = getattr(session, "objective_label_json", None)
+        if stored:
+            return from_json(stored)
+        if getattr(session, "task_id", None):
+            # Created before objective provenance was recorded, and linked to a
+            # task: the objective may well have been the task's own text.
+            return Label.unknown("legacy_task_session_objective")
+        return public(f"user_input:{session.id}")
 
     @staticmethod
     def _chat_history(session: AgentSession) -> list[dict]:
@@ -392,7 +522,11 @@ class AgentLoop:
 
             grants = [Grant(**row) for row in store.list_grants(session_id)]
             decision = self.resolver.resolve(
-                tool=tool, arguments=call.arguments, mode=session.mode, grants=grants
+                tool=tool,
+                arguments=call.arguments,
+                mode=session.mode,
+                grants=grants,
+                egress=self._egress(session_id),
             )
 
             if decision.outcome == "deny":
@@ -430,9 +564,48 @@ class AgentLoop:
                 self._request_approval(session, call, tool, decision)
                 raise Suspended()
 
-            self._record(session, call, self._execute(session, call))
+            result = self._execute(session, call)
+            self._note_private_read(session_id, call.name, result)
+            self._record(session, call, result)
 
-    def _tool_context(self, session: AgentSession) -> ToolContext:
+    @staticmethod
+    def _egress(session_id: str) -> permissions.EgressContext:
+        """What private data this run has read so far.
+
+        Read from the session row rather than a local, because a run suspends for an
+        approval and resumes in a later call; a restriction held in memory would be
+        forgotten exactly when the user had just been asked about it.
+        """
+
+        row = store.get_session(session_id) or {}
+        tags = tuple(str(tag) for tag in (row.get("egress_tags") or []))
+        if not tags:
+            return permissions.EgressContext(label=public(f"user_input:{session_id}"))
+        if "unknown_context" in tags:
+            return permissions.EgressContext(label=Label.unknown("unlabelled_model_context"))
+        return permissions.EgressContext(label=Label.private(*tags))
+
+    @staticmethod
+    def _note_private_read(session_id: str, tool_name: str, result: ToolResult) -> None:
+        """Record that this run has taken in private data.
+
+        Only ever adds. Once the model has seen a memory there is no way to show
+        that a URL it composes later does not encode it, so the restriction holds
+        for the rest of the run instead of being re-derived per call.
+        """
+
+        tags = permissions.tags_for_read(tool_name)
+        if not tags or result.status in {"denied", "error"}:
+            return
+        row = store.get_session(session_id) or {}
+        current = {str(tag) for tag in (row.get("egress_tags") or [])}
+        merged = current | set(tags)
+        if merged != current:
+            store.update_session(session_id, {"egress_tags": sorted(merged)})
+
+    def _tool_context(
+        self, session: AgentSession, *, approved: ApprovedCall | None = None
+    ) -> ToolContext:
         def sink(items: list[TodoItem]) -> None:
             store.update_session(session.id, {"todo": [item.model_dump() for item in items]})
             self._emit(
@@ -447,12 +620,23 @@ class AgentLoop:
             mode=session.mode,
             # The session's own snapshot, so ``load_skill`` refuses anything the
             # chat did not have turned on when this run started.
-            extras={"todo_sink": sink, "skills": session.skills},
+            extras={
+                "todo_sink": sink,
+                "skills": session.skills,
+                # Present only for the one execution resume_after_approval claimed;
+                # an ordinary execution never carries it.
+                **({"approved_call": approved} if approved is not None else {}),
+            },
+            source_label=self._egress(session.id).label,
         )
 
-    def _execute(self, session: AgentSession, call: ToolCall) -> ToolResult:
+    def _execute(
+        self, session: AgentSession, call: ToolCall, *, approved: ApprovedCall | None = None
+    ) -> ToolResult:
         return self.registry.execute(
-            call, self._tool_context(session), disabled=frozenset(session.disabled_tools)
+            call,
+            self._tool_context(session, approved=approved),
+            disabled=frozenset(session.disabled_tools),
         )
 
     def _request_approval(self, session: AgentSession, call, tool, decision) -> None:
@@ -487,6 +671,8 @@ class AgentLoop:
     def _record(self, session: AgentSession, call: ToolCall, result: ToolResult) -> None:
         """Persist a tool result, feed it back to the model, and update counters."""
 
+        result_label = join(self._egress(session.id).label, from_json(result.source_label_json))
+        self._raise_model_label(session.id, result_label)
         store.append_message(
             session.id,
             {
@@ -494,6 +680,7 @@ class AgentLoop:
                 "content": result.content or ("error: " + (result.error or "")),
                 "tool_call_id": call.id,
                 "name": call.name,
+                "source_label": result_label,
             },
         )
         store.record_tool_call(
@@ -554,6 +741,11 @@ class AgentLoop:
                         + "\n".join(f"- {item}" for item in verdict.unmet_criteria)
                         + "\n\nContinue working. Use tools; do not just reply."
                     ),
+                    # The outstanding items are the adjudicator's own words, and it
+                    # read this run's transcript to write them. A builtin label
+                    # would launder whatever that held into "text Neo ships", so
+                    # the message carries the run's restriction instead.
+                    "source_label": self._egress(session_id).label,
                 },
             )
             self._emit(session_id, events.STATUS, {"content": "Checking remaining work"})
@@ -599,6 +791,20 @@ def resume_after_approval(loop: AgentLoop, session_id: str, approval_id: str) ->
     if claimed is None:
         raise ValueError("This approval is no longer valid.")
 
-    loop._record(session, call, loop._execute(session, call))
+    # Built from the record just claimed, never from anything the model wrote. It
+    # names what the run had read when the user was asked -- the sources the
+    # approval prompt described -- so the call can send what was approved and
+    # nothing that draws on a source the user was not told about.
+    label = loop._egress(session_id).label
+    approved = ApprovedCall(
+        approval_id=claimed["id"],
+        session_id=session_id,
+        call_id=claimed["call_id"],
+        tool_name=claimed["tool_name"],
+        arguments_hash=claimed["arguments_hash"],
+        tags=frozenset(label.tags) if label.is_private() else frozenset(),
+        covers_unknown=label.is_unknown(),
+    )
+    loop._record(session, call, loop._execute(session, call, approved=approved))
     store.update_session(session_id, {"status": "running"})
     return loop.run(session_id)

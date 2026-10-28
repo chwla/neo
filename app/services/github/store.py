@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from app.core.config import get_settings
 from app.services.github.redaction import redact
+from app.services.integrations.vault import open_json, scoped_aad, seal_json
 
 
 def _connect():
@@ -32,6 +33,7 @@ def initialize_github_tables():
         CREATE TABLE IF NOT EXISTS workspace_github_connections (id TEXT PRIMARY KEY,name TEXT NOT NULL,owner TEXT NOT NULL,repo TEXT NOT NULL,token_ref TEXT NOT NULL DEFAULT 'GITHUB_TOKEN',enabled INTEGER NOT NULL DEFAULT 1,metadata_json TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS workspace_github_items (id TEXT PRIMARY KEY,connection_id TEXT NOT NULL,item_type TEXT NOT NULL,github_number INTEGER NOT NULL,github_id TEXT,title TEXT NOT NULL,state TEXT,author TEXT,body_text TEXT,labels_json TEXT,url TEXT,imported_task_id TEXT,imported_project_id TEXT,metadata_json TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,FOREIGN KEY(connection_id) REFERENCES workspace_github_connections(id));
         CREATE TABLE IF NOT EXISTS workspace_github_operations (id TEXT PRIMARY KEY,connection_id TEXT NOT NULL,item_id TEXT,operation_type TEXT NOT NULL,status TEXT NOT NULL,approval_required INTEGER NOT NULL DEFAULT 1,request_json TEXT,response_json TEXT,error TEXT,created_at TEXT NOT NULL,completed_at TEXT,FOREIGN KEY(connection_id) REFERENCES workspace_github_connections(id),FOREIGN KEY(item_id) REFERENCES workspace_github_items(id));
+        CREATE TABLE IF NOT EXISTS workspace_github_credentials (connection_id TEXT PRIMARY KEY REFERENCES workspace_github_connections(id) ON DELETE CASCADE, nonce TEXT NOT NULL, ciphertext TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_github_items_connection ON workspace_github_items(connection_id,item_type,github_number);
         CREATE INDEX IF NOT EXISTS idx_github_items_task ON workspace_github_items(imported_task_id);
         CREATE INDEX IF NOT EXISTS idx_github_operations_status ON workspace_github_operations(connection_id,status,created_at);
@@ -78,10 +80,12 @@ def get_row(table, id):
         c.close()
 
 
-def save_connection(data, id=None):
-    c = _connect()
+def save_connection(data, id=None, *, token_secret: str | None = None):
     timestamp = now()
     id = id or str(uuid.uuid4())
+    sealed = (seal_json({"token": token_secret}, aad=scoped_aad(f"github:{id}"))
+              if token_secret is not None else None)
+    c = _connect()
     try:
         if id and get_row("workspace_github_connections", id):
             keys = [
@@ -89,7 +93,7 @@ def save_connection(data, id=None):
                 for k in ("name", "owner", "repo", "token_ref", "enabled")
                 if k in data and data[k] is not None
             ]
-            sets = ", ".join(f"{k}=?" for k in keys) + ", updated_at=?"
+            sets = ", ".join([*(f"{k}=?" for k in keys), "updated_at=?"])
             c.execute(
                 f"UPDATE workspace_github_connections SET {sets} WHERE id=?",
                 [*[int(data[k]) if k == "enabled" else data[k] for k in keys], timestamp, id],
@@ -102,12 +106,18 @@ def save_connection(data, id=None):
                     data["name"],
                     data["owner"],
                     data["repo"],
-                    data.get("token_ref", "GITHUB_TOKEN"),
+                    "PROFILE_VAULT" if sealed else data.get("token_ref", "GITHUB_TOKEN"),
                     int(data.get("enabled", True)),
                     "{}",
                     timestamp,
                     timestamp,
                 ),
+            )
+        if sealed is not None:
+            c.execute(
+                "INSERT INTO workspace_github_credentials VALUES (?,?,?) "
+                "ON CONFLICT(connection_id) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext",
+                (id, *sealed),
             )
         c.commit()
         return get_row("workspace_github_connections", id)
@@ -197,3 +207,31 @@ def operation(connection_id, item_id, typ, status, request=None, response=None, 
         return get_row("workspace_github_operations", id)
     finally:
         c.close()
+
+
+def credential_configured(connection_id: str) -> bool:
+    c = _connect()
+    try:
+        return c.execute("SELECT 1 FROM workspace_github_credentials WHERE connection_id=?",
+                         (connection_id,)).fetchone() is not None
+    finally:
+        c.close()
+
+
+def read_credential(connection_id: str) -> str:
+    c = _connect()
+    try:
+        row = c.execute("SELECT nonce, ciphertext FROM workspace_github_credentials WHERE connection_id=?",
+                        (connection_id,)).fetchone()
+    finally:
+        c.close()
+    if row is None:
+        raise RuntimeError("Reconnect this GitHub connection with a token for this profile.")
+    try:
+        value = open_json(row["nonce"], row["ciphertext"], aad=scoped_aad(f"github:{connection_id}"))
+        token = value.get("token")
+        if not isinstance(token, str) or not token:
+            raise ValueError("missing token")
+        return token
+    except Exception:
+        raise RuntimeError("Reconnect this GitHub connection with a token for this profile.") from None

@@ -109,6 +109,7 @@ def run_process(
     timeout: float,
     on_line: Callable[[dict[str, Any] | str], None],
     is_cancelled: Callable[[], bool] | None = None,
+    stdin_text: str | None = None,
 ) -> RunOutcome:
     """Run ``argv`` in ``cwd``, streaming each stdout line to ``on_line``.
 
@@ -116,12 +117,17 @@ def run_process(
     not JSON -- a CLI is entitled to print a banner, and that is not a reason to
     fail a run.
 
+    ``stdin_text`` is the prompt. It is written and the pipe closed immediately,
+    which is both how these CLIs expect to be fed non-interactively and what keeps
+    the user's own text out of the process table, where every other process on the
+    machine could read it. With nothing to send, stdin is closed outright so the
+    child can never block waiting for input.
+
     Containment, since this bypasses the command sandbox by design:
       * ``cwd`` must already be a validated repository root; this function never
         derives one.
       * ``env`` must already be the allowlist from ``env.build_env``; nothing is
         inherited here.
-      * ``stdin`` is closed, so the child can never block waiting for input.
       * the child leads its own process group, and the group is what gets killed.
     """
 
@@ -133,7 +139,7 @@ def run_process(
             argv,
             cwd=cwd,
             env=env,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -143,6 +149,18 @@ def run_process(
     except (OSError, ValueError) as exc:
         outcome.error = f"could not start {argv[0]}: {exc}"
         return outcome
+
+    if stdin_text is not None and process.stdin is not None:
+        # Written from a side thread: a prompt larger than the pipe buffer would
+        # otherwise deadlock against a child that waits for EOF before replying.
+        def feed() -> None:
+            try:
+                process.stdin.write(stdin_text)
+                process.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+        threading.Thread(target=feed, name="neo-extagent-stdin", daemon=True).start()
 
     stopping = threading.Event()
     state: dict[str, bool] = {"timed_out": False, "cancelled": False}

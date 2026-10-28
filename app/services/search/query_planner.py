@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from app.services.current_time import today_for_prompt
+from app.services.disclosure import Label, content_hash, label_of, public, to_json
 from app.services.llm import LLMMessage
 
 if TYPE_CHECKING:
@@ -373,7 +374,7 @@ class QueryPlanner:
     """Turn a user turn into a provider query via the selected chat model."""
 
     def __init__(self) -> None:
-        self._cache: OrderedDict[tuple[str, str, str], SearchPlan] = OrderedDict()
+        self._cache: OrderedDict[str, SearchPlan] = OrderedDict()
 
     def plan(
         self,
@@ -382,6 +383,7 @@ class QueryPlanner:
         llm: LLMClient | None = None,
         hint: str | None = None,
         user_text: str | None = None,
+        source_label: Label | None = None,
     ) -> SearchPlan:
         """Plan ``query``.
 
@@ -403,18 +405,18 @@ class QueryPlanner:
         if llm is None or not query.strip():
             return fallback
 
-        cache_key = (
-            " ".join(query.lower().split()),
-            " ".join((user_text or "").lower().split()),
-            getattr(llm, "model", ""),
-            today_for_prompt(),
-        )
+        source_label = label_of(source_label)
+        cache_key = content_hash({
+            "query": query, "user_text": user_text, "hint": hint,
+            "label": to_json(source_label), "model": getattr(llm, "model", ""),
+            "date": today_for_prompt(),
+        })
         cached = self._cache.get(cache_key)
         if cached is not None:
             self._cache.move_to_end(cache_key)
             return cached
 
-        payload = self._request_plan(query, llm, hint, user_text)
+        payload = self._request_plan(query, llm, hint, user_text, source_label=source_label)
         plan = self._validate(payload, query, user_text) if payload is not None else None
         result = plan or fallback
         if plan is not None:
@@ -423,7 +425,8 @@ class QueryPlanner:
 
     @staticmethod
     def _request_plan(
-        query: str, llm: LLMClient, hint: str | None, user_text: str | None = None
+        query: str, llm: LLMClient, hint: str | None, user_text: str | None = None,
+        *, source_label: Label | None = None,
     ) -> dict[str, object] | None:
         user_content = query if not hint or hint == query else f"{query}\n\n(topic: {hint})"
         if user_text and " ".join(user_text.split()) != " ".join(query.split()):
@@ -434,6 +437,7 @@ class QueryPlanner:
                 [
                     LLMMessage(
                         role="system",
+                        source_label=public("builtin:search_query_planner"),
                         content=(
                             _QUERY_PLAN_SYSTEM_PROMPT
                             + f"\nToday's date is {today}, so the current year is {today[:4]}. "
@@ -443,7 +447,9 @@ class QueryPlanner:
                             "current year.\n"
                         ),
                     ),
-                    LLMMessage(role="user", content=user_content),
+                    LLMMessage(
+                        role="user", content=user_content, source_label=label_of(source_label),
+                    ),
                 ],
                 temperature=0.0,
             )
@@ -499,7 +505,7 @@ class QueryPlanner:
             secondary_query=secondary,
         )
 
-    def _remember(self, key: tuple[str, str, str], plan: SearchPlan) -> None:
+    def _remember(self, key: str, plan: SearchPlan) -> None:
         self._cache[key] = plan
         self._cache.move_to_end(key)
         while len(self._cache) > _PLAN_CACHE_MAX_ENTRIES:
@@ -576,6 +582,9 @@ def plan_query(
     llm: LLMClient | None = None,
     hint: str | None = None,
     user_text: str | None = None,
+    source_label: Label | None = None,
 ) -> SearchPlan:
     """Plan ``query`` using the process-wide planner (and its cache)."""
-    return _PLANNER.plan(query, llm=llm, hint=hint, user_text=user_text)
+    return _PLANNER.plan(
+        query, llm=llm, hint=hint, user_text=user_text, source_label=source_label,
+    )

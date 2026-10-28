@@ -8,6 +8,8 @@ from io import BytesIO
 
 from app.services.bundles import store
 from app.services.bundles.checksums import checksum_map, sha256_bytes
+from app.services.bundles.labels import source_label
+from app.services.bundles.labels import store as label_store
 from app.services.bundles.redaction import redact
 from app.services.bundles.serializer import rows
 
@@ -31,6 +33,8 @@ class BundleExporter:
             conn.close()
         if not any(entities.values()):
             raise LookupError(f"No {bundle_type} found for {entity_id}.")
+        labels = label_store()
+        archive_label = source_label(entities, labels)
         manifest = {
             "schema_version": 1,
             "bundle_type": bundle_type,
@@ -67,6 +71,7 @@ class BundleExporter:
                 "archive_path": str(store.bundle_dir() / f"{uuid.uuid4()}.zip"),
             },
         )
+        labels.raise_label(f"bundle:export:{record['id']}", archive_label)
         # Archive is only Neo-owned bundle data; no source repository paths are written.
         archive_path = record["metadata"]["archive_path"]
         __import__("pathlib").Path(archive_path).write_bytes(data)

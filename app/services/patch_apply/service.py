@@ -12,6 +12,7 @@ from app.services.files.extractors import extract_text
 from app.services.files.safety import extension_for
 from app.services.files.service import WorkspaceFilesService
 from app.services.files.types import FileLinkCreate, WorkspaceFile
+from app.services.isolation import fs_ops
 from app.services.patch_apply.types import (
     PatchApplication,
     PatchApplyRequest,
@@ -79,14 +80,7 @@ class ControlledPatchApplyService:
         replaced: list[PreparedFile] = []
         updated_files: list[dict] = []
         try:
-            for item in prepared.files:
-                item.path.parent.mkdir(parents=True, exist_ok=True)
-                temp = item.path.with_name(f".{application_id}.{uuid.uuid4().hex}.tmp")
-                temp.write_bytes(item.new_bytes)
-                temp_paths.append(temp)
-            for item, temp in zip(prepared.files, temp_paths, strict=True):
-                os.replace(temp, item.path)
-                replaced.append(item)
+            self._write_prepared(prepared, application_id, temp_paths, replaced)
             for item in prepared.files:
                 workspace_file = self._workspace_file(item, created_records)
                 updated_files.append(
@@ -138,6 +132,35 @@ class ControlledPatchApplyService:
             raise RuntimeError(f"{message}: {error}") from exc
         result_files: dict | list[dict] = updated_files[0] if prepared.legacy else updated_files
         return application or store.get_application(application_id), result_files
+
+    @staticmethod
+    def _write_prepared(
+        prepared: PreparedApply,
+        application_id: str,
+        temp_paths: list[Path],
+        replaced: list[PreparedFile],
+    ) -> None:
+        if prepared.repo:
+            root = Path(prepared.repo["workspace_path"]).resolve()
+            for item in prepared.files:
+                fs_ops.apply(
+                    root,
+                    item.relative_path,
+                    replacement=item.new_bytes,
+                    expected=item.original_bytes if item.change_type == "modify" else None,
+                )
+                replaced.append(item)
+            return
+        # Legacy workspace files live in Neo's private store, outside an agent's
+        # workspace. Keep the existing atomic path for those non-repository files.
+        for item in prepared.files:
+            item.path.parent.mkdir(parents=True, exist_ok=True)
+            temp = item.path.with_name(f".{application_id}.{uuid.uuid4().hex}.tmp")
+            temp.write_bytes(item.new_bytes)
+            temp_paths.append(temp)
+        for item, temp in zip(prepared.files, temp_paths, strict=True):
+            os.replace(temp, item.path)
+            replaced.append(item)
 
     @staticmethod
     def _workspace_file(item: PreparedFile, created_records: dict[str, tuple[dict, dict]]) -> dict:
@@ -353,11 +376,20 @@ class ControlledPatchApplyService:
                 errors.append(str(exc))
         for item in reversed(replaced):
             try:
-                if item.change_type == "create":
+                if prepared.repo:
+                    root = Path(prepared.repo["workspace_path"]).resolve()
+                    fs_ops.apply(
+                        root,
+                        item.relative_path,
+                        replacement=item.original_bytes if item.change_type == "modify" else None,
+                        expected=item.new_bytes,
+                    )
+                elif item.change_type == "create":
                     if item.path.exists():
                         item.path.unlink()
                 else:
                     item.path.write_bytes(item.original_bytes)
+                if item.change_type == "modify":
                     original = item.workspace_file or {}
                     file_store.update_file(
                         original["id"],

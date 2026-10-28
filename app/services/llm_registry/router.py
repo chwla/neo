@@ -11,6 +11,7 @@ from app.services.llm import (
     LLMChatResult,
     LLMMessage,
     ProviderUsagePersistenceError,
+    call_label,
 )
 from app.services.llm_registry.providers import build_client
 from app.services.llm_registry.service import LLMRegistryService
@@ -100,7 +101,7 @@ class RoutedLLMClient(BaseLLMClient):
             raise RuntimeError(f"LLM route '{self.route_name}' has no primary provider/model.")
         try:
             result = primary[2].chat_with_metadata(messages, temperature, output_limit)
-            return self._success(result, primary[0], primary[1], False)
+            return self._success(result, primary[0], primary[1], False, messages)
         except Exception as exc:
             self._record_call(
                 route_name=self.route_name,
@@ -115,7 +116,7 @@ class RoutedLLMClient(BaseLLMClient):
                 raise
             try:
                 result = fallback[2].chat_with_metadata(messages, temperature, output_limit)
-                return self._success(result, fallback[0], fallback[1], True)
+                return self._success(result, fallback[0], fallback[1], True, messages)
             except Exception as fallback_exc:
                 self._record_call(
                     route_name=self.route_name,
@@ -127,13 +128,14 @@ class RoutedLLMClient(BaseLLMClient):
                 )
                 raise
 
-    def _success(self, result, provider, model, fallback_used):
+    def _success(self, result, provider, model, fallback_used, messages):
         result = result.model_copy(
             update={
                 "route_name": self.route_name,
                 "provider_id": provider["id"],
                 "model_id": model["id"],
                 "fallback_used": fallback_used,
+                "source_label": call_label(messages),
             }
         )
         self._record_call(
@@ -172,6 +174,7 @@ class RoutedLLMClient(BaseLLMClient):
                 if event.get("type") == "done":
                     result = LLMChatResult(
                         content="",
+                        source_label=call_label(messages),
                         **{
                             k: event.get(k)
                             for k in (
@@ -215,6 +218,7 @@ class RoutedLLMClient(BaseLLMClient):
                 if event.get("type") == "done":
                     result = LLMChatResult(
                         content="",
+                        source_label=call_label(messages),
                         **{
                             k: event.get(k)
                             for k in (

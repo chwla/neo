@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import os
 
-from app.services.llm import BaseLLMClient, LLMChatResult, OllamaClient, OpenAICompatibleClient
+from app.services.llm import (
+    BaseLLMClient,
+    LLMChatResult,
+    OllamaClient,
+    OpenAICompatibleClient,
+    call_label,
+)
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -39,7 +45,12 @@ class MockClient(BaseLLMClient):
 
     def chat_with_metadata(self, messages, temperature=0.4, num_predict=None):
         content = messages[-1].content if messages else "mock"
-        return LLMChatResult(content=f"Mock: {content}", total_tokens=0, duration_ms=0)
+        return LLMChatResult(
+            content=f"Mock: {content}",
+            source_label=call_label(messages),
+            total_tokens=0,
+            duration_ms=0,
+        )
 
     def chat_stream(self, messages, temperature=0.4, num_predict=None):
         result = self.chat_with_metadata(messages, temperature, num_predict)

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000, ge=1, le=65535)
+    #: Vite and preview origins are accepted only when explicitly developing.
+    dev_cors_enabled: bool = Field(default=False)
     data_dir: str | None = Field(default=None)
     database_url: str = Field(default="sqlite:///./neo_memory.db")
     qdrant_url: str = Field(default="http://localhost:6333")
@@ -451,6 +453,26 @@ class Settings(BaseSettings):
     integration_oauth_redirect_uri: str = Field(
         default="http://127.0.0.1:8000/api/integrations/oauth/callback"
     )
+    #: Extra ``Host`` values this installation answers to, comma-separated. The
+    #: loopback spellings are always accepted; this is for a deployment reached by
+    #: its own hostname through a reverse proxy. Everything else is refused, which
+    #: is what stops a web page from pointing its own domain at 127.0.0.1 and
+    #: talking to Neo with the browser's cookies attached.
+    trusted_hosts: str = Field(default="")
+    #: Whether Codex may be handed its OAuth **refresh** token.
+    #:
+    #: Off, and it has to be: measured on this machine, Codex authenticates by
+    #: refreshing at startup, so a run given only an access token is refused by the
+    #: API (401). The only way to make it work is to put the refresh token inside the
+    #: run's own home directory -- which the run can read, because it has to. A
+    #: refresh token mints new access tokens indefinitely, so a single compromised
+    #: Codex run would hold the user's OpenAI account until they revoked it by hand.
+    #:
+    #: Claude Code needs no such thing: it accepts an access token directly, so its
+    #: refresh token never leaves the keychain. This is a difference between the two
+    #: products, not a choice Neo made, and it is left to the user rather than
+    #: decided for them -- with Codex refused until they decide.
+    codex_allow_refresh_token_handoff: bool = Field(default=False)
 
     @model_validator(mode="after")
     def apply_data_directory(self) -> "Settings":
@@ -483,6 +505,25 @@ def _base_settings() -> Settings:
     return Settings()
 
 
+def _workspaces_root() -> Path:
+    """The code-only root that managed workspace copies live under."""
+
+    base = _base_settings()
+    if base.data_dir:
+        return Path(base.data_dir).expanduser().resolve() / "workspaces"
+    url = base.database_url
+    if url.startswith("sqlite:///"):
+        candidate = Path(url.removeprefix("sqlite:///")).expanduser()
+        if not candidate.is_absolute():
+            from app.core.paths import install_root
+
+            candidate = install_root() / candidate
+        return candidate.resolve().parent / "workspaces"
+    from app.core.paths import install_root
+
+    return (install_root() / "data" / "workspaces").resolve()
+
+
 def get_settings() -> Settings:
     """Return settings for the current profile, or the app defaults outside a session."""
 
@@ -499,7 +540,13 @@ def get_settings() -> Settings:
                 "data_dir": str(root),
                 "workspace_files_dir": str(root / "workspace_files"),
                 "gallery_thumbnails_dir": str(root / "gallery_thumbnails"),
-                "workspace_repos_dir": str(root / "workspace_repos"),
+                # Deliberately *not* under the profile's own storage directory.
+                # A managed workspace holds the user's code and is handed to an
+                # agent; private storage is denied to agents wholesale, so a
+                # workspace in there is a workspace no run can open -- and
+                # carving a hole for it would expose everything beside it. It
+                # lives in a code-only root instead, one directory per profile.
+                "workspace_repos_dir": str(_workspaces_root() / root.name),
                 "skills_dir": str(root / "skills"),
                 "llm_config_path": str(root / "neo_llms.json"),
             }

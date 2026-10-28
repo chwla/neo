@@ -12,6 +12,7 @@ import requests
 from app.core.config import get_settings
 from app.db.memory_migrations import upgrade_memory
 from app.db.session import build_engine
+from app.services.memory import keyring as memory_keyring
 from app.services.memory.adapters import (
     ChatMemoryAdapter,
     GenericMemoryAdapter,
@@ -26,13 +27,14 @@ from app.services.memory.extraction import (
     probe_ollama_provider,
 )
 from app.services.memory.extraction_coordinator import MemoryExtractionCoordinator
-from app.services.memory.local_crypto import LocalMemoryCrypto
+from app.services.memory.keyring_crypto import KeyringMemoryCrypto
 from app.services.memory.runtime import build_semantic_duplicate_finder
 from app.services.memory.settings import MemorySettings
 from app.services.profile_accounts import (
     database_identity_for_profile,
     database_url_for,
     memory_key_material_for_profile,
+    profile_storage_dir,
 )
 
 
@@ -332,6 +334,36 @@ def _ensure_memory_schema(database_url: str, owner_id: str, database_identity: s
         _verified_memory_schemas.add(key)
 
 
+def memory_crypto_for_profile(profile: dict) -> KeyringMemoryCrypto:
+    """The crypto provider for one profile, backed by its keyring.
+
+    Writes use the keyring's random active key. Reads and digest checks also try the
+    legacy seed that used to be derived from the password hash, so records and
+    tombstones written before the keyring existed stay readable and keep matching.
+
+    On first use for an existing profile the keyring is created with that derived
+    seed recorded as legacy, which is what makes the switch invisible: nothing is
+    re-encrypted here, and no key the profile still needs is retired.
+
+    A guest's seed never depended on a password (it comes from the owner id alone),
+    so a guest keyring records it the same way and nothing is lost when the guest
+    is discarded.
+    """
+
+    profile_id = str(profile["id"])
+    guest = bool(profile.get("is_guest"))
+    try:
+        legacy_seed = memory_key_material_for_profile(profile_id, guest=guest)
+    except Exception:  # a profile whose registry row has gone is not a reason to fail here
+        legacy_seed = None
+    ring = memory_keyring.ensure_keyring(
+        profile_storage_dir(profile_id, guest=guest),
+        legacy_seed=legacy_seed,
+        legacy_source="derived:password_hash",
+    )
+    return KeyringMemoryCrypto(ring=ring)
+
+
 def build_memory_runtime(profile: dict) -> MemoryRuntime:
     profile_id = str(profile["id"])
     guest = bool(profile.get("is_guest"))
@@ -340,7 +372,7 @@ def build_memory_runtime(profile: dict) -> MemoryRuntime:
     owner_id = str(profile["owner_id"])
     database_identity = database_identity_for_profile(profile_id, guest=guest)
     _ensure_memory_schema(database_url, owner_id, database_identity)
-    crypto = LocalMemoryCrypto(seed=memory_key_material_for_profile(profile_id, guest=guest))
+    crypto = memory_crypto_for_profile(profile)
     coordinator = MemoryMutationCoordinator(
         flags=settings,
         payload_provider=crypto,

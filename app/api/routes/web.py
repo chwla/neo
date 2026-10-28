@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.services.disclosure import Labeled, content_hash, public
 from app.services.source_citations import CitedAnswer
 from app.services.web_fetch import FetchedPage, WebPageFetcher
 from app.services.web_search import SearchResult, WebAnswerService, WebSearchService
@@ -35,7 +36,10 @@ class WebSearchApiResponse(BaseModel):
 @router.post("/search", response_model=WebSearchApiResponse)
 def search_web(request: WebSearchRequest) -> WebSearchApiResponse:
     settings = get_settings()
-    response = WebSearchService().search(request.query, request.max_results)
+    response = WebSearchService().search(
+        Labeled(request.query, public(f"user_input:{content_hash(request.query)}")),
+        request.max_results,
+    )
     return WebSearchApiResponse(
         enabled=settings.web_search_enabled,
         provider=response.provider,
@@ -47,9 +51,13 @@ def search_web(request: WebSearchRequest) -> WebSearchApiResponse:
 
 @router.post("/fetch", response_model=FetchedPage)
 def fetch_web_page(request: WebFetchRequest) -> FetchedPage:
-    return WebPageFetcher().fetch(request.url)
+    return WebPageFetcher().fetch(
+        Labeled(request.url, public(f"user_input:{content_hash(request.url)}"))
+    )
 
 
 @router.post("/answer", response_model=CitedAnswer)
 def answer_from_web(request: WebAnswerRequest) -> CitedAnswer:
-    return WebAnswerService().answer(request.query)
+    return WebAnswerService().answer(
+        Labeled(request.query, public(f"user_input:{content_hash(request.query)}"))
+    )

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from app.services.agent_core.types import Evidence, ToolResult
+from app.services.disclosure import Label
 
 # How dangerous an action is, independent of which service implements it. The
 # permission resolver maps this onto the mode overlay; the six values line up
@@ -47,6 +48,7 @@ class ToolContext:
     task_id: str | None = None
     mode: str = "normal"
     extras: dict[str, Any] = field(default_factory=dict)
+    source_label: Label = field(default_factory=lambda: Label.unknown("unlabelled_tool_input"))
 
 
 class ToolHandler(Protocol):

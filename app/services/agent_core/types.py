@@ -93,6 +93,8 @@ class Evidence(BaseModel):
 
 
 class ToolResult(BaseModel):
+    # Server-derived provenance travels with the result, including across workers.
+    source_label_json: str | None = None
     call_id: str
     name: str
     status: ToolOutcome = "ok"
@@ -171,6 +173,12 @@ class AgentSession(BaseModel):
     external_meta: dict[str, Any] = Field(default_factory=dict)
     #: The handoff chain this session is running, if any.
     handoff: dict[str, Any] | None = None
+    #: Private sources this run has read. Only ever grows, and it is what makes a
+    #: later outbound call ask for approval -- see ``agent_core.permissions``.
+    egress_tags: list[str] = Field(default_factory=list)
+    #: Server-written provenance of a server-supplied objective; ``None`` when the
+    #: objective is what the user typed. Never accepted from a request.
+    objective_label_json: str | None = None
     #: Tool names withheld from this run, snapshotted from the chat at session
     #: creation -- like ``agent_definition_snapshot``, not re-read mid-run.
     disabled_tools: list[str] = Field(default_factory=list)

@@ -10,6 +10,7 @@ matters least once it has been acted on.
 
 from __future__ import annotations
 
+from app.services.disclosure import public
 from app.services.llm import LLMMessage
 
 #: Rough characters-per-token. Deliberately conservative: overestimating tokens
@@ -76,7 +77,10 @@ def fit(messages: list[LLMMessage], budget_tokens: int) -> list[LLMMessage]:
 
     dropped = len(older) - len(compacted)
     notice = (
-        [LLMMessage(role="user", content=f"[{dropped} earlier steps were dropped to fit context.]")]
+        [LLMMessage(
+            role="user", content=f"[{dropped} earlier steps were dropped to fit context.]",
+            source_label=public("builtin:context_notice"),
+        )]
         if dropped
         else []
     )

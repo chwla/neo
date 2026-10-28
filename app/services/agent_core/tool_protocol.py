@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.agent_core.types import ToolCall
+from app.services.disclosure import Label, invocation_label, public
 from app.services.llm import LLMMessage
 
 _FENCE = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -60,6 +61,7 @@ class ModelTurn:
     #: What answered and what it cost, for the run's transcript. The chat path
     #: records the same on every message; an agent turn is no less a model call.
     metadata: dict[str, Any] = field(default_factory=dict)
+    source_label: Label = field(default_factory=lambda: Label.unknown("unlabelled_model_turn"))
 
     @property
     def truncated(self) -> bool:
@@ -223,6 +225,7 @@ def request_tool_calls(
 
     allowed = {schema.get("function", schema).get("name") for schema in schemas}
     allowed.discard(None)
+    call_label = invocation_label(message.source_label for message in messages)
 
     def meta(result: Any) -> dict[str, Any]:
         return {
@@ -252,9 +255,10 @@ def request_tool_calls(
             calls = salvage_tool_calls(result.content, allowed)
             if calls:
                 return ModelTurn(
-                    _strip_salvaged(result.content), calls, result.finish_reason, meta(result)
+                    _strip_salvaged(result.content), calls, result.finish_reason, meta(result),
+                    call_label,
                 )
-        return ModelTurn(result.content, calls, result.finish_reason, meta(result))
+        return ModelTurn(result.content, calls, result.finish_reason, meta(result), call_label)
 
     attempt_messages = list(messages)
     for attempt in range(2):
@@ -269,15 +273,19 @@ def request_tool_calls(
             salvaged = salvage_tool_calls(result.content, allowed)
             if salvaged:
                 return ModelTurn(
-                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result)
+                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result),
+                    call_label,
                 )
             # Prose that merely mentions a tool is a final answer, not a broken
             # attempt, so only a real attempt is worth a repair round trip.
             if attempt == 0 and _looks_like_a_tool_attempt(result.content):
                 attempt_messages = [
                     *attempt_messages,
-                    LLMMessage(role="assistant", content=result.content),
-                    LLMMessage(role="user", content=_REPAIR_PROMPT),
+                    LLMMessage(role="assistant", content=result.content, source_label=call_label),
+                    LLMMessage(
+                        role="user", content=_REPAIR_PROMPT,
+                        source_label=public("builtin:tool_repair"),
+                    ),
                 ]
                 continue
             raise
@@ -285,13 +293,15 @@ def request_tool_calls(
             salvaged = salvage_tool_calls(result.content, allowed)
             if salvaged:
                 return ModelTurn(
-                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result)
+                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result),
+                    call_label,
                 )
         return ModelTurn(
             _strip_tool_block(result.content) if calls else result.content,
             calls,
             result.finish_reason,
             meta(result),
+            call_label,
         )
 
     raise ToolProtocolError("The model did not produce a usable tool call.")

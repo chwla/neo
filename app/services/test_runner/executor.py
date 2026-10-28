@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import signal
@@ -9,6 +10,10 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from app.services import isolation
+
+_LOG = logging.getLogger(__name__)
 
 STDOUT_LIMIT = 200 * 1024
 STDERR_LIMIT = 200 * 1024
@@ -44,6 +49,13 @@ def _resolved_argv(command: list[str]) -> list[str]:
     return [executable, *command[1:]]
 
 
+def _active_profile_id() -> str:
+    from app.core.config import active_profile_storage_dir
+
+    storage = active_profile_storage_dir.get()
+    return Path(storage).name if storage else ""
+
+
 def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionResult:
     started = time.monotonic()
     home = tempfile.mkdtemp(prefix="neo-test-home-")
@@ -59,28 +71,62 @@ def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionRes
     exit_code = None
     try:
         argv = _resolved_argv(command)
-        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-            process = subprocess.Popen(
+        # A test suite is the repository's own code, and on this path the repository
+        # is one an agent has just edited -- a `conftest.py` or an npm script it
+        # wrote runs here. So the run is isolated exactly like the agent's own.
+        stdout_truncated = stderr_truncated = False
+        try:
+            outcome = isolation.run(
                 argv,
-                cwd=cwd,
+                cwd=str(cwd),
                 env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                shell=False,
-                start_new_session=True,
+                purpose="test_runner",
+                profile_id=_active_profile_id(),
+                workspace=str(cwd),
+                timeout=float(timeout_seconds),
             )
-            try:
-                exit_code = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                timed_out = True
+            stdout_text = outcome.stdout[:STDOUT_LIMIT]
+            stderr_text = outcome.stderr[:STDERR_LIMIT]
+            stdout_truncated = len(outcome.stdout) > STDOUT_LIMIT
+            stderr_truncated = len(outcome.stderr) > STDERR_LIMIT
+            timed_out = outcome.timed_out
+            exit_code = outcome.exit_code
+            if outcome.quarantined:
+                error = outcome.quarantine_reason
+        except isolation.IsolationRefused as exc:
+            stdout_text = stderr_text = ""
+            error = str(exc)
+        except isolation.IsolationUnavailable:
+            # No validated backend here. Tests still run, with the allowlist and the
+            # scrubbed environment as their only guard; that is the pre-existing
+            # behaviour and the contract records it as unisolated rather than
+            # implying containment this platform cannot provide.
+            _LOG.warning("test_runner_unisolated platform=%s", sys.platform)
+            with (
+                tempfile.TemporaryFile() as stdout_file,
+                tempfile.TemporaryFile() as stderr_file,
+            ):
+                process = subprocess.Popen(
+                    argv,
+                    cwd=cwd,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    shell=False,
+                    start_new_session=True,
+                )
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except (AttributeError, ProcessLookupError, PermissionError):
-                    process.kill()
-                process.wait()
-            stdout_text, stdout_truncated = _read_limited(stdout_file, STDOUT_LIMIT)
-            stderr_text, stderr_truncated = _read_limited(stderr_file, STDERR_LIMIT)
+                    exit_code = process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except (AttributeError, ProcessLookupError, PermissionError):
+                        process.kill()
+                    process.wait()
+                stdout_text, stdout_truncated = _read_limited(stdout_file, STDOUT_LIMIT)
+                stderr_text, stderr_truncated = _read_limited(stderr_file, STDERR_LIMIT)
     except Exception as exc:
         stdout_text, stderr_text = "", ""
         stdout_truncated = stderr_truncated = False

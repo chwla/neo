@@ -242,6 +242,38 @@ def account_containers(windows: bool = IS_WINDOWS) -> set[Path]:
     return {Path(f"{system_drive}\\Users"), Path("/Users"), Path("/home")}
 
 
+def install_root() -> Path:
+    """The directory Neo is installed in.
+
+    Relative storage defaults are anchored here rather than to the process's
+    working directory. Resolving them against the cwd meant that starting Neo from
+    another folder created a second set of databases there, each holding real
+    profile data and none of it protected -- this repository still contains two
+    such sets, from exactly that.
+    """
+
+    return Path(__file__).resolve().parents[2]
+
+
+def private_dir_mode() -> int:
+    """Permissions for a directory holding one account's private data.
+
+    ``0o700`` where Neo owns its own storage. In a container the image deliberately
+    keeps ``/app/data`` group-owned by 0 and group-writable so the container can run
+    as an arbitrary uid against a bind mount, so group access is preserved there and
+    only *other* is removed.
+    """
+
+    # The image supports an arbitrary runtime UID through group 0 on the data
+    # mount. Without group write a profile created by one UID becomes unusable
+    # when the container starts under another UID.
+    return 0o770 if in_container() else 0o700
+
+
+def private_file_mode() -> int:
+    return 0o660 if in_container() else 0o600
+
+
 def in_container() -> bool:
     """Whether this process can only see a filesystem someone mounted for it.
 

@@ -10,10 +10,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import shutil
 import sqlite3
+import stat
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,10 +30,28 @@ from app.core.config import (
     get_settings,
 )
 from app.core.identifiers import canonical_uuid
+from app.core.paths import install_root, private_dir_mode, private_file_mode
 from app.db.session import initialize_database
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 PASSWORD_ITERATIONS = 390_000
+#: How many wrong passwords a profile tolerates before it is locked for a while.
+#: The password is the only thing standing between a local process and the whole
+#: profile, and PBKDF2 at 390k iterations still answers fast enough to brute-force a
+#: short secret over HTTP; this is what makes the attempt count the limit instead.
+UNLOCK_ATTEMPT_LIMIT = 5
+#: The lockout doubles per failure past the limit, up to this ceiling.
+UNLOCK_LOCKOUT_BASE_SECONDS = 15
+UNLOCK_LOCKOUT_MAX_SECONDS = 15 * 60
+#: A session is dropped after this long without use, and unconditionally after the
+#: absolute ceiling. A cookie that never expires is a permanent key to the profile.
+SESSION_IDLE_DAYS = 14
+SESSION_ABSOLUTE_DAYS = 90
+#: Minimum length for a password being set or changed. Existing passwords are never
+#: re-validated, so raising this never locks anyone out of an account they already
+#: have; it only applies where a new secret is being chosen. Four characters was
+#: brute-forceable in seconds by anything that could reach the unlock endpoint.
+MIN_PASSWORD_LENGTH = 8
 PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
 PROFILE_SESSION_TOKEN_BYTES = 32
 _registry_initialization_lock = Lock()
@@ -42,6 +62,7 @@ _initialized_registry_paths: set[Path] = set()
 # exactly when a redeployed image needs to re-run the initializers once.
 _storage_initialization_lock = Lock()
 _initialized_storage_keys: set[str] = set()
+_logger = logging.getLogger(__name__)
 
 
 def _root() -> Path:
@@ -50,9 +71,14 @@ def _root() -> Path:
         return Path(settings.data_dir).expanduser().resolve() / "profiles"
     database_url = settings.database_url
     if database_url.startswith("sqlite:///"):
-        database_path = Path(database_url.removeprefix("sqlite:///"))
-        return database_path.expanduser().resolve().parent / "profiles"
-    return Path("data/profiles").resolve()
+        database_path = Path(database_url.removeprefix("sqlite:///")).expanduser()
+        if not database_path.is_absolute():
+            # Anchored to the install directory. Resolving this against the process's
+            # working directory is what created the stray profile registries that
+            # still sit in `app/` and `frontend/`.
+            database_path = install_root() / database_path
+        return database_path.resolve().parent / "profiles"
+    return (install_root() / "data" / "profiles").resolve()
 
 
 def profiles_root() -> Path:
@@ -64,7 +90,16 @@ def profiles_root() -> Path:
 def _registry_path() -> Path:
     root = _root()
     root.mkdir(parents=True, exist_ok=True)
-    return root / "registry.db"
+    _restrict(root, directory=True)
+    path = root / "registry.db"
+    if path.exists():
+        # The registry holds every account's password hash and session tokens.
+        _restrict(path, directory=False)
+        for suffix in ("-wal", "-shm"):
+            beside = path.with_name(path.name + suffix)
+            if beside.exists():
+                _restrict(beside, directory=False)
+    return path
 
 
 def _connect_registry() -> sqlite3.Connection:
@@ -120,6 +155,16 @@ def initialize_profile_registry() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_profile_sessions_profile_id "
                 "ON profile_sessions(profile_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profile_unlock_attempts (
+                    profile_id TEXT PRIMARY KEY,
+                    failures INTEGER NOT NULL DEFAULT 0,
+                    locked_until TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
             conn.commit()
             _initialized_registry_paths.add(registry_path)
@@ -241,6 +286,60 @@ def _profile_directory(profile_id: str, *, guest: bool = False) -> Path:
     return _root() / section / profile_id
 
 
+def _restrict(path: Path, *, directory: bool) -> None:
+    """Take away other-account access, leaving the owner's (and a container's group).
+
+    Applied where Neo creates its own storage. SQLite makes its database and the
+    ``-wal``/``-shm`` beside it with the process umask, which on a normal account is
+    0644 -- readable by every other account on the machine. That is worth closing on
+    its own, before any agent is in the picture.
+    """
+
+    mode = private_dir_mode() if directory else private_file_mode()
+    try:
+        current = stat.S_IMODE(path.stat().st_mode)
+        if current & (stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH):
+            path.chmod(mode)
+    except OSError:
+        # Not worth failing a request over; the directory above is already closed.
+        pass
+
+
+def restrict_profile_storage(profile_id: str, *, guest: bool = False) -> None:
+    """Close other-account access across one profile's storage, in place.
+
+    Re-run on every resolution rather than only at creation, because SQLite creates
+    new ``-wal`` and ``-shm`` files as it goes and each arrives with the umask.
+    """
+
+    directory = _profile_directory(profile_id, guest=guest)
+    if not directory.exists():
+        return
+    _restrict(directory, directory=True)
+    try:
+        entries = list(directory.rglob("*"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            _restrict(path, directory=path.is_dir())
+        except OSError:
+            continue
+
+
+def profile_storage_dir(profile_id: str, *, guest: bool = False) -> Path:
+    """One profile's private storage directory, created if it does not exist.
+
+    Public because things outside this module legitimately need it -- the memory
+    keyring lives here, and so does the isolation policy's list of protected roots.
+    """
+
+    directory = _profile_directory(profile_id, guest=guest)
+    directory.mkdir(parents=True, exist_ok=True)
+    _restrict(directory, directory=True)
+    return directory
+
+
 def database_url_for(profile_id: str, *, guest: bool = False) -> str:
     directory = _profile_directory(profile_id, guest=guest)
     directory.mkdir(parents=True, exist_ok=True)
@@ -298,15 +397,34 @@ def public_profile(row: sqlite3.Row | dict) -> dict:
     }
 
 
+def listed_profile(row: sqlite3.Row | dict) -> dict:
+    """What the profile picker may show before anyone has signed in.
+
+    Narrower than :func:`public_profile` on purpose. That one builds the session
+    dict Neo's own code reads, which needs ``owner_id``; this one feeds an
+    *unauthenticated* endpoint, and ``owner_id`` is the per-profile identifier the
+    old memory key was derived from. It has no use in the picker, so it is not sent.
+    """
+
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "avatar_data": row["avatar_data"],
+        "is_guest": False,
+    }
+
+
 def list_profiles() -> list[dict]:
+    """Every local account, as the sign-in picker sees them."""
+
     initialize_profile_registry()
     conn = _connect_registry()
     try:
         rows = conn.execute(
-            "SELECT id, owner_id, username, avatar_data FROM account_profiles "
+            "SELECT id, username, avatar_data FROM account_profiles "
             "ORDER BY username COLLATE NOCASE"
         ).fetchall()
-        return [public_profile(row) for row in rows]
+        return [listed_profile(row) for row in rows]
     finally:
         conn.close()
 
@@ -314,8 +432,11 @@ def list_profiles() -> list[dict]:
 def create_profile(username: str, password: str, avatar_data: str | None = None) -> dict:
     initialize_profile_registry()
     username = _normalize_username(username)
-    if len(password) < 4:
-        raise HTTPException(status_code=422, detail="Password must contain at least 4 characters.")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Password must contain at least {MIN_PASSWORD_LENGTH} characters.",
+        )
     profile_id = str(uuid.uuid4())
     owner_id = canonical_uuid(profile_id)
     salt, digest = _password_parts(password)
@@ -392,10 +513,19 @@ def update_profile_account(
                 raise HTTPException(
                     status_code=401, detail="That password does not match this profile."
                 )
-            if len(new_password) < 4:
+            if len(new_password) < MIN_PASSWORD_LENGTH:
                 raise HTTPException(
-                    status_code=422, detail="Password must contain at least 4 characters."
+                    status_code=422,
+                    detail=(
+                        f"Password must contain at least {MIN_PASSWORD_LENGTH} characters."
+                    ),
                 )
+            # Memory keys used to be derived from the password hash below, so the
+            # old seed has to be on the keyring *before* the hash is replaced --
+            # afterwards it is gone, and with it every encrypted record and every
+            # tombstone written under it. Done first and allowed to fail the
+            # request: losing the user's memory is worse than refusing a rename.
+            _preserve_memory_key_material(profile_id, row)
             salt, digest = _password_parts(new_password)
             updates["password_salt"] = salt
             updates["password_hash"] = digest
@@ -423,15 +553,119 @@ def update_profile_account(
         conn.close()
 
 
+def _lockout_seconds(failures: int) -> int:
+    """Exponential back-off past the attempt limit, capped."""
+
+    over = max(0, failures - UNLOCK_ATTEMPT_LIMIT)
+    return min(UNLOCK_LOCKOUT_MAX_SECONDS, UNLOCK_LOCKOUT_BASE_SECONDS * (2**over))
+
+
+def check_unlock_allowed(profile_id: str) -> None:
+    """Refuse a password check while this profile is locked out.
+
+    Persisted in the registry rather than in memory: a throttle a restart clears is
+    no throttle at all, and anything that can reach the endpoint can also restart
+    the process on a local install.
+    """
+
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        row = conn.execute(
+            "SELECT failures, locked_until,"
+            " CAST((julianday(locked_until) - julianday('now')) * 86400 AS INTEGER) AS remaining"
+            " FROM profile_unlock_attempts WHERE profile_id = ?",
+            (profile_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or not row["locked_until"]:
+        return
+    remaining = int(row["remaining"] or 0)
+    if remaining > 0:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "too_many_attempts",
+                "message": (
+                    "Too many incorrect passwords. Try again in "
+                    f"{max(1, remaining)} seconds."
+                ),
+                "retry_after_seconds": max(1, remaining),
+            },
+            headers={"Retry-After": str(max(1, remaining))},
+        )
+
+
+def _record_unlock_failure(profile_id: str) -> None:
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        row = conn.execute(
+            "SELECT failures FROM profile_unlock_attempts WHERE profile_id = ?",
+            (profile_id,),
+        ).fetchone()
+        failures = int(row["failures"] if row else 0) + 1
+        locked_until = None
+        if failures >= UNLOCK_ATTEMPT_LIMIT:
+            locked_until = f"+{_lockout_seconds(failures)} seconds"
+        conn.execute(
+            "INSERT INTO profile_unlock_attempts (profile_id, failures, locked_until, updated_at)"
+            " VALUES (?, ?, datetime('now', ?), CURRENT_TIMESTAMP)"
+            " ON CONFLICT(profile_id) DO UPDATE SET failures = excluded.failures,"
+            " locked_until = excluded.locked_until, updated_at = CURRENT_TIMESTAMP",
+            (profile_id, failures, locked_until or "+0 seconds"),
+        )
+        if locked_until is None:
+            conn.execute(
+                "UPDATE profile_unlock_attempts SET locked_until = NULL WHERE profile_id = ?",
+                (profile_id,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _clear_unlock_failures(profile_id: str) -> None:
+    initialize_profile_registry()
+    conn = _connect_registry()
+    try:
+        conn.execute("DELETE FROM profile_unlock_attempts WHERE profile_id = ?", (profile_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_unlock_throttle() -> None:
+    """Clear every recorded failure. For tests and for an administrator's recovery."""
+
+    try:
+        initialize_profile_registry()
+    except Exception:
+        return
+    conn = _connect_registry()
+    try:
+        conn.execute("DELETE FROM profile_unlock_attempts")
+        conn.commit()
+    except sqlite3.OperationalError:
+        return
+    finally:
+        conn.close()
+
+
 def authenticate(profile_id: str, password: str) -> dict:
     initialize_profile_registry()
+    check_unlock_allowed(profile_id)
     conn = _connect_registry()
     try:
         row = conn.execute("SELECT * FROM account_profiles WHERE id = ?", (profile_id,)).fetchone()
     finally:
         conn.close()
     if row is None or not _verify_password(password, row["password_salt"], row["password_hash"]):
+        # Counted even for an unknown id, so probing for valid ids is throttled too.
+        _record_unlock_failure(profile_id)
         raise HTTPException(status_code=401, detail="That password does not match this profile.")
+    _clear_unlock_failures(profile_id)
     ensure_profile_storage(profile_id)
     return public_profile(row)
 
@@ -464,15 +698,33 @@ def profile_for_session(token: str) -> dict | None:
     initialize_profile_registry()
     conn = _connect_registry()
     try:
+        token_hash = _session_token_hash(token)
         row = conn.execute(
             """
-            SELECT p.id, p.owner_id, p.username, p.avatar_data
+            SELECT p.id, p.owner_id, p.username, p.avatar_data,
+                   CAST(julianday('now') - julianday(s.created_at) AS REAL) AS age_days,
+                   CAST(julianday('now') - julianday(s.last_seen_at) AS REAL) AS idle_days
             FROM profile_sessions AS s
             JOIN account_profiles AS p ON p.id = s.profile_id
             WHERE s.token_hash = ?
             """,
-            (_session_token_hash(token),),
+            (token_hash,),
         ).fetchone()
+        if row is not None:
+            # An expired cookie is deleted on the way past, so a stolen one stops
+            # working rather than merely being ignored by this request.
+            if (row["age_days"] or 0) > SESSION_ABSOLUTE_DAYS or (
+                row["idle_days"] or 0
+            ) > SESSION_IDLE_DAYS:
+                conn.execute("DELETE FROM profile_sessions WHERE token_hash = ?", (token_hash,))
+                conn.commit()
+                return None
+            conn.execute(
+                "UPDATE profile_sessions SET last_seen_at = CURRENT_TIMESTAMP"
+                " WHERE token_hash = ?",
+                (token_hash,),
+            )
+            conn.commit()
     finally:
         conn.close()
     if row is None:
@@ -558,8 +810,44 @@ def database_identity_for_profile(profile_id: str, *, guest: bool = False) -> st
     return f"{prefix}:{profile_id}"
 
 
+def _preserve_memory_key_material(profile_id: str, row: sqlite3.Row | dict) -> None:
+    """Put the currently derived memory seed on the profile's keyring.
+
+    Called immediately before a password change. Creating the keyring here also
+    migrates a profile that never had one: its active key becomes random from this
+    point on, while the derived seed stays available for reading what came before.
+    """
+
+    from app.services.memory import keyring as memory_keyring
+
+    seed = _derive_memory_seed(f"{row['owner_id']}:{row['password_hash']}")
+    try:
+        memory_keyring.ensure_keyring(
+            profile_storage_dir(profile_id),
+            legacy_seed=seed,
+            legacy_source="derived:password_hash",
+        )
+    except memory_keyring.KeyringError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Your password was not changed: Neo could not safely preserve the key "
+                "that reads your existing memories. Nothing has been modified."
+            ),
+        ) from exc
+
+
+def _derive_memory_seed(material: str) -> bytes:
+    return hashlib.sha256(f"neo-memory:{material}".encode()).digest()
+
+
 def memory_key_material_for_profile(profile_id: str, *, guest: bool = False) -> bytes:
-    """Derive stable local key material without adding a second secret store."""
+    """Derive the legacy local key material for one profile.
+
+    Retained because it is the only way to reconstruct the seed that existing rows
+    and tombstones were written under. New key material comes from the profile's
+    keyring (``app.services.memory.keyring``), not from here.
+    """
 
     if guest:
         material = owner_id_for_profile(profile_id, guest=True)
@@ -587,12 +875,17 @@ def delete_guest(profile_id: str) -> None:
 def delete_profile(profile_id: str, password: str) -> dict:
     """Permanently remove one password-confirmed local account and its private data."""
     initialize_profile_registry()
+    # Throttled on the same counter as unlock: this endpoint takes the same password
+    # and so is the same guessing oracle, with destruction rather than a session at
+    # the end of it.
+    check_unlock_allowed(profile_id)
     conn = _connect_registry()
     try:
         row = conn.execute("SELECT * FROM account_profiles WHERE id = ?", (profile_id,)).fetchone()
         if row is None or not _verify_password(
             password, row["password_salt"], row["password_hash"]
         ):
+            _record_unlock_failure(profile_id)
             raise HTTPException(
                 status_code=401,
                 detail="That password does not match this profile.",
@@ -638,6 +931,7 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
         if key in _initialized_storage_keys:
             return
         _initialize_profile_storage(profile_id, guest=guest)
+        restrict_profile_storage(profile_id, guest=guest)
         _initialized_storage_keys.add(key)
 
 
@@ -720,6 +1014,18 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_evaluation_tables,
         ):
             initializer()
+        # A managed repository used to live beside the profile database. Copy
+        # it into the code-only root before any external run can use it. A bad
+        # copy leaves the original and its database pointer intact; the rest
+        # of the profile must remain accessible so the user can recover it.
+        from app.services.repos.migration import migrate_managed_workspaces
+
+        migration = migrate_managed_workspaces(profile_id)
+        if migration["failed"]:
+            _logger.warning(
+                "Could not migrate %d managed repositories for a profile",
+                len(migration["failed"]),
+            )
         # A migration rather than an initializer, and it has to run here: every
         # profile has its own database, so a one-shot cleanup wired only into
         # application startup would reach the base database and no one's actual

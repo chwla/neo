@@ -18,6 +18,18 @@ import requests
 from dateutil import parser as date_parser
 
 from app.core.config import get_settings
+from app.services.disclosure import (
+    Destination,
+    DisclosureBlocked,
+    Label,
+    Labeled,
+    label_of,
+    require,
+    to_json,
+)
+from app.services.disclosure.egress import EgressTransportError
+from app.services.disclosure.egress import request as http_request
+from app.services.disclosure.gate import GrantStore
 from app.services.search.security import public_http_addresses
 from app.services.search.types import (
     EvidenceChunk,
@@ -832,6 +844,7 @@ class WebPageFetcher:
         max_document_bytes: int = 20_000_000,
         max_document_pages: int = 60,
         truncate_oversized: bool = False,
+        grants: GrantStore | None = None,
     ) -> None:
         settings = get_settings()
         self.timeout_seconds = timeout_seconds or settings.web_fetch_timeout_seconds
@@ -844,17 +857,48 @@ class WebPageFetcher:
         self.max_document_pages = max_document_pages
         #: Keep the beginning of an over-long page instead of discarding the whole page.
         self.truncate_oversized = truncate_oversized
+        #: Grants for one approved agent tool call. ``None`` unless the approved-call
+        #: path built this fetcher for that call alone.
+        self.grants = grants
 
-    def fetch(self, url: str) -> FetchedPage:
+    def fetch(self, url: str | Labeled) -> FetchedPage:
         started = time.perf_counter()
-        page = without_planted_instructions(self._fetch(url))
-        return page.model_copy(update={"fetch_ms": int((time.perf_counter() - started) * 1000)})
+        source = label_of(url)
+        value = url.value if isinstance(url, Labeled) else url
+        page = without_planted_instructions(self._fetch(value, source))
+        return page.model_copy(update={
+            "fetch_ms": int((time.perf_counter() - started) * 1000),
+            "source_label_json": to_json(source),
+        })
 
-    def _fetch(self, url: str) -> FetchedPage:
+    def _request_payload(self, url: str, source: Label) -> Labeled:
+        return Labeled({
+            "method": "GET", "url": url,
+            "headers": {
+                "User-Agent": self.user_agent,
+                "Accept": "text/html,application/xhtml+xml,text/plain,application/json"
+                + (",application/pdf" if self.read_documents else ""),
+            },
+        }, source)
+
+    def _fetch(self, url: str, source: Label | None = None) -> FetchedPage:
+        source = label_of(source)
+        if not isinstance(url, str):
+            return FetchedPage(url="", domain="unknown", error="Invalid URL.")
         parsed = urlparse(url)
         domain = parsed.netloc or "unknown"
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return FetchedPage(url=url, domain=domain, error="Invalid or unsupported URL.")
+        # DNS resolution itself can disclose a private hostname. Authorize before
+        # either URL safety helper can resolve it, then authorize the exact wire
+        # envelope again in the shared transport for each redirect.
+        try:
+            require(
+                "http", self._request_payload(url, source), Destination("web-fetch"),
+                grants=self.grants,
+            )
+        except DisclosureBlocked:
+            return FetchedPage(url=url, domain=domain, error="Fetch requires disclosure approval.")
         if not self._allowed_url(url):
             return FetchedPage(url=url, domain=domain, error="Blocked unsafe or unsupported URL.")
 
@@ -874,19 +918,10 @@ class WebPageFetcher:
                 # to the addresses this URL was just validated against.
                 host = (urlparse(current).hostname or "").rstrip(".").lower()
                 with pin_addresses(host, approved):
-                    response = requests.get(
-                        current,
-                        headers={
-                            "User-Agent": self.user_agent,
-                            "Accept": (
-                                "text/html,application/xhtml+xml,text/plain,application/json"
-                                + (",application/pdf" if self.read_documents else "")
-                            ),
-                        },
-                        stream=True,
-                        timeout=self.timeout_seconds,
-                        allow_redirects=False,
-                    )
+                    response = http_request(
+                        self._request_payload(current, source), Destination("web-fetch"),
+                        grants=self.grants, stream=True, timeout=self.timeout_seconds,
+                    ).value
                 if getattr(response, "status_code", 200) not in {301, 302, 303, 307, 308}:
                     break
                 location = response.headers.get("location")
@@ -903,6 +938,11 @@ class WebPageFetcher:
             if response is None:
                 return FetchedPage(url=url, domain=domain, error="Fetch failed.")
             response.raise_for_status()
+        except (DisclosureBlocked, EgressTransportError):
+            return FetchedPage(
+                url=current, domain=urlparse(current).netloc or domain,
+                error="Fetch was blocked or the provider was unavailable.",
+            )
         except requests.Timeout:
             return FetchedPage(
                 url=current, domain=urlparse(current).netloc or domain, error="Fetch timed out."
@@ -1095,6 +1135,7 @@ def fetch_pages(
     deadline: float | None = None,
     usable=None,
     enough=None,
+    selection_label: Label | None = None,
 ) -> list[FetchedPage]:
     """Read pages for ``results`` until ``max_pages`` of them can be used.
 
@@ -1121,7 +1162,8 @@ def fetch_pages(
     try:
         while next_candidate < min(max_pages, len(candidates)):
             result = candidates[next_candidate]
-            pending[executor.submit(fetcher.fetch, result.url)] = result
+            future = executor.submit(fetcher.fetch, Labeled(result.url, label_of(selection_label)))
+            pending[future] = result
             next_candidate += 1
         while pending and len(accepted) < max_pages:
             remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
@@ -1152,7 +1194,10 @@ def fetch_pages(
                 and (deadline is None or time.monotonic() < deadline)
             ):
                 result = candidates[next_candidate]
-                pending[executor.submit(fetcher.fetch, result.url)] = result
+                future = executor.submit(
+                    fetcher.fetch, Labeled(result.url, label_of(selection_label)),
+                )
+                pending[future] = result
                 next_candidate += 1
     finally:
         # A completed evidence set should not wait for spare fetches. Pending

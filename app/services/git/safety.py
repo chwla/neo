@@ -123,6 +123,12 @@ def validate_git_args(args: list[str]) -> list[str]:
             and bool(SHA_PATTERN.fullmatch(args[1].removeprefix("--source=")))
             and args[2:] == ["--worktree", "--", "."]
         )
+    elif operation == "ls-tree":
+        valid = len(args) == 4 and args[1:3] == ["-rz", "--full-tree"] and bool(
+            SHA_PATTERN.fullmatch(args[3])
+        )
+    elif operation == "ls-files":
+        valid = args == ["ls-files", "-z"]
     if not valid:
         raise ValueError("Git argv is not an approved fixed operation.")
     return list(args)

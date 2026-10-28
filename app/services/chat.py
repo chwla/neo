@@ -31,11 +31,21 @@ from app.services.chat_intent import resolve_internal_chat_intent
 from app.services.code_index.service import CodeIndexService
 from app.services.context import ContextPackage
 from app.services.current_time import today_for_prompt
+from app.services.disclosure.chat_rows import stored_label
+from app.services.disclosure.labels import (
+    Label,
+    Labeled,
+    content_hash,
+    from_json,
+    join,
+    public,
+    to_json,
+)
 from app.services.files.service import WorkspaceFilesService
 from app.services.gallery.chat_lookup import GalleryMatches, wants_gallery
 from app.services.gallery.chat_lookup import lookup as gallery_lookup
 from app.services.git.service import GitContextService
-from app.services.llm import ChatTurn, LLMChatResult, LLMClient, LLMMessage
+from app.services.llm import ChatTurn, LLMChatResult, LLMClient, LLMMessage, call_label
 from app.services.memory.contracts import SourceKind
 from app.services.memory.direct_answer import DirectMemoryAnswerService
 from app.services.memory.extraction_contracts import (
@@ -534,7 +544,7 @@ class NeoChatService:
         if selection is not None and selection.serialized is not None:
             messages.append(LLMMessage(role="user", content=selection.serialized.content))
         messages.extend(
-            LLMMessage(role=turn.role, content=turn.content)
+            LLMMessage(role=turn.role, content=turn.content, source_label=turn.source_label)
             for turn in history[-self.settings.chat_history_turns :]
         )
         # The images ride on the final user turn, which is the one the model is
@@ -558,6 +568,7 @@ class NeoChatService:
                 role="user",
                 content=content,
                 images=images or self.turn_images or None,
+                source_label=public("user_input:current_chat_turn"),
             )
         )
         return messages
@@ -858,6 +869,13 @@ class NeoChatService:
             }
             return active_rules_reply
 
+        if is_bare_search_command(prompt):
+            reply = "Please include the search terms in your message."
+            self.store.add_chat_message(chat_id, "assistant", reply)
+            self.db.commit()
+            self.last_web_debug = {"web_search_needed": False, "search_terms_required": True}
+            return reply
+
         agent_guidance = agent_run_guidance(prompt)
         if agent_guidance is not None:
             self.store.add_chat_message(chat_id, "assistant", agent_guidance)
@@ -1014,7 +1032,8 @@ class NeoChatService:
             web_started = time.perf_counter()
             web_query, web_hint = self._web_query_for(prompt, search_intent)
             web_context = self.web_search.build_context_forced(
-                web_query, hint=web_hint, options=self._search_options(), user_text=prompt
+                Labeled(web_query, from_json(search_intent.source_label_json)),
+                hint=web_hint, options=self._search_options(), user_text=prompt
             )
             self._record_search_stages(web_context)
             self._timings["search_ms"] = int((time.perf_counter() - web_started) * 1000)
@@ -1115,6 +1134,7 @@ class NeoChatService:
         self.db.commit()
 
         result = None
+        answer_source_label = Label.unknown("chat_answer_untracked")
         finish_reason = None
         provider_name = None
         model_name = None
@@ -1126,6 +1146,7 @@ class NeoChatService:
         try:
             generation_started = time.perf_counter()
             result = self._generate_complete(messages, num_predict=budget, llm=answer_llm)
+            answer_source_label = result.source_label
             self._timings["generation_ms"] = int((time.perf_counter() - generation_started) * 1000)
             if web_context.citations:
                 cited = self._cited_web_reply(
@@ -1144,6 +1165,7 @@ class NeoChatService:
                         gallery_context=gallery.prompt_block() if gallery is not None else None,
                     )
                     result = self._generate_complete(messages, num_predict=budget, llm=answer_llm)
+                    answer_source_label = join(answer_source_label, result.source_label)
                     cited = self._with_web_citations(result.content, web_context)
                 reply = cited
             else:
@@ -1170,6 +1192,7 @@ class NeoChatService:
                     web_context=web_context,
                 )
                 recovery = {"kind": failure, **recovered["recovery"]}
+                answer_source_label = Label.unknown("chat_recovery_has_untracked_sources")
                 if recovered.get("reply") is not None:
                     reply = recovered["reply"]
                     web_context = recovered.get("web_context") or web_context
@@ -1222,6 +1245,7 @@ class NeoChatService:
             chat_id,
             "assistant",
             reply,
+            source_label=answer_source_label,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -1452,6 +1476,22 @@ class NeoChatService:
                 "type": "done",
                 "message_id": assistant.id,
                 "reply": active_rules_reply,
+                "web_debug": self.last_web_debug,
+            }
+            return
+
+        if is_bare_search_command(prompt):
+            reply = "Please include the search terms in your message."
+            assistant = persist_assistant(reply)
+            self.db.commit()
+            self.db.refresh(assistant)
+            self.last_web_debug = {"web_search_needed": False, "search_terms_required": True}
+            yield {"type": "chunk", "content": reply}
+            yield {
+                "type": "done",
+                "message_id": assistant.id,
+                "reply": reply,
+                "thinking": None,
                 "web_debug": self.last_web_debug,
             }
             return
@@ -1718,7 +1758,8 @@ class NeoChatService:
             if self.settings.web_search_enabled:
                 yield {"type": "status", "content": "Searching the web"}
             web_context = self.web_search.build_context_forced(
-                web_query, hint=web_hint, options=self._search_options(), user_text=prompt
+                Labeled(web_query, from_json(search_intent.source_label_json)),
+                hint=web_hint, options=self._search_options(), user_text=prompt
             )
             self._record_search_stages(web_context)
             self._timings["search_ms"] = int((time.perf_counter() - web_started) * 1000)
@@ -2034,7 +2075,7 @@ class NeoChatService:
                 recovery["action"] = "search"
                 yield {"type": "status", "content": "Searching the web"}
                 recovered_context = self.web_search.build_context_forced(
-                    prompt, options=self._search_options()
+                    Labeled(prompt, call_label(messages)), options=self._search_options()
                 )
                 direct = self._direct_web_reply(prompt, recovered_context)
                 if direct is not None:
@@ -2118,6 +2159,7 @@ class NeoChatService:
         self._note_unrequested_reasoning(answer_llm, thinking)
         assistant = persist_assistant(
             reply,
+            source_label=from_json(final_metadata.get("source_label")),
             prompt_tokens=final_metadata.get("prompt_tokens"),
             completion_tokens=final_metadata.get("completion_tokens"),
             total_tokens=final_metadata.get("total_tokens"),
@@ -2503,7 +2545,13 @@ class NeoChatService:
                 content = _APPROVED_CALENDAR_OFFER_PLACEHOLDER
             else:
                 content = message.content + cls._shown_images_note(message)
-            turns.append(ChatTurn(role=message.role, content=content))
+            turns.append(
+                ChatTurn(
+                    role=message.role,
+                    content=content,
+                    source_label=stored_label(message.metadata_json),
+                )
+            )
         return turns
 
     @staticmethod
@@ -2722,7 +2770,7 @@ class NeoChatService:
     ) -> ResolvedSearchIntent:
         """Stage A: settle what is unambiguous without calling any model.
 
-        A bare search command searches the earlier question; a greeting or
+        A bare search command needs an explicit query in this turn; a greeting or
         courtesy is answered at once; an explicit command or a fully specified
         structured request (local time, a currency conversion, a release date, an
         instruction to search the web) goes straight to its capability. Anything
@@ -2730,7 +2778,6 @@ class NeoChatService:
         if the turn gets that far (``_route_turn``).
         """
 
-        previous = self._previous_search_intent(prior_messages)
         cleaned = " ".join((prompt or "").split())
         common: dict[str, Any] = {
             "original_query": prompt,
@@ -2740,17 +2787,12 @@ class NeoChatService:
         }
         intent: ResolvedSearchIntent | None = None
         if is_bare_search_command(cleaned):
-            question = self._previous_substantive_question(prior_messages)
             intent = ResolvedSearchIntent(
-                kind=SearchIntentKind.GENERAL_WEB if question else SearchIntentKind.NONE,
-                resolved_query=question or cleaned,
-                reason=(
-                    "Search command: searching the earlier question."
-                    if question
-                    else "Search command with no earlier question to search."
-                ),
+                kind=SearchIntentKind.NONE,
+                resolved_query=cleaned,
+                reason="Search command needs terms in the current message.",
                 confidence=0.99,
-                route="follow_up" if question else "direct",
+                route="direct",
                 **common,
             )
         elif is_social_pleasantry(cleaned) and not self._last_reply_asked_question(prior_messages):
@@ -2764,7 +2806,7 @@ class NeoChatService:
             )
         else:
             intent = self.search_intent_resolver.resolve_explicit(
-                prompt, previous=previous, timezone=timezone, locale=locale
+                prompt, previous=None, timezone=timezone, locale=locale
             )
         if intent is None:
             intent = ResolvedSearchIntent(
@@ -2778,6 +2820,11 @@ class NeoChatService:
                 decision_source="fallback",
                 route=None,
             )
+        # This resolver received only the current submission and browser metadata;
+        # previous messages were deliberately excluded from its arguments above.
+        intent = intent.model_copy(update={
+            "source_label_json": to_json(public(f"user_input:{content_hash(prompt)}")),
+        })
         self.last_search_intent = intent
         return intent
 
@@ -2805,8 +2852,12 @@ class NeoChatService:
         routed = self.search_intent_resolver.route_with_model(
             prompt,
             llm=self.helper_llm,
-            context=self._router_context(prior_messages),
-            previous=self._previous_search_intent(prior_messages),
+            # Routing to an external capability is itself an outbound choice.
+            # Stored history can contain private model output, so this router
+            # sees only the current user submission until it has an exact grant.
+            context=None,
+            previous=None,
+            query_label=from_json(intent.source_label_json),
             timezone=timezone,
             locale=locale,
             routes=self._enabled_routes(),
@@ -2934,15 +2985,15 @@ class NeoChatService:
     def _web_query_for(self, prompt: str, intent: ResolvedSearchIntent) -> tuple[str, str | None]:
         """The text to search and the planning hint, for a turn that searches.
 
-        A follow-up searches the earlier question, and a router decision searches
-        the standalone query the router wrote; an explicit command or a
-        structured request searches the message itself, as it always did.
+        A router decision and an explicit command search only this turn's user
+        text. Stored history has no outbound search grant.
         """
 
-        if intent.route == "follow_up" or (
-            intent.decision_source == "model" and intent.kind is SearchIntentKind.GENERAL_WEB
-        ):
-            return intent.resolved_query or prompt, None
+        if intent.decision_source == "model":
+            # The router saw stored history and may encode it in its suggested
+            # query. Search from this turn's user text alone until the stored
+            # sources have an exact outbound approval.
+            return prompt, None
         return prompt, intent.resolved_query
 
     def _answer_reasons(self, intent: ResolvedSearchIntent | None) -> bool:
@@ -3119,7 +3170,7 @@ class NeoChatService:
             if intent.kind == SearchIntentKind.CURRENCY:
                 if not intent.from_currency or not intent.to_currency or intent.amount is None:
                     return None
-                quote = FrankfurterClient().convert(
+                quote = FrankfurterClient(source_label=from_json(intent.source_label_json)).convert(
                     intent.amount,
                     intent.from_currency,
                     intent.to_currency,
@@ -3138,6 +3189,7 @@ class NeoChatService:
                     "finish_reason": "stop",
                     "duration_ms": int((time.perf_counter() - started) * 1000),
                     "metadata": {
+                        "source_label": quote.source_label_json,
                         "quote": quote.model_dump(mode="json"),
                         "search_intent": intent.model_dump(mode="json"),
                     },
@@ -3146,7 +3198,7 @@ class NeoChatService:
             if intent.kind == SearchIntentKind.WEATHER:
                 if not intent.location:
                     return None
-                weather = OpenMeteoClient()
+                weather = OpenMeteoClient(source_label=from_json(intent.source_label_json))
                 if intent.date == "tomorrow":
                     report = weather.forecast_weather(
                         intent.location,
@@ -3192,6 +3244,7 @@ class NeoChatService:
                     "finish_reason": "stop",
                     "duration_ms": int((time.perf_counter() - started) * 1000),
                     "metadata": {
+                        "source_label": report.source_label_json,
                         "weather": report.model_dump(mode="json"),
                         "search_intent": intent.model_dump(mode="json"),
                     },
@@ -3759,7 +3812,7 @@ class NeoChatService:
 
         if failure == "knowledge_gap":
             web_context = self.web_search.build_context_forced(
-                prompt, options=self._search_options()
+                Labeled(prompt, call_label(messages)), options=self._search_options()
             )
             direct = self._direct_web_reply(prompt, web_context)
             if direct is not None:
@@ -4116,6 +4169,7 @@ class NeoChatService:
         """
 
         raw_reply = ""
+        answer_label = call_label(messages)
         streamed_reply = ""
         thinking = ""
         final_metadata: dict[str, Any] = {
@@ -4157,6 +4211,7 @@ class NeoChatService:
                     ),
                 ),
             ]
+            answer_label = join(answer_label, call_label(continuation_messages))
             continuation = ""
             continuation_metadata: dict[str, Any] = {}
             # Grow the budget each round. Repeating the same cap makes a model that
@@ -4175,6 +4230,7 @@ class NeoChatService:
                     continuation_metadata = event
             raw_reply = _append_without_overlap(raw_reply, continuation)
             final_metadata = _merge_generation_metadata(final_metadata, continuation_metadata)
+        final_metadata["source_label"] = to_json(answer_label)
         return raw_reply, final_metadata, streamed_reply, thinking
 
     @staticmethod
@@ -4204,6 +4260,7 @@ class NeoChatService:
         """
         llm = llm or self.ollama
         result = llm.chat_with_metadata(messages, temperature=0.2, num_predict=num_predict)
+        answer_label = call_label(messages)
         content = result.content
         prompt_tokens = result.prompt_tokens or 0
         completion_tokens = result.completion_tokens or 0
@@ -4223,6 +4280,7 @@ class NeoChatService:
                     ),
                 ),
             ]
+            answer_label = join(answer_label, call_label(follow_up))
             result = llm.chat_with_metadata(
                 follow_up, temperature=0.2, num_predict=min(num_predict * (attempts + 1), 8192)
             )
@@ -4238,6 +4296,7 @@ class NeoChatService:
                 "completion_tokens": completion_tokens or None,
                 "total_tokens": (prompt_tokens + completion_tokens) or None,
                 "duration_ms": duration_ms or None,
+                "source_label": answer_label,
             }
         )
 
@@ -4412,6 +4471,9 @@ def _merge_generation_metadata(
     second: dict[str, Any],
 ) -> dict[str, Any]:
     merged = {**first, **second}
+    merged["source_label"] = to_json(
+        join(from_json(first.get("source_label")), from_json(second.get("source_label")))
+    )
     for key in ("prompt_tokens", "completion_tokens", "total_tokens", "duration_ms"):
         values = [item.get(key) for item in (first, second)]
         numeric = [value for value in values if isinstance(value, int)]

@@ -18,6 +18,23 @@ from app.services.agent_core.types import EXTERNAL_EXECUTORS
 from app.services.external_agents.types import ExternalAgentError
 
 
+def _is_guest_session() -> bool:
+    """Whether the active profile storage belongs to a guest.
+
+    Read from the directory the session middleware bound rather than from a
+    request, so it is the same answer wherever a run is started from.
+    """
+
+    from pathlib import Path
+
+    from app.core.config import active_profile_storage_dir
+
+    storage = active_profile_storage_dir.get()
+    if not storage:
+        return False
+    return Path(storage).parent.name == "guests"
+
+
 def preflight(
     executor: str | None,
     *,
@@ -34,6 +51,14 @@ def preflight(
         return
 
     from app.services import chat_prefs
+
+    if _is_guest_session():
+        # Checked explicitly rather than relying on the opt-in being off by
+        # default: the refusal has to hold for the right reason even if a guest
+        # profile somehow carried the preference.
+        raise ExternalAgentError(
+            "External engines need a profile of your own. Create one to run them."
+        )
 
     if not chat_prefs.external_agents_enabled():
         raise ExternalAgentError(

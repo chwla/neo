@@ -1,6 +1,7 @@
 # ruff: noqa: E501, E701
 from fastapi import APIRouter, HTTPException
 
+from app.services.disclosure import Label, content_hash, from_json, public
 from app.services.web_search import store
 from app.services.web_search.service import ReliableWebSearchService
 from app.services.web_search.types import WebSearchPlanRequest, WebSearchRunRequest
@@ -19,7 +20,9 @@ def plan(request: WebSearchPlanRequest):
 
 @router.post("/run")
 def run(request: WebSearchRunRequest):
-    return svc().run(request)
+    return svc().run(
+        request, source_label=public("user_input:" + content_hash(request.model_dump(mode="json"))),
+    )
 
 
 @router.get("/runs")
@@ -68,4 +71,10 @@ def refresh(run_id: str):
         raise HTTPException(404, "Web search run not found.")
     from app.services.web_search.types import WebSearchRunRequest
 
-    return svc().run(WebSearchRunRequest(query=run["query_text"], mode=run["mode"]))
+    provider = run.get("provider") or {}
+    source = (from_json(provider.get("source_label_json"))
+              if provider.get("query_hash") == content_hash(run["query_text"])
+              else Label.unknown("changed_or_legacy_saved_search"))
+    return svc().run(
+        WebSearchRunRequest(query=run["query_text"], mode=run["mode"]), source_label=source,
+    )

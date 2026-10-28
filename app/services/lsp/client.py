@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from app.core.config import active_profile_storage_dir
+from app.services import isolation
 from app.services.lsp.protocol import decode, encode
 
 
@@ -26,14 +30,25 @@ class JsonRpcClient:
         process_factory: Callable[..., Any] = subprocess.Popen,
         notification_handler: Callable[[str, dict], None] | None = None,
     ):
-        self.process = process_factory(
-            argv,
-            cwd=cwd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-        )
+        if process_factory is subprocess.Popen and isolation.status()["supported"]:
+            storage = active_profile_storage_dir.get()
+            profile_id = Path(storage).name if storage else ""
+            self.process = isolation.start_stream(
+                argv,
+                cwd=cwd,
+                env={"PATH": os.environ.get("PATH", os.defpath), "HOME": cwd},
+                profile_id=profile_id,
+                workspace=cwd,
+            )
+        else:
+            self.process = process_factory(
+                argv,
+                cwd=cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
         self.timeout = timeout
         self.next_id = 1
         self.notification_handler = notification_handler

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from app.services.disclosure import Labeled, content_hash, public
 from app.services.github import GitHubService
 from app.services.github.types import ConnectionCreate, ConnectionUpdate, PRDraftRequest
 
@@ -10,6 +11,11 @@ router = APIRouter(prefix="/github", tags=["github"])
 
 def service():
     return GitHubService()
+
+
+def _user_intent(connection_id, operation, **fields):
+    value = {"connection_id": connection_id, "operation": operation, **fields}
+    return Labeled(value, public("user_input:" + content_hash(value)))
 
 
 def fail(exc):
@@ -23,7 +29,10 @@ def connections():
 
 @router.post("/connections", status_code=201)
 def create_connection(body: ConnectionCreate):
-    return {"connection": service().create_connection(body.model_dump())}
+    try:
+        return {"connection": service().create_connection(body.model_dump())}
+    except ValueError as exc:
+        fail(exc)
 
 
 @router.patch("/connections/{connection_id}")
@@ -45,7 +54,12 @@ def disable_connection(connection_id: str):
 @router.post("/connections/{connection_id}/health")
 def health(connection_id: str):
     try:
-        return {"operation": service().health(connection_id)}
+        return {
+            "operation": service().health(
+                connection_id,
+                intent=_user_intent(connection_id, "health"),
+            )
+        }
     except LookupError as exc:
         fail(exc)
 
@@ -53,16 +67,30 @@ def health(connection_id: str):
 @router.post("/connections/{connection_id}/issues/{number}/import")
 def import_issue(connection_id: str, number: int):
     try:
-        return {"item": service().import_item(connection_id, number, "issue")}
-    except (LookupError, RuntimeError) as exc:
+        return {
+            "item": service().import_item(
+                connection_id,
+                number,
+                "issue",
+                intent=_user_intent(connection_id, "import_issue", number=number),
+            )
+        }
+    except (LookupError, RuntimeError, ValueError) as exc:
         fail(exc)
 
 
 @router.post("/connections/{connection_id}/pulls/{number}/import")
 def import_pr(connection_id: str, number: int):
     try:
-        return {"item": service().import_item(connection_id, number, "pr")}
-    except (LookupError, RuntimeError) as exc:
+        return {
+            "item": service().import_item(
+                connection_id,
+                number,
+                "pr",
+                intent=_user_intent(connection_id, "import_pr", number=number),
+            )
+        }
+    except (LookupError, RuntimeError, ValueError) as exc:
         fail(exc)
 
 

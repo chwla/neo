@@ -14,6 +14,7 @@ comparison listicles, not of primary evidence.
 
 from __future__ import annotations
 
+import copy
 import re
 import threading
 import time
@@ -23,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.services.disclosure import Label, Labeled, from_json, label_of
 from app.services.research.textutil import (
     canonicalize_url,
     host_group,
@@ -50,6 +52,7 @@ from app.services.research.types import (
     SearchAttempt,
 )
 from app.services.search.content import UNSUPPORTED_EXTENSIONS
+from app.services.search.providers import WebSearchProvider
 from app.services.search.types import FetchedPage, WebSearchResponse
 
 QUERY_DUPLICATE_THRESHOLD = 0.8
@@ -180,7 +183,9 @@ class Retriever:
         has_time: Callable[[], bool],
         max_workers: int = 4,
         fetch_retries: int = 1,
+        source_label: Label | None = None,
     ) -> None:
+        self.source_label = label_of(source_label)
         self.plan = plan
         self.max_searches = max_searches
         self.max_reads = max_reads
@@ -364,6 +369,11 @@ class Retriever:
                 break
             self.provider_calls += 1
             try:
+                # Dependency instances can be shared across concurrent runs. A
+                # per-call copy keeps one run's authorization out of another.
+                if isinstance(provider, WebSearchProvider):
+                    provider = copy.copy(provider)
+                    provider.source_label = self.source_label
                 if vertical == "web":
                     response = provider.search(action.query, limit, action.time_filter)
                 else:
@@ -503,6 +513,11 @@ class Retriever:
                 if self.cache
                 else None
             )
+            # Cache entries retain their acquisition label. Only verified public
+            # material may enter a new run through this shared cache; legacy or
+            # private material must be fetched under this run's authorization.
+            if cached is not None and not from_json(cached.source_label_json).is_public():
+                cached = None
             if cached is not None:
                 self.fetched_urls.add(candidate.canonical_url)
                 outcomes.append(self._source_from(candidate, cached, cached=True))
@@ -571,7 +586,7 @@ class Retriever:
         ]
 
     def _fetch_one(self, url: str) -> FetchedPage:
-        page = self.fetcher.fetch(url)
+        page = self.fetcher.fetch(Labeled(url, self.source_label))
         attempts = 0
         while (
             attempts < self.fetch_retries
@@ -580,7 +595,7 @@ class Retriever:
             and self.has_time()
         ):
             attempts += 1
-            page = self.fetcher.fetch(url)
+            page = self.fetcher.fetch(Labeled(url, self.source_label))
         return page
 
     def _source_from(

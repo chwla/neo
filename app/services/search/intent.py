@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 from app.services.current_time import today_for_prompt
+from app.services.disclosure import Label, join, label_of, public, to_json
 from app.services.llm import LLMMessage
 from app.services.search.types import ResolvedSearchIntent, SearchIntentKind
 
@@ -651,6 +652,7 @@ class SearchIntentResolver:
         timezone: str | None = None,
         locale: str | None = None,
         routes: tuple[str, ...] | list[str] = ROUTER_ROUTES,
+        query_label: Label | None = None,
     ) -> ResolvedSearchIntent:
         """Stage B: one fast, non-reasoning model call chooses the capability.
 
@@ -661,6 +663,9 @@ class SearchIntentResolver:
         explicit request never depends on this, because Stage A already took it.
         """
 
+        input_label = label_of(query_label)
+        if context or previous is not None:
+            input_label = join(input_label, Label.private("chat_private"))
         cleaned = _SPACE.sub(" ", query or "").strip()
         base = self._result(
             SearchIntentKind.NONE,
@@ -668,6 +673,7 @@ class SearchIntentResolver:
             cleaned,
             "Router unavailable; answering directly.",
             _FALLBACK_CONFIDENCE,
+            source_label_json=to_json(input_label),
             timezone=timezone,
             locale=locale,
             decision_source="fallback",
@@ -688,8 +694,9 @@ class SearchIntentResolver:
             LLMMessage(
                 role="system",
                 content=route_decision_prompt(enabled, today=today_for_prompt(timezone)),
+                source_label=public("builtin:route_decision"),
             ),
-            LLMMessage(role="user", content=user_content),
+            LLMMessage(role="user", content=user_content, source_label=input_label),
         ]
         finish_reason: str | None = None
         try:
@@ -716,6 +723,7 @@ class SearchIntentResolver:
         route, search_query, place = decision
         self.last_router = {"status": "ok", "route": route, "finish_reason": finish_reason}
         common = {
+            "source_label_json": to_json(input_label),
             "timezone": timezone,
             "locale": locale,
             "decision_source": "model",

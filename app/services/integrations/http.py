@@ -31,7 +31,18 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
-import requests
+from app.services.disclosure import (
+    Approval,
+    Destination,
+    DisclosureBlocked,
+    GrantStore,
+    Label,
+    Labeled,
+    join,
+    label_of,
+)
+from app.services.disclosure.egress import EgressTimeoutError, EgressTransportError
+from app.services.disclosure.egress import request as http_request
 
 _LOG = logging.getLogger("neo.integrations.http")
 
@@ -43,6 +54,7 @@ DEFAULT_TIMEOUT_SECONDS = 30
 #: caller what to do -- reconnect, back off, or give up -- without any detail
 #: from the provider's response reaching a log, a model, or a screen.
 _MESSAGES: dict[str, str] = {
+    "approval_required": "This request requires disclosure approval.",
     "blocked_host": "Refused a request to a host this provider is not allowed to use.",
     "timeout": "The provider did not respond in time.",
     "unreachable": "Could not reach the provider.",
@@ -95,11 +107,38 @@ def _category_for_status(status: int) -> str:
 def assert_host_allowed(url: str, *, allowed_hosts: frozenset[str]) -> str:
     """Return the host, having checked it is one this provider may be reached on."""
 
-    host = (urlparse(url).hostname or "").strip().rstrip(".").lower()
-    if host not in allowed_hosts:
-        _LOG.warning("integration_http_blocked_host host=%s", host or "(none)")
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip().rstrip(".").lower()
+        valid = (host in allowed_hosts and parsed.scheme == "https"
+                 and parsed.username is None and parsed.password is None
+                 and not parsed.fragment and parsed.port in (None, 443))
+    except ValueError:
+        valid, host = False, ""
+    if not valid:
+        # Unapproved hosts are caller data and may themselves contain a secret.
+        _LOG.warning("integration_http_blocked_host")
         raise IntegrationHttpError("blocked_host")
     return host
+
+
+def request_payload(
+    method: str, url: str, *, access_token: str | None = None,
+    params: dict[str, Any] | None = None, form: dict[str, Any] | None = None,
+    json_body: Any | None = None, headers: dict[str, str] | None = None,
+    source_label: Label | None = None,
+) -> Labeled:
+    """The exact credential-bearing envelope covered by a disclosure decision."""
+    sent = {"Accept": "application/json", **(headers or {})}
+    if access_token:
+        sent["Authorization"] = f"Bearer {access_token}"
+    source = label_of(source_label)
+    if access_token or form is not None:
+        source = join(source, Label.private("integration:credential"))
+    return Labeled({
+        "method": method.upper(), "url": url, "params": params, "data": form,
+        "json": json_body, "headers": sent,
+    }, source)
 
 
 def request_json(
@@ -113,6 +152,10 @@ def request_json(
     json_body: Any | None = None,
     headers: dict[str, str] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    source_label: Label | None = None,
+    destination: Destination | None = None,
+    grants: GrantStore | None = None,
+    approval: Approval | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Send one request and return ``(parsed_json, response_headers)``.
 
@@ -123,24 +166,25 @@ def request_json(
     """
 
     host = assert_host_allowed(url, allowed_hosts=allowed_hosts)
-    sent = {"Accept": "application/json", **(headers or {})}
-    if access_token:
-        sent["Authorization"] = f"Bearer {access_token}"
-
+    payload = request_payload(
+        method, url, access_token=access_token, params=params, form=form,
+        json_body=json_body, headers=headers, source_label=source_label,
+    )
     try:
-        response = requests.request(
-            method.upper(),
-            url,
-            params=params,
-            data=form,
-            json=json_body,
-            headers=sent,
-            timeout=timeout,
-        )
-    except requests.Timeout as exc:
-        raise IntegrationHttpError("timeout") from _scrub(exc)
-    except requests.RequestException as exc:
-        raise IntegrationHttpError("unreachable") from _scrub(exc)
+        response = http_request(
+            payload, destination or Destination("unscoped-integration"),
+            grants=grants, approval=approval, timeout=timeout,
+        ).value
+    except DisclosureBlocked:
+        raise IntegrationHttpError("approval_required") from None
+    except EgressTimeoutError:
+        raise IntegrationHttpError("timeout") from None
+    except EgressTransportError:
+        raise IntegrationHttpError("unreachable") from None
+
+    if 300 <= response.status_code < 400:
+        # OAuth credentials must never follow provider redirects.
+        raise IntegrationHttpError("provider_error", status=response.status_code)
 
     if response.status_code >= 400:
         category = _category_for_status(response.status_code)

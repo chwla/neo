@@ -1,5 +1,13 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
+export function csrfHeaders(method) {
+  if (["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase())) return {};
+  if (typeof document === "undefined") return {};
+  const entry = document.cookie.split("; ").find((item) => item.startsWith("neo_csrf="));
+  const token = entry?.slice("neo_csrf=".length);
+  return token ? { "X-Neo-Csrf": decodeURIComponent(token) } : {};
+}
+
 function errorDetail(value, fallback) {
   if (typeof value === "string" && value.trim()) return value;
   if (Array.isArray(value)) {
@@ -28,6 +36,7 @@ async function request(path, options = {}) {
       headers: {
         ...(isForm ? {} : { "Content-Type": "application/json" }),
         ...(options.headers ?? {}),
+        ...csrfHeaders(options.method),
       },
     });
   } catch (error) {
@@ -71,7 +80,7 @@ async function streamRequest(path, payload, onEvent, signal) {
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...csrfHeaders("POST") },
       body: JSON.stringify(payload),
       signal,
     });
@@ -179,7 +188,7 @@ async function streamBinaryRequest(path, body, onEvent, signal) {
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream" },
+      headers: { "Content-Type": "application/octet-stream", ...csrfHeaders("POST") },
       body,
       signal,
     });
@@ -293,6 +302,26 @@ export const api = {
   // starts the CLI's own sign-in if one is needed.
   connectExternalAgent: (executor) =>
     request(`/external-agents/${executor}/connect`, { method: "POST" }),
+  // The one-off safety check: runs this engine on a throwaway repository with a
+  // fixed, harmless instruction and records that it behaved. Runs are refused
+  // until it passes, so this is what makes an installed engine usable.
+  validateExternalAgent: (executor) =>
+    request(`/external-agents/${executor}/validate`, { method: "POST" }),
+  disclosureCsrf: () => request("/external-agents/disclosures/csrf"),
+  listDisclosures: (chatId) => request(`/external-agents/disclosures?chat_id=${encodeURIComponent(chatId)}`),
+  previewDisclosure: (payload, csrfToken) =>
+    request("/external-agents/disclosures/preview", {
+      method: "POST", body: JSON.stringify(payload),
+      headers: { "X-Neo-Disclosure-Csrf": csrfToken },
+    }),
+  approveDisclosure: (id, csrfToken) =>
+    request(`/external-agents/disclosures/${id}/approve`, {
+      method: "POST", headers: { "X-Neo-Disclosure-Csrf": csrfToken },
+    }),
+  revokeDisclosure: (id, csrfToken) =>
+    request(`/external-agents/disclosures/${id}`, {
+      method: "DELETE", headers: { "X-Neo-Disclosure-Csrf": csrfToken },
+    }),
   externalAgentLogin: (executor) => request(`/external-agents/${executor}/login`),
   submitExternalAgentLoginCode: (executor, code) =>
     request(`/external-agents/${executor}/login/code`, {
@@ -388,6 +417,7 @@ export const api = {
   validateBundle: (file) => { const form = new FormData(); form.append("file", file); return request("/bundles/import/validate", { method: "POST", body: form }); },
   importBundle: (file) => { const form = new FormData(); form.append("file", file); form.append("confirm", "true"); form.append("mode", "archive_only"); return request("/bundles/import", { method: "POST", body: form }); },
   githubConnections: () => request("/github/connections"),
+  updateGithubConnection: (id, payload) => request(`/github/connections/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
   createGithubConnection: (payload) => request("/github/connections", { method: "POST", body: JSON.stringify(payload) }),
   githubHealth: (id) => request(`/github/connections/${id}/health`, { method: "POST" }),
   importGithubIssue: (id, number) => request(`/github/connections/${id}/issues/${number}/import`, { method: "POST" }),
@@ -1258,6 +1288,14 @@ export const api = {
     request(`/agent-sessions/${sessionId}/deliver`, {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  previewScopedDelivery: (sessionId, token) =>
+    request(`/agent-sessions/${sessionId}/scoped-delivery/preview`, {
+      method: "POST", headers: { "X-Neo-Disclosure-Csrf": token },
+    }),
+  applyScopedDelivery: (sessionId, reviewId, token) =>
+    request(`/agent-sessions/${sessionId}/scoped-delivery/${reviewId}/apply`, {
+      method: "POST", headers: { "X-Neo-Disclosure-Csrf": token },
     }),
   undoAgentRun: (sessionId) =>
     request(`/agent-sessions/${sessionId}/undo`, { method: "POST" }),

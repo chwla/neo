@@ -31,6 +31,28 @@ function formatTime(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
+/**
+ * The request that starts an agent run on a task.
+ *
+ * Text the user typed for this run is sent as the objective. When nothing was
+ * typed, the run uses the task's own text -- but the browser asks the server to
+ * load it rather than sending it back. A task's text is stored data with its own
+ * provenance (one imported from a private GitHub issue is private), and once it is
+ * just a string in a request the server cannot tell it from something typed.
+ *
+ * Exported because this choice is the whole of the security property here, and
+ * the suite renders to static markup with no way to click the button.
+ */
+export function taskRunPayload(task, typedObjective, mode) {
+  const typed = (typedObjective || "").trim();
+  return {
+    ...(typed ? { objective: typed } : { use_task_objective: true }),
+    mode,
+    task_id: task.id,
+    project_id: task.project_id || null,
+  };
+}
+
 function formatStatus(value) {
   if (value === "waiting_approval") return "Waiting for approval";
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -198,13 +220,9 @@ export default function Tasks({ initialTaskId = null, initialProjectId = null, o
     setAgentBusy(true);
     setAgentMessage("");
     try {
-      const objective = runObjective.trim() || selectedTask.description || selectedTask.title;
-      const created = await api.createAgentSession({
-        objective,
-        mode: agentMode,
-        task_id: selectedTask.id,
-        project_id: selectedTask.project_id || null,
-      });
+      const created = await api.createAgentSession(
+        taskRunPayload(selectedTask, runObjective, agentMode),
+      );
       setRunObjective("");
       await refreshAgentSessions(selectedTask.id);
       onOpenAgentSession?.(created.session.id);

@@ -1,46 +1,128 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import app.services.tasks.store as task_store
+from app.services.disclosure import (
+    Destination,
+    GrantStore,
+    Label,
+    Labeled,
+    content_hash,
+    from_json,
+    join,
+    label_of,
+    require,
+    to_json,
+)
 from app.services.github import store
 from app.services.github.client import GitHubClient
 from app.services.github.redaction import redact
+from app.services.integrations.vault import scoped_aad
 from app.services.tasks import TaskCreate, TasksService
+from app.services.tasks.labels import raise_task_label
 
 
 class GitHubService:
+    @staticmethod
+    def _public_connection(connection):
+        return {
+            **connection,
+            "credential_configured": store.credential_configured(connection["id"]),
+        }
+
     def connections(self):
-        return store.list_rows("workspace_github_connections")
+        return [
+            self._public_connection(row) for row in store.list_rows("workspace_github_connections")
+        ]
+
+    @staticmethod
+    def _connection_input(data, *, required=False):
+        values = dict(data)
+        token = values.pop("token", None)
+        if hasattr(token, "get_secret_value"):
+            token = token.get_secret_value()
+        if token is not None and (not isinstance(token, str) or not token.strip()):
+            raise ValueError("Enter a GitHub access token.")
+        if required and token is None:
+            raise ValueError("Enter a GitHub access token for this profile.")
+        # Legacy environment references are retained in old rows for migration
+        # diagnostics, but cannot be selected or activated by API input.
+        values.pop("token_ref", None)
+        return values, token
 
     def create_connection(self, data):
-        return store.save_connection(data)
+        values, token = self._connection_input(data, required=True)
+        return self._public_connection(store.save_connection(values, token_secret=token))
 
     def update_connection(self, id, data):
         if not store.get_row("workspace_github_connections", id):
             raise LookupError("GitHub connection not found.")
-        return store.save_connection(data, id)
+        values, token = self._connection_input(data)
+        return self._public_connection(store.save_connection(values, id, token_secret=token))
 
     def disable_connection(self, id):
         if not store.get_row("workspace_github_connections", id):
             raise LookupError("GitHub connection not found.")
         return store.disable_connection(id)
 
-    def health(self, id):
+    def _read(self, con, path, expected_intent, intent):
+        destination = Destination(scoped_aad("github"), engine="github", thread_id=con["id"])
+        if not isinstance(intent, Labeled) or intent.value != expected_intent:
+            raise RuntimeError("This GitHub read requires an explicit user request.")
+        require("connector", intent, destination)
+        client = GitHubClient(con["id"], token=store.read_credential(con["id"]))
+        selected_path = Labeled(path, label_of(intent))
+        payload = client.payload(selected_path)
+        grants = GrantStore()
+        # The user's selected connection/read authorizes use of that connection's
+        # credential for this exact request, not arbitrary model-derived content.
+        grants.create(
+            profile_id=destination.profile_id,
+            engines=frozenset({"github"}),
+            thread_scope=con["id"],
+            tags=payload.label.tags,
+            content_hash=content_hash(payload),
+            sink="http",
+            ttl_seconds=30,
+        )
+        result = client.get(selected_path, destination=destination, grants=grants)
+        return Labeled(
+            result.value, join(result.label, Label.private(f"connector:github:{con['id']}"))
+        )
+
+    def health(self, id, *, intent: Labeled | None = None):
         con = self._connection(id)
         try:
-            profile = GitHubClient(con["token_ref"]).get("/user")
+            profile = self._read(con, "/user", {"connection_id": id, "operation": "health"}, intent)
+            profile = profile.value
             return store.operation(
                 id, None, "health", "completed", response={"login": profile.get("login")}
             )
         except RuntimeError as exc:
             return store.operation(id, None, "health", "failed", error=str(exc))
 
-    def import_item(self, id, number, kind):
+    def import_item(self, id, number, kind, *, intent: Labeled | None = None):
         con = self._connection(id)
+        if kind not in {"issue", "pr"} or not isinstance(number, int) or number < 1:
+            raise ValueError("Choose a valid GitHub issue or pull request number.")
         endpoint = "issues" if kind == "issue" else "pulls"
         try:
-            raw = GitHubClient(con["token_ref"]).get(
-                f"/repos/{con['owner']}/{con['repo']}/{endpoint}/{number}"
+            path = (
+                f"/repos/{quote(con['owner'], safe='')}/{quote(con['repo'], safe='')}/"
+                f"{endpoint}/{number}"
             )
+            result = self._read(
+                con,
+                path,
+                {
+                    "connection_id": id,
+                    "operation": f"import_{kind}",
+                    "number": number,
+                },
+                intent,
+            )
+            raw = result.value
         except RuntimeError as exc:
             store.operation(id, None, f"import_{kind}", "failed", error=str(exc))
             raise
@@ -57,6 +139,7 @@ class GitHubService:
                 "labels": [x.get("name") for x in raw.get("labels", []) if x.get("name")],
                 "url": raw.get("html_url"),
                 "metadata": {
+                    "source_label_json": to_json(result.label),
                     "changed_files": raw.get("changed_files"),
                     "comments": raw.get("comments"),
                 },
@@ -75,6 +158,10 @@ class GitHubService:
         task = TasksService().create_task(
             TaskCreate(title=item["title"], description=desc, tags=item.get("labels", []))
         )
+        # The link is written before the label record, deliberately. A crash between
+        # them leaves a task linked to an imported item with no record, which reads
+        # as UNKNOWN -- the strictest outcome -- instead of an unlinked task that
+        # would read as an ordinary private one and lose the issue's provenance.
         task_store.insert_link(
             {
                 "task_id": task.id,
@@ -86,6 +173,15 @@ class GitHubService:
                     {"connection_id": item["connection_id"], "github_number": item["github_number"]}
                 ),
             }
+        )
+        # The task's text is the issue's text, so it carries the issue's label: the
+        # connector and credential it was read under. An issue imported before
+        # labels existed has no record and makes the task UNKNOWN, not public.
+        metadata = item.get("metadata") or {}
+        stored = metadata.get("source_label_json") if isinstance(metadata, dict) else None
+        raise_task_label(
+            task.id,
+            from_json(stored) if stored else Label.unknown("legacy_github_item"),
         )
         return store.update_item(item_id, imported_task_id=task.id), task.model_dump()
 

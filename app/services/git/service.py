@@ -21,6 +21,7 @@ from app.services.git.safety import (
     validate_workspace,
 )
 from app.services.git.types import CheckpointCreateRequest, CheckpointRestoreRequest, GitInitRequest
+from app.services.isolation import fs_ops, safe_fs
 from app.services.patch_apply import store as patch_store
 from app.services.repos import store as repo_store
 from app.services.tasks import store as task_store
@@ -42,6 +43,92 @@ build/
 coverage/
 .coverage
 """
+
+
+def _restore_worktree(root: Path, sha: str) -> None:
+    """Preflight a commit, then restore exact Git bytes through confined writes.
+
+    Refuse links and unsupported object types before changing any file. Git never
+    receives a worktree-writing restore command here; only the anchored helper
+    can replace a tracked file. A partial failure rolls prior replacements back
+    through the same version checks.
+    """
+
+    tree = run_git(root, ["ls-tree", "-rz", "--full-tree", sha], raw_stdout=True)
+    index = run_git(root, ["ls-files", "-z"], raw_stdout=True)
+    if tree.truncated or index.truncated:
+        raise ValueError("Checkpoint contains too many files to restore safely.")
+    desired: dict[str, tuple[bytes, int]] = {}
+    for entry in tree.stdout_bytes.split(b"\0"):
+        if not entry:
+            continue
+        header, separator, path_bytes = entry.partition(b"\t")
+        fields = header.split(b" ")
+        if (
+            not separator
+            or len(fields) != 3
+            or fields[0] not in {b"100644", b"100755"}
+            or fields[1] != b"blob"
+        ):
+            raise ValueError("Checkpoint contains a link or unsupported Git object.")
+        path = path_bytes.decode("utf-8", errors="surrogateescape")
+        _check_restore_path(path)
+        blob = run_git(root, ["show", f"{sha}:{path}"], raw_stdout=True)
+        if blob.truncated:
+            raise ValueError(f"Checkpoint file {path!r} exceeds the safe restore limit.")
+        desired[path] = (blob.stdout_bytes, 0o755 if fields[0] == b"100755" else 0o644)
+
+    tracked = {
+        entry.decode("utf-8", errors="surrogateescape")
+        for entry in index.stdout_bytes.split(b"\0") if entry
+    }
+    changes: list[tuple[str, bytes | None, bytes | None, int | None, int | None]] = []
+    for path in sorted(tracked | desired.keys()):
+        _check_restore_path(path)
+        try:
+            before = safe_fs.read_file(root, path)
+            before_mode = safe_fs.file_mode(root, path)
+        except FileNotFoundError:
+            before = None
+            before_mode = None
+        after, after_mode = desired.get(path, (None, None))
+        if before != after or (after is not None and before_mode != after_mode):
+            changes.append((path, before, after, before_mode, after_mode))
+
+    applied: list[tuple[str, bytes | None, bytes | None, int | None, int | None]] = []
+    try:
+        for path, before, after, before_mode, after_mode in changes:
+            fs_ops.apply(
+                root, path, replacement=after, expected=before,
+                permission_mode=after_mode,
+            )
+            applied.append((path, before, after, before_mode, after_mode))
+    except BaseException as exc:
+        rollback_errors = []
+        for path, before, after, before_mode, _after_mode in reversed(applied):
+            try:
+                fs_ops.apply(
+                    root, path, replacement=before, expected=after,
+                    permission_mode=before_mode,
+                )
+            except BaseException as rollback_exc:
+                rollback_errors.append(f"{path}: {rollback_exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                "Checkpoint restore failed and rollback was incomplete: "
+                + "; ".join(rollback_errors)
+            ) from exc
+        raise
+
+
+def _check_restore_path(path: str) -> None:
+    """Reject Git names that would change meaning in the anchored helper."""
+
+    if "\\" in path or path.startswith("/"):
+        raise safe_fs.UnsafePath("checkpoint path is not a portable relative path")
+    parts = safe_fs._relative_parts(path)
+    if parts != tuple(path.split("/")):
+        raise safe_fs.UnsafePath("checkpoint path is not canonical")
 
 
 class GitService:
@@ -303,7 +390,7 @@ class GitService:
                 "them through a controlled workspace action first."
             )
         try:
-            result = run_git(root, ["restore", f"--source={sha}", "--worktree", "--", "."])
+            _restore_worktree(root, sha)
             synced = self._sync_metadata(repo)
             now = store.now_iso()
             index_store.mark_stale(repo["id"], "Git checkpoint restore", now)
@@ -329,8 +416,7 @@ class GitService:
                 repo["id"],
                 "restore",
                 "completed",
-                stdout_text=result.stdout,
-                stderr_text=result.stderr,
+                stdout_text="Checkpoint files restored through confined filesystem helper.",
                 checkpoint_id=checkpoint_id,
                 metadata={"commit_sha": sha, "synced_files": synced},
             )
@@ -362,9 +448,15 @@ class GitService:
 
     @staticmethod
     def _write_excludes(root: Path) -> None:
-        target = root / ".git" / "info" / "exclude"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(EXCLUDE_PATTERNS, encoding="utf-8")
+        relative = ".git/info/exclude"
+        try:
+            before = safe_fs.read_file(root, relative)
+        except FileNotFoundError:
+            before = None
+        fs_ops.apply(
+            root, relative, replacement=EXCLUDE_PATTERNS.encode("utf-8"),
+            expected=before,
+        )
 
     @staticmethod
     def _head(root: Path) -> str:
@@ -479,10 +571,9 @@ class GitService:
             file_item = file_store.get_file(mapping["file_id"], include_deleted=True)
             if not file_item:
                 continue
-            path = root / mapping["relative_path"]
-            if path.is_symlink() or (path.exists() and root not in path.resolve().parents):
-                raise ValueError("Restored repository file escaped the managed workspace.")
-            if not path.is_file():
+            try:
+                content = safe_fs.read_file(root, mapping["relative_path"])
+            except FileNotFoundError:
                 file_store.update_file(
                     file_item["id"],
                     {"deleted": True, "sha256": None, "size_bytes": 0, "extracted_text": None},
@@ -490,7 +581,6 @@ class GitService:
                 repo_store.update_repo_file_hash(file_item["id"], None, 0)
                 synced += 1
                 continue
-            content = path.read_bytes()
             digest = hashlib.sha256(content).hexdigest()
             extracted, extraction = extract_text(mapping["relative_path"], content, max_chars)
             updated = file_store.update_file(

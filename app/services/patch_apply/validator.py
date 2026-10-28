@@ -7,6 +7,7 @@ from pathlib import Path
 from app.core.config import get_settings
 from app.services.files import store as file_store
 from app.services.files.service import WorkspaceFilesService
+from app.services.isolation import safe_fs
 from app.services.patch_apply.applier import apply_exact_patch
 from app.services.patch_apply.parser import ParsedFilePatch, ParsedPatch, parse_unified_diff
 from app.services.patch_apply.types import PatchTargetStatus, PatchValidationResult
@@ -180,7 +181,15 @@ def _prepare_file(repo: dict | None, target: dict, patch: ParsedFilePatch) -> Pr
                 f"File has changed since this patch was proposed: {relative_path}. "
                 "Regenerate the patch before applying."
             )
-        original_bytes = path.read_bytes()
+        if repo:
+            try:
+                original_bytes = safe_fs.read_file(
+                    Path(repo["workspace_path"]).resolve(), relative_path
+                )
+            except OSError as exc:
+                raise ValueError(f"Unsafe patch target: {relative_path}.") from exc
+        else:
+            original_bytes = path.read_bytes()
         current_hash = hashlib.sha256(original_bytes).hexdigest()
         if current_hash != workspace_file["sha256"]:
             raise ValueError(

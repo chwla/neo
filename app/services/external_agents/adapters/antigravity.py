@@ -35,7 +35,6 @@ _DONE = "DONE"
 
 def build_argv(
     binary: str,
-    prompt: str,
     *,
     mode: str,
     resume_id: str | None = None,
@@ -46,7 +45,7 @@ def build_argv(
 ) -> list[str]:
     """The command line for one turn."""
 
-    argv = [binary, "-p", prompt, "--output-format", "stream-json"]
+    argv = [binary, "-p", "--output-format", "stream-json"]
     if resume_id:
         argv += ["--conversation", resume_id]
     if model:
@@ -196,7 +195,6 @@ def invocation(context: InvocationContext) -> Invocation:
 
     argv = build_argv(
         context.binary,
-        context.prompt,
         mode=context.mode,
         resume_id=context.resume_id,
         model=context.model,
@@ -204,7 +202,12 @@ def invocation(context: InvocationContext) -> Invocation:
         unsafe=context.unsafe,
         timeout_seconds=getattr(get_settings(), "external_agent_timeout_seconds", None),
     )
-    return Invocation(argv=argv, translate=Translator().feed, session_id=None)
+    return Invocation(
+        argv=argv,
+        translate=Translator().feed,
+        session_id=None,
+        stdin_text=context.prompt,
+    )
 
 
 __all__ = ["Translator", "build_argv", "invocation", "translate"]

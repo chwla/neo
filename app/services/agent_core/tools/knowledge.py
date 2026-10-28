@@ -8,9 +8,78 @@ hardcoded pipeline step, which is what the old runner did.
 
 from __future__ import annotations
 
+from app.services.agent_core.approvals import arguments_hash
 from app.services.agent_core.tools.base import AgentTool, ToolContext
+from app.services.disclosure import Labeled
+from app.services.disclosure.gate import ApprovedCall, GrantStore
 
 _LIMIT = 9000
+
+
+#: How long one approved call's grant lasts. Long enough for the call's own
+#: requests, short enough that nothing later in the run can reach it.
+_APPROVED_CALL_SECONDS = 120
+
+
+def _approved_grants(
+    context: ToolContext, tool_name: str, arguments: dict, *, destinations: frozenset[str]
+) -> GrantStore | None:
+    """Grants for this exact approved call, or ``None``.
+
+    Only an :class:`ApprovedCall` the loop placed in the server-set context counts,
+    and only for this session, this tool and these exact arguments. The grants it
+    yields live in a store created here for this call alone and dropped with it; a
+    later call in the same run starts without them.
+    """
+
+    approved = context.extras.get("approved_call")
+    if not isinstance(approved, ApprovedCall):
+        return None
+    if approved.session_id != context.session_id or approved.tool_name != tool_name:
+        return None
+    if approved.arguments_hash != arguments_hash(arguments):
+        return None
+    store = GrantStore.in_memory()
+    store.create_scoped(
+        approval_id=approved.approval_id,
+        tags=approved.tags,
+        # "search" is the embedded SearXNG dispatch; "http" every other request.
+        sinks=frozenset({"http", "search"}),
+        destinations=destinations,
+        ttl_seconds=_APPROVED_CALL_SECONDS,
+        covers_unknown=approved.covers_unknown,
+    )
+    return store
+
+
+def _approved_search(query: str, label, grants: GrantStore) -> str:
+    """Send the approved query verbatim, and report what the providers returned.
+
+    Narrow on purpose. The full search path rewrites the query with a model and
+    chooses result pages to read; both are payloads derived from the query that the
+    user did not see when they approved it. Here the only thing sent is the query
+    they approved, and reading any particular result is a separate ``web_fetch``
+    that asks again.
+    """
+
+    from app.services.search.providers import ProviderRegistry
+
+    errors: list[str] = []
+    for provider in ProviderRegistry(source_label=label, grants=grants).chain():
+        response = provider.search(query, 8)
+        if response.results:
+            lines = [
+                f"- {item.title}\n  {item.url}\n  {item.snippet}".rstrip()
+                for item in response.results[:8]
+            ]
+            return (
+                f"Search results for the approved query (from {provider.name}). "
+                "Pages were not opened; fetch one to read it.\n" + "\n".join(lines)
+            )[:_LIMIT]
+        if response.error:
+            errors.append(f"{provider.name}: {response.error}")
+    detail = "; ".join(errors) or "no results"
+    return f"No results for the approved query ({detail})."
 
 
 def web_search(arguments: dict, _context: ToolContext) -> str:
@@ -19,7 +88,16 @@ def web_search(arguments: dict, _context: ToolContext) -> str:
     query = str(arguments.get("query") or "").strip()
     if not query:
         raise ValueError("A search query is required.")
-    result = WebSearchService().build_context_forced(query)
+    if not _context.source_label.is_public():
+        grants = _approved_grants(
+            _context, "web_search", arguments, destinations=frozenset({"web-search"})
+        )
+        if grants is not None:
+            try:
+                return _approved_search(query, _context.source_label, grants)
+            finally:
+                grants.revoke_all()
+    result = WebSearchService().build_context_forced(Labeled(query, _context.source_label))
     if result.context_text:
         return result.context_text[:_LIMIT]
     warning = result.warning or (result.search.error if result.search else None)
@@ -34,7 +112,16 @@ def web_fetch(arguments: dict, _context: ToolContext) -> str:
         raise ValueError("A URL is required.")
     # WebPageFetcher carries Neo's SSRF guards, including the DNS-rebinding fix
     # from the readiness review; fetching with plain requests would bypass them.
-    page = WebPageFetcher().fetch(url)
+    grants = None
+    if not _context.source_label.is_public():
+        grants = _approved_grants(
+            _context, "web_fetch", arguments, destinations=frozenset({"web-fetch"})
+        )
+    try:
+        page = WebPageFetcher(grants=grants).fetch(Labeled(url, _context.source_label))
+    finally:
+        if grants is not None:
+            grants.revoke_all()
     if page is None or not page.fetched or not page.text:
         reason = getattr(page, "error", None) or "no readable content"
         return f"Could not retrieve {url}: {reason}."

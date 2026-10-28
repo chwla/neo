@@ -186,6 +186,32 @@ def deliver(session_id: str, payload: DeliverRequest):
         _raise(exc)
 
 
+@router.post("/{session_id}/scoped-delivery/preview")
+def preview_scoped_delivery(session_id: str, request: Request):
+    from app.api.routes.external_agents import _disclosure_profile, _require_disclosure_csrf
+    from app.services.disclosure import scoped_delivery
+
+    profile_id = _disclosure_profile(request)
+    _require_disclosure_csrf(request, profile_id)
+    try:
+        return scoped_delivery.preview(profile_id, session_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{session_id}/scoped-delivery/{review_id}/apply")
+def apply_scoped_delivery(session_id: str, review_id: str, request: Request):
+    from app.api.routes.external_agents import _disclosure_profile, _require_disclosure_csrf
+    from app.services.disclosure import scoped_delivery
+
+    profile_id = _disclosure_profile(request)
+    _require_disclosure_csrf(request, profile_id)
+    try:
+        return scoped_delivery.approve_and_apply(profile_id, session_id, review_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{session_id}/export")
 def export(session_id: str, target: str = Query(default="note", pattern="^(note|tasks)$")):
     try:

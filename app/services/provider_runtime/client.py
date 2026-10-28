@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
-from app.services.llm import BaseLLMClient, LLMChatResult, LLMMessage
+from app.services.llm import BaseLLMClient, LLMChatResult, LLMMessage, call_label
 from app.services.provider_runtime.errors import (
     ContextTooLargeError,
     ProviderFailure,
@@ -148,6 +148,7 @@ class ProviderRuntimeClient(BaseLLMClient):
         }
         return LLMChatResult(
             content=result.content,
+            source_label=call_label(messages),
             tool_calls=result.tool_calls,
             thinking=str(thinking) if thinking else None,
             prompt_tokens=result.usage.get("prompt_tokens"),

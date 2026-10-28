@@ -11,6 +11,18 @@ from urllib.parse import parse_qs, quote, quote_plus, unquote, urlparse
 import requests
 
 from app.core.config import get_settings
+from app.services.disclosure import (
+    Destination,
+    DisclosureBlocked,
+    Label,
+    Labeled,
+    label_of,
+    to_json,
+)
+from app.services.disclosure.egress import EgressTimeoutError, EgressTransportError
+from app.services.disclosure.egress import request as http_request
+from app.services.disclosure.gate import GrantStore
+from app.services.disclosure.service_credentials import CredentialScopeError, ServiceCredential
 from app.services.search.types import SearchResult, WebSearchResponse
 
 PROVIDER_INFO = {
@@ -35,8 +47,47 @@ SEARCH_VERTICALS = ("web", "news", "scholarly")
 SEARXNG_CATEGORIES = {"web": "general", "news": "news", "scholarly": "science"}
 
 
+#: The one origin each keyed provider's credential may be presented to.
+BRAVE_ORIGIN = "https://api.search.brave.com"
+TAVILY_ORIGIN = "https://api.tavily.com"
+SERPER_ORIGIN = "https://google.serper.dev"
+
+
 class WebSearchProvider(ABC):
     name: str
+    source_label: Label = Label.unknown("unlabelled_search")
+    #: Grants for one approved agent tool call, and nothing else. ``None`` on every
+    #: provider the registry hands out by default; set only by the approved-call
+    #: path, on a provider instance that does not outlive that call.
+    grants: GrantStore | None = None
+
+    def _http(
+        self,
+        method: str,
+        url: str,
+        *,
+        timeout: float,
+        credential: ServiceCredential | None = None,
+        **fields,
+    ):
+        # The labelled envelope carries only the search itself. A configured key is a
+        # separate capability bound to this provider's origin, attached by egress at
+        # transmission; it never shares the query's label (see service_credentials).
+        try:
+            return http_request(
+                Labeled({"method": method, "url": url, **fields}, self.source_label),
+                Destination("web-search", engine=self.name),
+                grants=self.grants,
+                timeout=timeout,
+                credential=credential,
+            ).value
+        except EgressTimeoutError:
+            raise requests.Timeout("Search provider timed out.") from None
+        except (DisclosureBlocked, CredentialScopeError, EgressTransportError):
+            raise requests.RequestException(
+                "Search request requires approval or its provider is unavailable."
+            ) from None
+
     #: Verticals this provider can actually narrow to. Others are ignored and searched as web.
     verticals: frozenset[str] = frozenset({"web"})
 
@@ -260,7 +311,7 @@ class SearXNGSearchProvider(WebSearchProvider):
         if vertical in SEARXNG_CATEGORIES:
             params["categories"] = SEARXNG_CATEGORIES[vertical]
         try:
-            response = requests.get(
+            response = self._http("GET",
                 f"{instance}/search",
                 params=params,
                 headers={"Accept": "application/json", "User-Agent": self.user_agent},
@@ -299,7 +350,9 @@ class SearXNGSearchProvider(WebSearchProvider):
             }
             for item in payload.get("results", [])
         ]
-        return _results_response(query, self.name, raw, max_results)
+        return _results_response(
+            query, self.name, raw, max_results, source_label=self.source_label,
+        )
 
 
 class DuckDuckGoSearchProvider(WebSearchProvider):
@@ -318,7 +371,7 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
         vertical: str | None = None,
     ) -> WebSearchResponse:
         try:
-            response = requests.get(
+            response = self._http("GET",
                 f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
                 headers={"User-Agent": self.user_agent},
                 timeout=self.timeout_seconds,
@@ -333,7 +386,9 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
 
         parser = _DuckDuckGoHTMLParser()
         parser.feed(response.text)
-        return _results_response(query, self.name, parser.results, max_results)
+        return _results_response(
+            query, self.name, parser.results, max_results, source_label=self.source_label,
+        )
 
 
 class BingHTMLSearchProvider(WebSearchProvider):
@@ -352,7 +407,7 @@ class BingHTMLSearchProvider(WebSearchProvider):
         vertical: str | None = None,
     ) -> WebSearchResponse:
         try:
-            response = requests.get(
+            response = self._http("GET",
                 "https://www.bing.com/search",
                 params={"q": query},
                 headers={"User-Agent": self.user_agent},
@@ -368,7 +423,9 @@ class BingHTMLSearchProvider(WebSearchProvider):
 
         parser = _BingHTMLParser()
         parser.feed(response.text)
-        return _results_response(query, self.name, parser.results, max_results)
+        return _results_response(
+            query, self.name, parser.results, max_results, source_label=self.source_label,
+        )
 
 
 class BraveSearchProvider(WebSearchProvider):
@@ -402,15 +459,14 @@ class BraveSearchProvider(WebSearchProvider):
         if time_filter in {"day", "week", "month", "year"}:
             params["freshness"] = time_filter
         try:
-            response = requests.get(
-                "https://api.search.brave.com/res/v1/web/search",
+            response = self._http("GET",
+                f"{BRAVE_ORIGIN}/res/v1/web/search",
                 params=params,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": self.user_agent,
-                    "X-Subscription-Token": self.api_key,
-                },
+                headers={"Accept": "application/json", "User-Agent": self.user_agent},
                 timeout=self.timeout_seconds,
+                credential=ServiceCredential.header(
+                    self.name, self.api_key, origin=BRAVE_ORIGIN, header="X-Subscription-Token"
+                ),
             )
             response.raise_for_status()
             payload = response.json()
@@ -426,7 +482,9 @@ class BraveSearchProvider(WebSearchProvider):
             }
             for item in payload.get("web", {}).get("results", [])
         ]
-        return _results_response(query, self.name, raw, max_results)
+        return _results_response(
+            query, self.name, raw, max_results, source_label=self.source_label,
+        )
 
 
 class TavilySearchProvider(WebSearchProvider):
@@ -459,14 +517,18 @@ class TavilySearchProvider(WebSearchProvider):
         if vertical == "news":
             payload["topic"] = "news"
         try:
-            response = requests.post(
-                "https://api.tavily.com/search",
+            response = self._http("POST",
+                f"{TAVILY_ORIGIN}/search",
                 json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers={"Content-Type": "application/json"},
                 timeout=self.timeout_seconds,
+                credential=ServiceCredential.header(
+                    self.name,
+                    self.api_key,
+                    origin=TAVILY_ORIGIN,
+                    header="Authorization",
+                    template="Bearer {secret}",
+                ),
             )
             response.raise_for_status()
             data = response.json()
@@ -494,7 +556,9 @@ class TavilySearchProvider(WebSearchProvider):
             }
             for item in data.get("results", [])
         ]
-        return _results_response(query, self.name, raw, max_results)
+        return _results_response(
+            query, self.name, raw, max_results, source_label=self.source_label,
+        )
 
 
 class SerperSearchProvider(WebSearchProvider):
@@ -522,11 +586,14 @@ class SerperSearchProvider(WebSearchProvider):
                 time_filter
             ]
         try:
-            response = requests.post(
-                "https://google.serper.dev/search",
+            response = self._http("POST",
+                f"{SERPER_ORIGIN}/search",
                 json=payload,
-                headers={"X-API-KEY": self.api_key, "Content-Type": "application/json"},
+                headers={"Content-Type": "application/json"},
                 timeout=self.timeout_seconds,
+                credential=ServiceCredential.header(
+                    self.name, self.api_key, origin=SERPER_ORIGIN, header="X-API-KEY"
+                ),
             )
             response.raise_for_status()
             data = response.json()
@@ -541,7 +608,9 @@ class SerperSearchProvider(WebSearchProvider):
             }
             for item in data.get("organic", [])
         ]
-        return _results_response(query, self.name, raw, max_results)
+        return _results_response(
+            query, self.name, raw, max_results, source_label=self.source_label,
+        )
 
 
 class WikipediaSearchProvider(WebSearchProvider):
@@ -571,7 +640,7 @@ class WikipediaSearchProvider(WebSearchProvider):
         vertical: str | None = None,
     ) -> WebSearchResponse:
         try:
-            response = requests.get(
+            response = self._http("GET",
                 self.endpoint,
                 params={
                     "action": "query",
@@ -607,7 +676,9 @@ class WikipediaSearchProvider(WebSearchProvider):
             for item in (payload.get("query") or {}).get("search", [])
             if item.get("title")
         ]
-        return _results_response(query, self.name, raw, max_results)
+        return _results_response(
+            query, self.name, raw, max_results, source_label=self.source_label,
+        )
 
 
 class DisabledSearchProvider(WebSearchProvider):
@@ -628,10 +699,20 @@ class DisabledSearchProvider(WebSearchProvider):
 
 
 class ProviderRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self, source_label: Label | None = None, *, grants: GrantStore | None = None
+    ) -> None:
         self.settings = get_settings()
+        self.source_label = label_of(source_label)
+        self.grants = grants
 
     def provider(self, name: str) -> WebSearchProvider:
+        provider = self._provider(name)
+        provider.source_label = self.source_label
+        provider.grants = self.grants
+        return provider
+
+    def _provider(self, name: str) -> WebSearchProvider:
         normalized = name.lower().strip()
         if normalized == "external_searxng":
             return SearXNGSearchProvider(provider_name="external_searxng")
@@ -697,6 +778,7 @@ def _results_response(
     provider: str,
     raw_results: list[dict[str, str | None]],
     max_results: int,
+    *, source_label: Label | None = None,
 ) -> WebSearchResponse:
     results: list[SearchResult] = []
     seen: set[str] = set()
@@ -707,6 +789,7 @@ def _results_response(
         seen.add(item_url)
         results.append(
             SearchResult(
+                source_label_json=to_json(label_of(source_label)),
                 title=str(item.get("title") or item_url),
                 url=item_url,
                 snippet=item.get("snippet"),
@@ -718,6 +801,7 @@ def _results_response(
         if len(results) >= max_results:
             break
     return WebSearchResponse(
+        source_label_json=to_json(label_of(source_label)),
         query=query,
         provider=provider,
         results=results,

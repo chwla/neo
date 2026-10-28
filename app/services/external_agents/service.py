@@ -21,7 +21,9 @@ Ordering matters in two places and is worth stating:
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,18 +32,32 @@ from app.services import chat_prefs
 from app.services.agent_core import events, store
 from app.services.agent_core.types import AgentSession, Budgets
 from app.services.agent_core.workspace import repo_root
-from app.services.external_agents import context, detect, models, runner, snapshot
+from app.services.disclosure import (
+    Destination,
+    Label,
+    Labeled,
+    authorize,
+    from_json,
+    public,
+    scoped_copy,
+    to_json,
+)
+from app.services.disclosure import approvals as disclosure_approvals
+from app.services.external_agents import credentials, detect, models, snapshot
+from app.services.external_agents import disclosure as ext_disclosure
 from app.services.external_agents import env as env_module
 from app.services.external_agents.adapters import antigravity as antigravity_adapter
 from app.services.external_agents.adapters import claude_code as claude_adapter
 from app.services.external_agents.adapters import codex as codex_adapter
 from app.services.external_agents.adapters import cursor as cursor_adapter
+from app.services.external_agents.provenance import output_label
 from app.services.external_agents.types import (
     ExternalAgentError,
     ExternalEvent,
     InvocationContext,
     RunOutcome,
 )
+from app.services.repos import store as repos_store
 from app.services.skills import resolver as skills_resolver
 
 #: Which adapter drives which CLI. The whole of Neo's engine-specific dispatch,
@@ -139,6 +155,276 @@ def _merge_meta(session_id: str, executor: str, patch: dict[str, Any]) -> None:
     store.update_session(session_id, {"external_meta": meta})
 
 
+def _launch(
+    argv: list[str],
+    *,
+    root: Path,
+    env: dict[str, str],
+    timeout: float,
+    on_line,
+    session_id: str,
+    profile_id: str,
+    mode: str,
+    stdin_text: str | None,
+    exec_paths: tuple[str, ...] = (),
+    thread_state: str | None = None,
+) -> RunOutcome:
+    """Start the CLI under the isolation launcher, and translate its result.
+
+    Everything the launcher refuses -- an unsupported platform, a workspace that
+    overlaps Neo's own storage, a failed self-check -- becomes an
+    :class:`ExternalAgentError`, because from the user's point of view those are all
+    "this run did not start, and here is what to fix". There is no unsandboxed path.
+    """
+
+    from app.services import isolation
+
+    try:
+        result = isolation.run(
+            argv,
+            cwd=str(root),
+            env=env,
+            purpose="external_agent",
+            profile_id=profile_id,
+            workspace=str(root),
+            thread_state=thread_state,
+            exec_paths=tuple(exec_paths),
+            shared_config_paths=_shared_config_paths(),
+            deny_ports=_neo_ports(),
+            mode=mode,
+            timeout=timeout,
+            stdin_text=stdin_text,
+            on_line=on_line,
+            is_cancelled=lambda: _is_cancelled(session_id),
+        )
+    except isolation.IsolationUnavailable as exc:
+        raise ExternalAgentError(
+            f"External engines are unavailable on this machine: {exc}"
+        ) from exc
+    except isolation.IsolationRefused as exc:
+        raise ExternalAgentError(str(exc)) from exc
+
+    outcome = RunOutcome()
+    outcome.exit_code = result.exit_code
+    outcome.timed_out = result.timed_out
+    outcome.cancelled = result.cancelled
+    if result.quarantined:
+        # Not "completed": something from this run is still alive, so the workspace
+        # and the undo journal are not safe to act on yet.
+        outcome.outcome = "failed"
+        outcome.error = result.quarantine_reason
+        return outcome
+    if result.cancelled:
+        outcome.outcome = "failed"
+        outcome.error = "cancelled"
+    elif result.timed_out:
+        outcome.outcome = "failed"
+        outcome.error = f"the run exceeded its {int(timeout)}s time limit and was stopped"
+    elif result.exit_code == 0:
+        outcome.outcome = "completed"
+    else:
+        outcome.outcome = "failed"
+        tail = " | ".join(result.stderr.splitlines()[-6:])[:1000]
+        outcome.error = f"{os.path.basename(argv[0])} exited with code {result.exit_code}" + (
+            f": {tail}" if tail else ""
+        )
+    return outcome
+
+
+def _verified_package(executor: str, binary: str):
+    """Stage this engine's install into the verified store, or refuse the run."""
+
+    from app.services.external_agents.packaging import resolve_package
+    from app.services.isolation import executables
+
+    entrypoint, package_root = resolve_package(executor, binary)
+    try:
+        return executables.stage(entrypoint, package_root=package_root)
+    except executables.ExecutableRejected as exc:
+        raise ExternalAgentError(
+            f"{executor} was not started because Neo could not verify the program it "
+            f"would run: {exc}"
+        ) from exc
+
+
+def _require_validated(executor: str, package) -> None:
+    """Refuse an engine nobody has checked on this machine.
+
+    Installed is not the same as validated. The record says someone ran this exact
+    program under this exact policy and watched it work; without one, Neo would be
+    guessing that an engine authenticates, reads its prompt from stdin and keeps its
+    writes where it was told -- and guessing wrong looks like a bug, not a refusal.
+    """
+
+    from app.services.external_agents import compat
+    from app.services.isolation import policy as isolation_policy
+
+    try:
+        compat.require(
+            executor,
+            package_hash=package.content_hash,
+            source_path=package.source_path,
+            policy_hash=isolation_policy.policy_version(),
+        )
+    except compat.NotValidated as exc:
+        raise ExternalAgentError(str(exc)) from exc
+
+
+def _artifact_labels():
+    """This profile's artifact label record, in its own private storage."""
+
+    from app.core.config import active_profile_storage_dir
+    from app.services.disclosure.artifacts import ArtifactLabels
+    from app.services.isolation.roots import roots
+
+    storage = active_profile_storage_dir.get()
+    base = Path(storage) if storage else roots().data_root
+    return ArtifactLabels(base / "artifact-labels.json")
+
+
+def _thread_state_dir(profile_id: str, executor: str, thread_id: str) -> Path:
+    """Where one engine keeps its own state for one thread of one profile.
+
+    Scoped this narrowly because a CLI's transcripts are a record of everything it
+    was told: shared between profiles they would cross the account boundary, and
+    shared between threads they would let a resume reach another conversation.
+    """
+
+    from app.core.paths import is_reparse_point, private_dir_mode
+    from app.services.isolation.roots import roots
+
+    if not profile_id or Path(profile_id).name != profile_id:
+        raise ExternalAgentError("A profile-bound CLI home is required.")
+    if not executor or Path(executor).name != executor:
+        raise ExternalAgentError("Invalid external engine state scope.")
+    # A vendor-reported id is untrusted, and dropping punctuation made distinct
+    # ids such as "a/b" and "ab" share one transcript directory. Hash the Neo
+    # scope key instead: stable across turns, with no lossy normalization.
+    safe = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    root = roots().data_root / "agent-state"
+    base = root / profile_id / executor / safe
+    for directory in (root, root / profile_id, root / profile_id / executor, base):
+        if is_reparse_point(directory):
+            raise ExternalAgentError("A CLI state directory is a link.")
+        directory.mkdir(parents=True, exist_ok=True, mode=private_dir_mode())
+        if is_reparse_point(directory):
+            raise ExternalAgentError("A CLI state directory is a link.")
+        directory.chmod(private_dir_mode())
+        if directory.stat().st_mode & 0o007:
+            raise ExternalAgentError("A CLI state directory is accessible to other users.")
+    return base
+
+
+def _neo_thread_scope(session: AgentSession) -> str:
+    """A stable transcript scope chosen by Neo, never by the external CLI."""
+
+    return f"chat:{session.chat_id}" if session.chat_id is not None else f"session:{session.id}"
+
+
+def _shared_config_paths() -> list[str]:
+    """Shared tool configuration that a run must not be able to rewrite.
+
+    These are the files the CLIs *execute* from -- hooks, MCP server commands,
+    credential helpers. A run that could write one would have arranged to run its own
+    code the next time the user started that tool by hand, outside any sandbox.
+    """
+
+    home = Path.home()
+    return [
+        str(home / ".claude" / "settings.json"),
+        str(home / ".claude" / "settings.local.json"),
+        str(home / ".claude.json"),
+        str(home / ".codex" / "config.toml"),
+        str(home / ".cursor" / "cli-config.json"),
+        str(home / ".zshrc"),
+        str(home / ".bashrc"),
+        str(home / ".profile"),
+        str(home / ".zprofile"),
+    ]
+
+
+def _neo_ports() -> list[int]:
+    """Local services whose APIs can expose Neo data or runtime state."""
+
+    from app.services.isolation.network import sensitive_ports
+
+    return list(sensitive_ports())
+
+
+def _active_profile_id() -> str:
+    """The profile this run belongs to, for scoping grants.
+
+    Read from the active profile storage directory the session middleware bound,
+    so a run can never be authorized against another profile's grants.
+    """
+
+    from app.core.config import active_profile_storage_dir
+
+    storage = active_profile_storage_dir.get()
+    return Path(storage).name if storage else ""
+
+
+def _instructions_segment(
+    skills_preamble: str, role: str, step_instructions: str
+) -> Labeled | None:
+    """The role and skill text, labelled by where it came from.
+
+    A handoff step's own instructions are Neo's shipped words, so they are public.
+    A chat-level agent role and installed skill bodies are the user's own material:
+    private, and withheld until granted.
+    """
+
+    builtin = (step_instructions or "").strip()
+    private_parts = [part for part in (skills_preamble, role) if part and part.strip()]
+    if not private_parts:
+        return Labeled(builtin, public("builtin:handoff_step")) if builtin else None
+    tags: list[str] = []
+    if skills_preamble and skills_preamble.strip():
+        tags.append("skill:enabled")
+    if role:
+        tags.append("agent_def:chat")
+    text = "\n\n".join([*private_parts, builtin]) if builtin else "\n\n".join(private_parts)
+    return Labeled(text, Label.private(*tags))
+
+
+def _granted_segments(session: AgentSession, executor: str) -> list[Labeled]:
+    """Material the user explicitly approved for this engine on this run.
+
+    Empty until the approval surface lands; the builder already accepts it, so the
+    path is one list away rather than a redesign.
+    """
+
+    del session, executor
+    return []
+
+
+def _objective_label(session) -> Label:
+    """The objective's provenance, as the server recorded it when the run began.
+
+    Typed this turn, it is the user's own words. Supplied by the server -- a task's
+    text -- it keeps that text's label, which an external engine must not receive
+    as though the user had typed it.
+    """
+
+    stored = getattr(session, "objective_label_json", None)
+    if stored:
+        return from_json(stored)
+    if getattr(session, "task_id", None):
+        # Created before objective provenance was recorded, and linked to a task:
+        # the objective may have been the task's text, so it is not assumed typed.
+        return Label.unknown("legacy_task_session_objective")
+    return public(f"user_input:{session.id}")
+
+
+def _withheld_notice(withheld) -> str:
+    kinds = sorted({item.kind for item in withheld})
+    return (
+        "Some context was not sent to this engine because it has not been approved: "
+        + ", ".join(kinds)
+        + ". To share a specific detail, put only that detail in a new request to this engine."
+    )
+
+
 def run_step(
     session_id: str,
     *,
@@ -172,9 +458,78 @@ def run_step(
     binary = detect.resolve_binary(executor)
     if not binary:  # pragma: no cover - require_available would have raised
         raise ExternalAgentError(f"{spec.name} is not installed.")
+    # What runs is a verified copy in Neo's own store, never the path on PATH. The
+    # install there is writable by anything running as this user, and metadata is no
+    # proof of content, so the copy is what the run is bound to.
+    package = _verified_package(executor, binary)
+    _require_validated(executor, package)
+    binary = package.entrypoint
 
     root = repo_root(session.repo_id)  # re-validates the live root on every call
     snapshot.ensure_git_worktree(root)
+
+    # A live folder can be renamed and attached again under a new repo id. Its
+    # inode identity carries the restriction across that new registration.
+    root_stat = root.stat()
+    identity_label = _artifact_labels().get(
+        f"folder:{root_stat.st_dev}:{root_stat.st_ino}"
+    )
+    if identity_label.is_private():
+        _artifact_labels().raise_label(f"repo:{session.repo_id or root}", identity_label)
+    repo_record = repos_store.get_repo(session.repo_id) if session.repo_id else None
+    if repo_record and repo_record.get("original_path"):
+        try:
+            original_stat = Path(repo_record["original_path"]).stat()
+        except OSError:
+            original_stat = None
+        if original_stat is not None:
+            origin_label = _artifact_labels().get(
+                f"folder:{original_stat.st_dev}:{original_stat.st_ino}"
+            )
+            if origin_label.is_private():
+                _artifact_labels().raise_label(
+                    f"repo:{session.repo_id or root}", origin_label
+                )
+
+    try:
+        approved = disclosure_approvals.consume_for_run(
+            profile_id=_active_profile_id(),
+            chat_id=session.chat_id,
+            request_id=session.client_request_id,
+            session_id=session.id,
+            engine=executor,
+            objective=objective,
+        )
+    except disclosure_approvals.DisclosureApprovalError as exc:
+        raise ExternalAgentError(
+            f"The private-context approval is no longer valid ({exc}). Preview it again."
+        ) from exc
+    if approved is not None:
+        # Private text can be written into files or Git objects by the engine.
+        # Give it a full copy, with no shared inodes or Git object store, and
+        # preserve the original workspace untouched for later review/delivery.
+        original_label = _artifact_labels().get(f"repo:{session.repo_id or root}")
+        if original_label.is_private():
+            raise ExternalAgentError(
+                "The source workspace already contains restricted material. "
+                "Start from a clean repository and preview again."
+            )
+        try:
+            root = scoped_copy.create(
+                root, profile_id=_active_profile_id(), session_id=session.id
+            )
+        except (OSError, ValueError, scoped_copy.ScopedCopyError) as exc:
+            raise ExternalAgentError(f"Could not isolate the approved run: {exc}") from exc
+        _merge_meta(
+            session_id,
+            executor,
+            {
+                "scoped_workspace": str(root),
+                "source_manifest_hash": scoped_copy.manifest_digest(root),
+                "disclosure_id": approved.approval_id,
+                "disclosure_tags": sorted(approved.payload.label.tags),
+            },
+        )
 
     resolved_mode = mode or session.mode or "normal"
     if resolved_mode == "plan" and not spec.capabilities.plan_mode:
@@ -199,8 +554,8 @@ def run_step(
             session.repo_id,
         )
 
-    resume_id = _resume_id(session, executor)
-    before = pre_state if pre_state is not None else snapshot.capture(root)
+    resume_id = None if approved is not None else _resume_id(session, executor)
+    before = pre_state if (pre_state is not None and approved is None) else snapshot.capture(root)
 
     history = []
     if session.chat_id and session.anchor_message_id:
@@ -221,6 +576,10 @@ def run_step(
     # the chat-level one goes first -- the same order Neo's own system prompt
     # uses, and the order in which the narrower instruction wins by being last.
     role = ((session.agent_definition_snapshot or {}).get("system_prompt") or "").strip()
+    # Skills and a user-written agent role are the user's own private material, so
+    # they are labelled and go through the gate like anything else. A shipped
+    # built-in role is public and flows; a role the user wrote is withheld until
+    # they approve it, and the run says so rather than quietly sending it.
     # Skills go ahead of both roles, in full. These CLIs take one prompt string
     # and hand nothing back until they are done, so there is no `load_skill`
     # round trip to make the way Neo's own loop does -- the choice is between
@@ -228,19 +587,89 @@ def run_step(
     # here rather than hidden because it is a real difference between engines.
     # What does not differ: a skill the chat turned off contributes nothing.
     skills_preamble = skills_resolver.prepended_text(session.skills or [])
-    combined = "\n\n".join(
-        part for part in (skills_preamble, role, (instructions or "").strip()) if part
-    )
 
-    prompt = context.build_prompt(
-        objective,
-        history=history,
-        previous_answer=previous_answer,
-        previous_executor_name=previous_executor_name,
-        change_summary=change_summary,
-        instructions=combined,
-        resuming=bool(resume_id),
+    payload = approved.payload if approved is not None else ext_disclosure.build_payload(
+        objective=Labeled(objective, _objective_label(session)),
+        history=[] if resume_id else history,
+        engine=executor,
+        thread_id=resume_id or session.id,
+        profile_id=_active_profile_id(),
+        instructions=_instructions_segment(skills_preamble, role, instructions),
+        change_summary=(
+            Labeled(
+                "Files changed since you last worked in this repository"
+                if resume_id
+                else "Files already changed in this turn"
+                " (read them from disk -- they are the source of truth):\n"
+                + change_summary,
+                public(f"workspace:{session.repo_id or 'repo'}"),
+            )
+            if change_summary
+            else None
+        ),
+        granted=_granted_segments(session, executor),
     )
+    if any(item.kind == "objective" for item in payload.withheld):
+        # Withholding the objective would launch the engine with nothing to do. The
+        # objective is server-supplied private text (a task's), and only an approval
+        # of that exact text could send it; stop with the reason instead.
+        raise ExternalAgentError(
+            f"This run's objective is private Neo data, so {spec.name} cannot receive "
+            "it without an approval of that exact text. Type the objective you want "
+            "the engine to receive instead."
+        )
+    # The workspace carries its own restriction. A run is authorized over what it is
+    # being sent *and* what the folder already holds: an earlier run may have written
+    # granted material into it, and reading that back is the same disclosure again.
+    labels = _artifact_labels()
+    workspace_key = (
+        f"scoped:{_active_profile_id()}:{session.id}"
+        if approved is not None else f"repo:{session.repo_id or root}"
+    )
+    workspace_label = labels.get(workspace_key)
+    if workspace_label.is_unknown():
+        # First time Neo has seen this folder. It has received nothing from Neo, so
+        # its contents are the user's own code -- recorded explicitly rather than
+        # inferred from the absence of a record.
+        workspace_label = labels.raise_label(
+            workspace_key, public(f"workspace:{session.repo_id or 'repo'}")
+        )
+    if not workspace_label.is_public():
+        decision = authorize(
+            "external_agent",
+            Labeled(payload.text, workspace_label),
+            Destination(
+                profile_id=_active_profile_id(),
+                engine=executor,
+                thread_id=resume_id or session.id,
+            ),
+            grants=None,
+        )
+        if not decision.allowed:
+            raise ExternalAgentError(
+                f"This folder holds material that was approved for another engine or "
+                f"thread, so {spec.name} cannot be run in it without a new approval. "
+                f"({decision.reason})"
+            )
+    if not payload.label.is_public() and not payload.label.is_unknown():
+        # Committed before the run starts: a crash between disclosing and recording
+        # would otherwise leave private material in a folder marked public.
+        labels.raise_label(workspace_key, payload.label)
+
+    prompt = payload.text
+    if payload.withheld:
+        store.append_event(
+            session_id,
+            events.STATUS,
+            {
+                "content": _withheld_notice(payload.withheld),
+                "executor": executor,
+                "withheld": [
+                    {"kind": item.kind, "reason": item.reason, "tags": list(item.tags)}
+                    for item in payload.withheld
+                ],
+            },
+        )
 
     # The per-chat tool toggles are forwarded only where the CLI can genuinely
     # enforce them. For an executor without a denylist there is nothing honest
@@ -293,6 +722,7 @@ def run_step(
     )
 
     collected: dict[str, Any] = {"final": None, "meta": {}, "outcome": None, "error": None}
+    source_label = output_label(store.get_session(session_id) or {}, session_id, executor)
 
     def handle(line: dict[str, Any] | str) -> None:
         if not isinstance(line, dict):
@@ -303,18 +733,64 @@ def run_step(
             _LOG.warning("external_agent_translate_failed executor=%s", executor, exc_info=True)
             return
         for event in produced:
-            _apply(session_id, executor, event, collected)
+            _apply(session_id, executor, event, collected, source_label=source_label)
 
-    outcome = runner.run_process(
-        argv,
-        cwd=str(root),
-        env=env_module.build_env(
+    # Per-thread state, so an engine keeps its own transcripts and caches where no
+    # other profile or thread can read them, and the user's real ~/.claude and
+    # ~/.codex stay denied outright.
+    thread_home = _thread_state_dir(
+        _active_profile_id(), executor,
+        f"session:{session.id}" if approved is not None else _neo_thread_scope(session),
+    )
+    if approved is not None:
+        labels.raise_label(
+            f"thread:{_active_profile_id()}:{executor}:{session.id}", payload.label
+        )
+    try:
+        credential = credentials.for_executor(
+            executor, binary=binary, home=str(thread_home)
+        )
+    except credentials.CredentialUnavailable as exc:
+        raise ExternalAgentError(str(exc)) from exc
+    credentials.write_files(credential)
+
+    child_env = {
+        **env_module.build_env(
             home_env=spec.home_env,
             home_dir=str(getattr(settings, spec.home_setting, "") or ""),
         ),
-        timeout=float(settings.external_agent_timeout_seconds),
+        "HOME": str(thread_home),
+        **credential.env,
+    }
+    # A run that cannot finish before its credential expires is not started: being
+    # cut off part-way through editing is worse than not starting.
+    timeout = float(settings.external_agent_timeout_seconds)
+    remaining = credential.remaining()
+    if remaining is not None:
+        timeout = min(timeout, max(0.0, remaining - 30))
+        if timeout < 60:
+            raise ExternalAgentError(
+                f"{spec.name}'s session expires too soon to start a run. Refresh it "
+                "and try again."
+            )
+
+    if approved is not None and not disclosure_approvals.still_active(
+        _active_profile_id(), approved.approval_id, session.id
+    ):
+        raise ExternalAgentError("The private-context approval expired or was revoked.")
+
+    outcome = _launch(
+        argv,
+        root=root,
+        env=child_env,
+        timeout=timeout,
+        thread_state=str(thread_home),
         on_line=handle,
-        is_cancelled=lambda: _is_cancelled(session_id),
+        session_id=session_id,
+        profile_id=_active_profile_id(),
+        mode=resolved_mode,
+        stdin_text=plan.stdin_text,
+        exec_paths=(package.root,),
     )
 
     # The stream is more informative than the exit code: a CLI that reported a
@@ -333,16 +809,17 @@ def run_step(
         "external_session_id"
     ) or resume_id
 
-    try:
-        changed = snapshot.record(session_id, session.repo_id or "", root, before)
-        if changed:
-            store.append_event(
-                session_id,
-                events.STATUS,
-                {"content": f"{len(changed)} file(s) changed", "executor": executor},
-            )
-    except Exception:  # pragma: no cover - the run happened; journalling is after
-        _LOG.warning("external_agent_journal_failed session=%s", session_id, exc_info=True)
+    if approved is None:
+        try:
+            changed = snapshot.record(session_id, session.repo_id or "", root, before)
+            if changed:
+                store.append_event(
+                    session_id,
+                    events.STATUS,
+                    {"content": f"{len(changed)} file(s) changed", "executor": executor},
+                )
+        except Exception:  # pragma: no cover - the run happened; journalling is after
+            _LOG.warning("external_agent_journal_failed session=%s", session_id, exc_info=True)
 
     _merge_meta(
         session_id,
@@ -357,12 +834,22 @@ def run_step(
     return outcome
 
 
-def _apply(session_id: str, executor: str, event: ExternalEvent, collected: dict[str, Any]) -> None:
+def _apply(
+    session_id: str,
+    executor: str,
+    event: ExternalEvent,
+    collected: dict[str, Any],
+    *,
+    source_label: Label,
+) -> None:
     """Persist one translated event and fold its side-channel facts in."""
 
     if event.type:
         payload = dict(event.payload)
         payload.setdefault("executor", executor)
+        # The CLI is untrusted. Replace, rather than trust, any provenance it
+        # places in an event payload before the event enters Neo's durable log.
+        payload["source_label"] = to_json(source_label)
         store.append_event(session_id, event.type, payload)
 
     if event.external_session_id:
@@ -390,16 +877,16 @@ def _audit(
 ) -> dict[str, Any]:
     """Enough to answer "what exactly did Neo run?".
 
-    The prompt -- always the last element of argv -- is deliberately dropped. It
-    is already the objective and the conversation, both of which are in the
-    transcript, and it is the one part of the command line likely to carry the
-    user's own sensitive text; recording it again would copy it into a second
-    place for no gain.
+    The whole argv is recorded, because the prompt is no longer in it: every
+    adapter passes it on stdin. This used to drop ``argv[-1]`` on the assumption
+    that the prompt was the last element, which was true only for Codex -- for the
+    other three the prompt sat at ``argv[2]`` and was copied verbatim into this
+    record, into the event log, and from there to the browser.
     """
 
     return {
         "executor": executor,
-        "argv": list(argv[:-1]),
+        "argv": list(argv),
         "cwd": str(root),
         "mode": mode,
         "unsafe": unsafe,

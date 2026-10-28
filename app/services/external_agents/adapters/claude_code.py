@@ -38,7 +38,6 @@ _MODES = {"plan": "plan", "normal": "acceptEdits", "auto": "acceptEdits"}
 
 def build_argv(
     binary: str,
-    prompt: str,
     *,
     mode: str,
     session_id: str,
@@ -61,7 +60,6 @@ def build_argv(
     argv = [
         binary,
         "-p",
-        prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -346,7 +344,6 @@ def invocation(context: InvocationContext) -> Invocation:
     conversation = context.resume_id or context.new_session_id
     argv = build_argv(
         context.binary,
-        context.prompt,
         mode=context.mode,
         session_id=conversation,
         resume=bool(context.resume_id),
@@ -359,7 +356,12 @@ def invocation(context: InvocationContext) -> Invocation:
         effort=context.effort,
         unsafe=context.unsafe,
     )
-    return Invocation(argv=argv, translate=translate, session_id=conversation)
+    return Invocation(
+        argv=argv,
+        translate=translate,
+        session_id=conversation,
+        stdin_text=context.prompt,
+    )
 
 
 __all__ = ["build_argv", "invocation", "translate"]

@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.disclosure.labels import Label, join, to_json
 
 ACTIVE_STATUSES = {"queued", "running", "waiting_approval"}
 
@@ -111,6 +112,12 @@ def initialize_agent_core_tables() -> None:
                 external_efforts_json TEXT,
                 -- The chain plan and which step is current, for a handoff.
                 handoff_json TEXT,
+                -- The private sources this run has read, which decide whether an
+                -- outbound call needs the user's approval.
+                egress_tags_json TEXT,
+                -- The objective's provenance when the server supplied it (a task's
+                -- text). NULL means the objective is what the user typed this turn.
+                objective_label_json TEXT,
                 todo_json TEXT,
                 evidence_json TEXT,
                 budgets_json TEXT,
@@ -146,6 +153,7 @@ def initialize_agent_core_tables() -> None:
                 tool_calls_json TEXT,
                 tool_call_id TEXT,
                 name TEXT,
+                source_label_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES workspace_agent_sessions(id) ON DELETE CASCADE
             );
@@ -258,9 +266,20 @@ def initialize_agent_core_tables() -> None:
             "external_models_json",
             "external_efforts_json",
             "handoff_json",
+            # The private sources this run has read. Persisted rather than held in
+            # memory because a run suspends for an approval and resumes later, and
+            # the restriction has to survive that gap.
+            "egress_tags_json",
+            "objective_label_json",
         ):
             if name not in existing:
                 conn.execute(f"ALTER TABLE workspace_agent_sessions ADD COLUMN {name} TEXT")
+        message_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(workspace_agent_messages)").fetchall()
+        }
+        if "source_label_json" not in message_columns:
+            conn.execute("ALTER TABLE workspace_agent_messages ADD COLUMN source_label_json TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_agent_sessions_chat"
             " ON workspace_agent_sessions(chat_id, created_at)"
@@ -328,6 +347,7 @@ def _row_to_session(row: sqlite3.Row) -> dict:
     data["external_models"] = _loads(data.pop("external_models_json", None), {}) or {}
     data["external_efforts"] = _loads(data.pop("external_efforts_json", None), {}) or {}
     data["handoff"] = _loads(data.pop("handoff_json", None), None)
+    data["egress_tags"] = _loads(data.pop("egress_tags_json", None), []) or []
     data.setdefault("executor", "neo")
     return data
 
@@ -335,6 +355,9 @@ def _row_to_session(row: sqlite3.Row) -> dict:
 def _row_to_message(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["tool_calls"] = _loads(data.pop("tool_calls_json", None), [])
+    from app.services.disclosure import from_json
+
+    data["source_label"] = from_json(data.pop("source_label_json", None))
     return data
 
 
@@ -459,6 +482,8 @@ _SESSION_COLUMNS = {
     "external_models",
     "external_efforts",
     "handoff",
+    "egress_tags",
+    "objective_label_json",
 }
 _JSON_COLUMNS = {
     "todo": "todo_json",
@@ -469,6 +494,7 @@ _JSON_COLUMNS = {
     "external_models": "external_models_json",
     "external_efforts": "external_efforts_json",
     "handoff": "handoff_json",
+    "egress_tags": "egress_tags_json",
 }
 
 
@@ -514,6 +540,11 @@ def cancel_session(session_id: str) -> dict | None:
 
 
 def append_message(session_id: str, message: dict) -> dict:
+    from app.services.disclosure import Label, to_json
+
+    source_label = message.get("source_label")
+    if not isinstance(source_label, Label):
+        source_label = Label.unknown("unlabelled_agent_message")
     conn = _connect()
     try:
         row = conn.execute(
@@ -527,8 +558,8 @@ def append_message(session_id: str, message: dict) -> dict:
             """
             INSERT INTO workspace_agent_messages
                 (id, session_id, seq, role, content, tool_calls_json, tool_call_id,
-                 name, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
+                 name, source_label_json, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 identifier,
@@ -539,6 +570,7 @@ def append_message(session_id: str, message: dict) -> dict:
                 json.dumps(message.get("tool_calls") or []) if message.get("tool_calls") else None,
                 message.get("tool_call_id"),
                 message.get("name"),
+                to_json(source_label),
                 message.get("created_at") or now_iso(),
             ),
         )
@@ -641,7 +673,36 @@ def sessions_for_chat(chat_id: int) -> list[dict]:
         conn.close()
 
 
-def create_chat_for_session(objective: str, title: str) -> tuple[int, int]:
+def conversation_refusal(chat_id: int | None, anchor_message_id: int | None) -> str | None:
+    """Why a run may not join this conversation, or ``None`` if it may.
+
+    The chat decides what the run reads as its history, so it is checked rather
+    than taken on trust: it must exist in this profile's own database, and the
+    anchor row must belong to it. Profiles have separate databases, so a chat id
+    from another profile simply does not exist here.
+    """
+
+    if chat_id is None and anchor_message_id is None:
+        return None
+    if chat_id is None:
+        return "An anchor message needs the chat it belongs to."
+    conn = _connect()
+    try:
+        if conn.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone() is None:
+            return "That chat does not exist."
+        if anchor_message_id is not None and conn.execute(
+            "SELECT 1 FROM chat_messages WHERE id = ? AND chat_id = ?",
+            (anchor_message_id, chat_id),
+        ).fetchone() is None:
+            return "That message is not part of this chat."
+    finally:
+        conn.close()
+    return None
+
+
+def create_chat_for_session(
+    objective: str, title: str, *, objective_label: Label | None = None
+) -> tuple[int, int]:
     """Open a conversation for a run that was not started from one.
 
     Every run is a turn of a chat -- that is the whole shape of the thing now --
@@ -669,13 +730,38 @@ def create_chat_for_session(objective: str, title: str) -> tuple[int, int]:
         )
         chat_id = int(chat.lastrowid or 0)
         conn.execute(
-            "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?,?,?,?)",
-            (chat_id, "user", objective, now),
+            "INSERT INTO chat_messages (chat_id, role, content, metadata_json, created_at)"
+            " VALUES (?,?,?,?,?)",
+            (
+                chat_id,
+                "user",
+                objective,
+                json.dumps({
+                    "provenance": "user_input",
+                    # A server-supplied objective (a task's text) keeps that text's
+                    # provenance in the transcript, so a later turn that forwards
+                    # history cannot shed it by replaying this row.
+                    "source_label": to_json(
+                        join(Label.private(f"chat:{chat_id}"), objective_label)
+                        if objective_label is not None
+                        else Label.private(f"chat:{chat_id}")
+                    ),
+                }, sort_keys=True),
+                now,
+            ),
         )
         anchor = conn.execute(
-            "INSERT INTO chat_messages (chat_id, role, content, response_kind, created_at)"
-            " VALUES (?,?,?,?,?)",
-            (chat_id, "assistant", "", "agent_run", now),
+            "INSERT INTO chat_messages"
+            " (chat_id, role, content, response_kind, metadata_json, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (
+                chat_id,
+                "assistant",
+                "",
+                "agent_run",
+                json.dumps({"source_label": to_json(Label.unknown("agent_anchor_pending"))}),
+                now,
+            ),
         )
         conn.commit()
         return chat_id, int(anchor.lastrowid or 0)
@@ -688,9 +774,21 @@ def set_anchor_session(message_id: int, session_id: str) -> None:
 
     conn = _connect()
     try:
+        row = conn.execute(
+            "SELECT metadata_json FROM chat_messages WHERE id = ?", (int(message_id),)
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["agent_session_id"] = session_id
         conn.execute(
             "UPDATE chat_messages SET metadata_json = ? WHERE id = ?",
-            (json.dumps({"agent_session_id": session_id}, sort_keys=True), int(message_id)),
+            (json.dumps(metadata, sort_keys=True), int(message_id)),
         )
         conn.commit()
     finally:
@@ -862,7 +960,7 @@ def chat_history_before(chat_id: int, message_id: int, limit: int = 40) -> list[
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT role, content FROM chat_messages"
+            "SELECT id, role, content, response_kind, metadata_json FROM chat_messages"
             " WHERE chat_id = ? AND id < ? AND role IN ('user', 'assistant')"
             " AND content IS NOT NULL AND TRIM(content) != ''"
             " ORDER BY id DESC LIMIT ?",
@@ -872,7 +970,48 @@ def chat_history_before(chat_id: int, message_id: int, limit: int = 40) -> list[
         return []
     finally:
         conn.close()
-    return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+    return [_history_row(row) for row in reversed(rows)]
+
+
+def _history_row(row: sqlite3.Row) -> dict:
+    """One transcript row, carrying the provenance a disclosure decision needs.
+
+    Provenance is read from the row's own metadata, never guessed from its shape.
+    A ``user`` row is the user's own words whatever else it carries, so it is
+    recorded as such even for rows written before provenance existed. An
+    ``assistant`` row with nothing recorded stays unattributed, which the
+    disclosure gate treats as UNKNOWN and therefore withholds.
+    """
+
+    metadata: dict = {}
+    raw = row["metadata_json"] if "metadata_json" in row.keys() else None
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                metadata = parsed
+        except (ValueError, TypeError):
+            metadata = {}
+    item: dict = {
+        "id": row["id"],
+        "role": row["role"],
+        "content": row["content"],
+        "response_kind": row["response_kind"] if "response_kind" in row.keys() else None,
+    }
+    if row["role"] == "user":
+        item["provenance"] = "user_input"
+    elif metadata.get("provenance"):
+        item["provenance"] = str(metadata["provenance"])
+    tags = metadata.get("label_tags")
+    if isinstance(tags, list):
+        item["label_tags"] = [str(t) for t in tags if isinstance(t, str)]
+    if metadata.get("thread_id"):
+        item["thread_id"] = str(metadata["thread_id"])
+    if "source_label" in metadata:
+        item["source_label"] = metadata["source_label"]
+    if metadata.get("forgotten_memory"):
+        item["forgotten_memory"] = True
+    return item
 
 
 def update_anchor_message(message_id: int, fields: dict) -> None:
@@ -895,6 +1034,11 @@ def update_anchor_message(message_id: int, fields: dict) -> None:
         "model_name",
         "route_name",
         "finish_reason",
+        # Who produced this answer, and under which disclosure scope. Recorded
+        # here because a later turn's disclosure decision depends on it: an
+        # answer an external engine wrote is not the user's own words, and one
+        # that quoted granted private material carries those tags forward.
+        "metadata_json",
     }
     clean = {key: value for key, value in fields.items() if key in allowed}
     if not clean or not message_id:

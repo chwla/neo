@@ -13,6 +13,7 @@ import requests
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.config import get_settings
+from app.services.disclosure.labels import Label, join
 
 _registry_lock = RLock()
 
@@ -38,10 +39,20 @@ class LLMMessage(BaseModel):
     tool_call_id: str | None = None
     name: str | None = None
     images: list[str] | None = None
+    # Server-side provenance for the exact message sent to the model. Provider
+    # serializers intentionally omit this field; it governs later tool egress.
+    source_label: Label = Field(default_factory=lambda: Label.unknown("unlabelled_llm_message"))
+
+
+def call_label(messages: list[LLMMessage]) -> Label:
+    """Provenance of exactly the messages passed to one model invocation."""
+
+    return join(*(message.source_label for message in messages))
 
 
 class LLMChatResult(BaseModel):
     content: str
+    source_label: Label = Field(default_factory=lambda: Label.unknown("unlabelled_model_result"))
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     thinking: str | None = None
     prompt_tokens: int | None = None
@@ -68,6 +79,7 @@ class LLMChatResult(BaseModel):
 class ChatTurn(BaseModel):
     role: str = Field(pattern="^(user|assistant|system)$")
     content: str
+    source_label: Label = Field(default_factory=lambda: Label.unknown("unlabelled_chat_turn"))
 
 
 class LLMClient(Protocol):
@@ -528,6 +540,7 @@ class OllamaClient(BaseLLMClient):
         duration = payload.get("total_duration")
         return LLMChatResult(
             content=self.clean_response(raw),
+            source_label=call_label(messages),
             tool_calls=tool_calls,
             thinking=native_thinking or self.extract_thinking(raw),
             prompt_tokens=prompt,
@@ -667,6 +680,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         usage = payload.get("usage") or {}
         return LLMChatResult(
             content=self.clean_response(raw),
+            source_label=call_label(messages),
             tool_calls=tool_calls,
             thinking=native_thinking or self.extract_thinking(raw),
             prompt_tokens=usage.get("prompt_tokens"),

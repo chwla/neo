@@ -46,6 +46,14 @@ from app.services.external_agents.types import ExternalAgentError
 
 _LOG = logging.getLogger(__name__)
 
+#: Engines whose "sign-in" Neo refuses to drive.
+#:
+#: Antigravity documents no login subcommand, so driving it meant starting the bare
+#: interactive CLI and typing into it through an HTTP endpoint -- in Neo's own working
+#: directory, with no measurement of what the binary does with that input. The
+#: fallback is the honest one: tell the user the command to run.
+NO_DRIVEN_LOGIN = frozenset({"antigravity"})
+
 #: The sign-in each CLI offers, as argv after the binary.
 LOGIN_ARGV: dict[str, list[str]] = {
     "claude_code": ["auth", "login"],
@@ -313,6 +321,16 @@ def start(executor: str) -> dict[str, Any]:
 
     if executor not in detect.SPECS:
         raise ExternalAgentError(f"Unknown engine '{executor}'.")
+    if executor in NO_DRIVEN_LOGIN:
+        # Not a sign-in command: the whole CLI, started interactively, with its
+        # stdin writable through Neo's API. Nothing here knows what it does with
+        # what it is sent, because nobody has measured it against a real binary --
+        # so Neo asks the user to run it themselves instead of typing into it.
+        raise ExternalAgentError(
+            f"{detect.SPECS[executor].name} has no sign-in command Neo can drive. "
+            f"Run `{LOGIN_COMMAND.get(executor, executor)}` in a terminal, then "
+            "come back and refresh."
+        )
     if not chat_prefs.external_agents_enabled():
         raise ExternalAgentError(
             "External engines are off for this profile. Turn them on before signing in."

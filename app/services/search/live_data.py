@@ -1,23 +1,49 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from pydantic import BaseModel
 
-HttpGet = Callable[..., Any]
+from app.services.disclosure import (
+    Destination,
+    DisclosureBlocked,
+    Label,
+    Labeled,
+    label_of,
+    to_json,
+)
+from app.services.disclosure.egress import EgressTransportError, request
 
 
 class LiveDataError(RuntimeError):
     """A safe, user-presentable structured live-data failure."""
 
 
+class _LiveDataClient:
+    def __init__(self, *, timeout_seconds: float = 8.0, source_label: Label | None = None):
+        self.timeout_seconds = timeout_seconds
+        self.source_label = label_of(source_label)
+
+    def _get(self, url, *, params, headers, timeout):
+        envelope = Labeled({
+            "method": "GET", "url": url, "params": params, "headers": headers,
+        }, self.source_label)
+        try:
+            # This public-only capability has no grant path. Private parameters
+            # need a separate approved operation; a configured provider is not consent.
+            return request(envelope, Destination("live-data"), timeout=timeout).value
+        except DisclosureBlocked:
+            raise LiveDataError("Live-data request provenance requires approval.") from None
+        except EgressTransportError:
+            raise LiveDataError("The live-data provider is temporarily unavailable.") from None
+
+
 class CurrencyQuote(BaseModel):
+    source_label_json: str | None = None
     amount: Decimal
     from_currency: str
     to_currency: str
@@ -29,6 +55,7 @@ class CurrencyQuote(BaseModel):
 
 
 class WeatherReport(BaseModel):
+    source_label_json: str | None = None
     location: str
     country: str | None = None
     latitude: float
@@ -45,6 +72,7 @@ class WeatherReport(BaseModel):
 
 
 class WeatherForecast(BaseModel):
+    source_label_json: str | None = None
     location: str
     country: str | None = None
     latitude: float
@@ -69,12 +97,8 @@ class LocalDateTimeResult(BaseModel):
     used_web: bool = False
 
 
-class FrankfurterClient:
+class FrankfurterClient(_LiveDataClient):
     endpoint = "https://api.frankfurter.dev/v1/latest"
-
-    def __init__(self, *, timeout_seconds: float = 8.0, http_get: HttpGet = requests.get) -> None:
-        self.timeout_seconds = timeout_seconds
-        self.http_get = http_get
 
     def convert(
         self,
@@ -87,6 +111,7 @@ class FrankfurterClient:
         quote = self._currency(to_currency)
         if base == quote:
             return CurrencyQuote(
+                source_label_json=to_json(self.source_label),
                 amount=parsed_amount,
                 from_currency=base,
                 to_currency=quote,
@@ -95,7 +120,7 @@ class FrankfurterClient:
                 reference_date=datetime.now(UTC).date().isoformat(),
             )
         try:
-            response = self.http_get(
+            response = self._get(
                 self.endpoint,
                 params={"base": base, "symbols": quote},
                 headers={"Accept": "application/json"},
@@ -116,6 +141,7 @@ class FrankfurterClient:
         if rate <= 0:
             raise LiveDataError("The currency provider returned an invalid exchange rate.")
         return CurrencyQuote(
+            source_label_json=to_json(self.source_label),
             amount=parsed_amount,
             from_currency=base,
             to_currency=quote,
@@ -142,13 +168,9 @@ class FrankfurterClient:
         return amount
 
 
-class OpenMeteoClient:
+class OpenMeteoClient(_LiveDataClient):
     geocoding_endpoint = "https://geocoding-api.open-meteo.com/v1/search"
     forecast_endpoint = "https://api.open-meteo.com/v1/forecast"
-
-    def __init__(self, *, timeout_seconds: float = 8.0, http_get: HttpGet = requests.get) -> None:
-        self.timeout_seconds = timeout_seconds
-        self.http_get = http_get
 
     def current_weather(
         self,
@@ -164,7 +186,7 @@ class OpenMeteoClient:
         if not re.fullmatch(r"[a-z]{2}", language):
             language = "en"
         try:
-            geocode_response = self.http_get(
+            geocode_response = self._get(
                 self.geocoding_endpoint,
                 params={
                     "name": cleaned_location,
@@ -184,7 +206,7 @@ class OpenMeteoClient:
             latitude = float(place["latitude"])
             longitude = float(place["longitude"])
 
-            forecast_response = self.http_get(
+            forecast_response = self._get(
                 self.forecast_endpoint,
                 params={
                     "latitude": latitude,
@@ -202,6 +224,7 @@ class OpenMeteoClient:
             current = forecast_payload["current"]
             code = int(current["weather_code"])
             return WeatherReport(
+                source_label_json=to_json(self.source_label),
                 location=str(place.get("name") or cleaned_location),
                 country=place.get("country"),
                 latitude=latitude,
@@ -244,7 +267,7 @@ class OpenMeteoClient:
         if not re.fullmatch(r"[a-z]{2}", language):
             language = "en"
         try:
-            geocode_response = self.http_get(
+            geocode_response = self._get(
                 self.geocoding_endpoint,
                 params={
                     "name": cleaned_location,
@@ -262,7 +285,7 @@ class OpenMeteoClient:
             place = places[0]
             latitude = float(place["latitude"])
             longitude = float(place["longitude"])
-            forecast_response = self.http_get(
+            forecast_response = self._get(
                 self.forecast_endpoint,
                 params={
                     "latitude": latitude,
@@ -284,6 +307,7 @@ class OpenMeteoClient:
             index = 1 if day == "tomorrow" else 0
             code = int(daily["weather_code"][index])
             return WeatherForecast(
+                source_label_json=to_json(self.source_label),
                 location=str(place.get("name") or cleaned_location),
                 country=place.get("country"),
                 latitude=latitude,

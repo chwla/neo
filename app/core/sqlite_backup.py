@@ -66,6 +66,13 @@ def backup_sqlite_file(source: Path, destination: Path) -> SQLiteFileBackup:
         destination.unlink(missing_ok=True)
         raise RuntimeError("backup_integrity_check_failed")
     os.chmod(destination, 0o600)
+    with destination.open("rb") as verified_file:
+        os.fsync(verified_file.fileno())
+    directory_fd = os.open(destination.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
     return SQLiteFileBackup(
         source_path=str(source),
         destination_path=str(destination),

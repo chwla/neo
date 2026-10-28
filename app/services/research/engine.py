@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 from app.core.config import get_settings
+from app.services.disclosure import Destination, Label, Labeled, join, label_of, require, to_json
 from app.services.research import stopping, strategy
 from app.services.research.authority import assess_sources, claim_fit
 from app.services.research.capability import ModelCapability, resolve_capability, work_scale
@@ -236,7 +237,7 @@ def plan_preview(
 
 
 def run_research(
-    query: str,
+    query: str | Labeled,
     depth: DepthMode,
     *,
     deps: EngineDependencies | None = None,
@@ -245,6 +246,13 @@ def run_research(
     context: str = "",
     run_id: str | None = None,
 ) -> ResearchOutcome:
+    source = label_of(query)
+    query = query.value if isinstance(query, Labeled) else query
+    if context:
+        source = join(source, Label.unknown("untracked_research_context"))
+    # Planning itself is a worker boundary, not a declassification step. Reject
+    # unknown/private inputs before constructing models or retrieving evidence.
+    require("research", Labeled(query, source), Destination("research"))
     deps = deps or default_dependencies()
     run = _Run(
         query,
@@ -254,13 +262,28 @@ def run_research(
         cancelled or (lambda: False),
         context,
         run_id or uuid.uuid4().hex[:12],
+        source_label=source,
     )
-    return run.execute()
+    outcome = run.execute()
+    outcome.source_label_json = to_json(source)
+    return outcome
 
 
 class _Run:
-    def __init__(self, query, depth, deps, progress, cancelled, context, run_id) -> None:
+    def __init__(
+        self,
+        query,
+        depth,
+        deps,
+        progress,
+        cancelled,
+        context,
+        run_id,
+        *,
+        source_label: Label | None = None,
+    ) -> None:
         self.query = query
+        self.source_label = label_of(source_label)
         self.depth = depth
         self.deps = deps
         self.progress = progress
@@ -297,6 +320,7 @@ class _Run:
             clock=deps.clock,
             deadline=self.deadline,
             cancelled=cancelled,
+            source_label=self.source_label,
         )
         self.trace = ResearchTrace(run_id=run_id, query=query, depth=depth)
         self.trace.model_route = {
@@ -388,6 +412,7 @@ class _Run:
             has_time=lambda: self.llm_budget.has_time(reserved=self.steps <= 1),
             max_workers=self.deps.max_fetch_workers,
             fetch_retries=self.deps.fetch_retries,
+            source_label=self.source_label,
         )
         while True:
             step = self.steps + 1

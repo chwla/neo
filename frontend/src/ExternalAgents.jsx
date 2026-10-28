@@ -52,6 +52,12 @@ export function engineState(row, enabled) {
   if (!row?.version) return "not_installed";
   if (!row?.available) return "signed_out";
   if (!enabled) return "off";
+  // Installed, signed in and switched on is still not runnable. Neo refuses an
+  // engine it has not checked *here*: one harmless run that confirms this exact
+  // program authenticates, reads its prompt from stdin and keeps its writes where
+  // it was told. Without that, a run would be a guess, so the panel asks for it
+  // rather than letting the composer fail later.
+  if (row?.validated === false) return "unvalidated";
   return "connected";
 }
 
@@ -59,6 +65,7 @@ const STATE_LABEL = {
   not_installed: "Not installed",
   signed_out: "Not signed in",
   off: "Signed in · switched off",
+  unvalidated: "Needs a safety check",
   connected: "Connected",
 };
 
@@ -67,6 +74,7 @@ const STATE_ACTION = {
   not_installed: "",
   signed_out: "Sign in",
   off: "Turn on",
+  unvalidated: "Run the check",
   connected: "",
 };
 
@@ -118,6 +126,24 @@ export default function ExternalAgents({ onClose, onChanged, backLabel, onBack }
     },
     [load, onChanged],
   );
+
+  async function validate(row) {
+    setBusy(row.id);
+    setNote("");
+    setError("");
+    try {
+      const result = await api.validateExternalAgent(row.id);
+      if (result?.validated) {
+        await settled(`${row.name} passed its check and is ready to use.`);
+      } else {
+        setError(result?.detail || `${row.name} did not pass its check.`);
+      }
+    } catch (exc) {
+      setError(exc?.message || `${row.name} could not be checked.`);
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function connect(row) {
     setBusy(row.id);
@@ -236,6 +262,15 @@ export default function ExternalAgents({ onClose, onChanged, backLabel, onBack }
                 </p>
               ) : null}
 
+              {state === "unvalidated" ? (
+                <p className="engine-connect-muted">
+                  Signed in and allowed, but Neo has not checked {row.name} on this computer
+                  yet. The check runs it once on a throwaway folder with a fixed instruction
+                  and confirms it works the way Neo expects. Until it passes, runs are
+                  refused rather than attempted.
+                </p>
+              ) : null}
+
               {state === "connected" ? (
                 <p className="engine-connect-muted">
                   Signed in{row.auth === "subscription" ? " on your subscription" : ""} and
@@ -258,7 +293,7 @@ export default function ExternalAgents({ onClose, onChanged, backLabel, onBack }
                 <button
                   type="button"
                   className="engine-button primary"
-                  onClick={() => connect(row)}
+                  onClick={() => (state === "unvalidated" ? validate(row) : connect(row))}
                   disabled={Boolean(busy) || loading}
                 >
                   {busy === row.id ? "Working…" : action}

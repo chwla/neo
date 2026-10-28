@@ -40,7 +40,6 @@ _TOOL_SUFFIX = "ToolCall"
 
 def build_argv(
     binary: str,
-    prompt: str,
     *,
     mode: str,
     resume_id: str | None = None,
@@ -61,7 +60,7 @@ def build_argv(
             "run. Switch this chat to Normal, or pick an engine that does."
         )
 
-    argv = [binary, "-p", prompt, "--output-format", "stream-json"]
+    argv = [binary, "-p", "--output-format", "stream-json"]
     if resume_id:
         argv += ["--resume", resume_id]
     if model:
@@ -238,13 +237,17 @@ def invocation(context: InvocationContext) -> Invocation:
 
     argv = build_argv(
         context.binary,
-        context.prompt,
         mode=context.mode,
         resume_id=context.resume_id,
         model=context.model,
         unsafe=context.unsafe,
     )
-    return Invocation(argv=argv, translate=Translator().feed, session_id=None)
+    return Invocation(
+        argv=argv,
+        translate=Translator().feed,
+        session_id=None,
+        stdin_text=context.prompt,
+    )
 
 
 __all__ = ["Translator", "build_argv", "invocation", "translate"]

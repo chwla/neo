@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from app.services.disclosure import Label, label_of, public
 from app.services.llm import LLMMessage
 from app.services.research.capability import ModelCapability, output_budget
 
@@ -136,7 +137,9 @@ class LLMBudget:
         clock: Callable[[], float] | None = None,
         deadline: float | None = None,
         cancelled: Callable[[], bool] | None = None,
+        source_label: Label | None = None,
     ) -> None:
+        self.source_label = label_of(source_label)
         self.limit = limit
         self.reserved = min(reserved, limit)
         self.used = 0
@@ -392,7 +395,10 @@ def call_json[T: BaseModel](
     profile = profile or budget.profile
     system = f"Stage: {stage}\n{instructions}\n{UNTRUSTED_NOTE}\nRespond with JSON only."
     user = "INPUT:\n" + json.dumps(payload, ensure_ascii=False)
-    messages = [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)]
+    messages = [
+        LLMMessage(role="system", content=system, source_label=public("builtin:research_stage")),
+        LLMMessage(role="user", content=user, source_label=budget.source_label),
+    ]
     num_predict = output_budget(capability, num_predict, len(system) + len(user))
     client = llm_factory(num_predict)
     last_error = "invalid output"
@@ -423,9 +429,12 @@ def call_json[T: BaseModel](
             last_error = _validation_summary(exc)
             messages = [
                 *messages,
-                LLMMessage(role="assistant", content=(raw or "")[:6000]),
+                LLMMessage(
+                    role="assistant", content=(raw or "")[:6000], source_label=budget.source_label
+                ),
                 LLMMessage(
                     role="user",
+                    source_label=budget.source_label,
                     content=(
                         "That output did not match the required JSON structure "
                         f"({last_error}). Return only the corrected JSON."

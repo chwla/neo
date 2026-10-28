@@ -25,6 +25,7 @@ class SearchIntentKind(StrEnum):
 class ResolvedSearchIntent(BaseModel):
     """Structured, carryable result of resolving a user turn's live-data intent."""
 
+    source_label_json: str | None = None
     kind: SearchIntentKind
     original_query: str
     resolved_query: str
@@ -57,6 +58,7 @@ class ResolvedSearchIntent(BaseModel):
 
 
 class SearchResult(BaseModel):
+    source_label_json: str | None = None
     title: str
     url: str
     snippet: str | None = None
@@ -68,6 +70,7 @@ class SearchResult(BaseModel):
 
 
 class WebSearchResponse(BaseModel):
+    source_label_json: str | None = None
     query: str
     provider: str
     results: list[SearchResult] = Field(default_factory=list)
@@ -97,6 +100,7 @@ class PageLink(BaseModel):
 
 
 class FetchedPage(BaseModel):
+    source_label_json: str | None = None
     url: str
     title: str | None = None
     domain: str
@@ -161,6 +165,7 @@ class EvidenceChunk(BaseModel):
 
 
 class WebContext(BaseModel):
+    source_label_json: str | None = None
     query: str
     needed: bool
     search: WebSearchResponse | None = None
@@ -228,6 +233,7 @@ class StructuredSource(BaseModel):
 
 
 class ComprehensiveSearchResult(BaseModel):
+    source_label_json: str | None = None
     query: str
     provider_used: str
     rewritten_query: str

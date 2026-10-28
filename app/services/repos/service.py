@@ -4,13 +4,20 @@ import shutil
 import uuid
 from pathlib import Path
 
-from app.core.config import get_settings
+from app.core.config import active_profile_storage_dir, get_settings
+from app.services.disclosure import public
+from app.services.disclosure.artifacts import ArtifactLabels
 from app.services.files.service import WorkspaceFilesService
 from app.services.files.store import now_iso
 from app.services.projects.store import get_project
 from app.services.repos import store
 from app.services.repos.importer import import_scan
-from app.services.repos.safety import ensure_inside, validate_live_root, validate_repo_root
+from app.services.repos.safety import (
+    ensure_inside,
+    prepare_managed_root,
+    validate_live_root,
+    validate_repo_root,
+)
 from app.services.repos.scanner import scan_repo
 from app.services.repos.types import RepoRegisterRequest
 
@@ -77,8 +84,9 @@ class RepoWorkspaceService:
             # real files without knowing anything about live workspaces.
             workspace_path = source
         else:
-            managed_root = Path(self.settings.workspace_repos_dir).resolve()
-            managed_root.mkdir(parents=True, exist_ok=True)
+            managed_root = Path(self.settings.workspace_repos_dir)
+            prepare_managed_root(managed_root)
+            managed_root = managed_root.resolve()
             workspace_path = ensure_inside(managed_root, managed_root / repo_id)
         now = now_iso()
         repo = store.insert_repo(
@@ -102,6 +110,26 @@ class RepoWorkspaceService:
         )
         try:
             mappings = import_scan(repo, scan, copy=not live)
+            storage = active_profile_storage_dir.get()
+            if storage:
+                labels = ArtifactLabels(Path(storage) / "artifact-labels.json")
+                workspace_stat = workspace_path.stat()
+                workspace_identity = (
+                    f"folder:{workspace_stat.st_dev}:{workspace_stat.st_ino}"
+                )
+                source_stat = source.stat()
+                source_identity = f"folder:{source_stat.st_dev}:{source_stat.st_ino}"
+                # The attached folder and the repo id are distinct identities.
+                # Carry an existing inode restriction through a rename or a
+                # fresh managed import before the row becomes ready for a run.
+                labels.raise_label(f"repo:{repo_id}", public(f"workspace:{repo_id}"))
+                for identity in {source_identity, workspace_identity}:
+                    inherited = labels.get(identity)
+                    if inherited.is_private() or (
+                        inherited.is_unknown() and inherited.reason != "no_artifact_record"
+                    ):
+                        labels.raise_label(f"repo:{repo_id}", inherited)
+                labels.raise_label(workspace_identity, labels.get(f"repo:{repo_id}"))
         except Exception:
             # Only a managed copy is Neo's to delete. Removing the tree on a
             # failed live import would delete the user's project.

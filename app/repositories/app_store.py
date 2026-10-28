@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.chat import Chat, ChatGeneration, ChatMessage
 from app.models.enums import ProjectStatus
 from app.models.project import Project
+from app.services.disclosure.labels import Label, to_json
 
 #: Everything ``ChatUpdateRequest`` can change on a chat that has no messages
 #: yet, minus ``pinned`` and ``archived`` -- a chat carrying either is never
@@ -27,6 +28,22 @@ REUSABLE_CHAT_FIELDS = (
     "external_models",
     "external_efforts",
 )
+
+
+def _message_metadata(
+    chat_id: int, role: str, metadata: dict | None, source_label: Label | None = None
+) -> dict:
+    """Stamp stored chat provenance in server code, never from supplied metadata."""
+
+    body = dict(metadata) if isinstance(metadata, dict) else {}
+    body.pop("source_label", None)
+    if role == "user":
+        body["provenance"] = "user_input"
+        label = Label.private(f"chat:{chat_id}")
+    else:
+        label = source_label or Label.unknown("chat_output_without_invocation_label")
+    body["source_label"] = to_json(label)
+    return body
 
 
 def _column_default(name: str):
@@ -245,13 +262,16 @@ class AppStore:
         )
 
     def add_chat_message(self, chat_id: int, role: str, content: str, **fields) -> ChatMessage:
-        metadata = fields.pop("metadata", None)
+        source_label = fields.pop("source_label", None)
+        metadata = _message_metadata(
+            chat_id, role, fields.pop("metadata", None), source_label
+        )
         message = self.add(
             ChatMessage(
                 chat_id=chat_id,
                 role=role,
                 content=content,
-                metadata_json=json.dumps(metadata, sort_keys=True) if metadata else None,
+                metadata_json=json.dumps(metadata, sort_keys=True),
                 **fields,
             )
         )
@@ -267,6 +287,7 @@ class AppStore:
         content: str,
         **metadata,
     ) -> ChatMessage:
+        source_label = metadata.pop("source_label", None)
         existing = self.db.scalar(
             select(ChatMessage).where(ChatMessage.generation_id == generation_id)
         )
@@ -274,7 +295,8 @@ class AppStore:
             try:
                 with self.db.begin_nested():
                     existing = self.add_chat_message(
-                        chat_id, "assistant", content, generation_id=generation_id, **metadata
+                        chat_id, "assistant", content, generation_id=generation_id,
+                        source_label=source_label, **metadata
                     )
             except IntegrityError:
                 existing = self.db.scalar(
@@ -302,7 +324,14 @@ class AppStore:
                 setattr(existing, field, metadata[field])
         if "metadata" in metadata:
             value = metadata["metadata"]
-            existing.metadata_json = json.dumps(value, sort_keys=True) if value else None
+            try:
+                current = json.loads(existing.metadata_json or "{}")
+            except (TypeError, ValueError):
+                current = {}
+            body = _message_metadata(chat_id, "assistant", value, source_label)
+            if source_label is None and isinstance(current, dict) and current.get("source_label"):
+                body["source_label"] = current["source_label"]
+            existing.metadata_json = json.dumps(body, sort_keys=True)
         chat = self.get_chat(chat_id)
         if chat is not None:
             chat.updated_at = datetime.now(UTC)

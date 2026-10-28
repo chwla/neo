@@ -144,6 +144,16 @@ class Invocation(BaseModel):
     translate: Any
     #: The conversation id, when this CLI let Neo choose it up front.
     session_id: str | None = None
+    #: Directories the sandbox must allow this run to read and execute: the verified
+    #: engine package and nothing else.
+    exec_paths: tuple[str, ...] = ()
+    #: The prompt, to be written to the child's stdin and then closed.
+    #:
+    #: Deliberately *not* an argv element. argv is world-readable on this machine --
+    #: any process the user runs can read another's command line -- and the prompt is
+    #: the one part of a run that carries the user's own text. Every adapter puts it
+    #: here, and ``runner.run_process`` is what hands it over.
+    stdin_text: str | None = None
 
 
 class ExternalEvent(BaseModel):

@@ -9,6 +9,7 @@ from app.core.paths import (
     in_container,
     is_reparse_point,
     is_within,
+    private_dir_mode,
     same_path,
     split_roots,
     system_roots,
@@ -17,10 +18,25 @@ from app.core.paths import (
 __all__ = [
     "ensure_inside",
     "in_container",
+    "prepare_managed_root",
     "validate_browse_path",
     "validate_live_root",
     "validate_repo_root",
 ]
+
+
+def prepare_managed_root(root: Path) -> None:
+    """Create the code-only class and profile directories without public access."""
+
+    for directory in (root.parent, root):
+        if is_reparse_point(directory):
+            raise ValueError("Managed workspace storage may not be a link.")
+        directory.mkdir(parents=True, exist_ok=True, mode=private_dir_mode())
+        if is_reparse_point(directory):
+            raise ValueError("Managed workspace storage may not be a link.")
+        directory.chmod(private_dir_mode())
+        if directory.stat().st_mode & 0o007:
+            raise ValueError("Managed workspace storage is accessible to other users.")
 
 
 def validate_repo_root(raw_path: str) -> Path:
@@ -41,6 +57,16 @@ def validate_repo_root(raw_path: str) -> Path:
     if not candidate.is_dir():
         raise ValueError("Repository path must be a directory.")
     resolved = candidate.resolve()
+    # Code-only workspace copies and CLI homes are per-profile runtime state.
+    # Attaching one as a live repository would let another profile name it as
+    # its own workspace and bypass the scope that the isolation policy applies.
+    from app.services.isolation.roots import data_root
+
+    runtime_root = data_root()
+    for name in ("workspaces", "agent-state"):
+        scoped = runtime_root / name
+        if same_path(resolved, scoped) or is_within(scoped, resolved):
+            raise ValueError("Neo's scoped workspace storage cannot be attached.")
     if is_reparse_point(resolved):
         raise ValueError("Repository root may not be a symlink or junction.")
     if same_path(resolved, resolved.anchor):

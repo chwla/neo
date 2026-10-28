@@ -1229,6 +1229,7 @@ export function ChatMessage({
   agentPatchSessionId,
   onAgentDecide,
   onAgentDeliver,
+  onAgentReviewScoped,
   onAgentUndo,
   onAgentFork,
   onCloseAgentPatch,
@@ -1392,9 +1393,14 @@ export function ChatMessage({
                     </button>
                     {/* Only offered when this run actually produced changes, so
                         the menu never shows an action that would do nothing. */}
-                    {hasChanges ? (
+                    {hasChanges && delivery?.mode !== "private_scoped" ? (
                       <button type="button" onClick={() => onAgentDeliver?.(run, "patch")}>
                         {patchOpen ? "Hide diff" : "View diff"}
+                      </button>
+                    ) : null}
+                    {delivery?.mode === "private_scoped" ? (
+                      <button type="button" onClick={() => onAgentReviewScoped?.(run)}>
+                        Review changes
                       </button>
                     ) : null}
                     {hasChanges && delivery?.mode !== "live" && delivery?.deliverable?.length ? (
@@ -1889,6 +1895,10 @@ export const ChatComposer = memo(function ChatComposer({
   onOpenToolsPanel,
   onOpenSkillsPanel,
   onOpenUsagePanel,
+  onOpenDisclosurePicker,
+  onOpenDisclosureGrants,
+  onClearDisclosure,
+  disclosureSource = null,
   //: What /api/voice/status said, and the dictation state machine driving it.
   //: Passed in rather than owned here so the composer stays a rendering component
   //: and a test can put it in any state without a microphone.
@@ -2467,6 +2477,35 @@ export const ChatComposer = memo(function ChatComposer({
                     >
                       <span>Skills</span>
                     </button>
+                    {externalEngine ? (
+                      <button
+                        type="button"
+                        className="composer-menu-action"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onOpenDisclosurePicker?.();
+                        }}
+                        disabled={disabled}
+                      >
+                        <span>Add from Neo…</span>
+                      </button>
+                    ) : null}
+                    {externalEngine ? (
+                      <button type="button" className="composer-menu-action"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onOpenDisclosureGrants?.();
+                        }} disabled={disabled}>
+                        Review shared context
+                      </button>
+                    ) : null}
+                    {externalEngine && disclosureSource ? (
+                      <button type="button" className="composer-menu-action"
+                        onClick={onClearDisclosure} disabled={disabled}>
+                        Remove shared {disclosureSource.kind === "note"
+                          ? `note ${disclosureSource.title}` : `message #${disclosureSource.id}`}
+                      </button>
+                    ) : null}
                     {/* Hidden rather than disabled, which is the opposite of
                         the Tools button above -- and the difference is real. Tool
                         toggles still govern Neo's own turns when the engine
@@ -3734,6 +3773,13 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   const [memoryIncognito, setMemoryIncognito] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [composerValue, setComposerValue] = useState("");
+  const [sharedChatMessage, setSharedChatMessage] = useState(null);
+  const [showDisclosurePicker, setShowDisclosurePicker] = useState(false);
+  const [disclosureNotes, setDisclosureNotes] = useState([]);
+  const [disclosureGrants, setDisclosureGrants] = useState(null);
+  const [scopedReview, setScopedReview] = useState(null);
+  const [pendingDisclosure, setPendingDisclosure] = useState(null);
+  const disclosureDecisionRef = useRef(null);
   //: What the server says about speech recognition. Null until the first fetch, which
   //: is why the microphone renders disabled rather than absent while it is unknown.
   const [voiceStatus, setVoiceStatus] = useState(null);
@@ -4784,7 +4830,61 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
    * user bubble and the failure handling are the same work either way. Only the
    * `mode` differs, and what the server does with it.
    */
-  async function sendPrompt(prompt, turnMode = "chat", imageIds = []) {
+  function finishDisclosureDecision(approved) {
+    const resolve = disclosureDecisionRef.current;
+    disclosureDecisionRef.current = null;
+    setPendingDisclosure(null);
+    resolve?.(approved);
+  }
+
+  async function approvePendingDisclosure() {
+    if (!pendingDisclosure) return;
+    try {
+      const { token } = await api.disclosureCsrf();
+      await api.approveDisclosure(pendingDisclosure.id, token);
+      finishDisclosureDecision(true);
+    } catch (error) {
+      setStatusError(`Could not approve that context: ${errorMessage(error)}`);
+    }
+  }
+
+  async function openDisclosureGrants() {
+    if (!activeChat?.id) return;
+    try {
+      const grants = await api.listDisclosures(activeChat.id);
+      setDisclosureGrants({ chatId: activeChat.id, grants });
+    } catch (error) {
+      setStatusError(`Could not load shared context: ${errorMessage(error)}`);
+    }
+  }
+
+  async function openDisclosurePicker() {
+    setShowDisclosurePicker(true);
+    try {
+      const result = await api.notesList({ limit: 50, includeBody: false });
+      setDisclosureNotes((result.notes || []).filter((note) =>
+        note.content_format === "markdown" && !note.deleted));
+    } catch (error) {
+      setDisclosureNotes([]);
+      setStatusError(`Could not load notes for sharing: ${errorMessage(error)}`);
+    }
+  }
+
+  async function revokeDisclosureGrant(id) {
+    try {
+      const { token } = await api.disclosureCsrf();
+      await api.revokeDisclosure(id, token);
+      setDisclosureGrants((current) => current && {
+        ...current,
+        grants: current.grants.map((grant) => grant.id === id
+          ? { ...grant, status: "revoked" } : grant),
+      });
+    } catch (error) {
+      setStatusError(`Could not revoke shared context: ${errorMessage(error)}`);
+    }
+  }
+
+  async function sendPrompt(prompt, turnMode = "chat", imageIds = [], onUnsent = null) {
     // `sending` catches a send started by another flow (a rerun, or a generation resumed
     // after reload). It cannot catch a second click in the same tick, because it only
     // becomes true on the next render -- that window is what the guard closes.
@@ -4799,6 +4899,37 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     const requestId = guard.begin();
     if (requestId === null) {
       return;
+    }
+
+    const selectedSource = sharedChatMessage?.chatId === activeChat?.id
+      ? sharedChatMessage : null;
+    if (selectedSource && turnMode === "agent" && activeChat?.executor !== "neo") {
+      try {
+        const { token } = await api.disclosureCsrf();
+        const draft = await api.previewDisclosure({
+          chat_id: activeChat.id,
+          request_id: requestId,
+          engine: activeChat.executor,
+          objective: prompt,
+          ...(selectedSource.kind === "note"
+            ? { source_note_id: selectedSource.id }
+            : { source_message_id: selectedSource.id }),
+        }, token);
+        const approved = await new Promise((resolve) => {
+          disclosureDecisionRef.current = resolve;
+          setPendingDisclosure(draft);
+        });
+        if (!approved) {
+          if (onUnsent) onUnsent(); else setComposerValue(prompt);
+          guard.release();
+          return;
+        }
+      } catch (error) {
+        if (onUnsent) onUnsent(); else setComposerValue(prompt);
+        setStatusError(`Could not preview that context: ${errorMessage(error)}`);
+        guard.release();
+        return;
+      }
     }
 
     setStatusError("");
@@ -4847,6 +4978,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         },
       );
       if (result.agent_session_id) {
+        if (selectedSource) setSharedChatMessage(null);
         // An agent turn draws into a row of its own, not a pending reply, so the
         // news moves from the reply's key to the run's row before it loads.
         arrivalsRef.current.consume(replyArrivalKey(chatId, startedAt));
@@ -4871,7 +5003,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
             message.id === pendingId ? { ...message, failed: true } : message,
           ),
         );
-        setComposerValue(prompt);
+        if (onUnsent) onUnsent(); else setComposerValue(prompt);
         setStatusError(`${errorMessage(error)}. Your message was not sent, but it was kept.`);
       }
       setTurnFor(chatId, null);
@@ -4967,6 +5099,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     // turn: the correction lands before the agent's next decision, which is the
     // whole point of being able to say something mid-run.
     if (steeringSessionId) {
+      const attachmentsBeforeSend = chatAttachments;
+      const imagesBeforeSend = chatImages;
       setComposerValue("");
       setChatAttachments([]);
       setChatImages([]);
@@ -4975,6 +5109,8 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
         await api.sendAgentMessage(steeringSessionId, outgoing);
       } catch (error) {
         setComposerValue(prompt);
+        setChatAttachments(attachmentsBeforeSend);
+        setChatImages(imagesBeforeSend);
         setStatusError(`Could not send that to the agent: ${errorMessage(error)}`);
       }
       return;
@@ -4983,11 +5119,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       return;
     }
     const imageIds = chatImages.map((item) => item.id);
+    const attachmentsBeforeSend = chatAttachments;
+    const imagesBeforeSend = chatImages;
     setComposerValue("");
     setChatAttachments([]);
     setChatImages([]);
     setAttachError("");
-    await sendPrompt(outgoing, chatMode === "agent" ? "agent" : "chat", imageIds);
+    await sendPrompt(outgoing, chatMode === "agent" ? "agent" : "chat", imageIds, () => {
+      setComposerValue(prompt);
+      setChatAttachments(attachmentsBeforeSend);
+      setChatImages(imagesBeforeSend);
+    });
   }
 
   /** Persist a composer chip onto the chat it belongs to. */
@@ -5038,6 +5180,36 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       }
     } catch (error) {
       setChatAgentMessage(errorMessage(error));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function handleAgentReviewScoped(run) {
+    if (!run?.session?.id) return;
+    setAgentBusy(true);
+    try {
+      const { token } = await api.disclosureCsrf();
+      const review = await api.previewScopedDelivery(run.session.id, token);
+      setScopedReview({ ...review, sessionId: run.session.id });
+    } catch (error) {
+      setChatAgentMessage(`Could not review changes: ${errorMessage(error)}`);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function applyScopedReview() {
+    if (!scopedReview) return;
+    setAgentBusy(true);
+    try {
+      const { token } = await api.disclosureCsrf();
+      const result = await api.applyScopedDelivery(scopedReview.sessionId, scopedReview.id, token);
+      setScopedReview(null);
+      setChatAgentMessage(`Applied ${result.written?.length ?? 0} reviewed file(s).`);
+      await loadChat(activeChat.id, { history: "none", intent: "refresh" });
+    } catch (error) {
+      setChatAgentMessage(`Could not apply reviewed changes: ${errorMessage(error)}`);
     } finally {
       setAgentBusy(false);
     }
@@ -5421,6 +5593,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     onOpenToolsPanel: () => setShowChatTools(true),
     onOpenSkillsPanel: () => setShowSkills(true),
     onOpenUsagePanel: () => setShowUsage(true),
+    onOpenDisclosurePicker: openDisclosurePicker,
+    onOpenDisclosureGrants: openDisclosureGrants,
+    onClearDisclosure: () => setSharedChatMessage(null),
     onCompactConversation: handleCompactConversation,
   });
   const selectedModel = llms.find((llm) => llm.id === selectedLlmId)?.model || "";
@@ -5500,6 +5675,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     onProposalResolved: handleProposalResolved,
     onAgentDecide: handleAgentDecide,
     onAgentDeliver: handleAgentDeliver,
+    onAgentReviewScoped: handleAgentReviewScoped,
     onAgentUndo: handleAgentUndo,
     onAgentFork: handleAgentFork,
     onCloseAgentPatch: () => { setAgentPatch(""); setAgentPatchSessionId(null); },
@@ -5688,9 +5864,82 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           folderAttaching={false}
           usageWarnings={usageWarnings}
           agentMessage={chatAgentMessage}
+          disclosureSource={sharedChatMessage?.chatId === activeChat?.id ? sharedChatMessage : null}
           compacting={compacting}
           {...composerActions}
         />
+        {showDisclosurePicker && (
+          <Modal title="Add from Neo" onClose={() => setShowDisclosurePicker(false)}>
+            <p>Choose one earlier message or note to share with the selected coding engine on the next turn.</p>
+            <div className="engine-rows">
+              {messages.filter((message) => Number.isInteger(message.id)
+                && ["user", "assistant"].includes(message.role)).map((message) => (
+                <button type="button" className="engine-row" key={message.id}
+                  onClick={() => {
+                    setSharedChatMessage({ chatId: activeChat.id, kind: "chat_message", id: message.id });
+                    setShowDisclosurePicker(false);
+                  }}>
+                  <strong>{message.role === "user" ? "You" : "Neo"}</strong>
+                  <span> {message.content?.slice(0, 180) || "Empty message"}</span>
+                </button>
+              ))}
+              {disclosureNotes.map((note) => (
+                <button type="button" className="engine-row" key={note.id}
+                  onClick={() => {
+                    setSharedChatMessage({ chatId: activeChat.id, kind: "note", id: note.id,
+                      title: note.title });
+                    setShowDisclosurePicker(false);
+                  }}>
+                  <strong>Note</strong><span> {note.title}</span>
+                </button>
+              ))}
+            </div>
+          </Modal>
+        )}
+        {disclosureGrants && (
+          <Modal title="Shared context" onClose={() => setDisclosureGrants(null)}>
+            <p>Revocation stops future use. It cannot retract content an engine already received.</p>
+            {disclosureGrants.grants.length ? (
+              <div className="engine-rows">
+                {disclosureGrants.grants.map((grant) => (
+                  <div className="engine-row" key={grant.id}>
+                    <strong>{grant.engine}</strong>
+                    <span>{grant.source_kind === "note" ? "Note" : "Message"}
+                      {grant.source_kind === "note" ? "" : ` #${grant.source_id}`} · {grant.status}</span>
+                    {grant.status !== "revoked" && grant.status !== "expired" ? (
+                      <button type="button" onClick={() => revokeDisclosureGrant(grant.id)}>
+                        Revoke
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : <p>No shared context in this chat.</p>}
+          </Modal>
+        )}
+        {scopedReview && (
+          <Modal title="Review changes from private run" onClose={() => setScopedReview(null)}>
+            <p>These files will enter your original folder and keep their private context label.
+              Check the exact diff before applying it.</p>
+            <pre className="disclosure-preview">{scopedReview.patch || "No file changes."}</pre>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setScopedReview(null)}>Cancel</button>
+              <button type="button" onClick={applyScopedReview}
+                disabled={!scopedReview.files?.length || agentBusy}>Approve and apply</button>
+            </div>
+          </Modal>
+        )}
+        {pendingDisclosure && (
+          <Modal title="Approve private context" onClose={() => finishDisclosureDecision(false)}>
+            <p>This exact prompt will be sent to the selected coding engine. It includes one
+              earlier Neo source. The engine will work in a separate copy of the repository.</p>
+            <pre className="disclosure-preview">{pendingDisclosure.text}</pre>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => finishDisclosureDecision(false)}>Cancel</button>
+              <button type="button" onClick={approvePendingDisclosure}>Approve and send</button>
+            </div>
+          </Modal>
+        )}
         {showOpenFolder && (
           <OpenFolderDialog
             projectId={null}

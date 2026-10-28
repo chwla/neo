@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import re
 import threading
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from app.core.config import get_settings
+from app.services.disclosure import Label, Labeled, join, label_of, to_json
 from app.services.llm import LLMClient, get_llm_client
 from app.services.llm import LLMMessage as OllamaMessage
 from app.services.search.citations import validate_citation_markers
@@ -125,6 +127,10 @@ class WebSearchService:
         *,
         hint: str | None = None,
     ) -> WebSearchResponse:
+        source = label_of(query)
+        query = query.value if isinstance(query, Labeled) else query
+        if hint:
+            source = join(source, Label.unknown("unlabelled_search_hint"))
         if self._uses_custom_dependencies:
             if not self.settings.web_search_enabled:
                 return WebSearchResponse(
@@ -132,22 +138,27 @@ class WebSearchService:
                     provider="disabled",
                     error="Web search is disabled in this runtime.",
                 )
-            plan = plan_query(query, llm=self.llm, hint=hint)
+            plan = plan_query(query, llm=self.llm, hint=hint, source_label=source)
             rewritten_query = plan.provider_query
             limit = min(max_results or self.settings.web_search_max_results, 10)
+            provider = self.provider
+            if isinstance(provider, WebSearchProvider):
+                provider = copy.copy(provider)
+                provider.source_label = source
             try:
-                response = self.provider.search(
+                response = provider.search(
                     rewritten_query, limit, _plan_time_filter(plan, query, None)
                 )
             except TypeError:
-                response = self.provider.search(rewritten_query, limit)  # type: ignore[call-arg]
+                response = provider.search(rewritten_query, limit)  # type: ignore[call-arg]
             response.query = query
             response.provider_query = rewritten_query
+            response.source_label_json = to_json(source)
             return response
         options = SearchOptions(max_results=max_results)
-        return _run_provider_chain(query, options, llm=self.llm, hint=hint)
+        return _run_provider_chain(query, options, llm=self.llm, hint=hint, source_label=source)
 
-    def fetch(self, url: str) -> FetchedPage:
+    def fetch(self, url: str | Labeled) -> FetchedPage:
         return self.fetcher.fetch(url)
 
     def comprehensive_web_search(
@@ -173,13 +184,21 @@ class WebSearchService:
         ``user_text`` is the user's own message when ``query`` is a rewrite of
         it: planning and ranking keep the user's wording instead of losing it.
         """
-        return self._build_context_inner(query, hint=hint, options=options, user_text=user_text)
+        source = label_of(query)
+        value = query.value if isinstance(query, Labeled) else query
+        if hint or (user_text and user_text != value):
+            source = join(source, Label.unknown("unlabelled_search_planner_context"))
+        result = self._build_context_inner(
+            value, hint=hint, options=options, user_text=user_text, source_label=source,
+        )
+        return result.model_copy(update={"source_label_json": to_json(source)})
 
     def build_context(self, query: str, *, hint: str | None = None) -> WebContext:
-        decision = self.should_search(query)
+        value = query.value if isinstance(query, Labeled) else query
+        decision = self.should_search(value)
         if not decision.needed:
-            return WebContext(query=query, needed=False, warning=decision.reason)
-        return self._build_context_inner(query, hint=hint)
+            return WebContext(query=value, needed=False, warning=decision.reason)
+        return self.build_context_forced(query, hint=hint)
 
     def _build_context_inner(
         self,
@@ -188,14 +207,17 @@ class WebSearchService:
         hint: str | None = None,
         options: SearchOptions | None = None,
         user_text: str | None = None,
+        source_label: Label | None = None,
     ) -> WebContext:
         if self._uses_custom_dependencies:
-            return self._build_context_with_dependencies(query, hint=hint)
+            return self._build_context_with_dependencies(
+                query, hint=hint, source_label=source_label,
+            )
 
         # time_filter is deliberately left unset: the planner decides the window,
         # falling back to _time_filter_for_query only when it could not.
         result = comprehensive_web_search(
-            query,
+            Labeled(query, label_of(source_label)),
             SearchOptions(
                 max_results=(options.max_results if options and options.max_results else None)
                 or self.settings.web_search_max_results,
@@ -266,13 +288,15 @@ class WebSearchService:
         return provider_query(query, llm=self.llm, hint=hint)
 
     def _build_context_with_dependencies(
-        self, query: str, *, hint: str | None = None
+        self, query: str, *, hint: str | None = None, source_label: Label | None = None,
     ) -> WebContext:
-        search = self.search(query, self.settings.web_search_max_results, hint=hint)
+        search = self.search(
+            Labeled(query, label_of(source_label)), self.settings.web_search_max_results, hint=hint,
+        )
         if search.error or not search.results:
             return WebContext(query=query, needed=True, search=search, warning=search.error)
 
-        plan = plan_query(query, llm=self.llm, hint=hint)
+        plan = plan_query(query, llm=self.llm, hint=hint, source_label=source_label)
         answer_mode = _plan_answer_mode(plan, query)
         profile = build_relevance_profile(
             query,
@@ -298,7 +322,7 @@ class WebSearchService:
         for result in ranked_results[:8]:
             if fetched_count >= fetch_limit:
                 break
-            page = self.fetcher.fetch(result.url)
+            page = self.fetcher.fetch(Labeled(result.url, label_of(source_label)))
             if not page.title:
                 page.title = result.title
             relevant_page = relevant_fetched_page(profile, result, page)
@@ -334,12 +358,31 @@ class WebSearchService:
 
 
 def comprehensive_web_search(
+    query: str | Labeled,
+    options: SearchOptions | dict[str, object] | None = None,
+    *, llm: LLMClient | None = None, hint: str | None = None,
+    user_text: str | None = None,
+) -> ComprehensiveSearchResult:
+    source = label_of(query)
+    value = query.value if isinstance(query, Labeled) else query
+    # Additional planner material needs provenance too. A bare auxiliary string
+    # cannot quietly widen the authorized current-turn input.
+    if hint or (user_text and user_text != value):
+        source = join(source, Label.unknown("unlabelled_search_planner_context"))
+    result = _comprehensive_web_search(
+        value, options, llm=llm, hint=hint, user_text=user_text, source_label=source,
+    )
+    return result.model_copy(update={"source_label_json": to_json(source)})
+
+
+def _comprehensive_web_search(
     query: str,
     options: SearchOptions | dict[str, object] | None = None,
     *,
     llm: LLMClient | None = None,
     hint: str | None = None,
     user_text: str | None = None,
+    source_label: Label | None = None,
 ) -> ComprehensiveSearchResult:
     settings = get_settings()
     opts = options if isinstance(options, SearchOptions) else SearchOptions(**(options or {}))
@@ -361,7 +404,7 @@ def comprehensive_web_search(
 
     own_words = user_text if user_text and user_text.strip() != query.strip() else None
     plan_started = time.perf_counter()
-    plan = plan_query(query, llm=llm, hint=hint, user_text=own_words)
+    plan = plan_query(query, llm=llm, hint=hint, user_text=own_words, source_label=source_label)
     plan_ms = int((time.perf_counter() - plan_started) * 1000)
     rewritten_query = plan.provider_query
     answer_mode = _plan_answer_mode(plan, query)
@@ -387,7 +430,9 @@ def comprehensive_web_search(
     last_provider = "disabled"
     last_raw_results: list[SearchResult] = []
     last_ranked_results: list[SearchResult] = []
-    providers = _skip_unreachable(list(ProviderRegistry().chain()), provider_attempts)
+    providers = _skip_unreachable(
+        list(ProviderRegistry(source_label=source_label).chain()), provider_attempts,
+    )
     retry_scheduled = False
     attempt_counts: dict[str, int] = {}
 
@@ -548,6 +593,7 @@ def comprehensive_web_search(
             continue
 
         candidate = _build_verified_search_result(
+            selection_label=source_label,
             max_context_tokens=opts.max_context_tokens,
             query=query,
             rewritten_query=rewritten_query,
@@ -845,6 +891,7 @@ def _build_verified_search_result(
     time_sensitive: bool = False,
     reserved: list[str] | None = None,
     retry_search=None,
+    selection_label: Label | None = None,
 ) -> ComprehensiveSearchResult:
     """Build evidence exclusively from successfully read, relevant page bodies.
 
@@ -862,13 +909,15 @@ def _build_verified_search_result(
     )
     read_started = time.perf_counter()
     outcomes, usable_pages = read_candidates(
-        order, profile, answer_mode, max_pages=max_pages, deadline=deadline
+        order, profile, answer_mode, max_pages=max_pages, deadline=deadline,
+        selection_label=selection_label,
     )
     read_ms = int((time.perf_counter() - read_started) * 1000)
     readable_copy = None
     if retry_search is not None:
         readable_copy, more_outcomes, more_pages = _readable_copy(
-            order, outcomes, usable_pages, profile, answer_mode, retry_search, deadline
+            order, outcomes, usable_pages, profile, answer_mode, retry_search, deadline,
+            selection_label=selection_label,
         )
         outcomes.extend(more_outcomes)
         usable_pages.extend(more_pages)
@@ -991,6 +1040,7 @@ def _readable_copy(
     answer_mode: str,
     retry_search,
     deadline: float | None,
+    *, selection_label: Label | None = None,
 ) -> tuple[dict[str, object] | None, list[dict[str, object]], list[FetchedPage]]:
     """One search for a readable copy of the best match, when it could not be opened.
 
@@ -1040,7 +1090,8 @@ def _readable_copy(
         record.update({"result": "nothing_new", "ms": int((time.perf_counter() - started) * 1000)})
         return record, [], []
     more_outcomes, more_pages = read_candidates(
-        fresh, profile, answer_mode, max_pages=2, deadline=deadline
+        fresh, profile, answer_mode, max_pages=2, deadline=deadline,
+        selection_label=selection_label,
     )
     for item in more_outcomes:
         item["via"] = "readable_copy"
@@ -1061,6 +1112,7 @@ def read_candidates(
     *,
     max_pages: int,
     deadline: float | None,
+    selection_label: Label | None = None,
 ) -> tuple[list[dict[str, object]], list[FetchedPage]]:
     """Read pages for ``order`` and say what became of each candidate.
 
@@ -1075,7 +1127,10 @@ def read_candidates(
     def enough(accepted: list[FetchedPage]) -> bool:
         return answer_mode == "fact_lookup" and len({host_group(p.domain) for p in accepted}) >= 2
 
-    attempted = fetch_pages(order, max_pages, deadline=deadline, usable=usable, enough=enough)
+    attempted = fetch_pages(
+        order, max_pages, deadline=deadline, usable=usable, enough=enough,
+        selection_label=selection_label,
+    )
     retrieved_at = datetime.now(UTC).isoformat(timespec="seconds")
     outcomes: list[dict[str, object]] = []
     usable_pages: list[FetchedPage] = []
@@ -1122,10 +1177,11 @@ def _run_provider_chain(
     *,
     llm: LLMClient | None = None,
     hint: str | None = None,
+    source_label: Label | None = None,
 ) -> WebSearchResponse:
     settings = get_settings()
-    registry = ProviderRegistry()
-    rewritten_query = provider_query(query, llm=llm, hint=hint)
+    registry = ProviderRegistry(source_label=source_label)
+    rewritten_query = provider_query(query, llm=llm, hint=hint, source_label=source_label)
     limit = min(options.max_results or settings.web_search_max_results, 10)
     attempted: dict[str, str] = {}
     provider_attempts: list[dict[str, object]] = []
@@ -1175,9 +1231,12 @@ def _run_provider_chain(
     )
 
 
-def provider_query(query: str, *, llm: LLMClient | None = None, hint: str | None = None) -> str:
+def provider_query(
+    query: str, *, llm: LLMClient | None = None, hint: str | None = None,
+    source_label: Label | None = None,
+) -> str:
     """The search string for ``query``, planned by the model where available."""
-    return plan_query(query, llm=llm, hint=hint).provider_query
+    return plan_query(query, llm=llm, hint=hint, source_label=source_label).provider_query
 
 
 #: Characters per token, for budgeting the evidence pack.
@@ -1539,6 +1598,7 @@ class WebAnswerService:
 
     def answer(self, query: str) -> CitedAnswer:
         context = self.search.build_context(query)
+        query = query.value if isinstance(query, Labeled) else query
         if not context.needed:
             return CitedAnswer(answer="Web search was not needed for this query.", used_web=False)
         if context.warning and not context.citations:

@@ -30,6 +30,7 @@ from pathlib import Path
 
 from app.core import textio
 from app.services.agent_core.workspace import WorkspaceError, repo_root
+from app.services.isolation import fs_ops, safe_fs
 from app.services.repos import store as repos_store
 from app.services.repos.scanner import IGNORED_DIRS, IGNORED_NAMES
 
@@ -91,7 +92,7 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read(path: Path) -> tuple[str, bytes] | None:
+def _read(root: Path, relative: str) -> tuple[str, bytes] | None:
     """Decoded text for diffing, and the raw bytes the import hash was taken over.
 
     Both are returned because they answer different questions: the hash must be
@@ -100,7 +101,7 @@ def _read(path: Path) -> tuple[str, bytes] | None:
     """
 
     try:
-        raw = path.read_bytes()
+        raw = safe_fs.read_file(root, relative)
     except OSError:
         return None
     return textio.decode(raw), raw
@@ -128,7 +129,7 @@ def _untracked_changes(root: Path, known: set[str]) -> list[FileChange]:
                 continue
         except OSError:
             continue
-        managed = _read(path)
+        managed = _read(root, relative)
         if managed is None:
             continue
         changes.append(
@@ -165,8 +166,7 @@ def plan_delivery(repo_id: str) -> DeliveryPlan:
     plan = DeliveryPlan(repo_id=repo_id, original_root=str(original_root), mode=mode)
     for record in records:
         relative = record["relative_path"]
-        managed_path = root / relative
-        managed = _read(managed_path)
+        managed = _read(root, relative)
         if managed is None:
             # The agent cannot delete through the file tools, so a missing file
             # is a storage problem rather than an intended removal. Reporting it
@@ -178,8 +178,7 @@ def plan_delivery(repo_id: str) -> DeliveryPlan:
             continue  # unchanged in the copy
 
         original_relative = record.get("original_relative_path") or relative
-        original_path = original_root / original_relative
-        original = _read(original_path)
+        original = _read(original_root, original_relative)
 
         if original is None:
             plan.changes.append(
@@ -294,8 +293,8 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
             skipped.append({"path": change.relative_path, "reason": str(exc)})
             continue
 
+        current = _read(original_root, change.original_relative_path)
         if target.exists():
-            current = _read(target)
             if current is None:
                 skipped.append({"path": change.relative_path, "reason": "File could not be read."})
                 continue
@@ -308,8 +307,19 @@ def write_to_working_tree(plan: DeliveryPlan, only: list[str] | None = None) -> 
                 )
                 continue
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            textio.write_text(target, change.managed_text)
+            # Anchored to the repository root rather than written by path. The
+            # managed copy an agent just edited can contain a symlink, and
+            # `original_relative_path` came from that copy, so a plain write could
+            # be aimed at anything the user's account can reach.
+            fs_ops.apply(
+                original_root,
+                change.original_relative_path,
+                replacement=textio.encode(change.managed_text),
+                expected=current[1] if current is not None else None,
+            )
+        except safe_fs.UnsafePath as exc:
+            skipped.append({"path": change.relative_path, "reason": str(exc)})
+            continue
         except PermissionError:
             skipped.append(
                 {
