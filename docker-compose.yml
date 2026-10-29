@@ -4,7 +4,7 @@
 #
 # SearXNG used to be a second service here. It now runs inside Neo's own process
 # -- searx.webapp is a Flask WSGI app, so the image bakes in its source tree and
-# app/services/search/searxng_embedded.py imports it. That removes this file's
+# app/services/search/searxng_embedded.py imports it. That removes this file's 
 # private network, the SearXNG healthcheck, the depends_on gate that made Neo
 # wait on it, and the settings bind-mount, and makes `docker run` and
 # `docker compose up` equivalent again.
