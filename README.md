@@ -74,9 +74,7 @@ previews and approves. A private disclosure runs in a separate full copy and its
 changes require exact-diff review before delivery. External CLIs refuse to run on
 Linux, Windows and Docker, or when macOS isolation and CLI validation are missing.
 Neo-side commands and tests on unsupported platforms retain their ordinary
-workspace permissions and Git hardening; they are not OS-isolated. The current
-implementation and rollout limits are recorded in
-[`docs/security/audit-report.md`](docs/security/audit-report.md).
+workspace permissions and Git hardening; they are not OS-isolated.
 
 ### Reaching your folder
 
@@ -147,14 +145,8 @@ Requirements:
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
-.venv/bin/python scripts/setup_searxng.py          # optional; see below
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
-
-`scripts/setup_searxng.py` fetches the pinned SearXNG source and installs its
-dependencies, which is what the built-in search provider imports. It is optional:
-without it that provider reports itself unavailable and search falls back to the
-keyless DuckDuckGo and Bing providers, which need no setup at all.
 
 In another terminal:
 
@@ -240,8 +232,7 @@ must add an authenticated TLS reverse proxy and review cookie policy before expo
 Run the project checks before publishing an image:
 
 ```bash
-.venv/bin/pytest -q
-.venv/bin/ruff check app tests
+.venv/bin/ruff check app
 cd frontend
 npm test
 npm run build
@@ -257,29 +248,22 @@ docker restart neo
 curl -fsS http://127.0.0.1:8000/api/health/ready
 ```
 
-Detailed automated and manual acceptance procedures are included in the backend and frontend
-guides.
-
 ## Repository map
 
 ```text
 app/                 FastAPI routes, services, persistence, models, CLI, and TUI
 frontend/            React/Vite application and browser API client
-docs/backend.md      Backend architecture, database, API, operations, and validation
-docs/frontend.md     Frontend architecture, every screen, behavior, and manual testing
-tests/               Backend and contract regression tests
-scripts/             Maintenance and setup scripts, incl. the SearXNG fetch
+docs/                Setup, backend and frontend guides
 docker/searxng/      Settings for the SearXNG that runs inside Neo's process
 Dockerfile           Production frontend/backend image
 pyproject.toml       Python package and tooling configuration
 ```
 
-## Detailed documentation
+## Documentation
 
-- [Backend guide](docs/backend.md)
-- [Frontend guide](docs/frontend.md)
-
-The `/docs` directory intentionally contains only these two Markdown files.
+- [Setup guide](docs/setup.md): install, configure and run Neo
+- [Backend guide](docs/backend.md): architecture, storage, security, every subsystem
+- [Frontend guide](docs/frontend.md): structure, state conventions, testing, benchmarks
 
 ## License
 

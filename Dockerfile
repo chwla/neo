@@ -8,9 +8,6 @@ RUN npm run build
 
 
 # SearXNG has no PyPI package and cuts no releases, so the pin is a commit SHA.
-# Keep SEARXNG_COMMIT in sync with scripts/setup_searxng.py, which documents why
-# this particular commit and what to check when bumping it;
-# tests/test_searxng_embedded.py fails the build's test run if the two drift.
 FROM python:3.12-slim AS searxng-src
 ARG SEARXNG_COMMIT=54613defc7d4cbbc1d8ec3ba269b90717eab0958
 RUN apt-get update \
