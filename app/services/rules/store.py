@@ -2,19 +2,34 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from app.core.config import get_settings
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect() -> Iterator[sqlite3.Connection]:
+    """One connection per ``with`` block: committed (rolled back on error), then closed.
+
+    ``with sqlite3.connect(...)`` on its own commits but never closes, and since
+    Python 3.11 a dropped connection lingers until the garbage collector runs (it and
+    its statement cache refer to each other). Until then the database file stays
+    open, and on Windows an open file cannot be deleted, so a profile's directory
+    could not be removed.
+    """
     url = get_settings().database_url
     path = url.replace("sqlite:///", "", 1) if url.startswith("sqlite:///") else "neo_memory.db"
     conn = sqlite3.connect(path, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.row_factory = sqlite3.Row
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def now_iso() -> str:

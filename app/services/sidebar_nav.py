@@ -25,7 +25,7 @@ The id list is duplicated from that module on purpose, the way the theme
 catalogue is: the browser needs it to draw the panel and the server needs it to
 refuse a value it would otherwise store forever, and a shared source would mean
 shipping a constant through an endpoint that exists only to restate it.
-``tests/test_sidebar_nav_api.py`` holds the two lists together.
+Keep the two lists in step.
 """
 
 from __future__ import annotations

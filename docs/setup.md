@@ -202,10 +202,13 @@ interface itself on port 8000, exactly as the Docker image does.
 ### 4. Checks
 
 ```bash
-.venv/bin/ruff check app tests
-.venv/bin/python -m pytest
-cd frontend && npm test && npm run build
+.venv/bin/ruff check app
+cd frontend && npm run build
 ```
+
+The test suites (backend, frontend unit, browser end-to-end) and benchmarks are maintained in a
+separate, private repository and run against an exact Neo commit; `docs/release-readiness.md`
+records the results for each release candidate.
 
 ---
 

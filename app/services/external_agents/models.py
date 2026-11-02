@@ -336,7 +336,7 @@ def chosen(per_engine: dict[str, Any] | None, executor: str) -> str | None:
 def env_override(executor: str) -> str | None:
     """The end-to-end harness's escape hatch, kept for exactly that.
 
-    ``scripts/e2e_external_agents.py`` needs to tell "the integration is broken"
+    An end-to-end harness needs to tell "the integration is broken"
     apart from "this machine's config pins a model the account cannot use", and
     it has no chat to set a model on.
     """

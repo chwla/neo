@@ -7,8 +7,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1",
-    "test": "node --import ./tests/jsx-hooks.mjs --test tests/*.test.mjs"
+    "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
     "@tiptap/core": "3.31.4",
@@ -38,7 +37,6 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",

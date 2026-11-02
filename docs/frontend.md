@@ -8,7 +8,7 @@ API it talks to see [backend.md](backend.md).
 
 1. [Stack](#stack)
 2. [Directory layout](#directory-layout)
-3. [Running, building, testing](#running-building-testing)
+3. [Running and building](#running-and-building)
 4. [App shell and navigation](#app-shell-and-navigation)
 5. [Talking to the backend](#talking-to-the-backend)
 6. [Chat](#chat)
@@ -20,9 +20,8 @@ API it talks to see [backend.md](backend.md).
 12. [Responsive and mobile behaviour](#responsive-and-mobile-behaviour)
 13. [State and concurrency conventions](#state-and-concurrency-conventions)
 14. [Screens reference](#screens-reference)
-15. [Testing](#testing)
-16. [Benchmarks](#benchmarks)
-17. [Adding things](#adding-things)
+15. [Tests and benchmarks](#tests-and-benchmarks)
+16. [Adding things](#adding-things)
 
 ---
 
@@ -60,15 +59,13 @@ frontend/
     notes/                Notes controller, saver, crypto, editor, TipTap extensions, sketch
     backgrounds/          Animated chat backgrounds + render budget
     voice/                Dictation state machine, recorder, resampler
-  tests/                  node:test suites + JSX loader hook
-  bench/                  Browser benchmarks (CDP-driven), fixtures, seeders
 ```
 
 Rule of thumb: **UI in `.jsx`, rules in `.js`.** Behaviour that can be reasoned about without a DOM
 (race handling, state machines, formatting, key dispatch) lives in plain modules so it can be unit
 tested in Node.
 
-## Running, building, testing
+## Running and building
 
 From `frontend/`:
 
@@ -78,7 +75,6 @@ From `frontend/`:
 | `npm run dev` | Vite dev server on `127.0.0.1:5173`, proxying `/api`. |
 | `npm run build` | Production build to `frontend/dist`. |
 | `npm run preview` | Serve the production build (used by benchmarks). |
-| `npm test` | Run `node --test` over `tests/*.test.mjs`. |
 
 Environment variables (Vite): `VITE_API_PROXY_TARGET` (dev proxy target, default
 `http://127.0.0.1:8000`) and `VITE_API_BASE_URL` (API prefix, default `/api`).
@@ -87,7 +83,7 @@ In production the backend serves `dist` itself (Docker copies it to `/app/app/st
 app and API share one origin.
 
 **Judge performance on production builds**, throttled, and across browsers; dev builds with
-StrictMode double-invocation are not representative. See [Benchmarks](#benchmarks).
+StrictMode double-invocation are not representative. See [Tests and benchmarks](#tests-and-benchmarks).
 
 ## App shell and navigation
 
@@ -298,37 +294,16 @@ These recur across the codebase; follow them in new code.
 | Preferences | `AppearanceSettings`, `BackgroundSettings`, `KeyboardSettings`, `VoiceSettings`, `SidebarItemsSettings`, `AccountSettings` | `/appearance`, `/keybindings`, `/voice`, `/sidebar-nav` |
 | Web search | `WebSearch.jsx` | `/web-search` |
 
-## Testing
+## Tests and benchmarks
 
-`npm test` runs `node --test tests/*.test.mjs` with `tests/jsx-hooks.mjs`, which registers a module
-hook so Node can import the app's real `.jsx` sources (esbuild, already shipped inside Vite, strips
-JSX; `import.meta.env` is defined; `?raw` imports resolve to file text). There is no jsdom: tests
-target pure modules and render-isolation rules rather than a simulated DOM.
+Neo's test suites and benchmarks live in a separate, private repository and run against a
+disposable copy of one exact Neo commit; this repository carries none of them. The suite covers
+the frontend's pure modules under Node's test runner (a loader imports the real `.jsx` sources;
+there is no jsdom), browser end-to-end runs in real browsers, and benchmarks driven over the Chrome
+DevTools Protocol against a production build. `docs/release-readiness.md` records what was run
+against which commit.
 
-Coverage areas (one file per topic): chat streaming, arrivals, effort, view and sidebar rules;
-send guard and set writer races; CSRF header handling; keyboard (chord, dispatcher, engine, keymap,
-mode, palette, capture); notes (controller, saver, crypto vectors, lock transitions, projection,
-sketch, smart rules, dates); backgrounds and render budget; voice (machine, insertion, resampler,
-composer); panel preloading; modal stack; markdown; mobile shell; profile-scoped state; the
-no-em-dashes rule.
-
-When you fix a race or a rule, add a test at the module level that fails without the fix.
-
-## Benchmarks
-
-`bench/` holds browser benchmarks driven over the Chrome DevTools Protocol against a **production
-build** (`npm run build && npm run preview -- --port 4173 --strictPort`) with the backend on :8000.
-
-- `interaction.mjs`: input-to-painted latency, Event Timing, long tasks / long animation frames,
-  lazy-panel fallback flashes, entrance-animation counts; can delay or fail API calls through fetch
-  interception to make optimistic updates and races observable. Seeds a disposable profile with
-  `seed_profile.py`. Env: `BENCH_ORIGIN`, `BENCH_LABEL`, `BENCH_CPU` (throttle list),
-  `BENCH_REPEATS`, `BENCH_CACHE`.
-- `mobile-android.mjs`: real-input Chrome on an Android emulator.
-- `markdown-browsers.mjs`, `notes-browsers.mjs`, `matrix.mjs`, `drive.mjs`, plus HTML/JSX pages
-  (`transcript`, `loading`, `notes-browser`) that isolate a component for measurement.
-
-Compare before/after labels at CPU throttle levels (e.g. `BENCH_CPU=1,4`) across browsers.
+When you fix a race or a rule, add a module-level test there that fails without the fix.
 
 ## Adding things
 

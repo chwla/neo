@@ -57,7 +57,7 @@ def start_reminder_sweep() -> None:
     it fresh), and this thread would otherwise outlive the test that started
     it -- running forever against whatever env-derived paths happen to be
     live at each tick, well after that test's ``monkeypatch`` reverted them.
-    That is exactly the kind of leak ``tests/fsguard.py`` exists to catch.
+    That is exactly the kind of leak a test suite's filesystem guard exists to catch.
     """
 
     if _started.is_set() or os.environ.get("PYTEST_CURRENT_TEST") is not None:
