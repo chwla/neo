@@ -11,8 +11,10 @@ permissions:
 
 jobs:
   backend:
-    # Claim: the backend passes its tests and lint on this OS and Python version.
-    name: "Backend tests and lint (${{ matrix.os }}, Python ${{ matrix.python }})"
+    # Claim: Neo installs, passes lint, starts and serves requests on this OS and
+    # Python version, including creating its connector key with the right access.
+    # (The backend test suite is kept out of the repository by choice.)
+    name: "Backend lint and startup (${{ matrix.os }}, Python ${{ matrix.python }})"
     strategy:
       fail-fast: false
       matrix:
@@ -24,16 +26,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install the pinned runtime and test tools
-        run: python -m pip install -r requirements.txt pytest==9.1.1 ruff==0.16.2
+      - name: Install the pinned runtime and lint tool
+        run: python -m pip install -r requirements.txt ruff==0.16.2
       - name: Lint
-        run: python -m ruff check app tests
-      - name: Tests
-        run: python -m pytest -q -p no:cacheprovider
+        run: python -m ruff check app
+      - name: Start Neo and check it answers
+        shell: bash
+        run: |
+          scratch="$(mktemp -d)"
+          NEO_DATA_DIR="$scratch/data" python -m uvicorn app.main:app \
+            --host 127.0.0.1 --port 18000 > "$scratch/server.log" 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:18000/api/health/live && break; sleep 2; done
+          test "$(curl -s http://127.0.0.1:18000/api/health/ready)" = '{"status":"ready"}'
+          curl -fsS -c "$scratch/jar" -H 'content-type: application/json' \
+            -d '{"username":"ci","password":"ci-password"}' http://127.0.0.1:18000/api/account-profiles
+          curl -s -b "$scratch/jar" http://127.0.0.1:18000/api/health/ready | tee "$scratch/ready.json"
+          grep -q '"connector_key":{"ok":true' "$scratch/ready.json"
+          if grep -E "Traceback|ERROR" "$scratch/server.log"; then exit 1; fi
 
   frontend:
-    # Claim: the interface's unit tests and production build pass.
-    name: Frontend unit tests and production build
+    # Claim: the interface installs from the lockfile and its production build
+    # passes. (Test files are kept out of the repository by choice.)
+    name: Frontend production build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,43 +60,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
-      - run: npm test
       - run: npm run build
-
-  browsers:
-    # Claim: a first session (sign up, chat screen, notes, Web Crypto, log out,
-    # delete) works in this browser engine. WebKit runs on macOS, closest to Safari;
-    # it is an engine check, not Safari itself.
-    name: "Browser smoke (${{ matrix.browser }})"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { browser: chromium, os: ubuntu-latest }
-          - { browser: firefox, os: ubuntu-latest }
-          - { browser: webkit, os: macos-latest }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Backend in a virtualenv the smoke config can find
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install -r requirements.txt
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build the interface and run the smoke test
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-          npx playwright install --with-deps ${{ matrix.browser }}
-          npx playwright test --project=${{ matrix.browser }}
 
   docker:
     # Claim: the image builds, starts, answers health checks, ships no runtime

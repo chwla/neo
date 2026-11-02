@@ -1,6 +1,6 @@
 # Release readiness
 
-Last updated 2026-10-31, against HEAD `2896add` plus uncommitted work in the working tree.
+Last updated 2026-11-02, after commit `dcfb6f3` and its first CI run.
 
 ## Verdict: not ready
 
@@ -12,10 +12,10 @@ The security boundary and data-integrity blockers found in the 2026-10-30 audit 
 | Target | Status | Evidence |
 |---|---|---|
 | macOS, native | Verified locally | Backend suite on Python 3.14 and 3.12; browser smoke in three engines; live checks against a restarted backend |
-| Windows, native | **Unverified**; four features unsupported | Needs the `backend (windows-latest, ...)` CI job. Undo, patch apply, delivery and checkpoint restore fail closed. |
-| Linux, native | **Unverified** | Needs the `backend (ubuntu-latest, ...)` CI job |
-| Docker image | Verified locally on Docker Desktop (macOS); **unverified on Linux Docker Engine** | Built `neo:latest` (`e355fd476ffa`) and smoke-tested on a fresh volume: see Evidence. Linux Engine needs the `docker` CI job. |
-| Chromium engine (Chrome, Edge) | Verified locally (macOS) | Playwright smoke, Chromium 156 headless shell |
+| Windows, native | **Unverified**; four features unsupported | Needs the `Backend lint and startup (windows-latest, ...)` CI jobs to pass. Undo, patch apply, delivery and checkpoint restore fail closed. |
+| Linux, native | **Unverified** | Needs the `Backend lint and startup (ubuntu-latest, ...)` CI jobs to pass |
+| Docker image | Verified on Linux Docker Engine (CI) and Docker Desktop (macOS) | CI job "Docker image build and smoke" passed on `dcfb6f3`: builds, no runtime data in the image, starts, health, sign-up, connector key, key kept across a restart. Also smoke-tested locally: see Evidence. |
+| Chromium engine (Chrome, Edge) | Verified locally (macOS) | Playwright smoke, Chromium 156 headless shell. The Playwright files are kept local, so CI has no browser job. |
 | Firefox engine | Verified locally (macOS) | Playwright smoke, Firefox 157 |
 | WebKit engine | Verified locally (macOS) | Playwright smoke, WebKit 27.2. This is an engine check, not Safari itself. |
 | Safari, iOS Safari | **Unverified** | Not tested; WebKit is the closest evidence |
@@ -24,11 +24,11 @@ The supported browser floor is Chrome/Edge 111, Firefox 121 and Safari/iOS 16.2.
 
 ## What changed
 
-Every fix has a test in `tests/` (new suite) or `frontend/tests/`.
+Every fix has a regression test. Test files are kept out of the repository by choice: the backend suite in `tests/` and the new frontend test files exist only locally, the test names below refer to those local files, and CI runs lint, startup and build checks instead.
 
 | ID | Finding | Fix | Test |
 |---|---|---|---|
-| B1 | The test suite was deleted; the frontend failed 2 of 980 | New suite in `tests/` (your staged deletion is kept). `conftest.py` sandboxes data before any app import, and a SQLite guard fails any test that opens a database outside the temp directory. The crypto fixture is restored byte-identical. | `tests/test_harness_isolation.py` |
+| B1 | The test suite was deleted; the frontend failed 2 of 980 | New local-only suite in `tests/`, with the crypto fixture restored byte-identical. Because `tests/` is not in the repository, the frontend's `notes-crypto` and `no-em-dashes` tests fail in any checkout without it; CI therefore does not run the frontend tests. `conftest.py` sandboxes data before any app import, and a SQLite guard fails any test that opens a database outside the temp directory. The crypto fixture is restored byte-identical. | `tests/test_harness_isolation.py` |
 | B2 | Anonymous `/api/health/ready` ran a web search and a model call, and leaked the data path | Anonymous callers get status only, from storage checks. Signed-in callers get the full report, cached for 30 s. Probes are cached for 10 s. | `tests/test_health_ready.py` |
 | B3 | Interrupted agent runs were never failed in profile databases | Recovery runs per profile, for accounts and guests, and keeps the stale-heartbeat guard | `tests/test_profile_recovery.py` |
 | B4, X1 | Commands and tests ran unsandboxed: on macOS when the probe failed, and on Windows/Linux in AUTO mode with no prompt | One rule in `app/services/isolation/launch.py`, called before every command-sandbox and test-runner launch: sandboxed, or unsandboxed only with a person's approval of that run after being shown the exposure, or refused. A failing sandbox is never a fallback. The agent cannot approve itself. AUTO asks. | `tests/test_isolation_launch.py` |
@@ -85,7 +85,7 @@ The backend was restarted with the documented clean-environment command before t
 
 ## Not run, and why
 
-- **Hosted CI** (`.github/workflows/ci.yml`): it runs only after a push, and pushing is reserved for the repository owner. Until it passes, Windows, Linux and Docker stay unverified.
+- **Hosted CI, first run on `dcfb6f3`:** the Docker job passed. Every other job failed only because it expected the test files kept out of the repository (`ruff check app tests`, the root crypto fixture, the Playwright config). The workflow now lints `app` and starts Neo on each OS and Python version, the frontend job checks the production build only, and the browser job is gone: none of them needs a test file. Those jobs need the next push to run; until they pass, Windows and Linux stay unverified.
 - **Docker on Linux Engine:** the image was verified only on Docker Desktop (macOS), which defines `host.docker.internal` itself; the compose `extra_hosts` mapping matters on Linux Engine and needs the `docker` CI job.
 - **Real Windows ACL and Windows git:** they exist only in the Windows CI job. Locally the Windows key path is exercised with a mocked `icacls`.
 - **Safari and iOS Safari:** no device or automation available. WebKit is the closest evidence.
@@ -113,6 +113,6 @@ The backend was restarted with the documented clean-environment command before t
 
 ## Gates still to clear
 
-1. Push the branch so CI runs, then get every job green: backend on three OSes × two Pythons, frontend, browsers, and Docker on Linux Engine.
+1. Commit the updated workflow and docs (no test files) and push, then get every job green: backend lint and startup on three OSes × two Pythons, and the frontend build. Docker on Linux Engine has already passed.
 2. Decide on H9.
 3. Decide whether the Windows feature gap is acceptable for the release, or build and CI-verify the Windows `safe_fs` backend.

@@ -283,7 +283,7 @@ add an authenticated TLS reverse proxy before exposure.
 | macOS, native | Supported. Commands and tests run in the Seatbelt sandbox. |
 | Linux, native | Not yet verified. Commands and tests need per-run approval (no sandbox). |
 | Windows, native | Not yet verified. Commands and tests need per-run approval (no sandbox). Agent undo, patch apply, delivery and checkpoint restore are unavailable: Neo cannot guarantee on Windows that a restoring write stays inside the folder, so it refuses rather than risk it. |
-| Docker | Not yet verified end to end. Same rules as Linux. |
+| Docker | Verified: the image builds, starts and serves on Linux Docker Engine (CI) and Docker Desktop. Same command rules as Linux. |
 | Chrome, Edge 111+ / Firefox 121+ / Safari 16.2+ (iOS 16.2+) | The supported floor (`browserslist` in `frontend/package.json`). |
 
 "Not yet verified" means the matching job in `.github/workflows/ci.yml` has not yet passed;
