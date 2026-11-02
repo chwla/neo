@@ -54,7 +54,9 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
-COPY pyproject.toml README.md ./
+# LICENSE and NOTICE travel with the image: Apache-2.0 asks that a redistribution
+# carry both. requirements.txt is the lock exported for pip (see its header).
+COPY pyproject.toml README.md LICENSE NOTICE requirements.txt ./
 COPY app/ ./app/
 # Group 0 with group-write is what lets the container run as an arbitrary uid.
 # Linux bind mounts keep the host's ownership, so a Linux user has to run the
@@ -71,8 +73,12 @@ RUN if [ "$WITH_VOICE" = "1" ]; then \
         && apt-get install -y --no-install-recommends libgomp1 \
         && rm -rf /var/lib/apt/lists/*; \
     fi
-RUN if [ "$WITH_VOICE" = "1" ]; then pip install --no-cache-dir ".[voice]"; \
-    else pip install --no-cache-dir .; fi \
+# The pinned runtime set first, so the image runs the versions that were tested
+# and audited rather than whatever satisfies pyproject's lower bounds on build day.
+# The voice extra is not in the export and still resolves on top of it.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "$WITH_VOICE" = "1" ]; then pip install --no-cache-dir ".[voice]"; \
+    else pip install --no-cache-dir --no-deps .; fi \
     && mkdir -p /app/data/workspace_files /app/data/workspace_repos /app/data/voice-models \
     && useradd --create-home --uid 10001 --gid 0 neo \
     && chown -R 10001:0 /app/data \
@@ -84,7 +90,11 @@ RUN if [ "$WITH_VOICE" = "1" ]; then pip install --no-cache-dir ".[voice]"; \
 COPY --from=searxng-src /src/searxng/searx /opt/searxng/searx
 COPY --from=searxng-src /src/searxng/requirements.txt /opt/searxng/requirements.txt
 COPY docker/searxng/settings.yml /opt/searxng/settings.yml
+# Neo's own pins go back on afterwards: SearXNG's file pins packages Neo shares
+# (certifi, at the pinned commit, to a bundle that still trusts a distrusted root),
+# and installing it second would otherwise leave those at its older versions.
 RUN pip install --no-cache-dir -r /opt/searxng/requirements.txt \
+    && pip install --no-cache-dir -r /app/requirements.txt \
     && printf '%s\n' \
         '# Written at build time -- searx/version.py prefers this over shelling' \
         '# out to git, which is absent from the fetched tree.' \

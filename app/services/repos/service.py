@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import shutil
 import uuid
 from pathlib import Path
 
 from app.core.config import active_profile_storage_dir, get_settings
+from app.core.paths import remove_tree
 from app.services.disclosure import public
 from app.services.disclosure.artifacts import ArtifactLabels
 from app.services.files.service import WorkspaceFilesService
@@ -16,7 +16,6 @@ from app.services.repos.safety import (
     ensure_inside,
     prepare_managed_root,
     validate_live_root,
-    validate_repo_root,
 )
 from app.services.repos.scanner import scan_repo
 from app.services.repos.types import RepoRegisterRequest
@@ -40,7 +39,8 @@ class RepoWorkspaceService:
         if request.project_id and not get_project(request.project_id):
             raise LookupError("Project not found.")
         live = request.access == store.LIVE
-        source = validate_live_root(request.path) if live else validate_repo_root(request.path)
+        # Both kinds read the folder, so both are held to the configured roots.
+        source = validate_live_root(request.path)
         if store.get_repo_by_original_path(str(source)):
             raise ValueError("This repository is already registered.")
         return self._import_root(
@@ -134,7 +134,7 @@ class RepoWorkspaceService:
             # Only a managed copy is Neo's to delete. Removing the tree on a
             # failed live import would delete the user's project.
             if not live and workspace_path.exists():
-                shutil.rmtree(workspace_path)
+                remove_tree(workspace_path)
             store.cleanup_failed_import(repo_id)
             raise
         metadata = {

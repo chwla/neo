@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -36,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.core.paths import remove_tree
 from app.services.isolation import environment, procs
 from app.services.isolation.attest import AttestationFailed
 from app.services.isolation.attest import attest as run_attestation
@@ -133,7 +133,7 @@ class StreamProcess:
             )
         self._lease.finish()
         self._markers.remove()
-        shutil.rmtree(self._temp_dir, ignore_errors=True)
+        remove_tree(self._temp_dir, ignore_errors=True)
         self._cleaned = True
 
     def poll(self) -> int | None:
@@ -236,12 +236,44 @@ def start_stream(
         if lease is not None:
             lease.finish()
         markers.remove()
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        remove_tree(temp_dir, ignore_errors=True)
         raise
+
+
+#: How long a successful probe is trusted. The probe spawns ``sandbox-exec`` and
+#: writes run markers, and callers ask before every git command, file write and
+#: language-server start, so probing each time was most of their cost. Only a
+#: success is remembered: a failure is probed again on the next call, and a
+#: sandbox that disappears inside the window fails its launch, which every caller
+#: treats as a refusal rather than a reason to run unsandboxed.
+STATUS_TTL_SECONDS = 300.0
+_status_lock = threading.Lock()
+_status_cache: tuple[float, dict] | None = None
+
+
+def reset_status_cache() -> None:
+    global _status_cache
+    with _status_lock:
+        _status_cache = None
 
 
 def status() -> dict:
     """Whether this machine can isolate a run, and why not when it cannot."""
+
+    global _status_cache
+    with _status_lock:
+        cached = _status_cache
+    if cached is not None and time.monotonic() - cached[0] < STATUS_TTL_SECONDS:
+        return dict(cached[1])
+    result = _probe_status()
+    if result.get("supported"):
+        with _status_lock:
+            _status_cache = (time.monotonic(), dict(result))
+    return result
+
+
+def _probe_status() -> dict:
+    """Run the probe behind :func:`status`, uncached."""
 
     if sys.platform != "darwin":
         return {
@@ -405,7 +437,7 @@ def run(
         procs.self_test(markers)
     except procs.SupervisionUnavailable as exc:
         markers.remove()
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        remove_tree(temp_dir, ignore_errors=True)
         raise IsolationUnavailable(str(exc)) from exc
 
     try:
@@ -419,7 +451,7 @@ def run(
         )
     except BaseException:
         markers.remove()
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        remove_tree(temp_dir, ignore_errors=True)
         raise
 
     policy = RunPolicy(
@@ -489,7 +521,7 @@ def run(
         if not result.quarantined:
             lease.finish()
             markers.remove()
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            remove_tree(temp_dir, ignore_errors=True)
         else:
             _LOG.error(
                 "isolation_run_quarantined purpose=%s profile=%s reason=%s",

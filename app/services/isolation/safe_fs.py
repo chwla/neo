@@ -38,6 +38,32 @@ class UnsafePath(OSError):
     """The path could not be used without risking a write outside the tree."""
 
 
+class PlatformUnsupported(UnsafePath, ValueError):
+    """This platform cannot do anchored operations at all (Windows).
+
+    Also a ``ValueError`` -- as ``io.UnsupportedOperation`` is both -- so every route
+    that turns a ``ValueError`` into a 400 reports the reason instead of a 500.
+    """
+
+
+#: Windows has no ``openat``: ``dir_fd``, ``O_DIRECTORY`` and ``O_NOFOLLOW`` do not
+#: exist there, so the walk below cannot be built, and a containment check followed
+#: by a write by path is exactly the race this module exists to refuse. Rather than
+#: an ``AttributeError`` part way in, or a weaker write presented as this one, every
+#: operation is refused up front with a reason a person can act on.
+_SUPPORTED = os.name != "nt"
+PLATFORM_UNSUPPORTED_MESSAGE = (
+    "Undo, patch apply, delivery and checkpoint restore are not available on Windows in "
+    "this release: Neo cannot guarantee there that a restoring write stays inside the folder."
+)
+
+
+def supported() -> bool:
+    """Whether anchored in-tree operations work on this platform."""
+
+    return _SUPPORTED
+
+
 def _relative_parts(relative: str | os.PathLike[str]) -> tuple[str, ...]:
     text = str(relative).replace("\\", "/")
     if text.startswith("/"):
@@ -52,6 +78,8 @@ def _relative_parts(relative: str | os.PathLike[str]) -> tuple[str, ...]:
 
 
 def _open_root(root: int | str | os.PathLike[str]) -> int:
+    if not _SUPPORTED:
+        raise PlatformUnsupported(PLATFORM_UNSUPPORTED_MESSAGE)
     if isinstance(root, int):
         fd = os.dup(root)
         try:
@@ -345,6 +373,9 @@ def exists(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> bo
                 return True
             except FileNotFoundError:
                 return False
+    except PlatformUnsupported:
+        # "Cannot check here" is not "does not exist"; a caller must not act on it.
+        raise
     except (UnsafePath, FileNotFoundError):
         return False
 
@@ -363,6 +394,8 @@ def within(root: str | os.PathLike[str], candidate: str | os.PathLike[str]) -> s
 
 
 __all__ = [
+    "PLATFORM_UNSUPPORTED_MESSAGE",
+    "PlatformUnsupported",
     "UnsafePath",
     "delete",
     "exists",
@@ -370,6 +403,7 @@ __all__ = [
     "makedirs",
     "read_file",
     "root_identity",
+    "supported",
     "within",
     "write_file",
     "write_text",

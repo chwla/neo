@@ -4,7 +4,7 @@
 #
 # SearXNG used to be a second service here. It now runs inside Neo's own process
 # -- searx.webapp is a Flask WSGI app, so the image bakes in its source tree and
-# app/services/search/searxng_embedded.py imports it. That removes this file's 
+# app/services/search/searxng_embedded.py imports it. That removes this file's
 # private network, the SearXNG healthcheck, the depends_on gate that made Neo
 # wait on it, and the settings bind-mount, and makes `docker run` and
 # `docker compose up` equivalent again.
@@ -27,8 +27,20 @@ services:
     image: neo:latest
     container_name: neo
     restart: unless-stopped
+    # The image reaches Ollama on the host at host.docker.internal. Docker Desktop
+    # (macOS, Windows) defines that name; Docker Engine on Linux does not, so it is
+    # mapped to the host gateway here -- the same thing the README's `docker run`
+    # does with --add-host. Without it Ollama is unreachable on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      # Loopback only. Anyone who can reach this port can start a guest session or
+      # register a profile, and a session can open folders under /workspace (your
+      # home directory, by default) and run allowlisted commands there, unsandboxed
+      # on Linux. Publishing on every interface would offer that to the whole
+      # network. Reach Neo from another machine only through an authenticated TLS
+      # reverse proxy, never by widening this.
+      - "127.0.0.1:8000:8000"
     environment:
       NEO_SEARCH_PROVIDER: searxng
       # SearXNG aggregates upstream engines that rate-limit and serve CAPTCHAs,
@@ -80,15 +92,23 @@ services:
       # a \\wsl$ or C:\ mount crosses a filesystem bridge and is markedly slower.
       #
       # Mounting a home directory does not make all of it a project. /workspace
-      # itself is browse-only, and the broad folders (Desktop, Documents, Library,
-      # AppData, ...) are refused as destinations while staying browsable. What
+      # itself is browse-only, and folders holding credentials or other apps' data
+      # (.ssh, .aws, keychains, browser profiles, so all of Library) are refused.
+      # Broad folders such as Desktop and Documents are NOT refused: attaching one
+      # hands the agent everything in it, so open the project folder inside. What
       # the agent may then *do* is governed per-operation by
-      # app/services/agent_core/permissions.py, not by the folder picker.
+      # app/services/agent_core/permissions.py, not by the folder picker. On Linux
+      # there is no sandbox for its commands, and each one needs your approval.
       - ${NEO_WORKSPACE_HOST_ROOT:-${HOME:-${USERPROFILE}}}:/workspace
 
 volumes:
-  # The anonymous volume the standalone `docker run` container was using, kept
-  # by name so existing profiles, chats and the database carry over.
+  # Created by Compose on first `up`. To keep using a volume that already holds
+  # your profiles (the anonymous one a standalone `docker run` container made, for
+  # instance), name it in a docker-compose.override.yml next to this file, which
+  # Compose merges in automatically and which is ignored by git:
+  #
+  #   volumes:
+  #     neo-data:
+  #       external: true
+  #       name: <the existing volume's name>
   neo-data:
-    external: true
-    name: 3a71b43feaa9f05aff321924dc975c7778e1ccf0ad1aec76178c5c2959861066

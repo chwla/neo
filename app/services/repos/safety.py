@@ -60,7 +60,7 @@ def validate_repo_root(raw_path: str) -> Path:
     # Code-only workspace copies and CLI homes are per-profile runtime state.
     # Attaching one as a live repository would let another profile name it as
     # its own workspace and bypass the scope that the isolation policy applies.
-    from app.services.isolation.roots import data_root
+    from app.services.isolation.roots import data_root, overlaps_protected
 
     runtime_root = data_root()
     for name in ("workspaces", "agent-state"):
@@ -79,7 +79,48 @@ def validate_repo_root(raw_path: str) -> Path:
         )
     if any(is_within(root, resolved) for root in system_roots()):
         raise ValueError("System directories cannot be registered as repositories.")
+    # Checked before Neo's own storage below, which lists the same home paths but
+    # would describe them as Neo's data.
+    sensitive = _sensitive_overlap(resolved)
+    if sensitive:
+        raise ValueError(
+            f"That folder holds credentials or another app's private data ({sensitive}), "
+            "so Neo will not open it."
+        )
+    # The rest of Neo's own storage: every profile's database and files, the
+    # registry, the connector key. On macOS a run inside such a folder is refused
+    # by the isolation layer, but Neo's own file tools and the unsandboxed command
+    # path elsewhere would read it, so it is refused here, on every platform.
+    refusal = overlaps_protected(resolved)
+    if refusal:
+        raise ValueError(f"Neo's own storage cannot be attached: {refusal}.")
     return resolved
+
+
+def _sensitive_overlap(resolved: Path) -> str | None:
+    """The credential or private-app path ``resolved`` is, sits inside, or contains.
+
+    The list is the one the isolation layer keeps runs out of, applied at attach
+    time and on every platform, because Seatbelt enforces it only on macOS and
+    only for the processes it launches. It is anchored at the home directory and
+    at each configured workspace root: in a container the user's home is the
+    mount, not the server's own ``~``.
+    """
+
+    from app.services.isolation.roots import HOME_PRIVATE
+
+    bases: list[Path] = []
+    for raw in (str(Path.home()), *split_roots(get_settings().workspace_live_roots)):
+        try:
+            bases.append(Path(raw).expanduser().resolve())
+        except OSError:
+            continue
+    for base in bases:
+        for name in HOME_PRIVATE:
+            path = base / name
+            if is_within(path, resolved) or (is_within(resolved, path) and path.exists()):
+                return str(path)
+    return None
 
 
 def ensure_inside(root: Path, candidate: Path) -> Path:
@@ -123,11 +164,14 @@ def _live_roots() -> list[Path]:
 
 
 def validate_live_root(raw_path: str) -> Path:
-    """Validate a folder the agent will edit *in place*.
+    """Validate a folder the agent will edit *in place*, or copy from.
 
     Everything ``validate_repo_root`` refuses is refused here too -- this adds to
     that check rather than replacing it, because writing directly to a folder is
-    strictly more dangerous than copying out of one.
+    strictly more dangerous than copying out of one. A managed copy's source goes
+    through here as well: in a container the configured roots are the only part
+    of the filesystem that is the user's, and copying from outside them reached
+    Neo's own data directory.
 
     What it adds on top: the configured root list; the rule that a root is itself
     browse-only; and a better diagnosis when the path is simply not visible,
@@ -153,7 +197,7 @@ def validate_live_root(raw_path: str) -> Path:
     roots = _live_roots()
     if roots and not any(is_within(root, resolved) for root in roots):
         allowed = ", ".join(str(root) for root in roots)
-        raise ValueError(f"Folders opened for direct editing must live under: {allowed}.")
+        raise ValueError(f"Folders Neo opens must live under: {allowed}.")
     # A configured root is a container for projects, not a project. Opening one
     # would put every sibling project into a single workspace and index the lot,
     # so it is browse-only. ``same_path`` rather than ``==``: on macOS and Windows

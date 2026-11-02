@@ -28,7 +28,7 @@ API it talks to see [backend.md](backend.md).
 
 ## Stack
 
-- **React 18** with function components and hooks, **Vite 5** for dev server and build.
+- **React 18** with function components and hooks, **Vite 6** for dev server and build.
 - **Plain JavaScript** (`.js` / `.jsx`), no TypeScript.
 - **No router, no state library.** Navigation is app state plus history `pushState` permalinks;
   state is `useState`/`useReducer`, small external stores, and `useSyncExternalStore`.

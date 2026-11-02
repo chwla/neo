@@ -2,9 +2,49 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ProviderType = Literal["ollama", "openai_compatible", "disabled", "mock"]
+
+
+#: Keys Neo itself uses for web search. Named like provider keys, so the suffix
+#: rule alone let a model configuration send them to any endpoint.
+RESERVED_KEY_NAMES = frozenset(
+    {
+        "TAVILY_API_KEY",
+        "BRAVE_API_KEY",
+        "DATA_BRAVE_API_KEY",
+        "SERPER_API_KEY",
+        "WEB_SEARCH_API_KEY",
+    }
+)
+
+
+def check_key_env_name(name: str | None) -> str | None:
+    """Refuse an environment variable a provider may not take its key from.
+
+    A provider's key is read from the named variable and sent, as a bearer token,
+    to whatever base URL the provider names, and any signed-in session can set
+    both. So the name has to be one meant for a model provider: never one of
+    Neo's own settings (``NEO_CONNECTOR_MASTER_KEY`` opens every profile's sealed
+    tokens), and only the conventional ``*_API_KEY`` spelling, which keeps cloud
+    and VCS credentials, session tokens and the rest of the environment out.
+    """
+
+    if name is None:
+        return None
+    upper = name.upper()
+    if upper in RESERVED_KEY_NAMES:
+        raise ValueError(
+            f"{name} is Neo's own search key, not a model provider's, and cannot be "
+            "sent to a model endpoint."
+        )
+    if upper.startswith("NEO_") or not upper.endswith("_API_KEY"):
+        raise ValueError(
+            "The key must come from an environment variable named like a provider "
+            "API key (for example OPENAI_API_KEY), not one of Neo's own NEO_ settings."
+        )
+    return name
 
 
 class ProviderCreate(BaseModel):
@@ -18,6 +58,11 @@ class ProviderCreate(BaseModel):
     priority: int = Field(default=100, ge=0, le=10000)
     timeout_seconds: int = Field(default=60, ge=1, le=3600)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("api_key_ref")
+    @classmethod
+    def key_env_is_a_provider_key(cls, value: str | None) -> str | None:
+        return check_key_env_name(value)
 
     @model_validator(mode="after")
     def normalize(self) -> ProviderCreate:
@@ -39,6 +84,11 @@ class ProviderUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=0, le=10000)
     timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
     metadata: dict[str, Any] | None = None
+
+    @field_validator("api_key_ref")
+    @classmethod
+    def key_env_is_a_provider_key(cls, value: str | None) -> str | None:
+        return check_key_env_name(value)
 
 
 class ModelCreate(BaseModel):

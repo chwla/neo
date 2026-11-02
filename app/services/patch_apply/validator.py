@@ -186,6 +186,8 @@ def _prepare_file(repo: dict | None, target: dict, patch: ParsedFilePatch) -> Pr
                 original_bytes = safe_fs.read_file(
                     Path(repo["workspace_path"]).resolve(), relative_path
                 )
+            except safe_fs.PlatformUnsupported:
+                raise
             except OSError as exc:
                 raise ValueError(f"Unsafe patch target: {relative_path}.") from exc
         else:

@@ -74,11 +74,18 @@ What this does:
   there**; do not run without a volume if you want data to survive replacing the container.
 - Mounts your home directory at `/workspace` so Agent Mode can open projects where they
   already live.
+- Publishes port 8000 on `127.0.0.1` only. See [Security notes](#security-notes) for why.
 
-> **Note:** `docker-compose.yml` declares `neo-data` as an `external` volume with a fixed name
-> from the original author's machine. On a new machine, either create a volume with that exact
-> name or edit the `volumes:` block at the bottom of the file to a plain `neo-data:` entry
-> (remove `external` and `name`) so Compose creates it for you.
+> **Note:** Compose creates the `neo-data` volume on first `up`. To keep using a volume that
+> already holds your profiles, name it in a `docker-compose.override.yml` next to
+> `docker-compose.yml` (Compose merges it in automatically, and git ignores it):
+>
+> ```yaml
+> volumes:
+>   neo-data:
+>     external: true
+>     name: <the existing volume's name>
+> ```
 
 ### Configure with `.env`
 
@@ -109,25 +116,26 @@ reach.
 
 ```bash
 docker build -t neo:local .
-docker run --name neo -p 8000:8000 -v neo_data:/app/data \
+docker run --name neo -p 127.0.0.1:8000:8000 -v neo_data:/app/data \
   --add-host=host.docker.internal:host-gateway neo:local
 ```
 
 ### Production secrets
 
-Connector credentials and OAuth tokens are encrypted with a master key. In the image the key
-is read from `/app/data/secrets/connector-master-key` (via `NEO_CONNECTOR_MASTER_KEY_FILE`),
-and the readiness check **fails if that file does not exist**. Create it once:
+Connected accounts, OAuth client secrets and GitHub tokens are sealed under one master key.
+In the image it lives at `/app/data/secrets/connector-master-key` (`NEO_CONNECTOR_MASTER_KEY_FILE`),
+inside the data volume, and Neo generates it there on first run, mode `0600`. Nothing has to be
+created by hand. `NEO_CONNECTOR_MASTER_KEY` supplies a key inline instead.
 
-```bash
-docker exec neo sh -c 'mkdir -p /app/data/secrets && \
-  python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode())" \
-  > /app/data/secrets/connector-master-key && chmod 600 /app/data/secrets/connector-master-key'
-```
+**Back this key up with your data.** If it goes missing while sealed records exist, Neo will
+not quietly make a new one: it refuses, naming the missing key's fingerprint. Restore the file
+and restart. Only if no backup exists, start once with `NEO_CONNECTOR_KEY_RESET=<that
+fingerprint>`; that is a destructive reset -- every connected account on every profile must be
+reconnected, and every OAuth client secret and GitHub token re-entered. Passwords, chats, notes,
+memories and files are untouched. See "Connector master key" in the README for every case.
 
-For a throwaway local container you can instead pass `-e NEO_CONNECTOR_MASTER_KEY=<32-byte
-urlsafe base64>`. **Back this key up with your data**: ciphertext is bound to the profile and
-cannot be decrypted with a replacement key.
+If the container later runs as a different user (`NEO_UID`), the key becomes unreadable and Neo
+says so rather than replacing it; run as the original user again.
 
 ---
 
@@ -176,7 +184,11 @@ npm run dev
 ```
 
 Open <http://127.0.0.1:5173>. Vite proxies `/api` to `http://127.0.0.1:8000`; if your backend is
-elsewhere, set `VITE_API_PROXY_TARGET`.
+elsewhere, set `VITE_API_PROXY_TARGET`. The backend refuses writes whose `Origin` is not its own,
+so the proxy rewrites `Origin` for requests coming from the dev server's own page
+(`frontend/devProxy.js`); requests from any other page keep theirs and are still refused.
+Starting the backend with `NEO_DEV_CORS_ENABLED=true` is the alternative when you call the
+backend from the dev origin directly, without the proxy.
 
 ### 3. Serving the built UI from the backend (optional)
 
@@ -190,7 +202,8 @@ interface itself on port 8000, exactly as the Docker image does.
 ### 4. Checks
 
 ```bash
-.venv/bin/ruff check app
+.venv/bin/ruff check app tests
+.venv/bin/python -m pytest
 cd frontend && npm test && npm run build
 ```
 
@@ -267,7 +280,7 @@ Use `--api-url` or `NEO_API_URL` to point it elsewhere (default `http://127.0.0.
 |---|---|
 | `GET /api/health/live` | Process is up. Used by the Docker healthcheck. |
 | `GET /api/health` | Basic storage, search and Ollama availability. |
-| `GET /api/health/ready` | Dependency-aware: storage/SQLite, chat model, search provider, connector vault, required connectors. A `503` means alive but not ready; read the `checks` object. |
+| `GET /api/health/ready` | Without a session: only `{"status": "ready"\|"not_ready"}`, from writable storage and SQLite. Signed in: the full `checks` object (storage path, chat model, search provider, voice, connector key), cached for 30 seconds. A `503` means alive but not ready. |
 
 ---
 
@@ -284,6 +297,11 @@ Use `--api-url` or `NEO_API_URL` to point it elsewhere (default `http://127.0.0.
 - Port 8000 has no TLS. Do not expose it to an untrusted network. If you must, put an
   authenticated TLS reverse proxy in front, add its hostname to `NEO_TRUSTED_HOSTS`, and review
   the cookie settings.
+- The Docker examples publish the port on `127.0.0.1` only. Anyone who can reach it can start
+  a guest session or register a profile, and a session can open folders under the workspace
+  root and run allowlisted commands there. Outside macOS those commands are not sandboxed.
+  The `Host` check below stops browser-based attacks; it does not stop a client that connects
+  directly, so do not widen the port binding.
 - Requests with an unrecognised `Host` header are refused (DNS-rebinding defence); loopback
   names are always accepted.
 
@@ -293,8 +311,8 @@ Use `--api-url` or `NEO_API_URL` to point it elsewhere (default `http://127.0.0.
 |---|---|
 | "Backend API is not reachable" in the UI | The backend is not running on :8000, or `VITE_API_PROXY_TARGET` is wrong. |
 | Chat returns a model error | Ollama is not running, or the model is not pulled. `ollama list`; check `NEO_DEFAULT_MODEL` and `OLLAMA_BASE_URL`. |
-| `/api/health/ready` returns 503 for the vault | The master key file does not exist; see [Production secrets](#production-secrets). |
-| Docker: `external volume not found` | See the note under [Option A](#option-a-docker). |
+| Signed-in `/api/health/ready` shows `connector_key` not ok | The key is missing, unreadable or damaged; `detail` says which and what to do. See [Production secrets](#production-secrets). |
+| Docker: `external volume not found` | A `docker-compose.override.yml` names a volume that does not exist here. Fix the name or delete the override; see the note under [Option A](#option-a-docker). |
 | Linux: "Permission denied" writing to a project | Set `NEO_UID=$(id -u)` in `.env` and recreate the container. |
 | Web search returns nothing | Provider disabled, blocked, or rate-limited. Try a keyed provider or fallbacks; see `/api/health`. |
 | `untrusted_host` (400) | Request used a hostname not in loopback or `NEO_TRUSTED_HOSTS`. |

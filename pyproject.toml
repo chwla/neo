@@ -74,6 +74,12 @@ norecursedirs = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+# Non-Python files the code opens relative to its own module. Without this a
+# regular (non-editable) install leaves them out and the local-model catalogue
+# has nothing to recommend from.
+[tool.setuptools.package-data]
+"app.services.local_models" = ["data/*.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

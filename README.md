@@ -7,8 +7,8 @@ one profile-scoped application.
 
 The production image serves the current React interface and the FastAPI API from the same
 origin. Data stays in local SQLite databases and local workspace directories unless a user
-explicitly invokes a configured model, search provider, GitHub connection, REST API, or MCP
-server.
+explicitly invokes a configured model, search provider, GitHub connection, or connected
+Google account.
 
 ## What the platform includes
 
@@ -33,11 +33,10 @@ server.
 - Notes, tasks, projects, files, artifacts, repositories, code indexes, symbol awareness,
   LSP, patches, guarded commands, tests, Git checkpoints, research, agents, recovery,
   evaluation, continuity, and export/import bundles.
-- OpenAPI, manual REST, MCP Streamable HTTP, legacy MCP SSE, and trusted stdio connectors;
-  profile-bound AES-GCM credential storage; OAuth 2.0 Authorization Code with PKCE and atomic
-  token rotation; conservative auto-use of uniquely matched read operations; and explicit
-  approval for external or workspace writes. Connector administration requires an active
-  profile session.
+- Connected Google accounts (Calendar, Docs, Drive, Gmail) through OAuth 2.0 Authorization
+  Code with PKCE and atomic token rotation, with tokens sealed per profile with AES-GCM and
+  never returned by read APIs. External or workspace writes need explicit approval, and
+  connecting an account requires a signed-in profile; guest sessions cannot.
 
 ## Architecture
 
@@ -52,7 +51,7 @@ Browser (React + Vite)              Neo CLI
                          |
        profile SQLite DB + local files + managed repo copies
                          |
-       optional LLM, search, live-data, GitHub, REST, and MCP services
+       optional LLM, search, live-data, GitHub, and Google services
 ```
 
 Every non-guest account has a registry record plus its own storage directory and SQLite
@@ -73,8 +72,14 @@ their scoped workspace, and any earlier message or note the user explicitly
 previews and approves. A private disclosure runs in a separate full copy and its
 changes require exact-diff review before delivery. External CLIs refuse to run on
 Linux, Windows and Docker, or when macOS isolation and CLI validation are missing.
-Neo-side commands and tests on unsupported platforms retain their ordinary
-workspace permissions and Git hardening; they are not OS-isolated.
+
+Neo's own commands and test runs are sandboxed only where a sandbox exists (macOS).
+Everywhere else -- Windows, Linux, Docker, or a Mac whose sandbox check fails -- a
+command or test suite would run with your whole user account, so Neo never runs one
+unattended there: every launch needs your approval of that exact command, after Neo
+has said what running it unsandboxed exposes. AUTO mode asks too. The rule is enforced
+at the moment each process starts (`app/services/isolation/launch.py`), not only in
+the interface.
 
 ### Reaching your folder
 
@@ -99,22 +104,31 @@ they already live. Copy `.env.example` to `.env` only if you want to narrow it:
 
 Open a folder is a browser, not a text field: it lists what is under the root and you
 navigate to the project you want. Everything on disk is listed, hidden folders included,
-because `.dotfiles`, `.vscode`, `.config` and a repository's `.git` are ordinary folders
-to a coding agent.
+because `.dotfiles`, `.vscode` and a repository's `.git` are ordinary folders to a coding
+agent.
 
 The selected workspace scopes Neo's internal file tools. Their permission resolver in
 `app/services/agent_core/permissions.py` governs reads, writes and commands; the
 external CLI boundary also needs its operating-system policy and validation. The picker's rules
-(`app/services/repos/safety.py`) are only about what makes a sane *project root*:
+(`app/services/repos/safety.py`) decide which folders may be opened at all, for live and
+managed attachment alike:
 
-- `/workspace` itself is **browse-only**: a root holds projects, it is not one.
-- `Desktop`, `Documents`, `Downloads`, `Pictures`, `Music`, `Movies`, `Videos`, `Public`,
-  `OneDrive`, `Library`, `AppData` and `Applications` are refused as destinations, because
-  opening one would index everything you own. You still browse *through* them, which is
-  how `~/Desktop/my-app` is reached, and anything nested inside them opens normally.
+- `/workspace` itself is **browse-only**: a root holds projects, it is not one. When roots
+  are configured, every attached folder must live under one of them.
+- Folders that hold credentials or other apps' private data are refused, whether you pick
+  the folder itself, something inside it, or a folder that contains it: `.ssh`, `.aws`,
+  `.config/gcloud`, the coding CLIs' own homes (`.claude`, `.codex`, `.cursor`, `.gemini`),
+  shell histories, the macOS keychains and browser profiles (which also rules out
+  `~/Library` as a whole). The list is checked under your home directory and under each
+  configured root, so it holds inside a container too.
+- Neo's own data directory is refused, including any folder that contains it: it holds
+  every profile's database and the connector key.
 - Symlinks and Windows junctions are refused, `..` cannot escape the root, and the system
   trees (`/etc`, `/usr`, `/System`, …), the account containers (`/Users`, `/home`) and
   `$HOME` itself stay refused as they always were.
+
+Other broad folders such as `Desktop` and `Documents` are not refused by name. Attaching
+one indexes everything in it, so pick the project folder inside instead.
 
 **Linux uid.** A bind mount keeps the host's ownership, so a container running as another
 user can read every file and write none of them. Set `NEO_UID` to your own `id -u`; the
@@ -165,16 +179,14 @@ development backend is elsewhere.
 The multi-stage image compiles the frontend, installs the backend, removes any stale static
 bundle, and copies only the newly built interface into the runtime image.
 
-Set `NEO_CONNECTOR_MASTER_KEY` to a stable URL-safe base64 value that decodes to 32 bytes for
-this local Docker example. Production deployments should mount the permission-restricted key
-file described below instead of exposing the key through process environment.
+The connector master key is generated on first run inside the data volume, beside the data
+it protects (see [Connector master key](#connector-master-key)); nothing has to be supplied.
 
 ```bash
 docker build -t neo:local .
 docker run --name neo \
-  -p 8000:8000 \
+  -p 127.0.0.1:8000:8000 \
   -v neo_data:/app/data \
-  -e NEO_CONNECTOR_MASTER_KEY="$NEO_CONNECTOR_MASTER_KEY" \
   --add-host=host.docker.internal:host-gateway \
   neo:local
 ```
@@ -187,8 +199,9 @@ the built-in SearXNG backed by DuckDuckGo and Bing HTML fallbacks. Override any
 SearXNG runs inside Neo's own process rather than as a second container:
 `searx.webapp` is a Flask WSGI app, so the image bakes in its source tree at a
 pinned commit and `app/services/search/searxng_embedded.py` imports and calls it
-directly. Nothing binds an extra port, so `docker run` above and
-`docker compose up` are equivalent. To use a SearXNG you run yourself, set
+directly. Nothing binds an extra port, and `docker-compose.yml` maps
+`host.docker.internal` to the host the same way `--add-host` does above, so `docker run`
+and `docker compose up` are equivalent. To use a SearXNG you run yourself, set
 `NEO_SEARCH_PROVIDER=external_searxng` and `NEO_SEARXNG_URL` to its address.
 On Docker Desktop, `host.docker.internal` is normally available without the explicit
 `--add-host` option.
@@ -200,9 +213,12 @@ profile must survive replacement. The image runs as the unprivileged `neo` user.
 
 - `GET /api/health/live` is a process-only liveness probe.
 - `GET /api/health` reports basic storage, search, and Ollama availability.
-- `GET /api/health/ready` performs dependency-aware checks for writable storage and SQLite,
-  the selected chat model, the configured search provider, the connector vault, and every
-  enabled connector marked required.
+- `GET /api/health/ready` answers anonymous callers with only `{"status": ...}`, from a
+  cheap check of writable storage and SQLite: these routes need no session, and any web page
+  can make a browser request them, so nothing an anonymous caller triggers may start a web
+  search or a model call or reveal a path. A signed-in caller gets the full report -- storage
+  (with its path), the selected chat model, the configured search provider, voice and the
+  connector key -- computed at most once every 30 seconds.
 
 The Docker health check uses `/api/health/live`, so a temporarily unavailable model or search
 provider does not create a container restart loop. Treat `/api/health/ready` as the
@@ -215,24 +231,71 @@ Backend settings use the `NEO_` prefix and may be placed in `.env` for local dev
 Provider API keys are read from environment references. Connector credentials and OAuth
 tokens are encrypted per profile with AES-GCM and are never returned by read APIs.
 
-For production, provide a stable 32-byte URL-safe base64 connector key through
-`NEO_CONNECTOR_MASTER_KEY` or an existing `0600` file referenced by
-`NEO_CONNECTOR_MASTER_KEY_FILE`. The production image points that file at
-`/app/data/secrets/connector-master-key` and deliberately fails the vault readiness check if
-the file does not already exist. Development mode may create a permission-restricted local
-key. Preserve the production key with the data backup: ciphertext is bound to both the
-profile and connector record and cannot be decrypted with a replacement key.
+Model configurations may name an environment variable for their key (`api_key_env`). A key
+from the server's environment is only ever sent over `https` to its own provider's host
+(`OPENAI_API_KEY` to `api.openai.com`, and so on), never to an IP address, never after a
+redirect, and never for a guest session. Neo's own search keys cannot be named at all.
+`NEO_PROVIDER_KEY_HOSTS=MY_API_KEY=llm.example.com` allows a self-hosted endpoint. This
+stops a profile from sending an operator's key to a server of its choosing; it does not
+stop any non-guest profile from *spending* that key at its provider, and any process
+running as the same OS user can read the server's environment directly.
 
-Do not expose port 8000 directly to an untrusted network. The current profile cookie is
-HTTP-only and same-site but is configured for local HTTP, so internet-facing deployments
-must add an authenticated TLS reverse proxy and review cookie policy before exposure.
+### Connector master key
+
+Connected Google accounts, bring-your-own OAuth client secrets and GitHub tokens are sealed
+under one machine-level key. It is generated on first run at
+`NEO_CONNECTOR_MASTER_KEY_FILE` (in the image, `/app/data/secrets/connector-master-key`;
+otherwise `.neo-connector-master-key` beside the profiles), readable only by your account
+(mode `0600`; on Windows an access list restricted to you). `NEO_CONNECTOR_MASTER_KEY`
+supplies one inline instead. **Back it up with your data**: without it those records cannot
+be read.
+
+What Neo does in each case:
+
+- **First run**: generates the key, but only if no profile holds sealed records.
+- **Key file missing while sealed records exist**: Neo refuses to mint a new key and says so,
+  naming the missing key's fingerprint. Restore the file from a backup and restart.
+- **Unreadable or damaged**: an error naming the fix; the file is never replaced.
+- **Replaced by an operator**: accepted; accounts sealed under the old key show
+  "reconnect required" instead of failing.
+- **Rotation** (re-sealing everything under a new key) is not supported in this release.
+
+**Resetting the key is destructive.** If no backup exists, start once with
+`NEO_CONNECTOR_KEY_RESET=<fingerprint>`, copied from the refusal message (the value `1`, or
+any other value, does nothing). That generates a new key and permanently destroys every
+sealed record on every profile: each connected account must be reconnected and each OAuth
+client secret and GitHub token entered again. Passwords, chats, notes (locked notes included),
+memories and files are not affected. The reset is recorded, and because the fingerprint it
+names is then gone, leaving the variable set can never trigger a second one.
+
+Do not expose port 8000 directly to an untrusted network. The `docker run` example above and
+`docker-compose.yml` publish it on `127.0.0.1` only, and that is deliberate: anyone who can reach the port can start a guest
+session or register a profile, and a session can open folders under the workspace root and
+run allowlisted commands there (unsandboxed outside macOS, each only after explicit
+approval). Profile cookies are HTTP-only and same-site; behind an HTTPS reverse proxy set
+`NEO_COOKIE_SECURE=true` so they are also marked `Secure`. Internet-facing deployments must
+add an authenticated TLS reverse proxy before exposure.
+
+## Supported platforms and browsers
+
+| Target | Status |
+|---|---|
+| macOS, native | Supported. Commands and tests run in the Seatbelt sandbox. |
+| Linux, native | Not yet verified. Commands and tests need per-run approval (no sandbox). |
+| Windows, native | Not yet verified. Commands and tests need per-run approval (no sandbox). Agent undo, patch apply, delivery and checkpoint restore are unavailable: Neo cannot guarantee on Windows that a restoring write stays inside the folder, so it refuses rather than risk it. |
+| Docker | Not yet verified end to end. Same rules as Linux. |
+| Chrome, Edge 111+ / Firefox 121+ / Safari 16.2+ (iOS 16.2+) | The supported floor (`browserslist` in `frontend/package.json`). |
+
+"Not yet verified" means the matching job in `.github/workflows/ci.yml` has not yet passed;
+`docs/release-readiness.md` records what has.
 
 ## Validation
 
 Run the project checks before publishing an image:
 
 ```bash
-.venv/bin/ruff check app
+.venv/bin/ruff check app tests
+.venv/bin/python -m pytest
 cd frontend
 npm test
 npm run build
@@ -253,6 +316,7 @@ curl -fsS http://127.0.0.1:8000/api/health/ready
 ```text
 app/                 FastAPI routes, services, persistence, models, CLI, and TUI
 frontend/            React/Vite application and browser API client
+tests/               Backend pytest suite and fixtures shared with the frontend tests
 docs/                Setup, backend and frontend guides
 docker/searxng/      Settings for the SearXNG that runs inside Neo's process
 Dockerfile           Production frontend/backend image

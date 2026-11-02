@@ -17,6 +17,7 @@ from contextlib import closing
 from pathlib import Path
 
 from app.core.config import active_profile_storage_dir, get_settings
+from app.core.paths import remove_tree
 from app.services.isolation.roots import overlaps_protected
 from app.services.repos.safety import prepare_managed_root
 
@@ -161,7 +162,7 @@ def migrate_managed_workspaces(profile_id: str) -> dict[str, list]:
                     os.close(parent_fd)
             finally:
                 if stage.exists():
-                    shutil.rmtree(stage)
+                    remove_tree(stage)
             _switch_record(source.name, source, destination)
             result["migrated"].append({"from": str(source), "to": str(destination)})
         except (OSError, RuntimeError, ValueError) as exc:

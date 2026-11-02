@@ -24,13 +24,13 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.paths import remove_tree
 from app.services.external_agents import compat, credentials, detect
 from app.services.external_agents import env as env_module
 from app.services.external_agents.packaging import resolve_package
@@ -263,8 +263,8 @@ def validate(executor: str) -> ValidationResult:
         )
     finally:
         if cleanup_allowed:
-            shutil.rmtree(parent, ignore_errors=True)
-            shutil.rmtree(home, ignore_errors=True)
+            remove_tree(parent, ignore_errors=True)
+            remove_tree(home, ignore_errors=True)
 
 
 __all__ = ["MARKER_FILE", "MARKER_TEXT", "OBJECTIVE", "ValidationResult", "validate"]

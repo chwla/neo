@@ -18,6 +18,8 @@ build/
 .env
 .env.*
 !.env.example
+# Per-machine Compose settings, such as an existing data volume to keep using.
+docker-compose.override.yml
 
 # Runtime data
 /data/
@@ -58,6 +60,8 @@ htmlcov/
 coverage/
 
 # Browser and visual verification artifacts
+frontend/test-results/
+frontend/playwright-report/
 .tmp-cdp-*/
 .tmp-headless-*/
 react-*-modal.png

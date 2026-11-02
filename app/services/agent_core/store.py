@@ -280,6 +280,17 @@ def initialize_agent_core_tables() -> None:
         }
         if "source_label_json" not in message_columns:
             conn.execute("ALTER TABLE workspace_agent_messages ADD COLUMN source_label_json TEXT")
+        snapshot_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(workspace_agent_file_snapshots)").fetchall()
+        }
+        if "snapshot_status" not in snapshot_columns:
+            # 'captured', or 'unavailable' where the platform cannot take a safe
+            # snapshot (Windows): the run touched the file and cannot undo it.
+            conn.execute(
+                "ALTER TABLE workspace_agent_file_snapshots"
+                " ADD COLUMN snapshot_status TEXT NOT NULL DEFAULT 'captured'"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_agent_sessions_chat"
             " ON workspace_agent_sessions(chat_id, created_at)"
@@ -1381,8 +1392,8 @@ def insert_file_snapshot(item: dict) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO workspace_agent_file_snapshots"
             " (id, session_id, repo_id, relative_path, existed_before, before_text,"
-            "  before_newline, after_sha256, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            "  before_newline, after_sha256, created_at, snapshot_status)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 item["id"],
                 item["session_id"],
@@ -1393,6 +1404,7 @@ def insert_file_snapshot(item: dict) -> None:
                 item.get("before_newline") or "\n",
                 item.get("after_sha256"),
                 item["created_at"],
+                item.get("snapshot_status") or "captured",
             ),
         )
         conn.commit()

@@ -10,10 +10,14 @@ tighten what the mode allowed.
 
 from __future__ import annotations
 
+from app.services.agent_core import store as agent_store
+from app.services.agent_core.approvals import arguments_hash
 from app.services.agent_core.tools.base import AgentTool, ToolContext
 from app.services.agent_core.types import Evidence, ToolResult
 from app.services.command_sandbox.service import CommandSandboxService
 from app.services.command_sandbox.types import CommandRequest
+from app.services.disclosure.gate import ApprovedCall
+from app.services.isolation import launch
 
 _OUTPUT_LIMIT = 12_000
 
@@ -75,6 +79,30 @@ def _recovery_hint(category: str) -> str:
     return _RECOVERY.get(category, "That command is not allowed by Neo's sandbox policy.")
 
 
+def _human_approval(arguments: dict, context: ToolContext, kind: str) -> tuple[str, bool]:
+    """Who approved this call, and whether they were told it would have no sandbox.
+
+    Only the :class:`ApprovedCall` the loop placed in the server-set context counts,
+    and only for this session, this tool and these exact arguments -- the same test
+    ``knowledge`` applies. Without one this is the agent acting on its own, which
+    never counts as approval to run unsandboxed. With one, the acknowledgement holds
+    only if the card the person answered carried the exposure text: a call approved
+    while a sandbox existed must not run without it because the sandbox later failed.
+    """
+
+    approved = context.extras.get("approved_call")
+    if (
+        not isinstance(approved, ApprovedCall)
+        or approved.session_id != context.session_id
+        or approved.tool_name != kind
+        or approved.arguments_hash != arguments_hash(arguments)
+    ):
+        return "agent", False
+    record = agent_store.get_approval(approved.approval_id) or {}
+    shown = launch.UNSANDBOXED_EXPOSURE in str(record.get("reason") or "")
+    return f"agent-approval:{approved.approval_id}", shown
+
+
 def _execute(arguments: dict, context: ToolContext, category: str, kind: str) -> ToolResult:
     if not context.repo_id:
         raise ValueError("This action needs a repository. Attach one to the session first.")
@@ -94,7 +122,10 @@ def _execute(arguments: dict, context: ToolContext, category: str, kind: str) ->
         reason = decision.get("reason") or "The sandbox policy does not allow that command."
         raise ValueError(f"{reason}. {_recovery_hint(category)}")
 
-    service.approve(proposed["id"], True)
+    approver, acknowledged = _human_approval(arguments, context, kind)
+    service.approve(
+        proposed["id"], True, approver=approver, acknowledge_unsandboxed=acknowledged
+    )
     record = service.execute(proposed["id"])
 
     passed = record.get("status") == "completed" and record.get("exit_code") == 0

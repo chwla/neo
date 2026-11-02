@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "./api.js";
+import { COPY_FAILED_MESSAGE, copyText } from "./clipboard.js";
 import PatchApplications from "./PatchApplications.jsx";
 
 function patchSections(content) {
@@ -33,8 +34,7 @@ export default function ArtifactsPanel({ taskId = null, projectId = null, agentR
   }
 
   async function copy() {
-    await navigator.clipboard.writeText(selected.content);
-    setMessage("Artifact copied.");
+    setMessage((await copyText(selected.content)) ? "Artifact copied." : COPY_FAILED_MESSAGE);
   }
 
   async function validatePatch() {

@@ -56,6 +56,21 @@ def _sessionmaker_for_current_database() -> sessionmaker:
     return _sessionmakers[url]
 
 
+def release_database(database_url: str) -> None:
+    """Close and forget the cached engine for a database about to be deleted.
+
+    Engines are cached per URL for the life of the process. Without this, a deleted
+    guest or account keeps its pooled connections, and the deleted files they hold
+    open, until the process exits; on Windows the open files also stop the delete.
+    """
+
+    with _sessionmakers_lock:
+        cached = _sessionmakers.pop(database_url, None)
+    bind = cached.kw.get("bind") if cached is not None else None
+    if bind is not None and bind is not engine:
+        bind.dispose()
+
+
 class _ProfileAwareSessionFactory:
     """Keep legacy ``SessionLocal()`` callers isolated to the active profile."""
 

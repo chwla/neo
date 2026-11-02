@@ -320,14 +320,28 @@ def get_file(file_id: str, *, include_deleted: bool = False) -> dict | None:
         conn.close()
 
 
-def get_file_by_sha(sha256: str) -> dict | None:
+def get_file_by_sha(sha256: str, *, source_type: str | None = None) -> dict | None:
+    """The first live row holding these bytes, optionally only one made by ``source_type``.
+
+    Deduplication passes ``source_type``. Rows of different origins have different
+    lifetimes -- Notes collects its own files once nothing refers to them -- so a
+    Files upload that reused a Notes row could be deleted by that collection.
+    """
+
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT * FROM workspace_files WHERE sha256 = ? AND deleted = 0 "
-            "ORDER BY created_at LIMIT 1",
-            (sha256,),
-        ).fetchone()
+        if source_type is None:
+            row = conn.execute(
+                "SELECT * FROM workspace_files WHERE sha256 = ? AND deleted = 0 "
+                "ORDER BY created_at LIMIT 1",
+                (sha256,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM workspace_files WHERE sha256 = ? AND deleted = 0 "
+                "AND coalesce(source_type, 'upload') = ? ORDER BY created_at LIMIT 1",
+                (sha256, source_type),
+            ).fetchone()
         return _file_row(row) if row else None
     finally:
         conn.close()

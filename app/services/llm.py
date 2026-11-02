@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -127,7 +126,12 @@ class LLMConfig(BaseModel):
         return self
 
     def resolved_api_key(self) -> str | None:
-        return (os.getenv(self.api_key_env) if self.api_key_env else None) or self.api_key
+        # A key from the server's environment only goes where key_policy allows;
+        # a key the user typed into this configuration is theirs to send anywhere.
+        from app.services.llm_registry import key_policy
+
+        environment_key = key_policy.env_key(self.api_key_env, self.base_url)
+        return environment_key or self.api_key
 
     def public_dict(self) -> dict[str, Any]:
         data = self.model_dump(exclude={"api_key"})
@@ -617,18 +621,48 @@ class OpenAICompatibleClient(BaseLLMClient):
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
+    @staticmethod
+    def _checked(response: requests.Response) -> requests.Response:
+        """Refuse a redirect instead of following it with the key attached.
+
+        Every request here carries the bearer key, and none follows redirects: an
+        API endpoint has no reason to send one, and following it is how a key
+        allowed for one host would reach another. ``raise_for_status`` ignores 3xx.
+        """
+
+        if response.is_redirect or response.is_permanent_redirect:
+            raise requests.HTTPError(
+                f"{response.status_code} redirect refused: the endpoint tried to send the "
+                "request elsewhere",
+                response=response,
+            )
+        response.raise_for_status()
+        return response
+
     def is_available(self) -> bool:
         try:
-            response = requests.get(f"{self.base_url}/models", headers=self.headers, timeout=3)
-            response.raise_for_status()
+            self._checked(
+                requests.get(
+                    f"{self.base_url}/models",
+                    headers=self.headers,
+                    timeout=3,
+                    allow_redirects=False,
+                )
+            )
             return True
         except requests.RequestException:
             return False
 
     def model_is_installed(self) -> bool:
         try:
-            response = requests.get(f"{self.base_url}/models", headers=self.headers, timeout=3)
-            response.raise_for_status()
+            response = self._checked(
+                requests.get(
+                    f"{self.base_url}/models",
+                    headers=self.headers,
+                    timeout=3,
+                    allow_redirects=False,
+                )
+            )
             return any(item.get("id") == self.model for item in response.json().get("data", []))
         except requests.RequestException:
             return False
@@ -660,13 +694,15 @@ class OpenAICompatibleClient(BaseLLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers=self.headers,
-            json=self._payload(messages, temperature, num_predict, False, tools),
-            timeout=self.timeout,
+        response = self._checked(
+            requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=self._payload(messages, temperature, num_predict, False, tools),
+                timeout=self.timeout,
+                allow_redirects=False,
+            )
         )
-        response.raise_for_status()
         payload = response.json()
         message = payload["choices"][0]["message"]
         raw = str(message.get("content") or "")
@@ -696,14 +732,16 @@ class OpenAICompatibleClient(BaseLLMClient):
         self, messages: list[LLMMessage], temperature: float = 0.4, num_predict: int | None = None
     ) -> Iterator[dict[str, Any]]:
         started = time.perf_counter()
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers=self.headers,
-            json=self._payload(messages, temperature, num_predict, True),
-            stream=True,
-            timeout=self.timeout,
+        response = self._checked(
+            requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=self._payload(messages, temperature, num_predict, True),
+                stream=True,
+                timeout=self.timeout,
+                allow_redirects=False,
+            )
         )
-        response.raise_for_status()
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
         for line in response.iter_lines(decode_unicode=True):

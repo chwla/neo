@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from app.services.llm import (
     BaseLLMClient,
     LLMChatResult,
@@ -9,6 +7,7 @@ from app.services.llm import (
     OpenAICompatibleClient,
     call_label,
 )
+from app.services.llm_registry import key_policy
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -96,7 +95,10 @@ def build_client(
         )
     if provider_type == "openai_compatible":
         key_ref = provider.get("api_key_ref")
-        api_key = os.getenv(key_ref) if key_ref else None
+        refused = key_policy.refusal(key_ref, str(provider.get("base_url") or ""))
+        if refused:
+            raise ProviderConfigurationError(f"Not using {key_ref}: {refused}.")
+        api_key = key_policy.env_key(key_ref, str(provider.get("base_url") or ""))
         if key_ref and not api_key:
             raise ProviderConfigurationError(
                 f"API key environment variable '{key_ref}' is not configured."

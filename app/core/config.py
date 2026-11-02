@@ -13,6 +13,18 @@ active_profile_storage_dir: ContextVar[str | None] = ContextVar(
     "active_profile_storage_dir", default=None
 )
 
+#: Path settings whose defaults are relative; see ``Settings._anchor_relative_defaults``.
+_RELATIVE_PATH_DEFAULTS = (
+    "llm_config_path",
+    "workspace_files_dir",
+    "workspace_repos_dir",
+    "skills_dir",
+    "gallery_thumbnails_dir",
+    "frontend_dir",
+    "searxng_source_dir",
+    "searxng_settings_path",
+)
+
 
 class Settings(BaseSettings):
     """Runtime settings for the local Neo memory service."""
@@ -459,6 +471,14 @@ class Settings(BaseSettings):
     #: is what stops a web page from pointing its own domain at 127.0.0.1 and
     #: talking to Neo with the browser's cookies attached.
     trusted_hosts: str = Field(default="")
+    #: Extra hosts a provider key from the server environment may be sent to, as
+    #: ``ENV_NAME=host`` pairs separated by commas. The conventional names already
+    #: map to their providers' own hosts (``llm_registry.key_policy``); this is for
+    #: a self-hosted endpoint the operator trusts with that key.
+    provider_key_hosts: str = Field(default="")
+    #: Mark the session and CSRF cookies ``Secure``. Turn on when Neo is reached
+    #: through an HTTPS reverse proxy; leave off for plain-HTTP loopback use.
+    cookie_secure: bool = Field(default=False)
     #: Whether Codex may be handed its OAuth **refresh** token.
     #:
     #: Off, and it has to be: measured on this machine, Codex authenticates by
@@ -481,23 +501,45 @@ class Settings(BaseSettings):
             self.default_model = self.chat_model
         if "web_search_enabled" not in fields_set:
             self.web_search_enabled = self.web_search_provider != "disabled"
-        if not self.data_dir:
-            return self
-        data_root = Path(self.data_dir).expanduser().resolve()
-        data_root.mkdir(parents=True, exist_ok=True)
-        if "database_url" not in fields_set:
-            self.database_url = f"sqlite:///{data_root / 'neo.db'}"
-        if "workspace_files_dir" not in fields_set:
-            self.workspace_files_dir = str(data_root / "workspace_files")
-        if "gallery_thumbnails_dir" not in fields_set:
-            self.gallery_thumbnails_dir = str(data_root / "gallery_thumbnails")
-        if "workspace_repos_dir" not in fields_set:
-            self.workspace_repos_dir = str(data_root / "workspace_repos")
-        if "skills_dir" not in fields_set:
-            self.skills_dir = str(data_root / "skills")
-        if "llm_config_path" not in fields_set:
-            self.llm_config_path = str(data_root / "neo_llms.json")
+        if self.data_dir:
+            data_root = Path(self.data_dir).expanduser().resolve()
+            data_root.mkdir(parents=True, exist_ok=True)
+            if "database_url" not in fields_set:
+                self.database_url = f"sqlite:///{data_root / 'neo.db'}"
+            if "workspace_files_dir" not in fields_set:
+                self.workspace_files_dir = str(data_root / "workspace_files")
+            if "gallery_thumbnails_dir" not in fields_set:
+                self.gallery_thumbnails_dir = str(data_root / "gallery_thumbnails")
+            if "workspace_repos_dir" not in fields_set:
+                self.workspace_repos_dir = str(data_root / "workspace_repos")
+            if "skills_dir" not in fields_set:
+                self.skills_dir = str(data_root / "skills")
+            if "llm_config_path" not in fields_set:
+                self.llm_config_path = str(data_root / "neo_llms.json")
+        self._anchor_relative_defaults(fields_set)
         return self
+
+    def _anchor_relative_defaults(self, fields_set: set[str]) -> None:
+        """Resolve the relative defaults against the install directory, not the cwd.
+
+        Read against the working directory, they named a different place for every
+        folder Neo was started from: a second base database and a second set of
+        workspace files appeared wherever it was launched, while profiles and the
+        isolation roots were already anchored at the install. Values set explicitly
+        are left as given.
+        """
+
+        from app.core.paths import install_root
+
+        root = install_root()
+        if "database_url" not in fields_set and self.database_url.startswith("sqlite:///"):
+            location = self.database_url.removeprefix("sqlite:///")
+            if location != ":memory:" and not Path(location).is_absolute():
+                self.database_url = f"sqlite:///{root / location}"
+        for name in _RELATIVE_PATH_DEFAULTS:
+            value = getattr(self, name)
+            if name not in fields_set and value and not Path(value).is_absolute():
+                setattr(self, name, str(root / value))
 
 
 @lru_cache

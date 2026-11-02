@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import active_profile_storage_dir
+from app.core.paths import remove_tree
 from app.services import isolation
 from app.services.git.safety import validate_git_args
 
@@ -34,6 +35,16 @@ _CONFIG_OVERRIDES = (
     "-c", "diff.external=",
     "-c", "protocol.ext.allow=never",
     "-c", "uploadpack.packObjectsHook=",
+    # Signature checks run a program too. A planted ``log.showSignature`` makes a
+    # plain ``git log`` verify every signed commit, and ``gpg.program`` (or its ssh
+    # and x509 siblings) names what runs. Pointing all three at the null device
+    # means a verification that does get triggered fails to start anything.
+    "-c", "log.showSignature=false",
+    "-c", f"gpg.program={os.devnull}",
+    "-c", f"gpg.ssh.program={os.devnull}",
+    "-c", f"gpg.x509.program={os.devnull}",
+    # An empty value resets the helper list, so none from the repository runs.
+    "-c", "credential.helper=",
     "--no-replace-objects",
     "--no-optional-locks",
 )
@@ -149,16 +160,48 @@ def _attribute_overrides(executable: str, cwd: Path, environment: dict[str, str]
     return overrides
 
 
-def _harden(
+def harden_args(
     args: list[str], executable: str, cwd: Path, environment: dict[str, str]
 ) -> list[str]:
-    """The approved argv with hardening added, subcommand flags in the right place."""
+    """The approved argv with hardening added, subcommand flags in the right place.
+
+    Public because the command sandbox launches git itself, for the agent's
+    read-only inspection commands, and must not run it any less hardened than this.
+    """
 
     overrides = [*_CONFIG_OVERRIDES, *_attribute_overrides(executable, cwd, environment)]
     extra = _SUBCOMMAND_FLAGS.get(args[0], ()) if args else ()
     if not extra:
         return [*overrides, *args]
     return [*overrides, args[0], *extra, *args[1:]]
+
+
+def hardened_environment(home: str, ceiling: Path) -> dict[str, str]:
+    """The environment every git process Neo starts runs with.
+
+    ``ceiling`` is where repository discovery stops: the parent of the directory
+    Neo means git to work in, so an enclosing repository is never picked up.
+    """
+
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": home,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C.UTF-8",
+        # Stop the repository discovery walk at the directory Neo named. Without it
+        # a managed workspace that is itself inside Neo's checkout resolved to that
+        # outer repository, so the change journal reported on the wrong tree.
+        "GIT_CEILING_DIRECTORIES": str(ceiling),
+        # Attribute files drive textconv and the clean/smudge filters; the repo's own
+        # must not be consulted for anything Neo runs.
+        "GIT_ATTR_NOSYSTEM": "1",
+        # No filter or diff helper gets a terminal to prompt on, and none of the
+        # credential helpers run.
+        "GIT_ASKPASS": "",
+        "GIT_CONFIG_COUNT": "0",
+    }
 
 
 @dataclass(frozen=True)
@@ -183,29 +226,11 @@ def run_git(
     if not executable:
         raise RuntimeError("Git is not installed in this runtime.")
     home = tempfile.mkdtemp(prefix="neo-git-home-")
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": home,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "LC_ALL": "C.UTF-8",
-        # Stop the repository discovery walk at the directory Neo named. Without it
-        # a managed workspace that is itself inside Neo's checkout resolved to that
-        # outer repository, so the change journal reported on the wrong tree.
-        "GIT_CEILING_DIRECTORIES": str(Path(cwd).parent),
-        # Attribute files drive textconv and the clean/smudge filters; the repo's own
-        # must not be consulted for anything Neo runs.
-        "GIT_ATTR_NOSYSTEM": "1",
-        # No filter or diff helper gets a terminal to prompt on, and none of the
-        # credential helpers run.
-        "GIT_ASKPASS": "",
-        "GIT_CONFIG_COUNT": "0",
-    }
+    environment = hardened_environment(home, Path(cwd).parent)
     try:
         completed = _execute(
             executable,
-            _harden(args, executable, cwd, environment),
+            harden_args(args, executable, cwd, environment),
             cwd,
             environment,
             timeout=timeout,
@@ -214,7 +239,7 @@ def run_git(
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Git operation timed out after {timeout} seconds.") from exc
     finally:
-        shutil.rmtree(home, ignore_errors=True)
+        remove_tree(home, ignore_errors=True)
     stdout_limit = 4 * 1024 * 1024 if raw_stdout else OUTPUT_LIMIT
     stdout_bytes = completed.stdout[:stdout_limit]
     stderr_bytes = completed.stderr[:OUTPUT_LIMIT]

@@ -26,6 +26,7 @@ from app.services.agent_framework.permissions import (
 )
 from app.services.agent_framework.types import AgentPermissions
 from app.services.disclosure import Label
+from app.services.isolation.launch import UNSANDBOXED_EXPOSURE
 from app.services.rules.safety import HARD_FORBIDDEN
 from app.services.tools.permissions import (
     ToolPermissionError,
@@ -82,6 +83,11 @@ EGRESS_TOOLS: dict[str, str] = {
     "create_checkpoint": "a workspace snapshot that can later be shared",
     "deliver_changes": "your own repository",
 }
+
+#: Shown when an edit to the user's own folder could not be undone afterwards.
+UNRECOVERABLE_WRITE = (
+    "Undo is not available for this folder on this computer, so this edit would be permanent."
+)
 
 # A session-level grant is only ever offered for edits inside the managed copy.
 # Commands, external writes and delivery stay per-call: their arguments carry too
@@ -205,6 +211,8 @@ class PermissionResolver:
         grants: list[Grant] | None = None,
         permissions: AgentPermissions | None = None,
         egress: EgressContext | None = None,
+        isolated: bool = True,
+        undo_available: bool = True,
     ) -> PermissionDecision:
         # 1. The denylist that predates modes, and cannot be argued with.
         if tool.name in DANGEROUS_TOOL_NAMES or tool.risk == "forbidden":
@@ -247,17 +255,33 @@ class PermissionResolver:
             tool.name in EGRESS_TOOLS or tool.source == "connector"
         ):
             destination = EGRESS_TOOLS.get(tool.name, "a connected service")
-            return PermissionDecision(
-                "ask",
-                (
-                    f"This turn has read {egress.describe()}, so sending anything to "
-                    f"{destination} needs your approval."
-                ),
-                grantable=False,
+            reason = (
+                f"This turn has read {egress.describe()}, so sending anything to "
+                f"{destination} needs your approval."
             )
+            if tool.risk == "command" and not isolated:
+                # The same card is the person's only chance to hear that the command
+                # has no sandbox; without that text the launch layer will refuse it.
+                reason = f"{reason} {UNSANDBOXED_EXPOSURE}"
+            return PermissionDecision("ask", reason, grantable=False)
 
         # 6. Only now does the mode have a say, and only to narrow.
         outcome = resolve_outcome(tool.risk, mode)
+
+        # 7. Without a sandbox a command runs with the user's whole account, so no
+        #    mode runs one unattended: AUTO asks like NORMAL, no grant covers it, and
+        #    the card carries the exposure the launch layer checks for.
+        #    ``isolation.launch`` enforces the same rule again at the moment of launch.
+        if tool.risk == "command" and not isolated and outcome in {"allow", "ask"}:
+            return PermissionDecision("ask", UNSANDBOXED_EXPOSURE, grantable=False)
+
+        # 8. A write the run cannot undo (a live folder on a platform with no safe
+        #    restore) is not done unprompted. Unlike a command it may be granted for
+        #    the session, because the predicate a person agrees to is a path.
+        unrecoverable_write = tool.risk == "workspace_write" and not undo_available
+        if unrecoverable_write and outcome == "allow":
+            outcome = "ask"
+
         grantable = outcome == "ask" and tool.risk in _GRANTABLE_RISKS
 
         if outcome == "ask":
@@ -269,7 +293,11 @@ class PermissionResolver:
 
         reasons = {
             "allow": f"{tool.risk} is permitted in {mode} mode.",
-            "ask": f"{tool.risk} requires approval in {mode} mode.",
+            "ask": (
+                f"{UNRECOVERABLE_WRITE} {tool.risk} requires approval in {mode} mode."
+                if unrecoverable_write
+                else f"{tool.risk} requires approval in {mode} mode."
+            ),
             "deny": f"{tool.risk} is not permitted in {mode} mode.",
             "propose": "Plan mode proposes changes without making them.",
         }

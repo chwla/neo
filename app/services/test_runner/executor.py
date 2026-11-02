@@ -11,13 +11,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.paths import remove_tree
 from app.services import isolation
+from app.services.isolation import launch
 
 _LOG = logging.getLogger(__name__)
 
 STDOUT_LIMIT = 200 * 1024
 STDERR_LIMIT = 200 * 1024
 COMBINED_LIMIT = 300 * 1024
+
+
+class _RunUnsandboxed(Exception):
+    """Internal: take the approved unsandboxed branch below."""
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,14 @@ def _active_profile_id() -> str:
     return Path(storage).name if storage else ""
 
 
-def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionResult:
+def execute(
+    command: list[str],
+    cwd: Path,
+    timeout_seconds: int,
+    *,
+    subject: str = "",
+    approval: launch.HumanApproval | None = None,
+) -> ExecutionResult:
     started = time.monotonic()
     home = tempfile.mkdtemp(prefix="neo-test-home-")
     environment = {
@@ -69,13 +82,20 @@ def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionRes
     timed_out = False
     error = None
     exit_code = None
+    unsandboxed = False
     try:
         argv = _resolved_argv(command)
         # A test suite is the repository's own code, and on this path the repository
         # is one an agent has just edited -- a `conftest.py` or an npm script it
-        # wrote runs here. So the run is isolated exactly like the agent's own.
+        # wrote runs here. So the launch goes through ``isolation.launch``: isolated
+        # exactly like the agent's own, or unsandboxed only because the person who
+        # started this run approved it knowing that, or not at all.
         stdout_truncated = stderr_truncated = False
+        mode = launch.authorize("test_runner", subject=subject, approval=approval)
+        unsandboxed = mode == "unsandboxed"
         try:
+            if unsandboxed:
+                raise _RunUnsandboxed
             outcome = isolation.run(
                 argv,
                 cwd=str(cwd),
@@ -93,15 +113,15 @@ def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionRes
             exit_code = outcome.exit_code
             if outcome.quarantined:
                 error = outcome.quarantine_reason
-        except isolation.IsolationRefused as exc:
+        except (isolation.IsolationRefused, isolation.IsolationUnavailable) as exc:
+            # Includes a sandbox that failed part way into the launch: that is a
+            # refusal, never a cue to run the suite without one.
             stdout_text = stderr_text = ""
             error = str(exc)
-        except isolation.IsolationUnavailable:
-            # No validated backend here. Tests still run, with the allowlist and the
-            # scrubbed environment as their only guard; that is the pre-existing
-            # behaviour and the contract records it as unisolated rather than
-            # implying containment this platform cannot provide.
-            _LOG.warning("test_runner_unisolated platform=%s", sys.platform)
+        except _RunUnsandboxed:
+            # No sandbox here, and the person who started this run approved running
+            # it without one after being told what that exposes.
+            _LOG.warning("test_runner_unisolated platform=%s subject=%s", sys.platform, subject)
             with (
                 tempfile.TemporaryFile() as stdout_file,
                 tempfile.TemporaryFile() as stderr_file,
@@ -132,7 +152,7 @@ def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionRes
         stdout_truncated = stderr_truncated = False
         error = str(exc)
     finally:
-        shutil.rmtree(home, ignore_errors=True)
+        remove_tree(home, ignore_errors=True)
 
     combined = stdout_text + (("\n" if stdout_text and stderr_text else "") + stderr_text)
     combined_truncated = len(combined.encode("utf-8")) > COMBINED_LIMIT
@@ -153,5 +173,6 @@ def execute(command: list[str], cwd: Path, timeout_seconds: int) -> ExecutionRes
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
             "combined_truncated": combined_truncated,
+            "unsandboxed": unsandboxed,
         },
     )

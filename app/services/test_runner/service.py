@@ -5,6 +5,7 @@ import uuid
 
 from app.services.agent_core import store as agent_store
 from app.services.chat_intent import is_internal_chat_command
+from app.services.isolation.launch import HumanApproval
 from app.services.patch_apply import store as patch_store
 from app.services.repos import store as repo_store
 from app.services.rules.resolver import RuleResolver
@@ -136,7 +137,18 @@ class TestRunnerService:
         )
         started = store.now_iso()
         store.update_run(run["id"], {"status": "running", "started_at": started})
-        result = execute(command_item["command"], cwd, command_item["timeout_seconds"])
+        approval = (
+            HumanApproval(subject=run["id"], approver="user", acknowledged_exposure=True)
+            if request.acknowledge_unsandboxed
+            else None
+        )
+        result = execute(
+            command_item["command"],
+            cwd,
+            command_item["timeout_seconds"],
+            subject=run["id"],
+            approval=approval,
+        )
         return store.update_run(
             run["id"],
             {

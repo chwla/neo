@@ -1,0 +1,123 @@
+# Each job's name says which release claim it is evidence for. A target Neo
+# supports is only claimed once its job here has passed.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    # Claim: the backend passes its tests and lint on this OS and Python version.
+    name: "Backend tests and lint (${{ matrix.os }}, Python ${{ matrix.python }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the pinned runtime and test tools
+        run: python -m pip install -r requirements.txt pytest==9.1.1 ruff==0.16.2
+      - name: Lint
+        run: python -m ruff check app tests
+      - name: Tests
+        run: python -m pytest -q -p no:cacheprovider
+
+  frontend:
+    # Claim: the interface's unit tests and production build pass.
+    name: Frontend unit tests and production build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  browsers:
+    # Claim: a first session (sign up, chat screen, notes, Web Crypto, log out,
+    # delete) works in this browser engine. WebKit runs on macOS, closest to Safari;
+    # it is an engine check, not Safari itself.
+    name: "Browser smoke (${{ matrix.browser }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { browser: chromium, os: ubuntu-latest }
+          - { browser: firefox, os: ubuntu-latest }
+          - { browser: webkit, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Backend in a virtualenv the smoke config can find
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the interface and run the smoke test
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps ${{ matrix.browser }}
+          npx playwright test --project=${{ matrix.browser }}
+
+  docker:
+    # Claim: the image builds, starts, answers health checks, ships no runtime
+    # databases or profile data, and keeps its connector key across a restart.
+    name: Docker image build and smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t neo:ci .
+      - name: No runtime data in the image
+        run: |
+          found="$(docker run --rm --entrypoint sh neo:ci -c \
+            "find /app/app \( -name '*.db*' -o -name neo_llms.json -o -name profiles \) -print")"
+          if [ -n "$found" ]; then echo "$found"; exit 1; fi
+      - name: Start, sign in, and check health
+        run: |
+          docker volume create neo-ci-data
+          docker run -d --name neo-ci -p 127.0.0.1:18000:8000 -v neo-ci-data:/app/data neo:ci
+          for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:18000/api/health/live && break; sleep 2; done
+          test "$(curl -s http://127.0.0.1:18000/api/health/ready)" = '{"status":"ready"}'
+          curl -fsS -c jar -H 'content-type: application/json' \
+            -d '{"username":"ci","password":"ci-password"}' http://127.0.0.1:18000/api/account-profiles
+          curl -s -b jar http://127.0.0.1:18000/api/health/ready | tee ready.json
+          grep -q '"connector_key":{"ok":true' ready.json
+      - name: The connector key survives a restart, private
+        run: |
+          before="$(docker exec neo-ci sha256sum /app/data/secrets/connector-master-key)"
+          test "$(docker exec neo-ci stat -c %a /app/data/secrets/connector-master-key)" = 600
+          docker restart neo-ci
+          for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:18000/api/health/live && break; sleep 2; done
+          after="$(docker exec neo-ci sha256sum /app/data/secrets/connector-master-key)"
+          test "$before" = "$after"
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f neo-ci || true
+          docker volume rm neo-ci-data || true

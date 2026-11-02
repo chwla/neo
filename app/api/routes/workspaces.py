@@ -114,9 +114,15 @@ def node(wid: str, p: Node):
     return svc().node(wid, **p.model_dump())
 
 
+def _not_implemented(action: str):
+    """Refuse plainly. These routes used to answer success without changing anything."""
+
+    raise HTTPException(501, f"{action} is not supported yet.")
+
+
 @router.patch("/{wid}/nodes/{node_id}")
 def update_node(wid: str, node_id: str, p: dict):
-    return {"id": node_id, "updated": True}
+    _not_implemented("Updating a workspace node")
 
 
 @router.post("/{wid}/edges")
@@ -126,7 +132,7 @@ def edge(wid: str, p: Edge):
 
 @router.delete("/{wid}/edges/{edge_id}", status_code=204)
 def delete_edge(wid: str, edge_id: str):
-    return None
+    _not_implemented("Deleting a workspace edge")
 
 
 @router.get("/{wid}/timeline")
@@ -177,7 +183,7 @@ def link(wid: str, p: Link):
 
 @router.post("/{wid}/unlink")
 def unlink(wid: str, p: Link):
-    return {"unlinked": True}
+    _not_implemented("Unlinking an entity from a workspace")
 
 
 @router.post("/{wid}/index-memory")

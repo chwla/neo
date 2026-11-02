@@ -470,7 +470,12 @@ def queued_generations(limit: int) -> list[tuple[str, int]]:
 
     if limit <= 0:
         return []
-    conn = _connect()
+    try:
+        conn = _connect()
+    except sqlite3.OperationalError:
+        # The profile's database is gone (deleted while a stream still polls it):
+        # nothing is queued there any more.
+        return []
     try:
         rows = conn.execute(
             "SELECT id, chat_id FROM chat_generations WHERE status = 'queued'"
@@ -489,7 +494,10 @@ def queued_agent_sessions(limit: int) -> list[tuple[str, int]]:
 
     if limit <= 0:
         return []
-    conn = _connect()
+    try:
+        conn = _connect()
+    except sqlite3.OperationalError:
+        return []
     try:
         rows = conn.execute(
             "SELECT id, chat_id FROM workspace_agent_sessions"

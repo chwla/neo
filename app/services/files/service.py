@@ -53,7 +53,9 @@ class WorkspaceFilesService:
         digest = hashlib.sha256(content).hexdigest()
         if source_type == "note_encrypted":
             deduplicate = False
-        existing = store.get_file_by_sha(digest) if deduplicate else None
+        existing = (
+            store.get_file_by_sha(digest, source_type=source_type) if deduplicate else None
+        )
         if existing:
             for link_type, target_id in links or []:
                 self.attach(

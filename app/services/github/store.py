@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 
 from app.core.config import get_settings
 from app.services.github.redaction import redact
-from app.services.integrations.vault import open_json, scoped_aad, seal_json
+from app.services.integrations.vault import (
+    ConnectorKeyUnavailable,
+    open_json,
+    scoped_aad,
+    seal_json,
+)
 
 
 def _connect():
@@ -233,5 +238,8 @@ def read_credential(connection_id: str) -> str:
         if not isinstance(token, str) or not token:
             raise ValueError("missing token")
         return token
+    except ConnectorKeyUnavailable as exc:
+        # The key is missing or damaged; re-entering one token would not help.
+        raise RuntimeError(str(exc)) from None
     except Exception:
         raise RuntimeError("Reconnect this GitHub connection with a token for this profile.") from None

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from app.core.paths import IS_WINDOWS, is_within
 from app.services import isolation
+from app.services.git import executor as git_executor
+from app.services.isolation import launch
 
 _LOG = logging.getLogger(__name__)
 
@@ -76,9 +78,61 @@ def _active_profile_id() -> str:
     return Path(storage).name if storage else ""
 
 
-def run(argv: list[str], cwd: Path, timeout_ms: int) -> dict:
+def git_invocation(
+    argv: list[str], cwd: Path, workspace: Path, env: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
+    """An allowlisted ``git`` command, hardened the way Neo's git service runs git.
+
+    The policy admits git's inspection subcommands with any arguments, and they
+    look read-only. They are not, unhardened: git reads the repository's own
+    configuration and attributes, and several settings there name a program to
+    run (see ``git.executor``). With ``HOME`` pointed at the workspace, a
+    ``.gitconfig`` committed to the repository would also be read as the user's.
+    ``argv[0]`` is the already resolved executable.
+    """
+
+    environment = {
+        **env,
+        **git_executor.hardened_environment(str(cwd), workspace.parent),
+        # As in the isolated git service: global configuration is discarded above,
+        # so the workspace standing in for these only supplies harmless defaults.
+        "XDG_CONFIG_HOME": str(cwd),
+    }
+    hardened = git_executor.harden_args(argv[1:], argv[0], cwd, environment)
+    return [argv[0], *hardened], environment
+
+
+def _failed(started: float, reason: str, stdout: str = "") -> dict:
+    return {
+        "status": "failed",
+        "exit_code": None,
+        "stdout_text": stdout[:OUTPUT_LIMIT],
+        "stderr_text": reason,
+        "output_truncated": False,
+        "duration_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
+def _captured(value) -> str:
+    """Output from ``TimeoutExpired``, which is bytes even when ``text=True`` was asked for."""
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
+def run(
+    argv: list[str],
+    cwd: Path,
+    timeout_ms: int,
+    *,
+    workspace: Path | None = None,
+    subject: str = "",
+    approval: launch.HumanApproval | None = None,
+) -> dict:
     started = time.monotonic()
     env = _child_env(cwd)
+    is_git = argv[0] == "git"
     try:
         argv = [resolve_program(argv[0], cwd, env["PATH"]), *argv[1:]]
     except (FileNotFoundError, PermissionError) as exc:
@@ -90,22 +144,39 @@ def run(argv: list[str], cwd: Path, timeout_ms: int) -> dict:
             "output_truncated": False,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
-    # Run inside the isolation launcher. The allowlist above decides *which*
-    # programs may run; it says nothing about what they may then read, and several
-    # allowlisted ones -- `cat`, `grep`, `find` -- will read anything they are
-    # pointed at. `pytest` and `npm run` are worse: they execute the repository's
-    # own code, which on this path is code an agent has just written. Measured:
-    # before this, `cat <neo data dir>/profiles/registry.db` succeeded.
+    # The allowlist decides *which* programs may run; it says nothing about what
+    # they may then read, and several allowlisted ones -- `cat`, `grep`, `find` --
+    # read anything they are pointed at. `pytest` and `npm run` are worse: they run
+    # the repository's own code, which on this path an agent may just have written.
+    # Measured, before isolation: `cat <neo data dir>/profiles/registry.db` worked.
+    # So the launch goes through the one rule in ``isolation.launch``: sandboxed, or
+    # unsandboxed only because a person approved exactly this run, or not at all.
     try:
-        result = isolation.run(
-            argv,
-            cwd=str(cwd),
-            env=env,
-            purpose="command_sandbox",
-            profile_id=_active_profile_id(),
-            workspace=str(cwd),
-            timeout=timeout_ms / 1000,
-        )
+        mode = launch.authorize("command_sandbox", subject=subject, approval=approval)
+    except launch.UnsandboxedLaunchRefused as exc:
+        return _failed(started, str(exc))
+    try:
+        if is_git:
+            # Inside the try: hardening runs git itself, and a refusal there is
+            # reported like a refusal of the command.
+            argv, env = git_invocation(argv, cwd, workspace or cwd, env)
+    except (isolation.IsolationRefused, isolation.IsolationUnavailable) as exc:
+        return _failed(started, str(exc))
+    if mode == "isolated":
+        try:
+            result = isolation.run(
+                argv,
+                cwd=str(cwd),
+                env=env,
+                purpose="command_sandbox",
+                profile_id=_active_profile_id(),
+                workspace=str(cwd),
+                timeout=timeout_ms / 1000,
+            )
+        except (isolation.IsolationRefused, isolation.IsolationUnavailable) as exc:
+            # A sandbox that fails part way into a launch is a refusal, never a cue
+            # to run the command without it.
+            return _failed(started, str(exc))
         stdout, stderr = result.stdout or "", result.stderr or ""
         timed_out = result.timed_out
         exit_code = result.exit_code
@@ -113,29 +184,9 @@ def run(argv: list[str], cwd: Path, timeout_ms: int) -> dict:
             # Something the command started is still running. Reported as a failure
             # rather than a result, because its output cannot be trusted to be
             # complete and its files may still be changing.
-            return {
-                "status": "failed",
-                "exit_code": None,
-                "stdout_text": stdout[:OUTPUT_LIMIT],
-                "stderr_text": result.quarantine_reason,
-                "output_truncated": False,
-                "duration_ms": round((time.monotonic() - started) * 1000),
-            }
-    except isolation.IsolationRefused as exc:
-        return {
-            "status": "failed",
-            "exit_code": None,
-            "stdout_text": "",
-            "stderr_text": str(exc),
-            "output_truncated": False,
-            "duration_ms": round((time.monotonic() - started) * 1000),
-        }
-    except isolation.IsolationUnavailable:
-        # No validated backend on this platform. Commands still run -- the feature
-        # predates isolation and the allowlist is its original guard -- but this is
-        # the unsandboxed path, and the contract says so rather than implying
-        # containment that is not there.
-        _LOG.warning("command_sandbox_unisolated platform=%s", sys.platform)
+            return _failed(started, result.quarantine_reason or "", stdout)
+    else:
+        _LOG.warning("command_sandbox_unisolated platform=%s subject=%s", sys.platform, subject)
         try:
             completed = subprocess.run(
                 argv,
@@ -152,8 +203,7 @@ def run(argv: list[str], cwd: Path, timeout_ms: int) -> dict:
             timed_out = False
             exit_code = completed.returncode
         except subprocess.TimeoutExpired as exc:
-            stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-            stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+            stdout, stderr = _captured(exc.stdout), _captured(exc.stderr)
             timed_out = True
             exit_code = None
     truncated = len(stdout.encode()) > OUTPUT_LIMIT or len(stderr.encode()) > OUTPUT_LIMIT

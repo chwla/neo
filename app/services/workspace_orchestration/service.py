@@ -99,7 +99,9 @@ class WorkspaceService:
         allowed = {
             k: v
             for k, v in fields.items()
-            if k in {"name", "goal", "scope_text", "status", "readiness_status"} and v is not None
+            # The route takes a raw dict; anything but text would fail the SQLite bind.
+            if k in {"name", "goal", "scope_text", "status", "readiness_status"}
+            and isinstance(v, str)
         }
         allowed["updated_at"] = store.now()
         c = store.conn()

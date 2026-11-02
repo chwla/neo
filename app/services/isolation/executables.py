@@ -29,6 +29,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.paths import remove_tree
 from app.services.isolation.roots import roots
 
 #: Files bigger than this are not staged. Claude Code is ~200 MB and Codex's tree is
@@ -316,7 +317,7 @@ def stage(path: str, *, package_root: str | None = None) -> Package:
             if not entry.exists():
                 raise ExecutableRejected(f"could not stage {resolved}: {exc}") from exc
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_tree(staging, ignore_errors=True)
 
     if not entry.exists():
         raise ExecutableRejected(f"the staged package has no entrypoint at {relative}")

@@ -13,7 +13,6 @@ import hmac
 import logging
 import os
 import secrets
-import shutil
 import sqlite3
 import stat
 import uuid
@@ -30,8 +29,8 @@ from app.core.config import (
     get_settings,
 )
 from app.core.identifiers import canonical_uuid
-from app.core.paths import install_root, private_dir_mode, private_file_mode
-from app.db.session import initialize_database
+from app.core.paths import install_root, private_dir_mode, private_file_mode, remove_tree
+from app.db.session import initialize_database, release_database
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 PASSWORD_ITERATIONS = 390_000
@@ -61,7 +60,17 @@ _initialized_registry_paths: set[Path] = set()
 # exactly when a redeployed image needs to re-run the initializers once.
 _storage_initialization_lock = Lock()
 _initialized_storage_keys: set[str] = set()
+#: Each password check runs its throttle check, the hash and the failure record
+#: under one of these, so concurrent guesses cannot all pass the check before the
+#: first failure is counted. A fixed pool rather than a lock per id: ids come from
+#: the request, and probing random ones must not grow memory.
+_password_check_locks = tuple(Lock() for _ in range(64))
 _logger = logging.getLogger(__name__)
+
+
+def _password_check_lock(profile_id: str) -> Lock:
+    digest = hashlib.sha256(profile_id.encode("utf-8")).digest()
+    return _password_check_locks[digest[0] % len(_password_check_locks)]
 
 
 def _root() -> Path:
@@ -342,6 +351,10 @@ def profile_storage_dir(profile_id: str, *, guest: bool = False) -> Path:
 def database_url_for(profile_id: str, *, guest: bool = False) -> str:
     directory = _profile_directory(profile_id, guest=guest)
     directory.mkdir(parents=True, exist_ok=True)
+    return _database_url(directory)
+
+
+def _database_url(directory: Path) -> str:
     return f"sqlite:///{directory / 'neo.db'}"
 
 
@@ -654,17 +667,24 @@ def reset_unlock_throttle() -> None:
 
 def authenticate(profile_id: str, password: str) -> dict:
     initialize_profile_registry()
-    check_unlock_allowed(profile_id)
-    conn = _connect_registry()
-    try:
-        row = conn.execute("SELECT * FROM account_profiles WHERE id = ?", (profile_id,)).fetchone()
-    finally:
-        conn.close()
-    if row is None or not _verify_password(password, row["password_salt"], row["password_hash"]):
-        # Counted even for an unknown id, so probing for valid ids is throttled too.
-        _record_unlock_failure(profile_id)
-        raise HTTPException(status_code=401, detail="That password does not match this profile.")
-    _clear_unlock_failures(profile_id)
+    with _password_check_lock(profile_id):
+        check_unlock_allowed(profile_id)
+        conn = _connect_registry()
+        try:
+            row = conn.execute(
+                "SELECT * FROM account_profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None or not _verify_password(
+            password, row["password_salt"], row["password_hash"]
+        ):
+            # Counted even for an unknown id, so probing for valid ids is throttled too.
+            _record_unlock_failure(profile_id)
+            raise HTTPException(
+                status_code=401, detail="That password does not match this profile."
+            )
+        _clear_unlock_failures(profile_id)
     ensure_profile_storage(profile_id)
     return public_profile(row)
 
@@ -866,14 +886,48 @@ def memory_key_material_for_profile(profile_id: str, *, guest: bool = False) -> 
     return hashlib.sha256(f"neo-memory:{material}".encode()).digest()
 
 
+#: Per-profile storage kept outside the profile's own directory: managed workspace
+#: copies and external-CLI homes. They live in code-only roots because an agent is
+#: handed them (see ``config.get_settings``), so removing ``profiles/...`` alone left a
+#: deleted account's copied source code on disk.
+SCOPED_STORAGE_CLASSES = ("workspaces", "agent-state")
+
+
+def remove_scoped_storage(profile_id: str) -> None:
+    """Delete one profile's managed workspace copies and CLI state. Raises ``OSError``."""
+
+    if not profile_id or Path(profile_id).name != profile_id or profile_id in {".", ".."}:
+        raise ValueError("invalid_profile_id")
+    from app.services.isolation.roots import data_root
+
+    base = data_root()
+    for name in SCOPED_STORAGE_CLASSES:
+        target = base / name / profile_id
+        if target.is_symlink():
+            target.unlink()
+        elif target.exists():
+            remove_tree(target)
+
+
 def delete_guest(profile_id: str) -> None:
     if profile_id.startswith("guest-"):
-        shutil.rmtree(_profile_directory(profile_id, guest=True), ignore_errors=True)
+        directory = _profile_directory(profile_id, guest=True)
+        release_database(_database_url(directory))
+        remove_tree(directory, ignore_errors=True)
+        try:
+            remove_scoped_storage(profile_id)
+        except (OSError, ValueError):
+            _logger.warning("Could not remove a guest profile's workspace copies")
 
 
 def delete_profile(profile_id: str, password: str) -> dict:
     """Permanently remove one password-confirmed local account and its private data."""
     initialize_profile_registry()
+    with _password_check_lock(profile_id):
+        return _delete_profile_checked(profile_id, password)
+
+
+def _delete_profile_checked(profile_id: str, password: str) -> dict:
     # Throttled on the same counter as unlock: this endpoint takes the same password
     # and so is the same guessing oracle, with destruction rather than a session at
     # the end of it.
@@ -896,14 +950,18 @@ def delete_profile(profile_id: str, password: str) -> dict:
         accounts_root = (_root() / "accounts").resolve()
         if not directory.resolve().is_relative_to(accounts_root):
             raise HTTPException(status_code=400, detail="Invalid profile storage location.")
-        if directory.exists():
-            try:
-                shutil.rmtree(directory)
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Neo could not remove this profile's local data. The account was kept.",
-                ) from exc
+        try:
+            if directory.exists():
+                release_database(_database_url(directory))
+                remove_tree(directory)
+            # Before the registry row goes, so a failure here leaves the account in
+            # place and deleting it again finishes the job.
+            remove_scoped_storage(str(row["id"]))
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Neo could not remove this profile's local data. The account was kept.",
+            ) from exc
 
         conn.execute("DELETE FROM profile_sessions WHERE profile_id = ?", (row["id"],))
         conn.execute("DELETE FROM account_profiles WHERE id = ?", (row["id"],))
@@ -915,7 +973,27 @@ def delete_profile(profile_id: str, password: str) -> dict:
 
 
 def cleanup_guests() -> None:
-    shutil.rmtree(_root() / "guests", ignore_errors=True)
+    """Remove every guest profile, and the workspace copies and CLI state they made."""
+
+    guests = _root() / "guests"
+    if guests.is_dir():
+        for directory in guests.iterdir():
+            release_database(_database_url(directory))
+    remove_tree(guests, ignore_errors=True)
+    from app.services.isolation.roots import data_root
+
+    base = data_root()
+    for name in SCOPED_STORAGE_CLASSES:
+        scoped = base / name
+        if not scoped.is_dir():
+            continue
+        for entry in scoped.iterdir():
+            if not entry.name.startswith("guest-"):
+                continue
+            try:
+                remove_scoped_storage(entry.name)
+            except (OSError, ValueError):
+                _logger.warning("Could not remove a guest profile's workspace copies")
 
 
 def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
@@ -946,7 +1024,10 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
     with profile_database(profile_id, guest=guest):
         initialize_database(get_settings().database_url)
         # The feature stores use get_settings(), which is profile-aware inside this context.
-        from app.services.agent_core.store import initialize_agent_core_tables
+        from app.services.agent_core.store import (
+            initialize_agent_core_tables,
+            recover_interrupted_sessions,
+        )
         from app.services.agent_framework import initialize_agent_framework_tables
         from app.services.appearance import initialize_appearance_tables
         from app.services.bundles import initialize_bundle_tables
@@ -985,6 +1066,12 @@ def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None
             initialize_task_tables,
             initialize_calendar_tables,
             initialize_agent_core_tables,
+            # Every profile has its own database, so the startup call in main.py
+            # only ever reached the base one: a restart left each profile's
+            # interrupted runs showing as in progress for good. This runs once per
+            # profile per process, which is exactly once per restart, and only
+            # fails rows whose heartbeat has gone stale -- a live worker keeps its run.
+            recover_interrupted_sessions,
             initialize_bundle_tables,
             initialize_agent_framework_tables,
             initialize_command_sandbox_tables,

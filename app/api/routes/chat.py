@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Lock, RLock, Thread
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_store
 from app.api.routes.accounts import session_for
-from app.core.config import get_settings
+from app.core.config import active_profile_storage_dir, get_settings
 from app.db.session import SessionLocal
 from app.models import Chat, ChatGeneration, ChatMessage, Project
 from app.models.enums import ProjectStatus
@@ -2318,6 +2319,7 @@ def stream_all_chat_events(request: Request, after: int | None = None) -> Stream
     """
 
     profile = session_for(request)
+    storage = active_profile_storage_dir.get()
 
     def generate():
         # ``after`` omitted means "you decide", and the answer comes back on the
@@ -2351,6 +2353,12 @@ def stream_all_chat_events(request: Request, after: int | None = None) -> Stream
                 now = time.monotonic()
                 if profile is not None and now - last_pump > QUEUE_PUMP_INTERVAL:
                     last_pump = now
+                    if storage and not Path(storage).exists():
+                        # The profile was deleted while this tail was open. Its
+                        # session is revoked, so end rather than poll a database
+                        # that no longer exists.
+                        yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
+                        return
                     _pump_turn_queue(profile)
                 # Wakes as soon as this process writes an event; the interval
                 # remains the most it waits, for writers elsewhere.

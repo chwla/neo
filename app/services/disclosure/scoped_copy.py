@@ -9,6 +9,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+from app.core.paths import remove_tree
 from app.services.isolation.roots import data_root, overlaps_protected
 from app.services.repos.migration import _fsync_tree, _manifest
 from app.services.repos.safety import prepare_managed_root
@@ -62,5 +63,5 @@ def create(source: Path, *, profile_id: str, session_id: str) -> Path:
             os.close(fd)
     finally:
         if stage.exists():
-            shutil.rmtree(stage)
+            remove_tree(stage)
     return destination

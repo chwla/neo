@@ -15,6 +15,40 @@ from app.core.config import active_profile_storage_dir
 from app.services import isolation
 from app.services.lsp.protocol import decode, encode
 
+#: What a language server started outside isolation inherits. An allowlist, because
+#: Neo's own environment can hold provider API keys and the connector key, and
+#: nothing a language server does needs them. ``HOME`` stays the real one here:
+#: pointing it into the workspace, as the isolated path does, would leave the
+#: server's caches inside the user's live project.
+_INHERITED_ENV = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    # Windows needs these to start a process at all, and Node finds its caches by them.
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "PATHEXT",
+    "COMSPEC",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+)
+
+
+def unsandboxed_environment() -> dict[str, str]:
+    return {name: os.environ[name] for name in _INHERITED_ENV if os.environ.get(name)}
+
 
 class JsonRpcClient:
     """JSON-RPC-over-stdio client with bounded output and deterministic cleanup."""
@@ -41,6 +75,11 @@ class JsonRpcClient:
                 workspace=cwd,
             )
         else:
+            # Injected factories keep their own signature; only a real process
+            # needs its environment trimmed.
+            options = (
+                {"env": unsandboxed_environment()} if process_factory is subprocess.Popen else {}
+            )
             self.process = process_factory(
                 argv,
                 cwd=cwd,
@@ -48,6 +87,7 @@ class JsonRpcClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
+                **options,
             )
         self.timeout = timeout
         self.next_id = 1

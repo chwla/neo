@@ -1,6 +1,8 @@
 import hmac
+import logging
 import secrets
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -14,6 +16,7 @@ from app.api.routes.accounts import (
     CSRF_COOKIE,
     PERSISTENT_SESSION_MAX_AGE,
     SESSION_COOKIE,
+    cookie_secure,
     session_for,
 )
 from app.api.routes.accounts import router as accounts_router
@@ -63,6 +66,7 @@ from app.api.routes.voice import router as voice_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
+from app.core.body_limits import BodySizeLimitMiddleware
 from app.core.config import get_settings
 from app.core.origins import ALLOWED_BROWSER_ORIGINS
 from app.services.agent_core.store import (
@@ -84,7 +88,7 @@ from app.services.gallery.store import initialize_gallery_tables
 from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.integrations.store import initialize_integration_tables
-from app.services.isolation import recover_interrupted_runs
+from app.services.isolation import IsolationUnavailable, recover_interrupted_runs
 from app.services.keybindings import initialize_keybinding_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
@@ -107,6 +111,8 @@ from app.services.tasks.store import initialize_task_tables
 from app.services.test_runner.store import initialize_test_runner_tables
 from app.services.web_search import initialize_web_search_tables
 from app.services.workspace_orchestration import initialize_workspace_orchestration_tables
+
+_LOG = logging.getLogger(__name__)
 
 # Reachable without a profile session by design: the profile picker itself (listing
 # profiles, registering, starting a guest, and unlocking are the sign-in steps, and
@@ -134,8 +140,10 @@ def requires_authenticated_profile(path: str) -> bool:
 #: addressed to this installation, and answering it is what makes DNS rebinding
 #: work: a page on any domain can point its own hostname at 127.0.0.1 and then
 #: talk to Neo with the browser's cookies attached. Checked as a whole value,
-#: since a suffix match would accept ``127.0.0.1.evil.com``.
-TRUSTED_HOST_SUFFIXES = ("localhost", "127.0.0.1", "[::1]", "::1", "testserver")
+#: since a suffix match would accept ``127.0.0.1.evil.com``. Starlette's test
+#: client defaults to ``testserver``, which is deliberately not here: tests pass
+#: ``base_url="http://127.0.0.1"`` instead of widening what production answers to.
+TRUSTED_HOST_SUFFIXES = ("localhost", "127.0.0.1", "[::1]", "::1")
 
 
 def _host_is_trusted(raw_host: str | None, extra: tuple[str, ...] = ()) -> bool:
@@ -230,12 +238,18 @@ class NoStoreMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         response = await call_next(request)
+        # On every response: no MIME sniffing (a stored upload must never be read as
+        # HTML), no framing by another site (clickjacking), and no URLs -- which can
+        # carry ids -- leaking to sites the interface links to.
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
         if response.headers.get("content-type", "").lower().startswith("text/html"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data: blob:; font-src 'self' data:; "
                 "connect-src 'self'; object-src 'none'; frame-src 'none'; "
-                "base-uri 'self'; form-action 'self'"
+                "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
             )
         if _within(request.url.path, PROTECTED_PREFIXES):
             # A route may set a weaker header of its own (gallery images used
@@ -282,7 +296,7 @@ class ProfileSessionMiddleware(BaseHTTPMiddleware):
                 max_age=None if session.get("is_guest") else PERSISTENT_SESSION_MAX_AGE,
                 httponly=False,
                 samesite="lax",
-                secure=False,
+                secure=cookie_secure(),
                 path="/",
             )
         return response
@@ -307,8 +321,29 @@ def _warm_embedded_searxng() -> None:
     threading.Thread(target=warm_up, name="searxng-warmup", daemon=True).start()
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Guest sessions live only in this process's memory, so guest storage found at
+    # startup belongs to a process that crashed or was killed before shutdown
+    # cleanup ran, and no session can ever reach it again.
+    cleanup_guests()
+    yield
+    cleanup_guests()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Neo Memory", version="0.1.0")
+    # The schema sits under /api so the session middleware covers it: it maps every
+    # route Neo has, which is nothing to hand an unauthenticated caller. FastAPI's
+    # /docs and /redoc pages are off because they never worked here: they load
+    # their scripts from a CDN and run inline ones, and the CSP below refuses both.
+    app = FastAPI(
+        title="Neo Memory",
+        version="0.1.0",
+        lifespan=_lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url="/api/openapi.json",
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(ALLOWED_BROWSER_ORIGINS if get_settings().dev_cors_enabled else ()),
@@ -324,6 +359,8 @@ def create_app() -> FastAPI:
     app.add_middleware(CsrfGuardMiddleware)
     app.add_middleware(OriginGuardMiddleware)
     app.add_middleware(TrustedHostMiddleware)
+    # Last added, so outermost: no body is read past its ceiling by anything below.
+    app.add_middleware(BodySizeLimitMiddleware)
     app.include_router(accounts_router, prefix="/api")
     app.include_router(security_router, prefix="/api")
     app.include_router(projects_router, prefix="/api")
@@ -407,7 +444,15 @@ def create_app() -> FastAPI:
     initialize_web_search_tables()
     initialize_workspace_orchestration_tables()
     initialize_continuity_tables()
-    recover_interrupted_runs()
+    try:
+        recover_interrupted_runs()
+    except IsolationUnavailable as exc:
+        # Records of runs a crash interrupted can only be settled by the sandbox
+        # that launched them. Without one -- Neo nested in another sandbox, a
+        # failed probe, a data directory moved to another platform -- refusing to
+        # start would lock the user out of everything else. The records stay, and
+        # ``isolation.run`` retries recovery before it launches anything.
+        _LOG.warning("isolation_recovery_deferred reason=%s", exc)
     # A restart leaves agent sessions in 'running' that no worker will ever
     # advance. The previous runner had an equivalent helper that nothing called,
     # so runs stayed active forever; this one is wired up.
@@ -417,10 +462,6 @@ def create_app() -> FastAPI:
     delete_chatless_sessions()
     start_reminder_sweep()
     _warm_embedded_searxng()
-
-    @app.on_event("shutdown")
-    def remove_temporary_guest_profiles() -> None:
-        cleanup_guests()
 
     frontend_dir = Path(get_settings().frontend_dir).resolve()
     index_file = frontend_dir / "index.html"

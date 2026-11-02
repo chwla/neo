@@ -6,6 +6,7 @@ import {
   formatTokens,
   renderStreamingHtml,
 } from "./chatPresentation.js";
+import { COPY_FAILED_MESSAGE, copyText } from "./clipboard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -70,18 +71,6 @@ export function senderName(executor) {
   return EXECUTOR_NAMES[executor] || executor;
 }
 
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const area = document.createElement("textarea");
-    area.value = text;
-    document.body.appendChild(area);
-    area.select();
-    document.execCommand("copy");
-    document.body.removeChild(area);
-  }
-}
 
 function lastAssistantEntry(steps) {
   for (let index = steps.length - 1; index >= 0; index -= 1) {
@@ -135,6 +124,7 @@ function AgentBubble({ role, text, html, markdown, entry, onCopy, extraActions, 
     : [formatResponseKind(entry || {}), formatTokens(entry || {}), formatDuration(entry?.duration_ms)]
       .filter(Boolean);
   const body = text ?? "";
+  const [copyFailed, setCopyFailed] = useState(false);
 
   return (
     <article className={`neo-chat-message ${isUser ? "user" : "assistant"}`}>
@@ -155,11 +145,15 @@ function AgentBubble({ role, text, html, markdown, entry, onCopy, extraActions, 
               </span>
             ) : null}
             <MessageActionsMenu label={isUser ? "Message actions" : "Response actions"}>
-              <button type="button" onClick={() => onCopy?.(entry?.content ?? body)}>
+              <button
+                type="button"
+                onClick={async () => setCopyFailed((await onCopy?.(entry?.content ?? body)) === false)}
+              >
                 Copy
               </button>
               {extraActions}
             </MessageActionsMenu>
+            {copyFailed ? <span className="copy-failed" role="status">{COPY_FAILED_MESSAGE}</span> : null}
           </div>
         </div>
       </div>

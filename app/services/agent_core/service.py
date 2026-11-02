@@ -22,6 +22,7 @@ from app.services.agent_core.types import (
     ToolCall,
 )
 from app.services.disclosure import Label, public, to_json
+from app.services.isolation import safe_fs
 from app.services.repos import store as repos_store
 
 MAX_OBJECTIVE = 20_000
@@ -359,6 +360,21 @@ class AgentCoreService:
             if repo is None:
                 return None
             if repo.get("access") == repos_store.LIVE:
+                if not journal.undo_available():
+                    # No safe read here either, so no diff: the journal still knows
+                    # which files the run touched, and the panel says why it cannot
+                    # offer an undo rather than showing nothing at all.
+                    return {
+                        "mode": delivery.LIVE,
+                        "root": repo["original_path"],
+                        "deliverable": [
+                            {"path": record["relative_path"], "status": "modified"}
+                            for record in store.list_file_snapshots(session.id)
+                        ],
+                        "blocked": [],
+                        "undoable": False,
+                        "undo_unavailable_reason": safe_fs.PLATFORM_UNSUPPORTED_MESSAGE,
+                    }
                 plan = journal.session_changes(session.id, session.repo_id)
                 return {
                     "mode": delivery.LIVE,
@@ -369,6 +385,7 @@ class AgentCoreService:
                     ],
                     "blocked": [],
                     "undoable": bool(plan.changes),
+                    "undo_unavailable_reason": None,
                 }
             plan = delivery.plan_delivery(session.repo_id)
         except Exception:
@@ -559,6 +576,8 @@ class AgentCoreService:
             raise AgentCoreValidationError(
                 "Only a run against a folder on this machine can be undone."
             )
+        if not journal.undo_available():
+            raise AgentCoreValidationError(safe_fs.PLATFORM_UNSUPPORTED_MESSAGE)
         return journal.undo(session_id, session.repo_id)
 
     def clone_for_fork(

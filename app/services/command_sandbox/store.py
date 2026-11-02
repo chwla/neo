@@ -30,9 +30,27 @@ def initialize_command_sandbox_tables() -> None:
         CREATE INDEX IF NOT EXISTS idx_command_runs_status ON workspace_command_runs(status,created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_command_runs_category ON workspace_command_runs(category,created_at DESC);
         """)
+        # Who approved a run, and whether they were shown that it would run without a
+        # sandbox. Added after the table first shipped, so older databases get them here.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(workspace_command_runs)")}
+        for name, definition in _ADDED_COLUMNS.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE workspace_command_runs ADD COLUMN {name} {definition}")
         conn.commit()
     finally:
         conn.close()
+
+
+_ADDED_COLUMNS = {
+    "approved_by": "TEXT",
+    "unsandboxed_ack": "INTEGER NOT NULL DEFAULT 0",
+}
+_COLUMNS = (
+    "id", "workspace_id", "command_json", "cwd", "category", "status", "approval_required",
+    "approved", "exit_code", "stdout_text", "stderr_text", "output_truncated", "duration_ms",
+    "timeout_ms", "policy_decision_json", "redaction_summary_json", "created_by", "created_at",
+    "started_at", "completed_at", "approved_by", "unsandboxed_ack",
+)
 
 
 def _row(row):
@@ -44,6 +62,7 @@ def _row(row):
     item["approval_required"] = bool(item["approval_required"])
     item["approved"] = bool(item["approved"])
     item["output_truncated"] = bool(item["output_truncated"])
+    item["unsandboxed_ack"] = bool(item.get("unsandboxed_ack"))
     return item
 
 
@@ -65,11 +84,15 @@ def create(item: dict) -> dict:
         "duration_ms": None,
         "started_at": None,
         "completed_at": None,
+        "approved_by": None,
+        "unsandboxed_ack": 0,
     }
     conn = _connect()
     try:
+        # Columns named, not positional: the table gains columns over time.
         conn.execute(
-            "INSERT INTO workspace_command_runs VALUES (:id,:workspace_id,:command_json,:cwd,:category,:status,:approval_required,:approved,:exit_code,:stdout_text,:stderr_text,:output_truncated,:duration_ms,:timeout_ms,:policy_decision_json,:redaction_summary_json,:created_by,:created_at,:started_at,:completed_at)",
+            f"INSERT INTO workspace_command_runs ({','.join(_COLUMNS)}) "
+            f"VALUES ({','.join(':' + name for name in _COLUMNS)})",
             data,
         )
         conn.commit()

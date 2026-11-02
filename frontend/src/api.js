@@ -265,7 +265,10 @@ export const api = {
   commandRun: (id) => request(`/command-sandbox/runs/${id}`),
   validateCommand: (payload) => request("/command-sandbox/validate", { method: "POST", body: JSON.stringify(payload) }),
   proposeCommand: (payload) => request("/command-sandbox/propose", { method: "POST", body: JSON.stringify(payload) }),
-  approveCommand: (id) => request(`/command-sandbox/runs/${id}/approve`, { method: "POST", body: JSON.stringify({ confirm: true }) }),
+  commandIsolation: () => request("/command-sandbox/isolation"),
+  approveCommand: (id, { acknowledgeUnsandboxed = false } = {}) => request(`/command-sandbox/runs/${id}/approve`, {
+    method: "POST", body: JSON.stringify({ confirm: true, acknowledge_unsandboxed: acknowledgeUnsandboxed }),
+  }),
   executeCommand: (id) => request(`/command-sandbox/runs/${id}/execute`, { method: "POST" }),
   cancelCommand: (id) => request(`/command-sandbox/runs/${id}/cancel`, { method: "POST" }),
   contextSummaries: (params = {}) => {

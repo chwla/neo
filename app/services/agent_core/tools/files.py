@@ -58,10 +58,15 @@ def read_file(arguments: dict, context: ToolContext):
     path = resolve(root, str(arguments.get("path", "")), must_exist=True)
     if _is_binary(path):
         raise WorkspaceError("That file is binary and cannot be read as text.")
-    text = textio.read_text(path)
-    truncated = len(text.encode("utf-8")) > MAX_READ_BYTES
+    # Read no more than is shown: loading a multi-gigabyte file whole to show its
+    # first 200 KB is how one tool call could exhaust the server's memory.
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_READ_BYTES + 1)
+    truncated = len(raw) > MAX_READ_BYTES
     if truncated:
-        text = text.encode("utf-8")[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
+        # Cut on a character boundary rather than mid-way through a UTF-8 sequence.
+        raw = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore").encode("utf-8")
+    text = textio.decode(raw)
     lines = text.splitlines()
     offset = max(int(arguments.get("offset") or 0), 0)
     limit = int(arguments.get("limit") or len(lines))

@@ -18,3 +18,6 @@ class CommandRequest(BaseModel):
 
 class ApprovalRequest(BaseModel):
     confirm: bool = False
+    #: The person saw ``isolation.launch.UNSANDBOXED_EXPOSURE`` and still approved
+    #: running this command without a sandbox. Ignored where a sandbox exists.
+    acknowledge_unsandboxed: bool = False

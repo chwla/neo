@@ -89,9 +89,43 @@ DANGEROUS_FLAGS: dict[str, frozenset[str]] = {
             "-fprint",
             "-fprint0",
             "-fls",
+            # Following symlinks walks out of the workspace; see the service's
+            # check on path arguments for the links a command is handed directly.
+            "-follow",
         }
     ),
-    "rg": frozenset({"--pre", "--hostname-bin"}),
+    "rg": frozenset({"--pre", "--hostname-bin", "--follow"}),
+    "grep": frozenset({"--dereference-recursive"}),
+    # The runner adds --no-ext-diff and --no-textconv ahead of the caller's own
+    # arguments, and git takes the last spelling given, so the opposites are refused
+    # here rather than allowed to switch the drivers back on. --output writes the
+    # result to a file; --edit-description writes the branch description.
+    # --show-signature and --verify-signatures run the configured signature program;
+    # the runner already points it at the null device, and these are refused as well
+    # so a request to verify never reaches git at all.
+    "git": frozenset(
+        {
+            "--ext-diff",
+            "--textconv",
+            "--output",
+            "--edit-description",
+            "--show-signature",
+            "--verify-signatures",
+        }
+    ),
+    # tree -o writes its listing to a file.
+    "tree": frozenset({"-o"}),
+}
+
+#: Short options refused wherever they appear, alone or inside a cluster
+#: (``tree -ao listing.txt`` is ``-a`` plus ``-o listing.txt``). Case matters here,
+#: unlike above: ``grep -r`` stays inside the tree, ``grep -R`` follows symlinks.
+#: tree ``-o`` writes a file; the rest follow symlinks out of the workspace.
+CLUSTERED_DANGEROUS_SHORT: dict[str, frozenset[str]] = {
+    "tree": frozenset({"o", "l"}),
+    "grep": frozenset({"R", "S"}),
+    "rg": frozenset({"L"}),
+    "find": frozenset({"L", "H"}),
 }
 
 
@@ -128,10 +162,23 @@ def validate(command: list[str], category: str, cwd: str) -> dict:
                 "(e.g. --show-current); creating, deleting or renaming a branch is forbidden"
             )
         dangerous = DANGEROUS_FLAGS.get(executable, frozenset())
+        clustered = CLUSTERED_DANGEROUS_SHORT.get(executable, frozenset())
         for arg in command[1:]:
             # Match both "--flag value" and "--flag=value" spellings.
             if arg.lower() in dangerous or arg.split("=", 1)[0].lower() in dangerous:
                 reasons.append(f"flag '{arg.split('=', 1)[0]}' is forbidden for '{command[0]}'")
+            elif (
+                arg.startswith("-")
+                and not arg.startswith("--")
+                and any(letter in clustered for letter in arg[1:])
+            ):
+                reasons.append(f"flag '{arg}' is forbidden for '{command[0]}'")
+        if executable == "git" and any(
+            "%G" in arg or "%(signature" in arg.lower() for arg in command[1:]
+        ):
+            # Format placeholders that verify signatures: %G?, %GS, %GK and the rest
+            # in log and show formats, %(signature...) in branch and ref formats.
+            reasons.append("signature verification formats are forbidden for git")
         for arg in command:
             norm = arg.replace("\\", "/")
             if any(token in arg for token in SHELL):

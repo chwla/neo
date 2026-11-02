@@ -148,7 +148,9 @@ def _default_slot(payload: MemoryCreateRequest, mutation_id: str) -> tuple[str, 
     return f"{memory_type}:{domain}:item:{entity_id}", Cardinality.ADDITIVE
 
 
-def _learned_in(db: Session, owner_id: str, memory_ids: list[str]) -> dict[str, list[dict[str, str]]]:
+def _learned_in(
+    db: Session, owner_id: str, memory_ids: list[str]
+) -> dict[str, list[dict[str, str]]]:
     """The projects whose chats each memory was learned in.
 
     Separate from scope: personal facts stay global even when said inside a

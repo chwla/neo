@@ -8,6 +8,7 @@ from threading import Lock
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from app.core.config import get_base_settings
 from app.services.notes import keys as note_keys
 from app.services.profile_accounts import (
     MIN_PASSWORD_LENGTH,
@@ -29,18 +30,19 @@ router = APIRouter(prefix="/account-profiles", tags=["account profiles"])
 SESSION_COOKIE = "neo_profile_session"
 CSRF_COOKIE = "neo_csrf"
 PERSISTENT_SESSION_MAX_AGE = 60 * 60 * 24 * 365 * 5
+MAX_PASSWORD_CHARS = 256
 _sessions: dict[str, dict] = {}
 _session_lock = Lock()
 
 
 class ProfileCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=48)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_CHARS)
     avatar_data: str | None = Field(default=None, max_length=3_000_000)
 
 
 class UnlockRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_CHARS)
 
 
 class DeleteProfileRequest(UnlockRequest):
@@ -51,10 +53,22 @@ class ProfileUpdateRequest(BaseModel):
     """Partial update of the signed-in account. Omitted fields are left unchanged."""
 
     username: str | None = Field(default=None, max_length=48)
-    avatar_data: str | None = None
+    avatar_data: str | None = Field(default=None, max_length=3_000_000)
     clear_avatar: bool = False
-    current_password: str | None = Field(default=None, max_length=200)
-    new_password: str | None = Field(default=None, max_length=200)
+    # The same ceiling as unlock: a password accepted at sign-in that cannot be
+    # given here could never be changed.
+    current_password: str | None = Field(default=None, max_length=MAX_PASSWORD_CHARS)
+    new_password: str | None = Field(default=None, max_length=MAX_PASSWORD_CHARS)
+
+
+def cookie_secure() -> bool:
+    """Whether cookies carry ``Secure``: on behind an HTTPS reverse proxy, off on loopback.
+
+    Off by default because a local install is plain HTTP on 127.0.0.1, where a
+    ``Secure`` cookie would never be sent back and nobody could sign in.
+    """
+
+    return bool(get_base_settings().cookie_secure)
 
 
 def session_for(request: Request) -> dict | None:
@@ -80,7 +94,7 @@ def _start_session(response: Response, profile: dict) -> None:
         max_age=None if profile.get("is_guest") else PERSISTENT_SESSION_MAX_AGE,
         httponly=False,
         samesite="lax",
-        secure=False,
+        secure=cookie_secure(),
         path="/",
     )
     if profile.get("is_guest"):
@@ -88,7 +102,7 @@ def _start_session(response: Response, profile: dict) -> None:
         with _session_lock:
             _sessions[token] = profile
         response.set_cookie(
-            SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False, path="/"
+            SESSION_COOKIE, token, httponly=True, samesite="lax", secure=cookie_secure(), path="/"
         )
         return
     token = create_profile_session(profile)
@@ -98,7 +112,7 @@ def _start_session(response: Response, profile: dict) -> None:
         max_age=PERSISTENT_SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=cookie_secure(),
         path="/",
     )
 
@@ -204,7 +218,7 @@ def update_current_profile(
             max_age=PERSISTENT_SESSION_MAX_AGE,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=cookie_secure(),
             path="/",
         )
         response.set_cookie(
@@ -213,7 +227,7 @@ def update_current_profile(
             max_age=PERSISTENT_SESSION_MAX_AGE,
             httponly=False,
             samesite="lax",
-            secure=False,
+            secure=cookie_secure(),
             path="/",
         )
     return {"profile": updated}

@@ -15,7 +15,6 @@ network how big the file is does not.
 from __future__ import annotations
 
 import io
-import shutil
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -24,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from tqdm.auto import tqdm
+
+from app.core.paths import remove_tree
 
 
 # Deliberately short. A long menu of models is a research tool, not a dictation
@@ -149,7 +150,7 @@ def remove(root: Path, model_id: str) -> bool:
     directory = directory_for(root, model_id)
     if not directory.is_dir():
         return False
-    shutil.rmtree(directory, ignore_errors=True)
+    remove_tree(directory, ignore_errors=True)
     return True
 
 

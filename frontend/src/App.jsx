@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom";
 
 import { api } from "./api.js";
+import { COPY_FAILED_MESSAGE, copyText as copyToClipboard } from "./clipboard.js";
 import { useStableActions } from "./useStableActions.js";
 import { createRequestId, createSendGuard } from "./sendGuard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
@@ -1418,6 +1419,12 @@ export function ChatMessage({
                       >
                         Undo this run
                       </button>
+                    ) : null}
+                    {hasChanges && delivery?.mode === "live" && delivery?.undo_unavailable_reason ? (
+                      // Said, not just withheld: a missing button reads as a bug.
+                      <span className="agent-undo-unavailable" role="note">
+                        {delivery.undo_unavailable_reason}
+                      </span>
                     ) : null}
                   </>
                 ) : isCompactionSummary ? null : (
@@ -4761,16 +4768,9 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
   }
 
   async function copyText(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const textArea = document.createElement("textarea");
-      textArea.value = text;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textArea);
-    }
+    const copied = await copyToClipboard(text);
+    if (!copied) setStatusError(COPY_FAILED_MESSAGE);
+    return copied;
   }
 
   function handleEditMessage(message) {

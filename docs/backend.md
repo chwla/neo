@@ -197,8 +197,9 @@ must re-enter it (or capture the profile) to touch the right database.
 ## API surface
 
 All routes are under `/api` (e.g. `GET /api/chats`). Each file in `app/api/routes/` maps to a
-feature; the interactive OpenAPI docs are served by FastAPI at `/docs` and `/openapi.json`
-(also reachable through the proxy in dev).
+feature. The OpenAPI schema is served at `/api/openapi.json` to signed-in sessions (also
+reachable through the proxy in dev). FastAPI's `/docs` and `/redoc` pages are off, because
+Neo's CSP blocks the CDN and inline scripts they need.
 
 | Area | Route module(s) |
 |---|---|
@@ -424,10 +425,11 @@ storage (`vault.py`: AES-GCM, key from `NEO_CONNECTOR_MASTER_KEY[_FILE]`). `http
 place a credential is attached to an outbound request. `capabilities.py` expresses what an
 account may do in user-readable terms.
 
-Broader connector types (OpenAPI, manual REST, MCP Streamable HTTP, legacy MCP SSE, trusted
-stdio) are configured per profile. Reads from uniquely matched operations may be used
-automatically; external or workspace **writes always require explicit approval**. Connector
-administration requires an active profile session.
+Connected accounts are the only connector type. The earlier user-added connector system
+(OpenAPI, manual REST, MCP, stdio) has been removed; `agent_core/tools/connectors.py` now
+only builds the per-chat catalog of built-in tools. External or workspace **writes always
+require explicit approval**, and connecting an account requires a signed-in profile; guest
+sessions cannot.
 
 The OAuth redirect URI is a fixed setting (`integration_oauth_redirect_uri`), not derived from the
 request, because providers match it exactly.
@@ -459,7 +461,9 @@ server. Command groups: `status`, `health`, `agents`/`agent`, `web`, `providers`
 ## Operations
 
 - **Health:** `/api/health/live` (process only; used by Docker), `/api/health`, and
-  `/api/health/ready` (dependency-aware, `503` with a `checks` object when not ready).
+  `/api/health/ready`: status only for anonymous callers (storage and SQLite, nothing that
+  leaves the machine); the full `checks` object, cached 30 s, for a signed-in caller. `503`
+  when not ready.
 - **Logs:** standard uvicorn/Python logging to stdout.
 - **Data to back up:** the data directory and the connector master key (see
   [setup.md](setup.md#backups-and-upgrades)).

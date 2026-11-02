@@ -27,7 +27,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from app.services.agent_core import events, permissions, store
+from app.services.agent_core import events, journal, permissions, store
 from app.services.agent_core.approvals import arguments_hash
 from app.services.agent_core.completion import CompletionAdjudicator
 from app.services.agent_core.context import context_budget, fit
@@ -52,6 +52,7 @@ from app.services.agent_core.types import (
 from app.services.agent_core.workspace import is_live
 from app.services.disclosure import Label, from_json, join, public, to_json
 from app.services.disclosure.gate import ApprovedCall
+from app.services.isolation import launch
 from app.services.llm import LLMMessage
 
 _LOG = logging.getLogger(__name__)
@@ -527,6 +528,9 @@ class AgentLoop:
                 mode=session.mode,
                 grants=grants,
                 egress=self._egress(session_id),
+                isolated=launch.sandbox_available(),
+                undo_available=journal.undo_available()
+                or not is_live(session.repo_id),
             )
 
             if decision.outcome == "deny":

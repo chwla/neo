@@ -497,9 +497,16 @@ def _probe(config: LLMConfig) -> dict[str, Any]:
             if config.resolved_api_key()
             else {}
         )
+        # Not followed: the request may carry a key, and a redirect could take it
+        # to a host the key was never allowed to reach.
         response = requests.get(
-            f"{base}/models", headers=headers, timeout=DISCOVERY_TIMEOUT_SECONDS
+            f"{base}/models",
+            headers=headers,
+            timeout=DISCOVERY_TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
+        if response.is_redirect:
+            raise requests.HTTPError("redirect refused", response=response)
         response.raise_for_status()
         return {
             "reachable": True,

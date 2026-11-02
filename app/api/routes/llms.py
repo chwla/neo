@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.services.llm import LLMConfig, LLMRegistry, get_llm_client
 from app.services.llm_registry.service import LLMRegistryService
+from app.services.llm_registry.types import check_key_env_name
 
 router = APIRouter(prefix="/llms", tags=["llms"])
 
@@ -43,6 +44,11 @@ def list_llms() -> LLMListResponse:
 def upsert_llm(config_id: str, request: LLMConfig) -> LLMListResponse:
     if request.id != config_id:
         raise HTTPException(status_code=400, detail="Configuration id must match the URL")
+    # Checked here rather than on LLMConfig, which also loads existing config files.
+    try:
+        check_key_env_name(request.api_key_env)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     registry = _registry()
     try:
         configs, active_id = registry.upsert(request)

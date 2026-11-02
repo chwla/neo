@@ -22,6 +22,7 @@ run rather than before the most recent edit within it.
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
 from app.core import textio
@@ -39,6 +40,8 @@ _PERMISSION_HINT = (
     "owned by a different user than the container runs as -- set NEO_UID/NEO_GID "
     "to your own (`id -u`/`id -g`) and restart."
 )
+
+_LOG = logging.getLogger(__name__)
 
 #: A file this size is not something a text agent meaningfully edited, and
 #: holding two copies of it in SQLite to enable an undo nobody wants is a poor
@@ -78,6 +81,25 @@ def record_before(session_id: str, repo_id: str, root: Path, relative_path: str)
 
     if not session_id or not repo_id:
         return
+    if not safe_fs.supported():
+        # No safe snapshot is possible here, and silence would let the panel offer
+        # an undo that has nothing behind it. The touch is recorded as such.
+        try:
+            store.insert_file_snapshot(
+                {
+                    "id": store.new_id(),
+                    "session_id": session_id,
+                    "repo_id": repo_id,
+                    "relative_path": relative_path,
+                    "existed_before": True,
+                    "before_text": None,
+                    "snapshot_status": "unavailable",
+                    "created_at": store.now_iso(),
+                }
+            )
+        except Exception:
+            _LOG.warning("journal_snapshot_unrecorded session=%s", session_id, exc_info=True)
+        return
     try:
         raw = _read_raw(root, relative_path)
         # A very large file still needs an "existed" snapshot row so undo
@@ -97,6 +119,12 @@ def record_before(session_id: str, repo_id: str, root: Path, relative_path: str)
         )
     except Exception:
         return
+
+
+def undo_available() -> bool:
+    """Whether a live run's changes can be listed and undone on this platform."""
+
+    return safe_fs.supported()
 
 
 def record_after(session_id: str, root: Path, relative_path: str) -> None:
@@ -133,6 +161,8 @@ def session_changes(session_id: str, repo_id: str) -> DeliveryPlan:
         relative = record["relative_path"]
         try:
             current = _read_text(root, relative)
+        except safe_fs.PlatformUnsupported:
+            raise
         except OSError:
             continue
         before = record["before_text"] or ""

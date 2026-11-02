@@ -4,6 +4,7 @@ import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 
 import Icon from "../WorkspaceIcon.jsx";
 import { api } from "../api.js";
+import { COPY_FAILED_MESSAGE, copyText } from "../clipboard.js";
 import { useCommandHandlers } from "../keys/useCommands.js";
 import { registerModal } from "../modalStack.js";
 import { insertAttachments } from "./extensions/attachments.js";
@@ -462,7 +463,12 @@ export default function NoteEditor({
         ],
       },
       { separator: true },
-      { label: "Copy as Markdown", onSelect: () => navigator.clipboard?.writeText(markdownOfNote()).catch(() => {}) },
+      {
+        label: "Copy as Markdown",
+        onSelect: async () => {
+          if (!(await copyText(markdownOfNote()))) controller.notify(COPY_FAILED_MESSAGE);
+        },
+      },
       { label: "Export as Markdown", onSelect: () => download(name, `${markdownOfNote()}\n`) },
       { label: "Print", onSelect: () => window.print() },
     ];

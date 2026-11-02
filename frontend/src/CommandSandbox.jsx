@@ -9,7 +9,18 @@ export default function CommandSandbox() {
   const payload = () => ({ workspace_id: workspaceId, command: command.trim().split(/\s+/).filter(Boolean), cwd: ".", category, created_by: "user" });
   async function validate() { setBusy(true); try { setPolicy(await api.validateCommand(payload())); } catch (error) { setStatus(error.message); } finally { setBusy(false); } }
   async function propose() { setBusy(true); try { const run = await api.proposeCommand(payload()); setDetail(run); setPolicy(run.policy_decision); await load(); setStatus(run.status === "blocked" ? "Blocked command recorded in audit history." : "Command proposed; explicit approval is required."); } catch (error) { setStatus(error.message); } finally { setBusy(false); } }
-  async function approve(item) { setBusy(true); try { const next = await api.approveCommand(item.id); setDetail(next); await load(); setStatus("Approved. Execution remains a separate action."); } catch (error) { setStatus(error.message); } finally { setBusy(false); } }
+  async function approve(item) {
+    setBusy(true);
+    try {
+      // Without a sandbox the run gets the whole account. The person approves that
+      // knowingly or not at all; the server refuses an unacknowledged unsandboxed run.
+      const isolation = await api.commandIsolation();
+      const acknowledgeUnsandboxed = !isolation.available;
+      if (acknowledgeUnsandboxed && !window.confirm(`${isolation.exposure}\n\nApprove running this command without a sandbox?`)) return;
+      const next = await api.approveCommand(item.id, { acknowledgeUnsandboxed });
+      setDetail(next); await load(); setStatus("Approved. Execution remains a separate action.");
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
   async function execute(item) { if (!window.confirm("Execute this approved allowlisted command only inside Neo's managed workspace?")) return; setBusy(true); try { const next = await api.executeCommand(item.id); setDetail(next); await load(); setStatus("Command completed; output is redacted and bounded."); } catch (error) { setStatus(error.message); } finally { setBusy(false); } }
   const policyMessage = policy?.allowed
     ? (typeof policy.reason === "string" ? policy.reason : "Command allowed; explicit approval required.")

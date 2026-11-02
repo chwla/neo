@@ -27,8 +27,11 @@ apart. The platform arguments exist so the rules are testable from any host.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import shutil
+import stat
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -288,3 +291,63 @@ def in_container() -> bool:
     if override in {"0", "false", "no"}:
         return False
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+def _make_owner_writable(root: Path) -> None:
+    """Give the owner write access throughout ``root`` so it can be deleted.
+
+    Read-only entries are ordinary: git writes its objects read-only, and a tree
+    copied from one is read-only too. On Windows that stops a delete outright; on
+    POSIX a read-only directory stops removal of everything inside it. Links are
+    never followed or changed -- only real files and directories under ``root``.
+    """
+
+    def loosen(path: str, *, directory: bool) -> None:
+        if os.path.islink(path):
+            return
+        extra = stat.S_IRWXU if directory else stat.S_IRUSR | stat.S_IWUSR
+        try:
+            os.chmod(path, stat.S_IMODE(os.lstat(path).st_mode) | extra)
+        except OSError:
+            pass
+
+    loosen(str(root), directory=True)
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        for name in directories:
+            loosen(os.path.join(current, name), directory=True)
+        for name in files:
+            loosen(os.path.join(current, name), directory=False)
+
+
+def remove_tree(path: str | os.PathLike[str], *, ignore_errors: bool = False) -> bool:
+    """Delete a directory tree, read-only entries included. Returns whether it is gone.
+
+    A link (symlink or Windows junction) at ``path`` is removed itself and never
+    followed. With ``ignore_errors`` a failure is logged rather than raised -- it
+    used to vanish silently, which on a shared machine meant a guest's files could
+    outlive the guest with nobody told.
+    """
+
+    target = Path(path)
+    try:
+        if target.is_symlink():
+            target.unlink()
+            return True
+        if is_reparse_point(target):
+            os.rmdir(target)  # a junction is removed like an empty directory
+            return True
+        try:
+            shutil.rmtree(target)
+        except PermissionError:
+            _make_owner_writable(target)
+            shutil.rmtree(target)
+        return True
+    except FileNotFoundError:
+        if ignore_errors:
+            return True
+        raise
+    except OSError:
+        if not ignore_errors:
+            raise
+        logging.getLogger(__name__).warning("remove_tree_incomplete path=%s", target, exc_info=True)
+        return False

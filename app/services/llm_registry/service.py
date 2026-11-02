@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import uuid
@@ -12,7 +11,7 @@ import requests
 
 from app.core.config import get_settings
 from app.services.llm import LLMConfig, LLMRegistry, ollama_supports_vision
-from app.services.llm_registry import store
+from app.services.llm_registry import key_policy, store
 from app.services.llm_registry.types import (
     ModelCreate,
     ModelUpdate,
@@ -323,7 +322,7 @@ class LLMRegistryService:
         items = store.list_rows("workspace_llm_providers", "provider", "priority, name")
         for item in items:
             item["api_key_configured"] = bool(
-                item.get("api_key_ref") and os.getenv(item["api_key_ref"])
+                key_policy.env_key(item.get("api_key_ref"), str(item.get("base_url") or ""))
             )
         return items
 
@@ -331,7 +330,7 @@ class LLMRegistryService:
         item = store.get_row("workspace_llm_providers", "provider", provider_id)
         if item:
             item["api_key_configured"] = bool(
-                item.get("api_key_ref") and os.getenv(item["api_key_ref"])
+                key_policy.env_key(item.get("api_key_ref"), str(item.get("base_url") or ""))
             )
         return item
 

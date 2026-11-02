@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -17,13 +20,56 @@ from app.services.search.searxng_embedded import source_available
 
 router = APIRouter(prefix="/health", tags=["health"])
 
+#: These routes answer without a session, and any web page can make a browser
+#: send them a GET (an ``<img>`` pointed at 127.0.0.1 is enough). So nothing an
+#: anonymous caller can trigger may cost more than a cached answer: the network
+#: probes below are remembered, and the full readiness checks -- a real web search
+#: and a model round trip -- are only ever run for a signed-in caller.
+PROBE_TTL_SECONDS = 10.0
+READINESS_TTL_SECONDS = 30.0
+ANONYMOUS_READINESS_TTL_SECONDS = 5.0
+
+_probe_lock = threading.Lock()
+_probe_cache: dict[str, tuple[float, bool]] = {}
+#: Held while the full checks run, so a burst of signed-in callers waits for one
+#: run instead of each starting its own search and model call.
+_readiness_lock = threading.Lock()
+_readiness_cache: tuple[float, dict[str, dict[str, object]]] | None = None
+_storage_cache: tuple[float, dict[str, object]] | None = None
+
+
+def reset_caches() -> None:
+    """Forget every remembered probe and readiness result."""
+
+    global _readiness_cache, _storage_cache
+    with _probe_lock:
+        _probe_cache.clear()
+    with _readiness_lock:
+        _readiness_cache = None
+        _storage_cache = None
+
+
+def _cached_probe(key: str, probe: Callable[[], bool]) -> bool:
+    now = time.monotonic()
+    with _probe_lock:
+        hit = _probe_cache.get(key)
+        if hit is not None and now - hit[0] < PROBE_TTL_SECONDS:
+            return hit[1]
+    value = probe()
+    with _probe_lock:
+        _probe_cache[key] = (time.monotonic(), value)
+    return value
+
 
 def _ollama_available(url: str) -> bool:
-    try:
-        response = requests.get(f"{url.rstrip('/')}/api/tags", timeout=2)
-        return response.ok
-    except requests.RequestException:
-        return False
+    def probe() -> bool:
+        try:
+            response = requests.get(f"{url.rstrip('/')}/api/tags", timeout=2)
+            return response.ok
+        except requests.RequestException:
+            return False
+
+    return _cached_probe(f"ollama:{url}", probe)
 
 
 def _search_available(provider: str, searxng_url: str) -> bool:
@@ -37,12 +83,16 @@ def _search_available(provider: str, searxng_url: str) -> bool:
         return source_available()
     if provider != "external_searxng":
         return True
-    try:
-        url = normalize_searxng_instance(searxng_url)
-        response = requests.get(url, timeout=2)
-        return response.status_code < 500
-    except (ValueError, requests.RequestException):
-        return False
+
+    def probe() -> bool:
+        try:
+            url = normalize_searxng_instance(searxng_url)
+            response = requests.get(url, timeout=2)
+            return response.status_code < 500
+        except (ValueError, requests.RequestException):
+            return False
+
+    return _cached_probe(f"searxng:{searxng_url}", probe)
 
 
 @router.get("")
@@ -128,9 +178,8 @@ def _storage_root() -> Path:
     return Path(".").resolve()
 
 
-def _readiness_checks() -> dict[str, dict[str, object]]:
-    settings = get_settings()
-    checks: dict[str, dict[str, object]] = {}
+def _storage_check() -> dict[str, object]:
+    """Writable storage and a live SQLite connection: local, cheap, no network."""
 
     try:
         root = _storage_root()
@@ -142,9 +191,34 @@ def _readiness_checks() -> dict[str, dict[str, object]]:
             db.execute(text("SELECT 1")).scalar_one()
         finally:
             db.close()
-        checks["storage"] = {"ok": True, "path": str(root)}
+        return {"ok": True, "path": str(root)}
     except Exception as exc:
-        checks["storage"] = {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc)}
+
+
+def _anonymous_storage_ok() -> bool:
+    """The storage check, remembered briefly so a flood of probes is not a flood of writes."""
+
+    global _storage_cache
+    with _readiness_lock:
+        now = time.monotonic()
+        if _storage_cache is None or now - _storage_cache[0] >= ANONYMOUS_READINESS_TTL_SECONDS:
+            _storage_cache = (time.monotonic(), _storage_check())
+        return _storage_cache[1].get("ok") is True
+
+
+def _cached_readiness_checks() -> dict[str, dict[str, object]]:
+    global _readiness_cache
+    with _readiness_lock:
+        now = time.monotonic()
+        if _readiness_cache is None or now - _readiness_cache[0] >= READINESS_TTL_SECONDS:
+            _readiness_cache = (time.monotonic(), _readiness_checks())
+        return _readiness_cache[1]
+
+
+def _readiness_checks() -> dict[str, dict[str, object]]:
+    settings = get_settings()
+    checks: dict[str, dict[str, object]] = {"storage": _storage_check()}
 
     try:
         model = ProviderRuntimeService().health_check(route_name="chat")
@@ -181,6 +255,14 @@ def _readiness_checks() -> dict[str, dict[str, object]]:
             "error": str(exc),
         }
 
+    try:
+        from app.services.integrations import vault
+
+        key = vault.key_status()
+        checks["connector_key"] = {"ok": key["state"] == "ok", **key}
+    except Exception as exc:
+        checks["connector_key"] = {"ok": False, "state": "error", "detail": str(exc)}
+
     # Voice is an optional extra, and readiness is all-or-nothing: the caller below
     # requires every check to be ok. So "not installed" and "switched off" both report
     # ok, with the reason alongside -- reporting them as failures would take readiness
@@ -208,10 +290,22 @@ def _readiness_checks() -> dict[str, dict[str, object]]:
 
 
 @router.get("/ready")
-def readiness() -> JSONResponse:
-    """Dependency-aware probe used before accepting production traffic."""
+def readiness(request: Request) -> JSONResponse:
+    """Dependency-aware probe used before accepting production traffic.
 
-    checks = _readiness_checks()
+    Anonymous callers learn only whether this process can serve: storage and the
+    database, nothing that leaves the machine, and no path or error text. The full
+    report -- model, search, voice, the storage path and every error -- is for a
+    signed-in caller, and even then it is computed at most once per TTL.
+    """
+
+    if session_for(request) is None:
+        ready = _anonymous_storage_ok()
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={"status": "ready" if ready else "not_ready"},
+        )
+    checks = _cached_readiness_checks()
     ready = all(check.get("ok") is True for check in checks.values())
     body: dict[str, object] = {
         "status": "ready" if ready else "not_ready",

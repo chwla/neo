@@ -29,6 +29,8 @@ is nothing to inject into it.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -39,7 +41,7 @@ from app.services.integrations import service
 from app.services.integrations.capabilities import UnknownCapabilityError
 from app.services.integrations.http import IntegrationHttpError
 from app.services.integrations.oauth import IntegrationOAuthError
-from app.services.integrations.vault import IntegrationVaultError
+from app.services.integrations.vault import ConnectorKeyUnavailable, IntegrationVaultError
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
@@ -112,6 +114,23 @@ def _self_origin(request: Request) -> str:
     return f"{url.scheme}://{url.netloc}"
 
 
+def _callback_origin_if_unreachable(request: Request, redirect_uri: str) -> str | None:
+    """The origin to connect from, when this tab's session cannot finish the flow.
+
+    The session cookie is host-only, and the provider returns the user to the
+    registered redirect URI exactly. A browser on ``localhost`` therefore arrives
+    at a ``127.0.0.1`` callback without its session and is refused, after it has
+    already granted access at the provider. Better to say so before leaving.
+    """
+
+    target = urlparse(redirect_uri)
+    if not target.hostname:
+        return None
+    if (request.url.hostname or "").lower() == target.hostname.lower():
+        return None
+    return f"{target.scheme}://{target.netloc}"
+
+
 def _handle(exc: Exception) -> HTTPException:
     """Map a failure onto a status and a message that is safe to show.
 
@@ -128,6 +147,10 @@ def _handle(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, IntegrationOAuthError):
         return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, ConnectorKeyUnavailable):
+        # The key itself is missing or damaged; its message is the way back
+        # (restore the file, or a deliberate reset), which "reconnect" would hide.
+        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, IntegrationVaultError):
         # The stored credential cannot be opened -- most often because the data
         # directory moved, which changes the AAD. Reconnecting is the fix.
@@ -152,13 +175,23 @@ def connections() -> ConnectionsResponse:
 
 @router.post("/oauth/start", response_model=StartResponse)
 def start(payload: StartRequest, request: Request) -> StartResponse:
+    redirect_uri = get_settings().integration_oauth_redirect_uri
+    callback_origin = _callback_origin_if_unreachable(request, redirect_uri)
+    if callback_origin:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Open Neo at {callback_origin} to connect an account. The sign-in "
+                f"finishes there, and this tab is signed in on {request.url.hostname}."
+            ),
+        )
     try:
         result = service.begin_connection(
             provider_id=payload.provider,
             capability_ids=tuple(payload.capabilities),
             session=session_for(request),
             session_token=request.cookies.get(SESSION_COOKIE),
-            redirect_uri=get_settings().integration_oauth_redirect_uri,
+            redirect_uri=redirect_uri,
             return_origin=payload.return_origin,
             self_origin=_self_origin(request),
         )

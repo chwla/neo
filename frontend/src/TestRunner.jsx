@@ -42,9 +42,19 @@ export default function TestRunner({ repo, compact = false }) {
     catch (error) { setMessage(error.message); } finally { setBusy(false); }
   }
   async function run(item) {
-    if (!window.confirm(`${WARNING}\n\nRun: ${item.command.join(" ")}?`)) return;
+    let isolation;
+    try { isolation = await api.commandIsolation(); }
+    catch (error) { setMessage(error.message); return; }
+    // A test suite is the repository's own code. Without a sandbox it runs with the
+    // whole account, so the warning says so and the run is acknowledged as such.
+    const acknowledgeUnsandboxed = !isolation.available;
+    const warning = acknowledgeUnsandboxed ? `${isolation.exposure}\n\n${WARNING}` : WARNING;
+    if (!window.confirm(`${warning}\n\nRun: ${item.command.join(" ")}?`)) return;
     setBusy(true); setMessage("Running in the managed copy…");
-    try { const data = await api.runTestCommand(item.id, { confirm: true }); setSelected(data.run); await load(); setMessage(`Test run ${data.run.status}.`); }
+    try {
+      const data = await api.runTestCommand(item.id, { confirm: true, acknowledge_unsandboxed: acknowledgeUnsandboxed });
+      setSelected(data.run); await load(); setMessage(`Test run ${data.run.status}.`);
+    }
     catch (error) { setMessage(error.message); } finally { setBusy(false); }
   }
   async function open(runId) {

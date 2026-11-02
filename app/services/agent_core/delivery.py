@@ -102,6 +102,9 @@ def _read(root: Path, relative: str) -> tuple[str, bytes] | None:
 
     try:
         raw = safe_fs.read_file(root, relative)
+    except safe_fs.PlatformUnsupported:
+        # Not "unreadable": treating it so would report every file as deleted.
+        raise
     except OSError:
         return None
     return textio.decode(raw), raw

@@ -40,6 +40,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.paths import remove_tree
+
 _LOG = logging.getLogger(__name__)
 
 IS_DARWIN = sys.platform == "darwin"
@@ -333,9 +335,8 @@ def recover_interrupted(data_root: Path) -> int:
         finally:
             os.close(directory_fd)
         markers.remove()
-        import shutil
 
-        shutil.rmtree(data_root / "tmp" / f"run-{run_id}", ignore_errors=True)
+        remove_tree(data_root / "tmp" / f"run-{run_id}", ignore_errors=True)
         recovered += 1
     return recovered
 

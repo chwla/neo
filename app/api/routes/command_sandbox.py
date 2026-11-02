@@ -14,6 +14,19 @@ def fail(exc):
     raise HTTPException(404 if isinstance(exc, LookupError) else 400, str(exc)) from exc
 
 
+@router.get("/isolation")
+def isolation_state():
+    """Whether runs here are sandboxed, and the exposure to show when they are not."""
+
+    from app.services.isolation import launch
+
+    available = launch.sandbox_available()
+    return {
+        "available": available,
+        "exposure": None if available else launch.UNSANDBOXED_EXPOSURE,
+    }
+
+
 @router.get("/runs")
 def runs(workspace_id: str | None = None, limit: int = Query(100, ge=1, le=200)):
     return {"runs": store.list_runs(workspace_id, limit)}
@@ -40,7 +53,12 @@ def propose(request: CommandRequest):
 @router.post("/runs/{run_id}/approve")
 def approve(run_id: str, request: ApprovalRequest):
     try:
-        return service().approve(run_id, request.confirm)
+        return service().approve(
+            run_id,
+            request.confirm,
+            approver="user",
+            acknowledge_unsandboxed=request.acknowledge_unsandboxed,
+        )
     except (LookupError, ValueError) as exc:
         fail(exc)
 

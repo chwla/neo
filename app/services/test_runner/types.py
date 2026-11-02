@@ -54,6 +54,9 @@ class TestCommandSuggestion(BaseModel):
 
 class TestRunRequest(BaseModel):
     confirm: bool = False
+    #: The person saw ``isolation.launch.UNSANDBOXED_EXPOSURE`` and still chose to
+    #: run this suite without a sandbox. Ignored where a sandbox exists.
+    acknowledge_unsandboxed: bool = False
     task_id: str | None = None
     agent_run_id: str | None = None
     patch_application_id: str | None = None

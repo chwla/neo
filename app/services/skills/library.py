@@ -26,6 +26,7 @@ import requests
 import yaml
 
 from app.core.config import get_settings
+from app.core.paths import remove_tree
 from app.services.repos.safety import validate_repo_root
 from app.services.skills import store
 from app.services.skills.types import SkillError
@@ -211,7 +212,7 @@ def install_from_form(
             source_ref=None,
         )
     except Exception:
-        shutil.rmtree(directory, ignore_errors=True)
+        remove_tree(directory, ignore_errors=True)
         raise
 
 
@@ -283,7 +284,7 @@ def install_from_folder(raw_path: str, *, enabled_by_default: bool = True) -> di
             source_ref=str(source),
         )
     except Exception:
-        shutil.rmtree(directory, ignore_errors=True)
+        remove_tree(directory, ignore_errors=True)
         raise
 
 
@@ -424,7 +425,7 @@ def install_from_github(url: str, *, enabled_by_default: bool = True) -> dict:
             source_ref=f"{owner}/{repo}{('@' + ref) if ref else ''}/{path}".rstrip("/"),
         )
     except Exception:
-        shutil.rmtree(directory, ignore_errors=True)
+        remove_tree(directory, ignore_errors=True)
         raise
 
 
@@ -438,7 +439,7 @@ def remove(skill: dict) -> None:
     store.delete_skill(skill["id"])
     directory = Path(skill["directory"])
     if directory.is_absolute() and directory.parent == skills_root():
-        shutil.rmtree(directory, ignore_errors=True)
+        remove_tree(directory, ignore_errors=True)
 
 
 __all__ = [

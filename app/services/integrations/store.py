@@ -30,7 +30,13 @@ import sqlite3
 from datetime import UTC, datetime
 
 from app.core.config import get_settings
-from app.services.integrations.vault import open_json, scoped_aad, seal_json
+from app.services.integrations.vault import (
+    ConnectorKeyUnavailable,
+    IntegrationVaultError,
+    open_json,
+    scoped_aad,
+    seal_json,
+)
 
 #: The only keys the HTTP layer may see for a connection. Stated as data rather
 #: than built by omission: a test asserts the response shape equals this set, so
@@ -326,9 +332,23 @@ def read_credential(connection_id: str) -> tuple[dict, str, str | None] | None:
         ).fetchone()
     if row is None:
         return None
-    secret = open_json(
-        row["secret_nonce"], row["secret_ciphertext"], aad=_credential_aad(connection_id)
-    )
+    try:
+        secret = open_json(
+            row["secret_nonce"], row["secret_ciphertext"], aad=_credential_aad(connection_id)
+        )
+    except ConnectorKeyUnavailable:
+        # The key is the problem, not this account: reconnecting would not help.
+        raise
+    except IntegrationVaultError:
+        # Sealed under a key that has since been replaced, or damaged. Say so on the
+        # account itself, so the list shows what to do rather than a failure later.
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE integration_connections SET status='reconnect_required',"
+                " last_error_category='credential_unreadable', updated_at=? WHERE id=?",
+                (now_iso(), connection_id),
+            )
+        raise
     return secret, row["updated_at"], row["expires_at"]
 
 
