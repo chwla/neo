@@ -298,6 +298,20 @@ def mark_interrupted_jobs(active_ids: set[str]) -> int:
         conn.close()
 
 
+def unfinished_job_ids() -> list[str]:
+    """Jobs in this profile that have not reached a terminal status."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM research_jobs WHERE status NOT IN (?, ?, ?)", _TERMINAL_STATUSES
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    return [str(row["id"]) for row in rows]
+
+
 def clear_all_jobs() -> int:
     conn = _connect()
     try:

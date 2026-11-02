@@ -83,9 +83,14 @@ def _run_guarded(session_id: str, approval_id: str | None, loop_factory) -> None
             store.append_event(session_id, events.RUN_FAILED, {"detail": str(exc)})
     finally:
         stop_heartbeat.set()
-        store.release_session(session_id, lease_token)
-        with _LOCK:
-            _ACTIVE.discard(session_id)
+        try:
+            store.release_session(session_id, lease_token)
+        finally:
+            # Even when the release cannot be written -- a run that outlived its
+            # deleted profile has no database left -- or the id would hold one of
+            # the process's turn slots until restart.
+            with _LOCK:
+                _ACTIVE.discard(session_id)
 
 
 def start(session_id: str, *, approval_id: str | None = None, loop_factory=None) -> None:

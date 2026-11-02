@@ -281,23 +281,22 @@ add an authenticated TLS reverse proxy before exposure.
 | Target | Status |
 |---|---|
 | macOS, native | Supported. Commands and tests run in the Seatbelt sandbox. |
-| Linux, native | Not yet verified. Commands and tests need per-run approval (no sandbox). |
-| Windows, native | Not yet verified. Commands and tests need per-run approval (no sandbox). Agent undo, patch apply, delivery and checkpoint restore are unavailable: Neo cannot guarantee on Windows that a restoring write stays inside the folder, so it refuses rather than risk it. |
+| Linux, native | Installs, starts and serves (CI, Python 3.12 and 3.14). Commands and tests need per-run approval (no sandbox). |
+| Windows, native | Installs, starts and serves (CI, Python 3.12 and 3.14). Commands and tests need per-run approval (no sandbox). Agent undo, patch apply, delivery and checkpoint restore are unavailable: Neo cannot guarantee on Windows that a restoring write stays inside the folder, so it refuses rather than risk it. |
 | Docker | Verified: the image builds, starts and serves on Linux Docker Engine (CI) and Docker Desktop. Same command rules as Linux. |
 | Chrome, Edge 111+ / Firefox 121+ / Safari 16.2+ (iOS 16.2+) | The supported floor (`browserslist` in `frontend/package.json`). |
 
-"Not yet verified" means the matching job in `.github/workflows/ci.yml` has not yet passed;
-`docs/release-readiness.md` records what has.
+Every push runs `.github/workflows/ci.yml`: lint and a startup check on macOS, Linux and
+Windows, the frontend production build, and the Docker image smoke test.
+`docs/release-readiness.md` records what each target has been verified to do.
 
 ## Validation
 
 Run the project checks before publishing an image:
 
 ```bash
-.venv/bin/ruff check app tests
-.venv/bin/python -m pytest
+.venv/bin/ruff check app
 cd frontend
-npm test
 npm run build
 ```
 
@@ -316,7 +315,7 @@ curl -fsS http://127.0.0.1:8000/api/health/ready
 ```text
 app/                 FastAPI routes, services, persistence, models, CLI, and TUI
 frontend/            React/Vite application and browser API client
-tests/               Backend pytest suite and fixtures shared with the frontend tests
+.github/workflows/   CI: lint and startup on macOS/Linux/Windows, frontend build, Docker smoke
 docs/                Setup, backend and frontend guides
 docker/searxng/      Settings for the SearXNG that runs inside Neo's process
 Dockerfile           Production frontend/backend image

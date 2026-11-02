@@ -205,7 +205,6 @@ async def run(http: Request, payload: ComparisonRequest) -> StreamingResponse:
 
     async def events() -> AsyncIterator[bytes]:
         stream = service.stream(**kwargs)
-        loop = asyncio.get_running_loop()
         sentry = asyncio.create_task(watch_for_disconnect())
 
         def pull():
@@ -217,8 +216,10 @@ async def run(http: Request, payload: ComparisonRequest) -> StreamingResponse:
         try:
             while True:
                 # The comparison itself is ordinary blocking work, so it runs in a worker
-                # thread and the event loop stays free to notice a disconnect.
-                event = await loop.run_in_executor(None, pull)
+                # thread and the event loop stays free to notice a disconnect. Through
+                # to_thread, which carries the request's context: Neo selects the profile
+                # database by ContextVar, and a bare executor thread has the base one.
+                event = await asyncio.to_thread(pull)
                 if event is None:
                     return
                 yield (json.dumps(event) + "\n").encode()

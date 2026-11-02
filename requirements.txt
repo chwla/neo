@@ -12,14 +12,10 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.14.2
     # via
-    #   httpx
     #   starlette
     #   watchfiles
 certifi==2026.10.23
-    # via
-    #   httpcore
-    #   httpx
-    #   requests
+    # via requests
 cffi==2.1.1 ; platform_python_implementation != 'PyPy'
     # via cryptography
 charset-normalizer==3.4.9
@@ -36,39 +32,18 @@ fastapi==0.141.1
     # via neo
 greenlet==3.5.4 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
     # via sqlalchemy
-grpcio==1.83.0
-    # via qdrant-client
 h11==0.16.0
-    # via
-    #   httpcore
-    #   uvicorn
-h2==4.4.1
-    # via httpx
-hpack==4.2.0
-    # via h2
-httpcore==1.0.9
-    # via httpx
+    # via uvicorn
 httptools==0.8.0
     # via uvicorn
-httpx==0.28.1
-    # via qdrant-client
-hyperframe==6.1.0
-    # via h2
 idna==3.18
     # via
     #   anyio
-    #   httpx
     #   requests
 numpy==2.5.1
-    # via
-    #   neo
-    #   qdrant-client
+    # via neo
 pillow==13.0.0
     # via neo
-portalocker==3.2.0
-    # via qdrant-client
-protobuf==7.35.1
-    # via qdrant-client
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
 pydantic==2.13.4
@@ -76,7 +51,6 @@ pydantic==2.13.4
     #   fastapi
     #   neo
     #   pydantic-settings
-    #   qdrant-client
 pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.15.0
@@ -91,14 +65,10 @@ python-dotenv==1.2.2
     #   uvicorn
 python-multipart==0.0.32
     # via neo
-pywin32==312 ; sys_platform == 'win32'
-    # via portalocker
 pyyaml==6.0.3
     # via
     #   neo
     #   uvicorn
-qdrant-client==1.19.0
-    # via neo
 requests==2.34.2
     # via neo
 six==1.17.0
@@ -113,7 +83,6 @@ typing-extensions==4.16.0
     # via
     #   anyio
     #   fastapi
-    #   grpcio
     #   pydantic
     #   pydantic-core
     #   sqlalchemy
@@ -127,9 +96,7 @@ typing-inspection==0.4.2
 tzdata==2026.3
     # via neo
 urllib3==2.8.0
-    # via
-    #   qdrant-client
-    #   requests
+    # via requests
 uvicorn==0.52.1
     # via neo
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'

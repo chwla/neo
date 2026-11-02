@@ -37,6 +37,7 @@ from app.services.research.store import (
     mark_interrupted_jobs,
     query_label_for,
     save_job,
+    unfinished_job_ids,
     update_job_status,
 )
 from app.services.research.types import (
@@ -329,6 +330,20 @@ def cancel_job(job_id: str) -> bool:
         update_job_status(job_id, JobStatus.CANCELLED.value, current_step="Cancelled by user")
         return True
     return False
+
+
+def cancel_unfinished_jobs() -> list[str]:
+    """Cancel every unfinished job in this profile, for a profile that is being deleted."""
+    job_ids = unfinished_job_ids()
+    for job_id in job_ids:
+        cancel_job(job_id)
+    return job_ids
+
+
+def running_job_ids() -> set[str]:
+    """Jobs with a worker thread in this process right now."""
+    with _lock:
+        return set(_active_jobs)
 
 
 def get_job(job_id: str) -> ResearchJob | None:

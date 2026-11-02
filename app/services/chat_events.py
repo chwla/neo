@@ -547,10 +547,42 @@ def has_active_turn(chat_id: int) -> bool:
         conn.close()
 
 
+def cancel_active_generations() -> list[str]:
+    """Stop every queued or running plain turn in this profile, returning their ids.
+
+    The same row flip as the Stop button, for a profile that is being deleted: a
+    worker gives up at its next leased write. One write transaction, so the ids
+    returned are exactly the rows this cancelled.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = [
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM chat_generations WHERE status IN ('queued', 'running')"
+            ).fetchall()
+        ]
+        conn.execute(
+            "UPDATE chat_generations SET status = 'cancelled', status_detail = 'Stopped',"
+            " completed_at = CURRENT_TIMESTAMP WHERE status IN ('queued', 'running')"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        # A profile database without the table has nothing to stop.
+        conn.rollback()
+        return []
+    finally:
+        conn.close()
+    return ids
+
+
 __all__ = [
     "active_turns",
     "any_active_turn",
     "append",
+    "cancel_active_generations",
     "first_seq_for",
     "first_seq_of_active_turns",
     "has_active_turn",

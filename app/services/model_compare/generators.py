@@ -738,10 +738,10 @@ _QUERIES = [
 def _coding() -> Iterator[Task]:
     for index, (expression, values) in enumerate(_TRACES):
         # Evaluated here so the question and its answer cannot disagree.
-        answer = eval(
+        answer = eval(  # noqa: S307 - our own literals
             expression,
             {"__builtins__": {}},
-            {  # noqa: S307 - our own literals
+            {
                 "xs": list(values),
                 "sorted": sorted,
                 "sum": sum,

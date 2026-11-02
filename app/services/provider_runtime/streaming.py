@@ -25,3 +25,8 @@ def cancel(request_id: str) -> bool:
 
 def clear(request_id: str) -> None:
     _CANCEL.pop(request_id, None)
+
+
+def live(request_ids) -> set[str]:
+    """Which of these requests still have a stream thread in this process."""
+    return {request_id for request_id in request_ids if request_id in _CANCEL}

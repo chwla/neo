@@ -1231,6 +1231,17 @@ def _spawn_generation(profile: dict, generation_id: str) -> None:
         raise
 
 
+def live_generation_threads(generation_ids) -> set[str]:
+    """Which of these generations still have a worker thread in this process.
+
+    Read by profile deletion, which waits for a cancelled turn's worker to let go
+    before it removes the database that worker writes to.
+    """
+
+    with _GENERATION_THREADS_LOCK:
+        return _GENERATION_THREADS & set(generation_ids)
+
+
 def _occupied_slots() -> int:
     """How many turns are using a concurrency slot right now.
 

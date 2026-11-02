@@ -547,6 +547,37 @@ def cancel_session(session_id: str) -> dict | None:
     return get_session(session_id)
 
 
+def cancel_active_sessions() -> list[str]:
+    """Cancel every unfinished session in this profile, as ``cancel_session`` does one.
+
+    For a profile that is being deleted. Returns the ids it cancelled.
+    """
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = [
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM workspace_agent_sessions"
+                " WHERE status IN ('queued', 'running', 'waiting_approval')"
+            ).fetchall()
+        ]
+        conn.execute(
+            "UPDATE workspace_agent_sessions SET status = 'cancelled', stop_reason = 'cancelled',"
+            " completed_at = ?, updated_at = ?"
+            " WHERE status IN ('queued', 'running', 'waiting_approval')",
+            (now_iso(), now_iso()),
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        conn.rollback()
+        return []
+    finally:
+        conn.close()
+    return ids
+
+
 # --- transcript ---------------------------------------------------------------
 
 

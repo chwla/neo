@@ -15,6 +15,7 @@ import os
 import secrets
 import sqlite3
 import stat
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,6 +47,11 @@ UNLOCK_LOCKOUT_MAX_SECONDS = 15 * 60
 #: absolute ceiling. A cookie that never expires is a permanent key to the profile.
 SESSION_IDLE_DAYS = 14
 SESSION_ABSOLUTE_DAYS = 90
+#: A session's last use is written at most this often, not on every request: each
+#: write is a registry transaction on the path of every authenticated call. The
+#: idle clock can therefore run up to this much ahead, so a session may end that
+#: much before its full idle window, never after it.
+SESSION_TOUCH_INTERVAL_SECONDS = 5 * 60
 #: Minimum length for a password being set or changed: just non-empty. Existing
 #: passwords are never re-validated, so this only applies where a new secret is
 #: being chosen.
@@ -54,18 +60,35 @@ PROFILE_OWNER_REVISION = "0001_profile_owner_uuid"
 PROFILE_SESSION_TOKEN_BYTES = 32
 _registry_initialization_lock = Lock()
 _initialized_registry_paths: set[Path] = set()
+#: ``_registry_path()`` runs for every registry connection, so its directory and
+#: permission checks are done once per registry, keyed by the settings that place it.
+_prepared_registry_paths: dict[tuple[str | None, str], Path] = {}
 # Feature tables are created per profile database, so a profile opened by an
 # existing session cookie would otherwise never pick up tables added by a newer
 # build. The set is process-local on purpose: it empties on restart, which is
 # exactly when a redeployed image needs to re-run the initializers once.
 _storage_initialization_lock = Lock()
 _initialized_storage_keys: set[str] = set()
+#: Profiles deleted by this process, keyed like ``_initialized_storage_keys``. Their
+#: storage is never initialised or created again: ids are random, so a deleted one
+#: never comes back, and a worker that outlives the delete must find its directory
+#: gone rather than bring back an empty copy of it.
+_deleted_storage_keys: set[str] = set()
+_deleted_storage_lock = Lock()
+#: How long deleting a profile waits for its cancelled workers in this process to
+#: stop before removing their storage. Each stops at its next check; one still
+#: blocked on a provider after this fails at its next write instead.
+PROFILE_WORK_STOP_SECONDS = 10.0
 #: Each password check runs its throttle check, the hash and the failure record
 #: under one of these, so concurrent guesses cannot all pass the check before the
 #: first failure is counted. A fixed pool rather than a lock per id: ids come from
 #: the request, and probing random ones must not grow memory.
 _password_check_locks = tuple(Lock() for _ in range(64))
 _logger = logging.getLogger(__name__)
+
+
+class ProfileDeletedError(RuntimeError):
+    """The profile was deleted in this process; its storage is not recreated."""
 
 
 def _password_check_lock(profile_id: str) -> Lock:
@@ -96,6 +119,11 @@ def profiles_root() -> Path:
 
 
 def _registry_path() -> Path:
+    settings = get_base_settings()
+    key = (settings.data_dir, settings.database_url)
+    prepared = _prepared_registry_paths.get(key)
+    if prepared is not None:
+        return prepared
     root = _root()
     root.mkdir(parents=True, exist_ok=True)
     _restrict(root, directory=True)
@@ -107,6 +135,10 @@ def _registry_path() -> Path:
             beside = path.with_name(path.name + suffix)
             if beside.exists():
                 _restrict(beside, directory=False)
+        # Remembered only once the file exists and is closed off: the first call
+        # comes before SQLite has created it. A ``-wal`` or ``-shm`` made later
+        # takes the database file's own mode from SQLite, so it needs no check.
+        _prepared_registry_paths[key] = path
     return path
 
 
@@ -294,6 +326,10 @@ def _profile_directory(profile_id: str, *, guest: bool = False) -> Path:
     return _root() / section / profile_id
 
 
+def _storage_key(profile_id: str, *, guest: bool = False) -> str:
+    return f"{'guest' if guest else 'account'}:{profile_id}"
+
+
 def _restrict(path: Path, *, directory: bool) -> None:
     """Take away other-account access, leaving the owner's (and a container's group).
 
@@ -343,15 +379,19 @@ def profile_storage_dir(profile_id: str, *, guest: bool = False) -> Path:
     """
 
     directory = _profile_directory(profile_id, guest=guest)
-    directory.mkdir(parents=True, exist_ok=True)
+    with _deleted_storage_lock:
+        if _storage_key(profile_id, guest=guest) in _deleted_storage_keys:
+            raise ProfileDeletedError("profile_deleted")
+        directory.mkdir(parents=True, exist_ok=True)
     _restrict(directory, directory=True)
     return directory
 
 
 def database_url_for(profile_id: str, *, guest: bool = False) -> str:
-    directory = _profile_directory(profile_id, guest=guest)
-    directory.mkdir(parents=True, exist_ok=True)
-    return _database_url(directory)
+    # Never creates the directory. This runs on every request and in every worker,
+    # and a worker that outlives a deleted profile would bring back an empty copy of
+    # it. Storage is created once, by ``ensure_profile_storage``.
+    return _database_url(_profile_directory(profile_id, guest=guest))
 
 
 def _database_url(directory: Path) -> str:
@@ -738,12 +778,13 @@ def profile_for_session(token: str) -> dict | None:
                 conn.execute("DELETE FROM profile_sessions WHERE token_hash = ?", (token_hash,))
                 conn.commit()
                 return None
-            conn.execute(
-                "UPDATE profile_sessions SET last_seen_at = CURRENT_TIMESTAMP"
-                " WHERE token_hash = ?",
-                (token_hash,),
-            )
-            conn.commit()
+            if (row["idle_days"] or 0) * 86400 >= SESSION_TOUCH_INTERVAL_SECONDS:
+                conn.execute(
+                    "UPDATE profile_sessions SET last_seen_at = CURRENT_TIMESTAMP"
+                    " WHERE token_hash = ?",
+                    (token_hash,),
+                )
+                conn.commit()
     finally:
         conn.close()
     if row is None:
@@ -751,7 +792,11 @@ def profile_for_session(token: str) -> dict | None:
     # A cookie outlives a deploy, so this is the only path that runs for a user
     # who never signs in again; without it their profile database keeps whatever
     # schema it had when the session started.
-    ensure_profile_storage(str(row["id"]))
+    try:
+        ensure_profile_storage(str(row["id"]))
+    except ProfileDeletedError:
+        # Read just before a delete of this profile removed the session.
+        return None
     return public_profile(row)
 
 
@@ -909,9 +954,76 @@ def remove_scoped_storage(profile_id: str) -> None:
             remove_tree(target)
 
 
+def _mark_profile_deleted(profile_id: str, *, guest: bool = False) -> None:
+    # Taken in the same order as ``ensure_profile_storage``, so an initialisation
+    # already under way finishes before the mark lands and none can start after it.
+    with _storage_initialization_lock, _deleted_storage_lock:
+        _deleted_storage_keys.add(_storage_key(profile_id, guest=guest))
+
+
+def _unmark_profile_deleted(profile_id: str, *, guest: bool = False) -> None:
+    with _deleted_storage_lock:
+        _deleted_storage_keys.discard(_storage_key(profile_id, guest=guest))
+
+
+def _stop_profile_work(profile_id: str, *, guest: bool = False) -> None:
+    """Cancel a profile's turns, runs, jobs and model calls, then wait for them.
+
+    Runs after the profile is marked deleted and before its storage goes. Every one
+    of these workers stops cooperatively -- a chat turn at its next leased write, an
+    agent run (and an external CLI's cancel probe) at its next read of its own row, a
+    research job or a streaming model call at its next check of its cancel flag -- so
+    the work is cancelled and the workers in this process get a short while to let go
+    of the database. A model call has its own thread, which outlives the chat turn
+    that stopped reading it.
+    """
+
+    directory = _profile_directory(profile_id, guest=guest)
+    if not (directory / "neo.db").exists():
+        return
+    from app.api.routes.chat import live_generation_threads
+    from app.services import chat_events
+    from app.services.agent_core import store as agent_store
+    from app.services.agent_core import worker as agent_worker
+    from app.services.provider_runtime import store as provider_store
+    from app.services.provider_runtime import streaming as provider_streaming
+    from app.services.research import jobs as research_jobs
+
+    generations: set[str] = set()
+    sessions: set[str] = set()
+    jobs: set[str] = set()
+    requests: set[str] = set()
+    with profile_database(profile_id, guest=guest):
+        try:
+            generations = set(chat_events.cancel_active_generations())
+            sessions = set(agent_store.cancel_active_sessions())
+            jobs = set(research_jobs.cancel_unfinished_jobs())
+            requests = set(provider_store.unfinished_request_ids())
+            for request_id in requests:
+                provider_streaming.cancel(request_id)
+        except sqlite3.Error:
+            # A database this broken is one its workers cannot write to either, and
+            # it must not stop the user deleting the profile.
+            _logger.warning("Could not cancel a deleted profile's work", exc_info=True)
+
+    deadline = time.monotonic() + PROFILE_WORK_STOP_SECONDS
+    while (
+        live_generation_threads(generations)
+        or sessions & agent_worker.active_ids()
+        or jobs & research_jobs.running_job_ids()
+        or provider_streaming.live(requests)
+    ):
+        if time.monotonic() >= deadline:
+            _logger.warning("A deleted profile's work was still stopping when its data was removed")
+            return
+        time.sleep(0.05)
+
+
 def delete_guest(profile_id: str) -> None:
     if profile_id.startswith("guest-"):
         directory = _profile_directory(profile_id, guest=True)
+        _mark_profile_deleted(profile_id, guest=True)
+        _stop_profile_work(profile_id, guest=True)
         release_database(_database_url(directory))
         remove_tree(directory, ignore_errors=True)
         try:
@@ -950,18 +1062,26 @@ def _delete_profile_checked(profile_id: str, password: str) -> dict:
         accounts_root = (_root() / "accounts").resolve()
         if not directory.resolve().is_relative_to(accounts_root):
             raise HTTPException(status_code=400, detail="Invalid profile storage location.")
+        _mark_profile_deleted(str(row["id"]))
+        removed = False
         try:
+            _stop_profile_work(str(row["id"]))
             if directory.exists():
                 release_database(_database_url(directory))
                 remove_tree(directory)
             # Before the registry row goes, so a failure here leaves the account in
             # place and deleting it again finishes the job.
             remove_scoped_storage(str(row["id"]))
+            removed = True
         except OSError as exc:
             raise HTTPException(
                 status_code=500,
                 detail="Neo could not remove this profile's local data. The account was kept.",
             ) from exc
+        finally:
+            if not removed:
+                # The account was kept, so it has to stay usable.
+                _unmark_profile_deleted(str(row["id"]))
 
         conn.execute("DELETE FROM profile_sessions WHERE profile_id = ?", (row["id"],))
         conn.execute("DELETE FROM account_profiles WHERE id = ?", (row["id"],))
@@ -1003,8 +1123,11 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
     resolution rather than only at signup and password login.
     """
 
-    key = f"{'guest' if guest else 'account'}:{profile_id}"
+    key = _storage_key(profile_id, guest=guest)
     with _storage_initialization_lock:
+        with _deleted_storage_lock:
+            if key in _deleted_storage_keys:
+                raise ProfileDeletedError("profile_deleted")
         if key in _initialized_storage_keys:
             return
         _initialize_profile_storage(profile_id, guest=guest)
@@ -1015,12 +1138,14 @@ def ensure_profile_storage(profile_id: str, *, guest: bool = False) -> None:
 def forget_profile_storage(profile_id: str, *, guest: bool = False) -> None:
     """Drop the memo so a recreated profile re-runs the initializers."""
 
-    key = f"{'guest' if guest else 'account'}:{profile_id}"
+    key = _storage_key(profile_id, guest=guest)
     with _storage_initialization_lock:
         _initialized_storage_keys.discard(key)
 
 
 def _initialize_profile_storage(profile_id: str, *, guest: bool = False) -> None:
+    # Created here rather than by ``profile_database``, which only points at it.
+    profile_storage_dir(profile_id, guest=guest)
     with profile_database(profile_id, guest=guest):
         initialize_database(get_settings().database_url)
         # The feature stores use get_settings(), which is profile-aware inside this context.

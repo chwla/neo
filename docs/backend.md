@@ -32,8 +32,7 @@ response, how data is stored, and how each major subsystem works. For installati
 
 - **Python 3.12**, **FastAPI** + **uvicorn**, **SQLAlchemy 2** (ORM for core models) with raw
   `sqlite3` in many service stores, **pydantic v2 / pydantic-settings**.
-- **SQLite** everywhere (WAL mode). Qdrant client is a dependency but SQLite-based vector
-  indexes are used for memory recall.
+- **SQLite** everywhere (WAL mode), including the vector indexes used for memory recall.
 - **LLMs:** Ollama by default; OpenAI-compatible endpoints supported. Embeddings default to
   `nomic-embed-text`.
 - Packaging: `pyproject.toml`; entry points `neo` (CLI) and `python -m app.runtime` (server).

@@ -123,6 +123,20 @@ def update_request(request_id: str, **fields: Any) -> dict | None:
     return get_request(request_id)
 
 
+def unfinished_request_ids() -> list[str]:
+    """Requests in this profile still marked running or streaming."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM workspace_provider_requests WHERE status IN ('running','streaming')"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    return [str(row["id"]) for row in rows]
+
+
 def list_requests(limit: int = 100) -> list[dict]:
     conn = _connect()
     try:

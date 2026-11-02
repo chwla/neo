@@ -26,6 +26,7 @@ Nothing in this module ranks anything. It measures, and it reports what it measu
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import queue
@@ -637,7 +638,14 @@ def run(
         # rather than after it. And it means the watcher thread -- which owns teardown --
         # exists from the outset, so a reader that takes the first event and then vanishes
         # still leaves a run that cleans up after itself.
-        futures = [pool.submit(work, llm, contender) for llm, contender in pairs]
+        #
+        # Each worker runs in a copy of the caller's context, which carries the profile:
+        # without it the thread resolves the base database, and a guest's run is not
+        # seen as a guest's when its key policy is checked.
+        futures = [
+            pool.submit(contextvars.copy_context().run, work, llm, contender)
+            for llm, contender in pairs
+        ]
 
         def watch() -> None:
             # The sentinel goes in a `finally` for the same reason: it is the only thing

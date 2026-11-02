@@ -10,7 +10,6 @@ from app.services.disclosure import (
     Labeled,
     join,
     label_of,
-    require,
 )
 from app.services.disclosure.egress import EgressTransportError
 from app.services.disclosure.egress import request as http_request
@@ -54,12 +53,6 @@ class GitHubClient:
     ) -> Labeled:
         payload = self.payload(path)
         destination = destination or Destination("unscoped-github")
-        # The existing offline validation fixture obeys the same authorization.
-        if self.token == "dummy_validation_token":
-            require("http", payload, destination, grants=grants, approval=approval)
-            return Labeled(
-                _fixture(path.value if isinstance(path, Labeled) else path), payload.label,
-            )
         try:
             result = http_request(
                 payload, destination, grants=grants, approval=approval, timeout=10
@@ -73,21 +66,3 @@ class GitHubClient:
             return Labeled(redact(value), result.label)
         except (EgressTransportError, ValueError):
             raise RuntimeError("GitHub request failed; check the connection.") from None
-
-
-def _fixture(path: str) -> dict:
-    if path == "/user":
-        return {"login": "neo-validation"}
-    is_pr = "/pulls/" in path
-    number = path.rsplit("/", 1)[-1]
-    return {
-        "id": f"fixture-{number}",
-        "title": f"Fixture {'PR' if is_pr else 'issue'} #{number}",
-        "state": "open",
-        "body": "Safe local validation fixture; no credentials or repository content.",
-        "labels": [{"name": "fixture"}],
-        "html_url": f"https://github.invalid/neo/demo/{'pull' if is_pr else 'issues'}/{number}",
-        "user": {"login": "neo-validation"},
-        "changed_files": 1 if is_pr else None,
-        "comments": 0,
-    }

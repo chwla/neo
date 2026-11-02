@@ -1,6 +1,6 @@
 # Release readiness
 
-Last updated 2026-11-02, after commit `dcfb6f3` and its first CI run.
+Last updated 2026-11-02. All 8 CI checks passed on commit `17c63fc`. The P1, P4, P5, H6, H7 and H9 fixes below come after that commit: verified locally, not yet committed or run through CI.
 
 ## Verdict: not ready
 
@@ -12,8 +12,8 @@ The security boundary and data-integrity blockers found in the 2026-10-30 audit 
 | Target | Status | Evidence |
 |---|---|---|
 | macOS, native | Verified locally | Backend suite on Python 3.14 and 3.12; browser smoke in three engines; live checks against a restarted backend |
-| Windows, native | **Unverified**; four features unsupported | Needs the `Backend lint and startup (windows-latest, ...)` CI jobs to pass. Undo, patch apply, delivery and checkpoint restore fail closed. |
-| Linux, native | **Unverified** | Needs the `Backend lint and startup (ubuntu-latest, ...)` CI jobs to pass |
+| Windows, native | Installs, lints, starts and serves (CI); features beyond that **unverified**; four features unsupported | CI on `17c63fc`, Python 3.12 and 3.14: startup, anonymous readiness, sign-up, connector key created with a restricted access list, clean log. The test suite and real use (agent tools, files, notes) have never run on Windows. Undo, patch apply, delivery and checkpoint restore fail closed. |
+| Linux, native | Installs, lints, starts and serves (CI); features beyond that **unverified** | CI on `17c63fc`, Python 3.12 and 3.14, same checks as Windows. The test suite runs only locally (macOS). |
 | Docker image | Verified on Linux Docker Engine (CI) and Docker Desktop (macOS) | CI job "Docker image build and smoke" passed on `dcfb6f3`: builds, no runtime data in the image, starts, health, sign-up, connector key, key kept across a restart. Also smoke-tested locally: see Evidence. |
 | Chromium engine (Chrome, Edge) | Verified locally (macOS) | Playwright smoke, Chromium 156 headless shell. The Playwright files are kept local, so CI has no browser job. |
 | Firefox engine | Verified locally (macOS) | Playwright smoke, Firefox 157 |
@@ -52,12 +52,20 @@ Every fix has a regression test. Test files are kept out of the repository by ch
 | H8 | The venv lagged the pins | Synced; `pip-audit` reports no known vulnerabilities | Command below |
 | D1, D2, D5 | Docker configuration | `extra_hosts` added to compose; `.dockerignore` uses `**/`; broad-folder and readiness docs corrected | Review; the `docker` CI job |
 | Found during testing | The chat event stream crashed after its profile was deleted | Queue readers tolerate a deleted database, and the stream ends when its profile is gone | `tests/test_profile_recovery.py`; browser smoke ran 3 times with no traceback |
+| P5 | Deleting a profile left its work running, and a late worker recreated the deleted directory | Before storage is removed, deletion (account or guest) cancels the profile's queued and running chat turns, agent runs (queued, running, waiting for approval), research jobs and streaming model calls, then waits up to 10 s for this process's workers to stop. External CLI runs stop through their existing cancel probe. `database_url_for()` and `profile_database()` no longer create directories; a deleted profile is marked so its storage is never initialised or created again in this process. A failed delete keeps the account usable. An agent worker that loses its database still frees its turn slot. | `tests/test_profile_delete_stops_work.py`; live check below |
+| P4 | Every authenticated request wrote the registry | `last_seen_at` is written at most once per 5 minutes. Absolute expiry is unchanged; idle expiry can come up to 5 minutes early, never late. `_registry_path()` does its directory and permission checks once per registry, and only after the file exists and is closed off. | `tests/test_session_touch_throttle.py`; live check below |
+| P1 | Model compare worker threads lost the profile, so they read the base database and a guest's run was not held to the guest key policy | The route pulls events through `asyncio.to_thread`, and the runner submits each worker in a copy of the caller's context. The thread pools in `research/retrieval.py` and `search/content.py` were checked and left alone: they only make network calls through egress, and read settings in constructors on the calling thread. | `tests/test_profile_context_threads.py` |
+| H6 | Dead Qdrant archive module and dependency | `app/services/archives.py` deleted; `qdrant-client` removed from `pyproject.toml`; `uv.lock` and `requirements.txt` regenerated, which also drops grpcio, h2, hpack, hyperframe, portalocker, pywin32, httpx, httpcore and protobuf from the runtime install. The `qdrant_url` setting stays, because `isolation/network.py` uses it to keep a legacy local Qdrant blocked from sandboxed processes. | `tests/test_cleanup_h6_h7.py`; clean Python 3.12 install and Docker build below |
+| H7 | A GitHub token value switched production code to fixture data | The fixture path is removed; nothing but the deleted test suite used it. The `noqa: S307` comment in `model_compare/generators.py` moved to the `eval(` line, where ruff reports it. | `tests/test_cleanup_h6_h7.py` |
+| H9 | Stray runtime files from runs in the wrong directory | Deleted, as you approved: `:memory:.ses`; `neo_memory.db`, `-shm`, `-wal` and `neo_llms.json` in `app/`; `neo_memory.db` and `neo_llms.json` in `frontend/`; `frontend/profiles/` (0 profiles); and the root `neo_memory.db`, `-shm` and `-wal` (61 chats from 2026-07-05 to 07-12 that no profile could see). Each was confirmed untracked first. No Neo process had the root database open; Docker Desktop's file-sharing service held a read-only handle on its `-shm`. A local start recreates an empty root database. | `git ls-files`, `lsof`; see "H9 deletion" under Evidence |
+
+The test files named in the rows above P5 belonged to the earlier local suite, which has since been deleted; they no longer exist. The P5 to H9 rows name the current local suite: 21 tests in `tests/`, including `tests/test_harness.py`, which checks that the suite runs on throwaway data only.
 
 **Deviation from the plan.** Rows sealed under a replaced connector key are detected when they fail to open: the connection is marked `reconnect_required` and never returns a 500. The plan called for a per-row `key_fingerprint` column. Without it, the message cannot distinguish "key replaced" from "record damaged".
 
 ## Evidence
 
-Run on macOS 26 (Darwin 25.6). Every result below was observed.
+Run on macOS 26 (Darwin 25.6). Every result below was observed. The first table is from the round that ended at `17c63fc`; its backend test counts refer to the earlier local suite, which has since been deleted. The second table is the P1, P4, P5, H6, H7 and H9 round.
 
 | Check | Command | Result |
 |---|---|---|
@@ -83,12 +91,36 @@ Run on macOS 26 (Darwin 25.6). Every result below was observed.
 
 The backend was restarted with the documented clean-environment command before the live checks. Disposable profiles were deleted afterwards.
 
+### P1, P4, P5, H6, H7 and H9 round
+
+| Check | Command | Result |
+|---|---|---|
+| Lint | `.venv/bin/ruff check app`, then `.venv/bin/ruff check tests` | All checks passed, both |
+| Backend tests, Python 3.14.6 | `.venv/bin/python -m pytest -q -p no:cacheprovider tests` | 21 passed, 1 warning (Starlette's own TestClient deprecation notice) |
+| Backend tests, Python 3.12.13 | Same, in a scratch venv built from the new `requirements.txt`, plus pytest, httpx and ruff | 21 passed, 2 warnings (both from third-party packages) |
+| The tests catch the old behaviour | Each fix undone in turn by a throwaway pytest plugin | Every one fails tests: no cancellation (2 failed), directories created again (2), model calls not cancelled (2), a write on every request (2), registry checks not memoised (1), runner context dropped (both P1 tests), route context dropped (1) |
+| Frontend build | `cd frontend && npx vite build --outDir <scratch dir>` | Built. Existing warning: the Notes chunk is 706.62 kB (H10). |
+| No em dashes | `node --test tests/no-em-dashes.test.mjs`, in `frontend/` | 4 passed |
+| S307 placement | `ruff check --isolated --select S307` on `generators.py` | The committed version: 1 error. Now: all checks passed. |
+| Dependency lock | `uv lock`, then the export command in the `requirements.txt` header | The lock lost grpcio, h2, hpack, hyperframe, portalocker, pywin32 and qdrant-client; no other version changed. `requirements.txt` also no longer lists httpx, httpcore and protobuf, which were runtime dependencies only through qdrant-client. |
+| Clean install | Python 3.12.13 scratch venv from `requirements.txt` | `qdrant_client` and `httpx` not installed. Neo started on 127.0.0.1:18081: health ok, sign-up 201, delete 204, no errors in the log. |
+| Docker build | `docker build -t neo-verify:h6 .` (BuildKit) | Built `6d05d864d53a`, 761 MB. `neo:latest` and your `neo` container were not touched. |
+| Docker smoke | `docker run --rm` of that image on 127.0.0.1:18002 | `qdrant_client` absent; `app.main` imports; health ok; anonymous readiness `{"status":"ready"}`; sign-up, then delete 204, no accounts left; no errors in the log. The container and its volume are gone. |
+| Live: P5 | A separate backend on 127.0.0.1:18080, clean environment, temporary data and working directories | An account and a guest, each deleted while llama3.2:3b was streaming a reply: 204 in 0.23 s and 0.12 s. The open event stream received `run.cancelled` and ended 1.07 s after the delete. Both directories were gone and stayed gone through 40 s of checks every 0.25 s, longer than the 30 s calendar sweep. 0 tracebacks or warnings in the backend log. |
+| Live: P4 | Same backend, 20 authenticated requests over 3.3 s | `registry.db` modification time and size unchanged; no `-wal` file created |
+| H9 deletion | `git ls-files` for each path; `lsof` | All 13 files and `frontend/profiles/` were untracked. Nothing had the root database open except Docker Desktop's read-only file-sharing handle on its `-shm`; the `neo` container had none of these files open. |
+
+A first live run, made before model calls were cancelled, logged two tracebacks from model-call threads writing to the deleted database (the directories still stayed gone). The model-call cancellation in P5 came from that run. Every disposable profile was deleted, and both temporary backends were stopped.
+
 ## Not run, and why
 
-- **Hosted CI, first run on `dcfb6f3`:** the Docker job passed. Every other job failed only because it expected the test files kept out of the repository (`ruff check app tests`, the root crypto fixture, the Playwright config). The workflow now lints `app` and starts Neo on each OS and Python version, the frontend job checks the production build only, and the browser job is gone: none of them needs a test file. Those jobs need the next push to run; until they pass, Windows and Linux stay unverified.
+- **Hosted CI:** the first run (`dcfb6f3`) failed only where jobs expected test files kept out of the repository. The workflow was changed to need none, and on `17c63fc` all 8 checks passed: backend lint and startup on macOS, Linux and Windows on Python 3.12 and 3.14, the frontend production build, and the Docker smoke test. CI does not run any test suite, so on Linux and Windows nothing beyond startup has been exercised.
 - **Docker on Linux Engine:** the image was verified only on Docker Desktop (macOS), which defines `host.docker.internal` itself; the compose `extra_hosts` mapping matters on Linux Engine and needs the `docker` CI job.
 - **Real Windows ACL and Windows git:** they exist only in the Windows CI job. Locally the Windows key path is exercised with a mocked `icacls`.
 - **Safari and iOS Safari:** no device or automation available. WebKit is the closest evidence.
+- **This round in CI:** not run. It runs after the next push.
+- **Frontend unit tests (`npm test`), this round:** not run. `notes-crypto.test.mjs` reads `tests/fixtures/notes_key_vectors.json`, which was deleted with the earlier local suite, so that test fails until the fixture is restored.
+- **Model compare, live:** not run. P1 is covered by tests of the route and the runner.
 
 ## Remaining risks
 
@@ -97,13 +129,13 @@ The backend was restarted with the documented clean-environment command before t
 - **Linux and Windows have no OS sandbox.** Commands and tests there run with the full user account once approved. The approval is what protects the user.
 - **Hardened but outside the launch rule:** language servers run fixed binaries. Git runs with the repository's program-running settings overridden.
 - **Provider keys from the environment:** any non-guest profile can still spend an operator key at its own provider, and any process running as the same OS user can read the server environment.
+- **Deleting a profile mid-call (P5):** deletion waits up to 10 s for the profile's workers. A worker still blocked on a provider after that is not waited for: it ends at its next write, which fails with a logged traceback. Its directory is not recreated.
+
+**Found during testing, not fixed:**
+- **Stop does not cancel the model call.** Stopping a chat reply stops the reply, but the model call runs on its own thread and keeps generating until it finishes. Only an explicit `/provider-runtime` cancel stops it. Profile deletion now cancels these calls; the Stop button does not.
 
 **Not addressed in this pass:**
-- **P1:** model compare drops the profile context in its worker threads. It is latent today.
-- **P4:** a session write on every authenticated request.
-- **P5:** deleting a profile does not cancel its in-flight work; only the stream crash it caused is fixed.
-- **H6, H7, H10:** dead `qdrant-client` module, a test token in GitHub client code, the 715 kB Notes chunk.
-- **H9:** stray runtime files. Awaiting your decision, including whether to export the 61 legacy chats in the root `neo_memory.db`.
+- **H10:** the Notes chunk, now 706.62 kB.
 
 **Operational:**
 - **Connector key rotation** (re-sealing under a new key) is not supported.
@@ -113,6 +145,7 @@ The backend was restarted with the documented clean-environment command before t
 
 ## Gates still to clear
 
-1. Commit the updated workflow and docs (no test files) and push, then get every job green: backend lint and startup on three OSes × two Pythons, and the frontend build. Docker on Linux Engine has already passed.
-2. Decide on H9.
+1. Done: CI is green on `17c63fc`.
+2. Done: H9 decided and the stray files deleted.
 3. Decide whether the Windows feature gap is acceptable for the release, or build and CI-verify the Windows `safe_fs` backend.
+4. Commit the P1, P4, P5, H6, H7 and H9 round (no test files) and get CI green on it.
