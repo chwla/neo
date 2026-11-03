@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from secrets import token_hex
 
+from app.core.paths import fsync_directory
 from app.core.sqlite_backup import backup_sqlite_file
 from app.services.memory.crypto import EncryptedValue
 from app.services.memory.keyring import KeyEntry, Keyring, ensure_keyring, load, new_active_entry
@@ -346,11 +347,7 @@ def rotate_profile_memory(
             os.fsync(fd)
         finally:
             os.close(fd)
-        directory_fd = os.open(backup_dir, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        fsync_directory(backup_dir)
     uri = f"file:{database}?mode={'rw' if apply else 'ro'}"
     conn = sqlite3.connect(uri, uri=True, timeout=30)
     conn.row_factory = sqlite3.Row

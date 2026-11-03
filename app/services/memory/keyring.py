@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.core.paths import rename_durably
 from app.services.memory.local_crypto import LEGACY_KEY_VERSION, LocalMemoryCrypto
 
 KEYRING_FILENAME = "memory-keyring.json"
@@ -166,13 +167,8 @@ def _write(storage_dir: str | os.PathLike[str], ring: Keyring) -> None:
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.replace(tmp, path)
-        # fsync the directory too, so the rename itself survives a crash.
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        # Durable rename, so the new keyring itself survives a crash.
+        rename_durably(tmp, path, replace=True)
     except OSError as exc:
         try:
             tmp.unlink()

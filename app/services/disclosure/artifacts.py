@@ -25,6 +25,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from app.core.paths import rename_durably
 from app.services.disclosure.labels import Label, from_json, join, to_json
 
 
@@ -88,12 +89,7 @@ class ArtifactLabels:
                 json.dump(self._records, stream, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(tmp, self._path)
-            parent_fd = os.open(self._path.parent, os.O_RDONLY)
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
+            rename_durably(tmp, self._path, replace=True)
         finally:
             if tmp.exists():
                 tmp.unlink()

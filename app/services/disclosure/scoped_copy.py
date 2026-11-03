@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import uuid
 from pathlib import Path
 
-from app.core.paths import remove_tree
+from app.core.paths import remove_tree, rename_durably
 from app.services.isolation.roots import data_root, overlaps_protected
 from app.services.repos.migration import _fsync_tree, _manifest
 from app.services.repos.safety import prepare_managed_root
@@ -55,12 +54,7 @@ def create(source: Path, *, profile_id: str, session_id: str) -> Path:
         if _manifest(source) != before or _manifest(stage) != before:
             raise ScopedCopyError("repository changed while it was copied")
         _fsync_tree(stage)
-        os.rename(stage, destination)
-        fd = os.open(scope_root, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        rename_durably(stage, destination, replace=False)
     finally:
         if stage.exists():
             remove_tree(stage)

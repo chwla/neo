@@ -17,7 +17,7 @@ from contextlib import closing
 from pathlib import Path
 
 from app.core.config import active_profile_storage_dir, get_settings
-from app.core.paths import remove_tree
+from app.core.paths import fsync_directory, fsync_file, remove_tree, rename_durably
 from app.services.isolation.roots import overlaps_protected
 from app.services.repos.safety import prepare_managed_root
 
@@ -54,14 +54,9 @@ def _manifest(root: Path) -> dict[str, tuple[int, str]]:
 def _fsync_tree(root: Path) -> None:
     for current, _dirs, files in os.walk(root):
         for name in files:
-            with (Path(current) / name).open("rb") as stream:
-                os.fsync(stream.fileno())
+            fsync_file(Path(current) / name)
     for current, _dirs, _files in os.walk(root, topdown=False):
-        fd = os.open(current, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        fsync_directory(current)
 
 
 def _switch_record(repo_id: str, source: Path, destination: Path) -> None:
@@ -144,7 +139,7 @@ def migrate_managed_workspaces(profile_id: str) -> dict[str, list]:
                 # rename is atomic on the same filesystem. A competing migration
                 # that won the name leaves its copy for comparison on retry.
                 try:
-                    os.rename(stage, destination)
+                    rename_durably(stage, destination, replace=False)
                 except OSError:
                     # A second startup process may have finished the same copy
                     # after our initial existence check. Accept it only when
@@ -155,11 +150,7 @@ def migrate_managed_workspaces(profile_id: str) -> dict[str, list]:
                         or _manifest(destination) != before
                     ):
                         raise
-                parent_fd = os.open(new_root, os.O_RDONLY)
-                try:
-                    os.fsync(parent_fd)
-                finally:
-                    os.close(parent_fd)
+                    fsync_directory(new_root)
             finally:
                 if stage.exists():
                     remove_tree(stage)

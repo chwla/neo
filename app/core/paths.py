@@ -351,3 +351,85 @@ def remove_tree(path: str | os.PathLike[str], *, ignore_errors: bool = False) ->
             raise
         logging.getLogger(__name__).warning("remove_tree_incomplete path=%s", target, exc_info=True)
         return False
+
+
+#: MoveFileExW flags: replace an existing destination; return only once the move is on disk.
+_MOVEFILE_REPLACE_EXISTING = 0x1
+_MOVEFILE_WRITE_THROUGH = 0x8
+
+
+def fsync_file(path: str | os.PathLike[str]) -> None:
+    """Flush a file that was written earlier, and has since been closed, to disk.
+
+    Windows flushes only through a handle with write access (a read-only one fails
+    with EBADF), so the file is opened for writing there, and a read-only file is
+    made writable for just as long as that takes. POSIX flushes through any handle.
+    """
+
+    if not IS_WINDOWS:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return
+    mode = os.stat(path).st_mode
+    read_only = not mode & stat.S_IWRITE
+    if read_only:
+        os.chmod(path, mode | stat.S_IWRITE)
+    try:
+        fd = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if read_only:
+            os.chmod(path, stat.S_IMODE(mode))
+
+
+def fsync_directory(path: str | os.PathLike[str]) -> None:
+    """Commit the entries of directory ``path``, so a file created in it survives a crash.
+
+    POSIX needs the directory itself fsynced for that. Windows can neither open a
+    directory with ``os.open`` (EACCES) nor flush one, so this does nothing there,
+    as in LevelDB and RocksDB: NTFS journals the change, so after a crash the entry
+    is either present or absent, never damaged. A rename that has to be on disk when
+    it returns goes through :func:`rename_durably`, which has a Windows equivalent.
+    """
+
+    if IS_WINDOWS:
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def rename_durably(
+    source: str | os.PathLike[str], destination: str | os.PathLike[str], *, replace: bool
+) -> None:
+    """Rename ``source`` to ``destination`` and return only once the rename is on disk.
+
+    With ``replace`` an existing destination file is replaced, as by ``os.replace``;
+    without it the rename fails if the destination exists on Windows, as by ``os.rename``.
+    POSIX renames, then fsyncs the parent directory. Windows has no directory fsync, so
+    it asks ``MoveFileExW`` to write the move through to disk before returning instead.
+    """
+
+    if not IS_WINDOWS:
+        (os.replace if replace else os.rename)(source, destination)
+        fsync_directory(Path(destination).parent)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+    move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    move.restype = wintypes.BOOL
+    flags = _MOVEFILE_WRITE_THROUGH | (_MOVEFILE_REPLACE_EXISTING if replace else 0)
+    if not move(os.fspath(source), os.fspath(destination), flags):
+        code = ctypes.get_last_error()
+        # WinError builds the matching OSError subclass (PermissionError, FileExistsError...).
+        raise ctypes.WinError(code, f"{ctypes.FormatError(code)}: {os.fspath(destination)!r}")
