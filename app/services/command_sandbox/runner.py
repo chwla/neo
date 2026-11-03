@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 from app.core.paths import IS_WINDOWS, is_within
+from app.core.processes import run_bounded
 from app.services import isolation
 from app.services.git import executor as git_executor
 from app.services.isolation import launch
@@ -113,14 +113,6 @@ def _failed(started: float, reason: str, stdout: str = "") -> dict:
     }
 
 
-def _captured(value) -> str:
-    """Output from ``TimeoutExpired``, which is bytes even when ``text=True`` was asked for."""
-
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value or ""
-
-
 def run(
     argv: list[str],
     cwd: Path,
@@ -187,25 +179,9 @@ def run(
             return _failed(started, result.quarantine_reason or "", stdout)
     else:
         _LOG.warning("command_sandbox_unisolated platform=%s subject=%s", sys.platform, subject)
-        try:
-            completed = subprocess.run(
-                argv,
-                cwd=cwd,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=timeout_ms / 1000,
-                shell=False,
-                check=False,
-            )
-            stdout, stderr = completed.stdout or "", completed.stderr or ""
-            timed_out = False
-            exit_code = completed.returncode
-        except subprocess.TimeoutExpired as exc:
-            stdout, stderr = _captured(exc.stdout), _captured(exc.stderr)
-            timed_out = True
-            exit_code = None
+        stdout, stderr, exit_code, timed_out = run_bounded(
+            argv, cwd=cwd, env=env, timeout=timeout_ms / 1000
+        )
     truncated = len(stdout.encode()) > OUTPUT_LIMIT or len(stderr.encode()) > OUTPUT_LIMIT
     return {
         "status": "timed_out" if timed_out else "completed",

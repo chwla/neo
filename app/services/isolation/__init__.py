@@ -499,6 +499,7 @@ def run(
             on_members=lease.update_members,
             raw_stdout=raw_stdout,
             max_stdout_bytes=max_stdout_bytes,
+            terminate_members=lambda: procs.terminate_all(markers),
         )
     finally:
         cleanup = None
@@ -544,6 +545,7 @@ def _spawn(
     on_members=None,
     raw_stdout: bool = False,
     max_stdout_bytes: int | None = None,
+    terminate_members=None,
 ) -> RunResult:
     result = RunResult()
     try:
@@ -599,28 +601,39 @@ def _spawn(
     stopping = threading.Event()
     state = {"timed_out": False, "cancelled": False}
 
+    def stop() -> None:
+        # The program and everything it started. Killing only the program left its
+        # descendants running and holding the output pipe, so the read below waited
+        # for them to exit on their own, however long that took.
+        process.kill()
+        if terminate_members is not None:
+            try:
+                terminate_members()
+            except (OSError, procs.SupervisionUnavailable):
+                _LOG.warning("isolation_stop_cleanup_failed", exc_info=True)
+
     def watch() -> None:
         deadline = time.monotonic() + timeout
+        # Until the output has been read, not just until the program exits: what it
+        # started can hold the pipe open after it is gone, and the limit covers that.
         while not stopping.wait(1.0):
-            if process.poll() is not None:
-                return
             if on_members is not None:
                 try:
                     on_members()
                 except (OSError, procs.SupervisionUnavailable) as exc:
                     result.quarantined = True
                     result.quarantine_reason = f"process membership could not be persisted: {exc}"
-                    process.kill()
+                    stop()
                     return
             if time.monotonic() >= deadline:
                 state["timed_out"] = True
-                process.kill()
+                stop()
                 return
             if is_cancelled is not None:
                 try:
                     if is_cancelled():
                         state["cancelled"] = True
-                        process.kill()
+                        stop()
                         return
                 except Exception:  # pragma: no cover - a probe must not kill a run
                     _LOG.warning("isolation_cancel_probe_failed", exc_info=True)

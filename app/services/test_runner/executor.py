@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.paths import remove_tree
+from app.core.processes import ProcessTree
 from app.services import isolation
 from app.services.isolation import launch
 
@@ -126,7 +126,7 @@ def execute(
                 tempfile.TemporaryFile() as stdout_file,
                 tempfile.TemporaryFile() as stderr_file,
             ):
-                process = subprocess.Popen(
+                tree = ProcessTree(
                     argv,
                     cwd=cwd,
                     env=environment,
@@ -134,17 +134,15 @@ def execute(
                     stdout=stdout_file,
                     stderr=stderr_file,
                     shell=False,
-                    start_new_session=True,
                 )
                 try:
-                    exit_code = process.wait(timeout=timeout_seconds)
+                    exit_code = tree.process.wait(timeout=timeout_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except (AttributeError, ProcessLookupError, PermissionError):
-                        process.kill()
-                    process.wait()
+                    tree.kill()
+                    tree.process.wait()
+                finally:
+                    tree.close()
                 stdout_text, stdout_truncated = _read_limited(stdout_file, STDOUT_LIMIT)
                 stderr_text, stderr_truncated = _read_limited(stderr_file, STDERR_LIMIT)
     except Exception as exc:
