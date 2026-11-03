@@ -10,7 +10,6 @@ from app.services.search import (
     ComprehensiveSearchResult,
     ProviderRegistry,
     SearchOptions,
-    WebPageFetcher,
     comprehensive_web_search,
 )
 from app.services.search.providers import PROVIDER_INFO, normalize_searxng_instance
@@ -23,10 +22,6 @@ class SearchRequest(BaseModel):
     max_results: int | None = Field(default=None, ge=1, le=10)
     max_pages: int | None = Field(default=None, ge=0, le=5)
     time_filter: str | None = None
-
-
-class FetchRequest(BaseModel):
-    url: str = Field(min_length=1)
 
 
 class ProviderQueryRequest(BaseModel):
@@ -172,8 +167,3 @@ def search_with_provider(request: ProviderQueryRequest) -> dict[str, object]:
     provider = ProviderRegistry().provider(request.provider)
     response = provider.search(request.query, request.count, request.time_filter)
     return response.model_dump()
-
-
-@router.post("/fetch")
-def fetch(request: FetchRequest):
-    return WebPageFetcher().fetch(request.url)
