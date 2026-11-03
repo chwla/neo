@@ -72,6 +72,9 @@ def run_bounded(
     """Run to completion or ``timeout`` seconds: (stdout, stderr, exit code, timed out).
 
     At the limit the whole tree is ended and the output read so far is returned.
+    Output is read as UTF-8, as the test runner reads it: decoding by the locale meant
+    cp1252 on Windows, which garbled what git, Node or pytest wrote and failed outright
+    on some characters.
     """
 
     tree = ProcessTree(
@@ -81,7 +84,8 @@ def run_bounded(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         shell=False,
     )
     try:

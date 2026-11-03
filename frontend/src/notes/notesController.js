@@ -220,6 +220,9 @@ export function createNotesController(profileId) {
   const trashing = new Set();
   let journal = null;
   let saver = null;
+  // Until start() has opened the journal there is no saver. A note started and typed
+  // in that window is recorded here and handed to the saver once it exists.
+  const beforeSaver = new Map();
   let channel = null;
   let openSeq = 0;
   let openAbort = null;
@@ -478,6 +481,11 @@ export function createNotesController(profileId) {
     }
     journal = createJournal(adapter ?? memoryJournalAdapter(), { tabId });
     saver = createNoteSaver({ transport: transportFor(), journal, tabId, onEvent: onSaverEvent, project: projectDoc, seal: sealSnapshot });
+    for (const [key, pending] of beforeSaver) {
+      if (pending.track) saver.track(key, pending.track);
+      if (pending.edited) edit(key);
+    }
+    beforeSaver.clear();
     api
       .noteKeyState()
       .then((keyState) => syncLockState({ setUp: Boolean(keyState.set_up), guest: Boolean(keyState.guest) }))
@@ -784,7 +792,8 @@ export function createNotesController(profileId) {
     let doc = newNoteDoc(style ?? state.settings.new_note_style);
     if (tagged) doc = { ...doc, content: [...doc.content, { type: "paragraph", content: [{ type: "text", text: `#${tagged}` }] }] };
     const now = new Date().toISOString();
-    saver.track(key, { folderId: folder });
+    if (saver) saver.track(key, { folderId: folder });
+    else beforeSaver.set(key, { track: { folderId: folder }, edited: false });
     summaries.set(key, null);
     set((current) => ({
       drafts: { ...current.drafts, [key]: { key, title: "", preview: "", updated_at: now, created_at: now, folder_id: folder } },
@@ -817,7 +826,11 @@ export function createNotesController(profileId) {
    * travel with every snapshot, or a save would clear them.
    */
   function edit(key) {
-    if (!saver) return;
+    if (!saver) {
+      const pending = beforeSaver.get(key) ?? { track: null, edited: false };
+      beforeSaver.set(key, { ...pending, edited: true });
+      return;
+    }
     const take = editorTakes.get(key);
     if (!take) return;
     if (!saver.isTracked(key)) {
