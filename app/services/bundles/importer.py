@@ -32,8 +32,16 @@ class BundleImporter:
                     raise ValueError("Bundle must contain neo_bundle.json and checksums.json.")
                 manifest = json.loads(archive.read("neo_bundle.json"))
                 checksums = json.loads(archive.read("checksums.json"))
+                if not isinstance(manifest, dict) or not isinstance(checksums, dict):
+                    raise ValueError("Bundle manifest or checksums are malformed.")
                 if manifest.get("schema_version") != 1:
                     raise ValueError("Unsupported bundle schema version.")
+                # Every entry but checksums.json itself is listed, once: nothing rides
+                # along unchecked.
+                if len(names) != len(set(names)) or set(checksums) != set(names) - {
+                    "checksums.json"
+                }:
+                    raise ValueError("Bundle checksums do not cover exactly its entries.")
                 for name, expected in checksums.items():
                     if name not in names or sha256_bytes(archive.read(name)) != expected:
                         raise ValueError(f"Checksum mismatch for {name}.")
