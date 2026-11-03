@@ -30,7 +30,14 @@ from app.core.config import (
     get_settings,
 )
 from app.core.identifiers import canonical_uuid
-from app.core.paths import install_root, private_dir_mode, private_file_mode, remove_tree
+from app.core.paths import (
+    IS_WINDOWS,
+    install_root,
+    private_dir_mode,
+    private_file_mode,
+    remove_tree,
+    restrict_to_owner,
+)
 from app.db.session import initialize_database, release_database
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
@@ -337,8 +344,18 @@ def _restrict(path: Path, *, directory: bool) -> None:
     ``-wal``/``-shm`` beside it with the process umask, which on a normal account is
     0644 -- readable by every other account on the machine. That is worth closing on
     its own, before any agent is in the picture.
+
+    Windows ignores mode bits, so there the ACL is closed instead. Under a checkout at a
+    drive root, such as ``C:\\neo``, the inherited ACL lets every signed-in account
+    read and change the files.
     """
 
+    if IS_WINDOWS:
+        try:
+            restrict_to_owner(path)
+        except OSError:
+            _logger.warning("profile_storage_not_restricted path=%s", path, exc_info=True)
+        return
     mode = private_dir_mode() if directory else private_file_mode()
     try:
         current = stat.S_IMODE(path.stat().st_mode)

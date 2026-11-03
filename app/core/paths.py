@@ -35,7 +35,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 IS_WINDOWS = os.name == "nt"
@@ -280,10 +279,22 @@ def private_file_mode() -> int:
     return 0o660 if in_container() else 0o600
 
 
-#: Trustees a private Windows path may grant access to besides the account itself:
-#: LocalSystem and the local Administrators group, in SDDL's short and long spellings.
-_WINDOWS_PRIVATE_TRUSTEES = {"SY", "BA", "S-1-5-18", "S-1-5-32-544"}
-_SDDL_ACE = re.compile(r"\((A|OA|D|OD);[^;]*;[^;]*;[^;]*;[^;]*;([^)]+)\)")
+#: Who private storage may let in on Windows besides the account itself: LocalSystem
+#: and the local Administrators group.
+_WINDOWS_ADMIN_SIDS = frozenset({"S-1-5-18", "S-1-5-32-544"})
+#: OWNER RIGHTS, i.e. whoever owns the object. Python's ``mkdir(mode=0o700)`` grants it.
+_OWNER_RIGHTS_SID = "S-1-3-4"
+#: A protected DACL giving the account, SYSTEM and Administrators full control; on a
+#: directory, inherited by everything created inside.
+_PRIVATE_DIRECTORY_SDDL = "D:PAI(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+_PRIVATE_FILE_SDDL = "D:PAI(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)"
+_SE_FILE_OBJECT = 1
+_OWNER_SECURITY_INFORMATION = 0x1
+_DACL_SECURITY_INFORMATION = 0x4
+_PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+_ACL_SIZE_INFORMATION = 2
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_ACCESS_DENIED_ACE_TYPE = 1
 
 
 @functools.cache
@@ -300,27 +311,120 @@ def windows_account_sid() -> str:
     return sid
 
 
+@functools.cache
+def _win32():
+    """ctypes, advapi32 and kernel32, with the prototypes the ACL helpers call."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    out = ctypes.POINTER(ctypes.c_void_p)
+    void = ctypes.c_void_p
+    for function, restype, argtypes in (
+        (
+            advapi.GetNamedSecurityInfoW,
+            wintypes.DWORD,
+            (wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, out, out, out, out, out),
+        ),
+        (
+            advapi.SetNamedSecurityInfoW,
+            wintypes.DWORD,
+            (wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, void, void, void, void),
+        ),
+        (advapi.ConvertSidToStringSidW, wintypes.BOOL, (void, ctypes.POINTER(ctypes.c_wchar_p))),
+        (
+            advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            wintypes.BOOL,
+            (wintypes.LPCWSTR, wintypes.DWORD, out, void),
+        ),
+        (
+            advapi.GetSecurityDescriptorDacl,
+            wintypes.BOOL,
+            (void, ctypes.POINTER(wintypes.BOOL), out, ctypes.POINTER(wintypes.BOOL)),
+        ),
+        (advapi.GetAclInformation, wintypes.BOOL, (void, void, wintypes.DWORD, ctypes.c_int)),
+        (advapi.GetAce, wintypes.BOOL, (void, wintypes.DWORD, out)),
+        (kernel.LocalFree, void, (void,)),
+    ):
+        function.restype = restype
+        function.argtypes = argtypes
+    return ctypes, advapi, kernel
+
+
+def _sid_text(sid) -> str:
+    ctypes, advapi, kernel = _win32()
+    text = ctypes.c_wchar_p()
+    if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return text.value or ""
+    finally:
+        kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+
+
+def _windows_dacl(path: Path) -> tuple[str, list[tuple[int, str | None]] | None]:
+    """``path``'s owner and its DACL as (ACE type, trustee SID) pairs.
+
+    ``None`` for the list is a null DACL, which lets everyone in. Trustees come back as
+    SID strings: SDDL text names some accounts by alias (``LA`` for the built-in
+    Administrator) and readable output is translated, so neither can be compared.
+    """
+
+    ctypes, advapi, kernel = _win32()
+    owner = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    error = advapi.GetNamedSecurityInfoW(
+        str(path),
+        _SE_FILE_OBJECT,
+        _OWNER_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
+        ctypes.byref(owner),
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if error:
+        raise ctypes.WinError(error, f"{ctypes.FormatError(error)}: {path}")
+    try:
+        owner_sid = _sid_text(owner) if owner.value else ""
+        if not dacl.value:
+            return owner_sid, None
+        size = (ctypes.c_uint32 * 3)()  # ACL_SIZE_INFORMATION: AceCount, bytes in use, free
+        if not advapi.GetAclInformation(dacl, size, ctypes.sizeof(size), _ACL_SIZE_INFORMATION):
+            raise ctypes.WinError(ctypes.get_last_error())
+        entries: list[tuple[int, str | None]] = []
+        for index in range(size[0]):
+            ace = ctypes.c_void_p()
+            if not advapi.GetAce(dacl, index, ctypes.byref(ace)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            kind = ctypes.c_ubyte.from_address(ace.value).value
+            # An allowed or denied ACE is a 4-byte header and a 4-byte mask, then the
+            # SID. Other kinds (object, callback) are reported without a trustee.
+            simple = kind in (_ACCESS_ALLOWED_ACE_TYPE, _ACCESS_DENIED_ACE_TYPE)
+            entries.append((kind, _sid_text(ctypes.c_void_p(ace.value + 8)) if simple else None))
+        return owner_sid, entries
+    finally:
+        kernel.LocalFree(descriptor)
+
+
 def _windows_acl_is_private(path: Path) -> bool:
     """Whether only this account, SYSTEM and Administrators are allowed into ``path``.
 
-    Read as SDDL from ``icacls /save``, which names trustees by SID; the readable
-    output is translated, which would make the check depend on the display language.
+    OWNER RIGHTS counts as the account when one of those owns ``path``, which is how a
+    directory Python creates with ``mode=0o700`` is made private.
     """
 
-    with tempfile.TemporaryDirectory() as scratch:
-        saved = Path(scratch) / "acl.txt"
-        completed = subprocess.run(  # noqa: S603 - fixed argv
-            ["icacls", str(path), "/save", str(saved)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0 or not saved.exists():
-            return False
-        sddl = saved.read_bytes().decode("utf-16", errors="replace")
-    allowed = _WINDOWS_PRIVATE_TRUSTEES | {windows_account_sid()}
-    trustees = [trustee for kind, trustee in _SDDL_ACE.findall(sddl) if kind in {"A", "OA"}]
-    return bool(trustees) and all(trustee in allowed for trustee in trustees)
+    owner, entries = _windows_dacl(path)
+    if entries is None:
+        return False
+    allowed = _WINDOWS_ADMIN_SIDS | {windows_account_sid()}
+    if owner in allowed:
+        allowed |= {_OWNER_RIGHTS_SID}
+    granted = [sid for kind, sid in entries if kind != _ACCESS_DENIED_ACE_TYPE]
+    return bool(granted) and all(sid in allowed for sid in granted)
 
 
 def is_private(path: Path) -> bool:
@@ -335,39 +439,52 @@ def is_private(path: Path) -> bool:
     return not path.stat().st_mode & 0o007
 
 
-def restrict_to_owner(directory: Path) -> None:
-    """Keep other accounts out of a directory Neo owns.
+def restrict_to_owner(path: Path) -> None:
+    """Keep other accounts out of a directory or file Neo owns.
 
-    POSIX sets :func:`private_dir_mode`. Windows ignores mode bits, so an ACL that is
-    not already private is replaced by one giving this account, SYSTEM and
-    Administrators full control, inherited by everything created inside.
+    POSIX sets :func:`private_dir_mode` or :func:`private_file_mode`. Windows ignores
+    mode bits, so an ACL that is not already private is replaced whole, explicit
+    entries included, by a protected one giving this account, SYSTEM and
+    Administrators full control. Inside a directory, whatever inherits its ACL is
+    brought in line and what is created later inherits it; an entry with explicit
+    grants of its own keeps them until it is restricted itself.
     """
 
+    directory = path.is_dir()
     if not IS_WINDOWS:
-        directory.chmod(private_dir_mode())
+        path.chmod(private_dir_mode() if directory else private_file_mode())
         return
-    if _windows_acl_is_private(directory):
+    if _windows_acl_is_private(path):
         return
-    grant = "(OI)(CI)F"
-    completed = subprocess.run(  # noqa: S603 - fixed argv, path chosen by Neo
-        [
-            "icacls",
-            str(directory),
-            "/inheritance:r",
-            "/grant:r",
-            f"*{windows_account_sid()}:{grant}",
-            f"*S-1-5-18:{grant}",
-            f"*S-1-5-32-544:{grant}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise OSError(
-            f"Neo could not restrict access to {directory}: "
-            f"{(completed.stderr or completed.stdout).strip()}"
+    ctypes, advapi, kernel = _win32()
+    descriptor = ctypes.c_void_p()
+    template = _PRIVATE_DIRECTORY_SDDL if directory else _PRIVATE_FILE_SDDL
+    sddl = template.format(sid=windows_account_sid())
+    if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, ctypes.byref(descriptor), None
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        present = ctypes.c_int()
+        dacl = ctypes.c_void_p()
+        defaulted = ctypes.c_int()
+        if not advapi.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        error = advapi.SetNamedSecurityInfoW(
+            str(path),
+            _SE_FILE_OBJECT,
+            _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            dacl,
+            None,
         )
+        if error:
+            raise ctypes.WinError(error, f"{ctypes.FormatError(error)}: {path}")
+    finally:
+        kernel.LocalFree(descriptor)
 
 
 def in_container() -> bool:

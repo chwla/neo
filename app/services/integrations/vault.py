@@ -34,10 +34,8 @@ import hmac
 import json
 import logging
 import os
-import re
 import stat
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -45,6 +43,7 @@ from typing import Any
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core.config import active_profile_storage_dir, get_base_settings
+from app.core.paths import is_private
 
 _LOG = logging.getLogger(__name__)
 
@@ -144,32 +143,19 @@ def _restrict_windows_key(path: Path) -> None:
         )
 
 
-#: Trustees that may hold access to the key besides its owner: LocalSystem and the
-#: local Administrators group, in SDDL's short and long spellings.
-_WINDOWS_ALLOWED_TRUSTEES = {"SY", "BA", "S-1-5-18", "S-1-5-32-544"}
-_SDDL_ACE = re.compile(r"\((A|OA|D|OD);[^;]*;[^;]*;[^;]*;[^;]*;([^)]+)\)")
-
-
 def _windows_key_is_private(path: Path) -> bool:
     """Whether only this account, SYSTEM and Administrators are allowed in.
 
-    Read as SDDL from ``icacls /save`` because that names trustees by SID; the
-    human-readable output is translated (``NT-AUTORITÄT\\SYSTEM``) and would make
-    the check depend on the display language.
+    Read through the Windows security API as SID strings. SDDL text names some
+    accounts by alias (``LA`` for the built-in Administrator), which made the key
+    Neo had just restricted look readable by others; readable output is translated
+    (``NT-AUTORITÄT\\SYSTEM``) and would make the check depend on the display language.
     """
 
-    with tempfile.TemporaryDirectory() as scratch:
-        saved = Path(scratch) / "acl.txt"
-        completed = subprocess.run(  # noqa: S603 - fixed argv
-            ["icacls", str(path), "/save", str(saved)], capture_output=True, text=True,
-            check=False,
-        )
-        if completed.returncode != 0 or not saved.exists():
-            return False
-        sddl = saved.read_bytes().decode("utf-16", errors="replace")
-    allowed = _WINDOWS_ALLOWED_TRUSTEES | {_windows_sid()}
-    trustees = [trustee for kind, trustee in _SDDL_ACE.findall(sddl) if kind in {"A", "OA"}]
-    return bool(trustees) and all(trustee in allowed for trustee in trustees)
+    try:
+        return is_private(path)
+    except OSError:
+        return False
 
 
 def _read_key_file(path: Path) -> bytes:
