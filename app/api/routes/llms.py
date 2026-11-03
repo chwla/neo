@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from app.services.llm import LLMConfig, LLMRegistry, get_llm_client
+from app.services.llm import LLMConfig, LLMRegistry
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.types import check_key_env_name
 
@@ -51,10 +51,13 @@ def upsert_llm(config_id: str, request: LLMConfig) -> LLMListResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     registry = _registry()
     try:
-        configs, active_id = registry.upsert(request)
+        registry.upsert(request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     LLMRegistryService().ensure_defaults()
+    # ensure_defaults imports the entry into the model registry, which can store it under
+    # another id, so answer with the list as it is now rather than as upsert left it.
+    configs, active_id = registry.list()
     return LLMListResponse(active_id=active_id, llms=[item.public_dict() for item in configs])
 
 
@@ -74,8 +77,11 @@ def select_active_llm(request: ActiveLLMRequest) -> LLMListResponse:
 
 @router.post("/{config_id}/test", response_model=LLMTestResponse)
 def test_llm(config_id: str) -> LLMTestResponse:
+    # The configuration named, at its own endpoint. get_llm_client routes by purpose
+    # and ignores the id, so it reported the chat route's health for any configuration,
+    # even one pointing at a server that is not there or one that does not exist.
     try:
-        client = get_llm_client(config_id, route_name="chat")
+        client = _registry().client(config_id)
     except (ValueError, LookupError, RuntimeError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     available = client.is_available()

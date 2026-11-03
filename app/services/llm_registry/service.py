@@ -239,6 +239,23 @@ class LLMRegistryService:
                 return True
         return False
 
+    def _provider_on_endpoint(
+        self, provider_type: str, legacy: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The registered provider of this type on the legacy entry's endpoint and key."""
+        model_name = str(legacy.get("model") or "").strip()
+        base_url = str(legacy.get("base_url") or "").rstrip("/")
+        if not model_name or not base_url:
+            return None
+        for provider in self.list_providers():
+            if (
+                provider.get("provider_type") == provider_type
+                and str(provider.get("base_url") or "").rstrip("/") == base_url
+                and (provider.get("api_key_ref") or None) == (legacy.get("api_key_env") or None)
+            ):
+                return provider
+        return None
+
     def _migrate_legacy_json(self) -> None:
         path = Path(get_settings().llm_config_path)
         if not path.is_file():
@@ -277,6 +294,38 @@ class LLMRegistryService:
             if self._already_served(legacy):
                 # A picker entry for a model an existing provider already serves. Importing
                 # it would create a second provider for the same endpoint.
+                continue
+            same_endpoint = self._provider_on_endpoint(provider_type, legacy)
+            if same_endpoint is not None:
+                # A model the endpoint's provider does not list yet belongs to that provider.
+                # A second provider for the endpoint would discover every model it serves,
+                # and each picker entry it synced would replace the existing one.
+                try:
+                    model = self.create_model(
+                        ModelCreate(
+                            id=_slug(
+                                f"{same_endpoint['id']}-{legacy.get('model')}",
+                                str(uuid.uuid4()),
+                            ),
+                            provider_id=same_endpoint["id"],
+                            model_name=str(legacy.get("model")),
+                            display_name=str(legacy.get("model")),
+                            max_output_tokens=int(legacy.get("num_predict", 160)),
+                            enabled=bool(legacy.get("enabled", True)),
+                            metadata={"source": "neo_llms.json"},
+                        )
+                    )
+                    if config_id == active:
+                        self.update_route(
+                            "chat",
+                            RouteUpdate(
+                                provider_id=same_endpoint["id"],
+                                model_id=model["id"],
+                                metadata={"source": "legacy"},
+                            ),
+                        )
+                except (ValueError, sqlite3.IntegrityError):
+                    pass
                 continue
             try:
                 provider = self.create_provider(
@@ -661,10 +710,20 @@ class LLMRegistryService:
 
         registry = LLMRegistry()
         configs, active_id = registry.load()
-        configs = [item for item in configs if item.id != config_id and item.model != entry.model]
+        # Replace this entry and any other for the same model on the same endpoint. The
+        # same model name on another endpoint is a different backend and stays.
+        replaced = {
+            item.id
+            for item in configs
+            if item.id == config_id
+            or (item.model == entry.model and item.base_url.rstrip("/") == base_url)
+        }
+        configs = [item for item in configs if item.id not in replaced]
         configs.append(entry)
         if not any(item.enabled for item in configs):
             return
+        if active_id in replaced and entry.enabled:
+            active_id = config_id  # the selection follows its model to the refreshed entry
         registry.save(configs, active_id)
 
     def _remove_model_from_picker(self, model: dict[str, Any]) -> None:
