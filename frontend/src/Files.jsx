@@ -37,11 +37,28 @@ export default function Files({ initialFileId = null }) {
   // Trash holds deleted files until they are restored or deleted permanently.
   const [inTrash, setInTrash] = useState(false);
   const input = useRef(null);
+  // A reload after a delete or restore lists the view on screen when it finishes, not
+  // the one it started in: switching to Trash mid-delete must not show the Files list.
+  // Only the newest answer may land, or a slow earlier one would overwrite it.
+  const view = useRef({ query, extension, inTrash });
+  view.current = { query, extension, inTrash };
+  const latestLoad = useRef(0);
+  // Likewise, an action that finishes late closes the open file only if it is still
+  // the one the action was for, not one opened in the meantime (even the same file,
+  // reopened from Trash).
+  const openFile = useRef(null);
+  openFile.current = selected;
+
+  function close(wasFor) {
+    if (openFile.current && wasFor(openFile.current)) { setSelected(null); setLinks([]); }
+  }
 
   const load = useCallback(async () => {
-    const data = await api.filesList({ q: query, extension, trashed: inTrash });
-    setFiles(data.files || []);
-  }, [query, extension, inTrash]);
+    const ticket = ++latestLoad.current;
+    const shown = view.current;
+    const data = await api.filesList({ q: shown.query, extension: shown.extension, trashed: shown.inTrash });
+    if (ticket === latestLoad.current) setFiles(data.files || []);
+  }, []);
 
   async function open(fileId) {
     const data = await api.file(fileId);
@@ -57,7 +74,7 @@ export default function Files({ initialFileId = null }) {
     setInTrash(next); setSelected(null); setLinks([]); setError(""); setNotice("");
   }
 
-  useEffect(() => { load().catch((err) => setError(err.message)); }, [load]);
+  useEffect(() => { load().catch((err) => setError(err.message)); }, [load, query, extension, inTrash]);
   useEffect(() => {
     Promise.all([api.projectsList({ limit: 100 }), api.tasksList({ limit: 100 })])
       .then(([projectData, taskData]) => {
@@ -82,32 +99,36 @@ export default function Files({ initialFileId = null }) {
   }
 
   async function remove() {
-    if (!window.confirm(`Move ${selected.display_name} to Trash? You can restore it from Trash.`)) return;
-    try { await api.deleteFile(selected.id); setSelected(null); setLinks([]); setNotice("Moved to Trash."); await load(); }
+    const target = selected;
+    if (!window.confirm(`Move ${target.display_name} to Trash? You can restore it from Trash.`)) return;
+    try { await api.deleteFile(target.id); close((open) => open === target); setNotice("Moved to Trash."); await load(); }
     catch (err) { setError(err.message); }
   }
 
   async function restore() {
-    try { await api.restoreFile(selected.id); setSelected(null); setNotice("Restored to Files."); await load(); }
+    const target = selected;
+    try { await api.restoreFile(target.id); close((open) => open === target); setNotice("Restored to Files."); await load(); }
     catch (err) { setError(err.message); }
   }
 
   async function purge() {
+    const target = selected;
     if (!window.confirm(
-      `Delete ${selected.display_name} permanently? Neo's stored copy is removed and cannot be restored. ` +
+      `Delete ${target.display_name} permanently? Neo's stored copy is removed and cannot be restored. ` +
       "Anything else that uses the same file, such as a gallery image or a note, keeps it.",
     )) return;
-    try { await api.deleteFilePermanently(selected.id); setSelected(null); setNotice("Deleted permanently."); await load(); }
+    try { await api.deleteFilePermanently(target.id); close((open) => open === target); setNotice("Deleted permanently."); await load(); }
     catch (err) { setError(err.message); }
   }
 
   async function emptyTrash() {
-    const count = files.length;
+    const trashed = new Set(files.map((item) => item.id));
+    const count = trashed.size;
     if (!window.confirm(
       `Empty Trash? ${count} file${count === 1 ? " is" : "s are"} deleted permanently and cannot be restored. ` +
       "Anything else that uses one of them keeps it.",
     )) return;
-    try { await api.emptyFilesTrash(); setSelected(null); setNotice("Trash emptied."); await load(); }
+    try { await api.emptyFilesTrash(); close((open) => trashed.has(open.id)); setNotice("Trash emptied."); await load(); }
     catch (err) { setError(err.message); }
   }
 
