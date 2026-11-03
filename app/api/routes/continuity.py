@@ -1,7 +1,7 @@
 # ruff: noqa
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.services.continuity import ContinuityService
+from app.services.continuity import ContinuityService, ImportUnavailable
 
 router = APIRouter(prefix="/continuity", tags=["continuity"])
 
@@ -39,13 +39,16 @@ def export(p: Export):
 def dry(p: Import):
     try:
         return s().dry_run(**p.model_dump())
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    except ImportUnavailable as e:
+        raise HTTPException(501, {"code": "continuity_import_unavailable", "message": e.message})
 
 
 @router.post("/import")
 def imp(p: Import):
-    return s().import_bundle(**p.model_dump())
+    try:
+        return s().import_bundle(**p.model_dump())
+    except ImportUnavailable as e:
+        raise HTTPException(501, {"code": "continuity_import_unavailable", "message": e.message})
 
 
 @router.get("/bundles/{bid}")

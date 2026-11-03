@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 
 from app.services import integration
 from app.services.workspace_orchestration import WorkspaceService
@@ -260,20 +259,17 @@ class ContinuityService:
         }
 
     def dry_run(self, bundle_path, mode="dry_run", confirm_replace=False):
-        path = Path(bundle_path)
-        if path.is_absolute() or ".." in path.parts:
-            raise ValueError("Unsafe bundle path")
-        return {
-            "status": "passed",
-            "mode": mode,
-            "confirm_replace": confirm_replace,
-            "checks": {
-                "path_traversal": "passed",
-                "duplicate_records": "warning",
-                "unsupported_entity_types": "warning",
-            },
-            "resume_instructions": ["Use append import after review."],
-        }
+        # Nothing reads a continuity bundle back yet, so no check can honestly pass.
+        raise ImportUnavailable()
 
     def import_bundle(self, **payload):
-        return self.dry_run(**payload) | {"imported": True, "id_mapping": {}}
+        raise ImportUnavailable()
+
+
+class ImportUnavailable(RuntimeError):
+    """Continuity bundles can be exported and inspected, not imported (yet)."""
+
+    message = (
+        "Continuity import isn't available yet. Nothing was read or imported. "
+        "Archive-only import is available under Bundles."
+    )
