@@ -290,7 +290,12 @@ def _thread_state_dir(profile_id: str, executor: str, thread_id: str) -> Path:
     shared between threads they would let a resume reach another conversation.
     """
 
-    from app.core.paths import is_reparse_point, private_dir_mode
+    from app.core.paths import (
+        is_private,
+        is_reparse_point,
+        private_dir_mode,
+        restrict_to_owner,
+    )
     from app.services.isolation.roots import roots
 
     if not profile_id or Path(profile_id).name != profile_id:
@@ -309,8 +314,8 @@ def _thread_state_dir(profile_id: str, executor: str, thread_id: str) -> Path:
         directory.mkdir(parents=True, exist_ok=True, mode=private_dir_mode())
         if is_reparse_point(directory):
             raise ExternalAgentError("A CLI state directory is a link.")
-        directory.chmod(private_dir_mode())
-        if directory.stat().st_mode & 0o007:
+        restrict_to_owner(directory)
+        if not is_private(directory):
             raise ExternalAgentError("A CLI state directory is accessible to other users.")
     return base
 

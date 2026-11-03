@@ -27,12 +27,15 @@ apart. The platform arguments exist so the rules are testable from any host.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 IS_WINDOWS = os.name == "nt"
@@ -275,6 +278,96 @@ def private_dir_mode() -> int:
 
 def private_file_mode() -> int:
     return 0o660 if in_container() else 0o600
+
+
+#: Trustees a private Windows path may grant access to besides the account itself:
+#: LocalSystem and the local Administrators group, in SDDL's short and long spellings.
+_WINDOWS_PRIVATE_TRUSTEES = {"SY", "BA", "S-1-5-18", "S-1-5-32-544"}
+_SDDL_ACE = re.compile(r"\((A|OA|D|OD);[^;]*;[^;]*;[^;]*;[^;]*;([^)]+)\)")
+
+
+@functools.cache
+def windows_account_sid() -> str:
+    """The SID of the Windows account Neo runs as."""
+
+    completed = subprocess.run(  # noqa: S603 - fixed argv
+        ["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True, check=False
+    )
+    fields = [field.strip().strip('"') for field in completed.stdout.strip().split('","')]
+    sid = fields[-1].strip('"') if fields else ""
+    if completed.returncode != 0 or not sid.startswith("S-1-"):
+        raise OSError("Neo could not determine the current Windows account.")
+    return sid
+
+
+def _windows_acl_is_private(path: Path) -> bool:
+    """Whether only this account, SYSTEM and Administrators are allowed into ``path``.
+
+    Read as SDDL from ``icacls /save``, which names trustees by SID; the readable
+    output is translated, which would make the check depend on the display language.
+    """
+
+    with tempfile.TemporaryDirectory() as scratch:
+        saved = Path(scratch) / "acl.txt"
+        completed = subprocess.run(  # noqa: S603 - fixed argv
+            ["icacls", str(path), "/save", str(saved)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0 or not saved.exists():
+            return False
+        sddl = saved.read_bytes().decode("utf-16", errors="replace")
+    allowed = _WINDOWS_PRIVATE_TRUSTEES | {windows_account_sid()}
+    trustees = [trustee for kind, trustee in _SDDL_ACE.findall(sddl) if kind in {"A", "OA"}]
+    return bool(trustees) and all(trustee in allowed for trustee in trustees)
+
+
+def is_private(path: Path) -> bool:
+    """Whether other accounts are kept out of ``path`` (a container's group aside).
+
+    POSIX reads the mode's "other" bits. Windows reports 0o777 for every directory,
+    whatever its ACL says, so there the ACL itself is read.
+    """
+
+    if IS_WINDOWS:
+        return _windows_acl_is_private(path)
+    return not path.stat().st_mode & 0o007
+
+
+def restrict_to_owner(directory: Path) -> None:
+    """Keep other accounts out of a directory Neo owns.
+
+    POSIX sets :func:`private_dir_mode`. Windows ignores mode bits, so an ACL that is
+    not already private is replaced by one giving this account, SYSTEM and
+    Administrators full control, inherited by everything created inside.
+    """
+
+    if not IS_WINDOWS:
+        directory.chmod(private_dir_mode())
+        return
+    if _windows_acl_is_private(directory):
+        return
+    grant = "(OI)(CI)F"
+    completed = subprocess.run(  # noqa: S603 - fixed argv, path chosen by Neo
+        [
+            "icacls",
+            str(directory),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{windows_account_sid()}:{grant}",
+            f"*S-1-5-18:{grant}",
+            f"*S-1-5-32-544:{grant}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise OSError(
+            f"Neo could not restrict access to {directory}: "
+            f"{(completed.stderr or completed.stdout).strip()}"
+        )
 
 
 def in_container() -> bool:

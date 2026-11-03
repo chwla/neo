@@ -7,9 +7,11 @@ from app.core.config import get_settings
 from app.core.paths import (
     account_containers,
     in_container,
+    is_private,
     is_reparse_point,
     is_within,
     private_dir_mode,
+    restrict_to_owner,
     same_path,
     split_roots,
     system_roots,
@@ -34,8 +36,8 @@ def prepare_managed_root(root: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True, mode=private_dir_mode())
         if is_reparse_point(directory):
             raise ValueError("Managed workspace storage may not be a link.")
-        directory.chmod(private_dir_mode())
-        if directory.stat().st_mode & 0o007:
+        restrict_to_owner(directory)
+        if not is_private(directory):
             raise ValueError("Managed workspace storage is accessible to other users.")
 
 
