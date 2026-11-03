@@ -23,6 +23,7 @@ class WorkspaceFile(BaseModel):
     source_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     deleted: bool = False
+    deleted_at: str | None = None
     created_at: str
     updated_at: str
 

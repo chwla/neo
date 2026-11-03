@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _db_path() -> str:
@@ -44,6 +49,11 @@ def initialize_workspace_file_tables() -> None:
                 target_id TEXT NOT NULL, title TEXT, metadata_json TEXT, created_at TEXT NOT NULL,
                 FOREIGN KEY (file_id) REFERENCES workspace_files(id),
                 UNIQUE(file_id, link_type, target_id)
+            );
+            CREATE TABLE IF NOT EXISTS workspace_file_operations (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload_json TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS workspace_artifacts (
                 id TEXT PRIMARY KEY, title TEXT NOT NULL, artifact_type TEXT NOT NULL,
@@ -257,6 +267,11 @@ def initialize_workspace_file_tables() -> None:
         _ensure_column(
             conn, "workspace_repos", "external_unsafe_opt_in", "INTEGER NOT NULL DEFAULT 0"
         )
+        # Delete moves a Files item to Trash (``deleted``, stamped ``deleted_at``).
+        # Deleting it permanently stamps ``purged_at``: it is no Files item any more,
+        # and its row and bytes go once nothing else uses them (``purge_files``).
+        _ensure_column(conn, "workspace_files", "deleted_at", "TEXT")
+        _ensure_column(conn, "workspace_files", "purged_at", "TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -354,16 +369,20 @@ def list_files(
     link_type: str | None = None,
     target_id: str | None = None,
     include_deleted: bool = False,
+    trashed: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
     conn = _connect()
     try:
         # Locked notes' attachments are ciphertext that only the note can read;
-        # listing them as files would show opaque blobs nobody can open.
-        where = ["coalesce(f.source_type, '') != 'note_encrypted'"]
+        # listing them as files would show opaque blobs nobody can open. A file
+        # deleted permanently is no Files item, even while another item keeps it.
+        where = ["coalesce(f.source_type, '') != 'note_encrypted'", "f.purged_at IS NULL"]
         params: list = []
-        if not include_deleted:
+        if trashed:
+            where.append("f.deleted = 1")
+        elif not include_deleted:
             where.append("f.deleted = 0")
         if extension:
             where.append("lower(coalesce(f.extension, '')) = ?")
@@ -424,6 +443,203 @@ def update_file(file_id: str, updates: dict) -> dict | None:
         conn.execute(f"UPDATE workspace_files SET {', '.join(columns)} WHERE id = ?", params)
         conn.commit()
         return get_file(file_id, include_deleted=True)
+    finally:
+        conn.close()
+
+
+#: Where other items point at a file row. A row named in any of these is a shared
+#: asset: deleting its Files item permanently leaves the row and its bytes to them.
+_REFERENCES = (
+    ("gallery_items", "file_id"),
+    ("note_attachment_refs", "file_id"),
+    ("workspace_repo_files", "file_id"),
+    ("workspace_patch_applications", "file_id"),
+    ("workspace_patch_application_files", "workspace_file_id"),
+    ("workspace_code_symbols", "file_id"),
+    ("workspace_code_file_summaries", "file_id"),
+    ("workspace_code_references", "source_file_id"),
+)
+
+
+def _referenced(conn: sqlite3.Connection, file_id: str) -> bool:
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table, column in _REFERENCES:
+        if (
+            table in tables
+            and conn.execute(
+                f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1", (file_id,)
+            ).fetchone()
+        ):
+            return True
+    return False
+
+
+def trash_file(file_id: str) -> dict | None:
+    """Move a Files item to Trash. Its row, links and bytes stay, so it can come back."""
+
+    conn = _connect()
+    try:
+        now = now_iso()
+        with conn:
+            changed = conn.execute(
+                "UPDATE workspace_files SET deleted = 1, deleted_at = coalesce(deleted_at, ?), "
+                "updated_at = ? WHERE id = ? AND purged_at IS NULL",
+                (now, now, file_id),
+            ).rowcount
+    finally:
+        conn.close()
+    return get_file(file_id, include_deleted=True) if changed else None
+
+
+def restore_file(file_id: str) -> dict | None:
+    """Bring a Files item back from Trash; ``None`` when it is not in Trash."""
+
+    conn = _connect()
+    try:
+        with conn:
+            changed = conn.execute(
+                "UPDATE workspace_files SET deleted = 0, deleted_at = NULL, updated_at = ? "
+                "WHERE id = ? AND deleted = 1 AND purged_at IS NULL",
+                (now_iso(), file_id),
+            ).rowcount
+    finally:
+        conn.close()
+    return get_file(file_id) if changed else None
+
+
+def _enqueue_collection(conn: sqlite3.Connection, file_ids: list[str], paths: list[str]) -> None:
+    now = now_iso()
+    conn.execute(
+        "INSERT INTO workspace_file_operations "
+        "(id, kind, payload_json, state, attempts, created_at, updated_at) "
+        "VALUES (?, 'collect', ?, 'pending', 0, ?, ?)",
+        (str(uuid.uuid4()), json.dumps({"file_ids": file_ids, "paths": paths}), now, now),
+    )
+
+
+def purge_files(file_ids: list[str] | None = None) -> list[str]:
+    """Delete Files items in Trash permanently: every one of them when ``file_ids`` is None.
+
+    Each stops being a Files item at once: ``purged_at`` is stamped and its links go.
+    In the same transaction its row is queued for collection, so a crash leaves
+    either nothing done or a queued collection that ``run_pending_operations``
+    finishes. Returns the ids purged; one not in Trash is left alone.
+    """
+
+    conn = _connect()
+    try:
+        with conn:
+            if file_ids is None:
+                rows = conn.execute(
+                    "SELECT id FROM workspace_files WHERE deleted = 1 AND purged_at IS NULL"
+                ).fetchall()
+            else:
+                rows = [
+                    conn.execute(
+                        "SELECT id FROM workspace_files "
+                        "WHERE id = ? AND deleted = 1 AND purged_at IS NULL",
+                        (file_id,),
+                    ).fetchone()
+                    for file_id in file_ids
+                ]
+            ids = [row["id"] for row in rows if row]
+            if ids:
+                now = now_iso()
+                conn.executemany(
+                    "UPDATE workspace_files SET purged_at = ?, updated_at = ? WHERE id = ?",
+                    [(now, now, file_id) for file_id in ids],
+                )
+                conn.executemany(
+                    "DELETE FROM workspace_file_links WHERE file_id = ?", [(i,) for i in ids]
+                )
+                _enqueue_collection(conn, ids, [])
+        return ids
+    finally:
+        conn.close()
+
+
+def queue_collection(file_ids: list[str], paths: list[str] | None = None) -> None:
+    """Queue rows to collect if nothing uses them, and derived files already orphaned."""
+
+    conn = _connect()
+    try:
+        with conn:
+            _enqueue_collection(conn, list(file_ids), list(paths or []))
+    finally:
+        conn.close()
+
+
+def has_pending_operations() -> bool:
+    conn = _connect()
+    try:
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM workspace_file_operations WHERE state = 'pending' LIMIT 1"
+            ).fetchone()
+        )
+    finally:
+        conn.close()
+
+
+def run_pending_operations(owned_roots: list[Path]) -> int:
+    """Finish queued collections. Safe to run any number of times, from any process.
+
+    A row is deleted only once it is no Files item and nothing else uses it, in a
+    transaction that also records its path; the bytes are unlinked after that, so a
+    row never names a file that is gone. Only paths inside ``owned_roots`` are ever
+    unlinked, never a file in an attached repository. A failed unlink (a file held
+    open on Windows, say) leaves the operation pending for the next run to finish.
+    """
+
+    roots = [Path(root).expanduser().resolve() for root in owned_roots]
+    conn = _connect()
+    done = 0
+    try:
+        ops = conn.execute(
+            "SELECT * FROM workspace_file_operations WHERE state = 'pending' ORDER BY created_at"
+        ).fetchall()
+        for op in ops:
+            payload = json.loads(op["payload_json"])
+            try:
+                with conn:
+                    paths = list(payload.get("paths") or [])
+                    for file_id in payload.get("file_ids") or []:
+                        row = conn.execute(
+                            "SELECT storage_path, purged_at FROM workspace_files WHERE id = ?",
+                            (file_id,),
+                        ).fetchone()
+                        if row is None or row["purged_at"] is None or _referenced(conn, file_id):
+                            continue
+                        conn.execute("DELETE FROM workspace_files WHERE id = ?", (file_id,))
+                        paths.append(row["storage_path"])
+                    payload = {"file_ids": [], "paths": paths}
+                    conn.execute(
+                        "UPDATE workspace_file_operations SET payload_json = ?, updated_at = ? "
+                        "WHERE id = ?",
+                        (json.dumps(payload), now_iso(), op["id"]),
+                    )
+                for raw in payload["paths"]:
+                    path = Path(raw).expanduser().resolve()
+                    if not any(path.is_relative_to(root) for root in roots):
+                        logger.warning("file_collection_outside_owned_roots path=%s", path)
+                        continue
+                    path.unlink(missing_ok=True)
+                with conn:
+                    conn.execute(
+                        "UPDATE workspace_file_operations SET state = 'done', updated_at = ? "
+                        "WHERE id = ?",
+                        (now_iso(), op["id"]),
+                    )
+                done += 1
+            except Exception as exc:  # noqa: BLE001 - left pending; the next run retries
+                logger.warning("file_collection_failed op=%s error=%s", op["id"], exc)
+                with conn:
+                    conn.execute(
+                        "UPDATE workspace_file_operations SET attempts = attempts + 1, "
+                        "last_error = ?, updated_at = ? WHERE id = ?",
+                        (str(exc)[:500], now_iso(), op["id"]),
+                    )
+        return done
     finally:
         conn.close()
 

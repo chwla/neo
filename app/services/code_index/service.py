@@ -235,7 +235,7 @@ class CodeIndexService:
             raise LookupError("Code symbol not found.")
         return {
             "symbol": symbol,
-            "file": WorkspaceFilesService().get(symbol["file_id"]),
+            "file": WorkspaceFilesService().get(symbol["file_id"], include_trashed=True),
             "dependencies": store.list_dependencies(symbol["repo_id"], symbol["relative_path"]),
         }
 

@@ -167,7 +167,8 @@ class RepoWorkspaceService:
         mapping = store.get_repo_file(repo_file_id)
         if not mapping or mapping["repo_id"] != repo_id:
             raise LookupError("Repository file not found.")
-        return mapping, WorkspaceFilesService().get(mapping["file_id"])
+        # The repository's file, whatever the Files view of it is (it may be in Trash).
+        return mapping, WorkspaceFilesService().get(mapping["file_id"], include_trashed=True)
 
     def soft_delete(self, repo_id: str) -> None:
         self.get(repo_id)

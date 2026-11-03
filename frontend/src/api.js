@@ -556,7 +556,7 @@ export const api = {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries({
       q: params.q, extension: params.extension, project_id: params.projectId,
-      task_id: params.taskId, note_id: params.noteId,
+      task_id: params.taskId, note_id: params.noteId, trashed: params.trashed ? "true" : "",
     })) if (value) search.set(key, value);
     search.set("limit", String(params.limit ?? 100));
     return request(`/files?${search.toString()}`);
@@ -570,7 +570,11 @@ export const api = {
     if (links.noteId) form.append("note_id", links.noteId);
     return request("/files/upload", { method: "POST", body: form });
   },
+  // Delete moves a file to Trash; deleting it permanently is only offered from there.
   deleteFile: (fileId) => request(`/files/${fileId}`, { method: "DELETE" }),
+  restoreFile: (fileId) => request(`/files/${fileId}/restore`, { method: "POST" }),
+  deleteFilePermanently: (fileId) => request(`/files/${fileId}/permanent`, { method: "DELETE" }),
+  emptyFilesTrash: () => request("/files/trash/empty", { method: "POST" }),
   summarizeFile: (fileId) => request(`/files/${fileId}/summarize`, { method: "POST" }),
   attachFile: (fileId, linkType, targetId) => request(`/files/${fileId}/links`, {
     method: "POST", body: JSON.stringify({ link_type: linkType, target_id: targetId }),

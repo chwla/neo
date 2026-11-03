@@ -191,7 +191,7 @@ class GalleryService:
         return self._read_bytes(self.get(item_id)["file_id"])
 
     def image_path(self, item_id: str) -> Path:
-        return self.files.download_path(self.get(item_id)["file_id"])
+        return self.files.download_path(self.get(item_id)["file_id"], include_trashed=True)
 
     def thumbnail_path(self, item_id: str) -> Path:
         """The cached thumbnail, regenerated if it has gone missing."""
@@ -242,9 +242,12 @@ class GalleryService:
     def delete(self, item_id: str, *, purge: bool = False) -> None:
         """Soft delete by default, matching how workspace files behave.
 
-        ``purge`` destroys the derived data and the bytes as well. It is the only
-        way to reclaim the disk, so it is offered explicitly rather than being
-        what an accidental click does.
+        ``purge`` removes the item and what was derived from it: its thumbnail, its
+        vectors and its memory entries. The image itself is a file the Files item
+        shares; it goes once that has been deleted permanently too and nothing else
+        uses it. It used to be unlinked here outright, which left the Files item
+        naming a missing file and, for an image from an attached repository, would
+        have deleted the original.
         """
 
         item = store.get_item(item_id, include_deleted=True)
@@ -254,18 +257,13 @@ class GalleryService:
             store.update_item(item_id, {"deleted": True})
             self._deindex_memory(item_id)
             return
-        thumbnail = item.get("thumbnail_path")
-        if thumbnail:
-            Path(thumbnail).unlink(missing_ok=True)
-        try:
-            self.files.download_path(item["file_id"]).unlink(missing_ok=True)
-        except (LookupError, OSError):
-            pass
-        from app.services.files import store as files_store
-
-        files_store.update_file(item["file_id"], {"deleted": True})
         self._deindex_memory(item_id)
         store.delete_item(item_id)
+        from app.services.files import store as files_store
+
+        thumbnail = item.get("thumbnail_path")
+        files_store.queue_collection([item["file_id"]], [thumbnail] if thumbnail else [])
+        self.files.collect()
 
     def request_description(self, item_id: str, *, force: bool = False) -> dict:
         """Hand the item to the describer. Never blocks the caller."""
@@ -279,7 +277,9 @@ class GalleryService:
     # ----------------------------------------------------------------- private
 
     def _read_bytes(self, file_id: str) -> bytes:
-        return self.files.download_path(file_id).read_bytes()
+        # The image is the gallery item's as well as the Files item's: moving the
+        # Files item to Trash must not take it away from the gallery.
+        return self.files.download_path(file_id, include_trashed=True).read_bytes()
 
     def _write_thumbnail(self, item_id: str, content: bytes) -> str:
         self.thumbnails_root.mkdir(parents=True, exist_ok=True)

@@ -209,6 +209,10 @@ def _run_guarded(item_id: str, force: bool) -> None:
     try:
         VisionDescriber().describe(item_id, force=force)
     except Exception as exc:
+        if store.get_item(item_id, include_deleted=True) is None:
+            # Deleted while its description was queued or running: nothing is wrong.
+            _LOG.info("gallery describe skipped for %s: the item was deleted", item_id)
+            return
         # describe() already records its own failures; this only catches a fault
         # in the machinery around it, which must not kill the thread silently.
         _LOG.exception("gallery describe worker crashed for %s: %s", item_id, exc)

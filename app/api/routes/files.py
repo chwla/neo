@@ -62,9 +62,11 @@ def list_files(
     task_id: str | None = None,
     note_id: str | None = None,
     include_deleted: bool = False,
+    trashed: bool = False,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
+    _service()  # brings the tables up to date before they are queried
     filters = [("project", project_id), ("task", task_id), ("note", note_id)]
     active = [(kind, value) for kind, value in filters if value]
     if len(active) > 1:
@@ -76,6 +78,7 @@ def list_files(
         link_type=link_type,
         target_id=target_id,
         include_deleted=include_deleted,
+        trashed=trashed,
         limit=limit,
         offset=offset,
     )
@@ -107,11 +110,39 @@ def download_file(file_id: str) -> FileResponse:
 
 @router.delete("/files/{file_id}", status_code=204)
 def delete_file(file_id: str) -> None:
+    """Move the file to Trash, from where it can be restored."""
+
     try:
-        _service().get(file_id)
+        _service().trash(file_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    store.update_file(file_id, {"deleted": True})
+
+
+@router.post("/files/{file_id}/restore")
+def restore_file(file_id: str) -> dict:
+    try:
+        item = _service().restore(file_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"file": WorkspaceFile.model_validate(item)}
+
+
+@router.delete("/files/{file_id}/permanent", status_code=204)
+def delete_file_permanently(file_id: str) -> None:
+    """Delete a file in Trash for good. One not in Trash is refused, never purged."""
+
+    service = _service()
+    item = store.get_file(file_id, include_deleted=True)
+    if item is None or item.get("purged_at"):
+        raise HTTPException(status_code=404, detail="File not found.")
+    if not item["deleted"]:
+        raise HTTPException(status_code=409, detail="Move the file to Trash first.")
+    service.purge([file_id])
+
+
+@router.post("/files/trash/empty")
+def empty_trash() -> dict:
+    return {"purged": len(_service().purge(None))}
 
 
 @router.post("/files/{file_id}/links")

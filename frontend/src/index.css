@@ -1843,6 +1843,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--neo-green); }
   transition: background .12s ease, border-color .12s ease;
 }
 .ws-primary:hover:not(:disabled) { border-color: var(--neo-green); background: var(--neo-accent-a16); transition-duration: 0s; }
+.ws-primary.danger { border-color: var(--neo-danger-a40); background: transparent; color: var(--neo-danger); }
+.ws-primary.danger:hover:not(:disabled) { border-color: var(--neo-danger); background: transparent; }
 
 .ws-filters { display: grid; gap: 7px; padding: 14px 18px 12px; }
 .ws-search { position: relative; display: flex; align-items: center; }

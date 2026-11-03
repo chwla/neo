@@ -34,16 +34,27 @@ export default function Files({ initialFileId = null }) {
   const [artifactRefresh, setArtifactRefresh] = useState(0);
   const [applicationRefresh, setApplicationRefresh] = useState(0);
   const [tab, setTab] = useState("preview");
+  // Trash holds deleted files until they are restored or deleted permanently.
+  const [inTrash, setInTrash] = useState(false);
   const input = useRef(null);
 
   const load = useCallback(async () => {
-    const data = await api.filesList({ q: query, extension });
+    const data = await api.filesList({ q: query, extension, trashed: inTrash });
     setFiles(data.files || []);
-  }, [query, extension]);
+  }, [query, extension, inTrash]);
 
   async function open(fileId) {
     const data = await api.file(fileId);
     setSelected(data.file); setLinks(data.links || []); setError(""); setNotice("");
+  }
+
+  function openTrashed(item) {
+    // A file in Trash is shown from its list row: it is no live file to fetch.
+    setSelected(item); setLinks([]); setTab("preview"); setError(""); setNotice("");
+  }
+
+  function showTrash(next) {
+    setInTrash(next); setSelected(null); setLinks([]); setError(""); setNotice("");
   }
 
   useEffect(() => { load().catch((err) => setError(err.message)); }, [load]);
@@ -71,8 +82,33 @@ export default function Files({ initialFileId = null }) {
   }
 
   async function remove() {
-    if (!window.confirm(`Delete ${selected.display_name}? The original upload will remain stored safely.`)) return;
-    await api.deleteFile(selected.id); setSelected(null); setLinks([]); await load();
+    if (!window.confirm(`Move ${selected.display_name} to Trash? You can restore it from Trash.`)) return;
+    try { await api.deleteFile(selected.id); setSelected(null); setLinks([]); setNotice("Moved to Trash."); await load(); }
+    catch (err) { setError(err.message); }
+  }
+
+  async function restore() {
+    try { await api.restoreFile(selected.id); setSelected(null); setNotice("Restored to Files."); await load(); }
+    catch (err) { setError(err.message); }
+  }
+
+  async function purge() {
+    if (!window.confirm(
+      `Delete ${selected.display_name} permanently? Neo's stored copy is removed and cannot be restored. ` +
+      "Anything else that uses the same file, such as a gallery image or a note, keeps it.",
+    )) return;
+    try { await api.deleteFilePermanently(selected.id); setSelected(null); setNotice("Deleted permanently."); await load(); }
+    catch (err) { setError(err.message); }
+  }
+
+  async function emptyTrash() {
+    const count = files.length;
+    if (!window.confirm(
+      `Empty Trash? ${count} file${count === 1 ? " is" : "s are"} deleted permanently and cannot be restored. ` +
+      "Anything else that uses one of them keeps it.",
+    )) return;
+    try { await api.emptyFilesTrash(); setSelected(null); setNotice("Trash emptied."); await load(); }
+    catch (err) { setError(err.message); }
   }
 
   async function proposePatch() {
@@ -92,7 +128,8 @@ export default function Files({ initialFileId = null }) {
 
   const extensions = [...new Set(files.map((item) => item.extension).filter(Boolean))].sort();
   const name = selected ? selected.metadata?.relative_path || selected.display_name : "";
-  const TABS = [
+  // A file in Trash can be read, restored or deleted, nothing else.
+  const TABS = inTrash ? [["preview", "Preview", null]] : [
     ["preview", "Preview", null],
     ["summary", "Summary", null],
     ["links", "Links", links.length],
@@ -104,14 +141,28 @@ export default function Files({ initialFileId = null }) {
       <aside className="ws-rail">
         <header className="ws-rail-head">
           <div className="ws-rail-top">
-            <span className="ws-rail-count">{files.length} file{files.length === 1 ? "" : "s"}</span>
+            <span className="ws-rail-count">
+              {files.length} file{files.length === 1 ? "" : "s"}{inTrash ? " in Trash" : ""}
+            </span>
+            <button className="ws-action" type="button" aria-pressed={inTrash} onClick={() => showTrash(!inTrash)}>
+              <Icon name={inTrash ? "file" : "trash"} />
+              {inTrash ? "Back to Files" : "Trash"}
+            </button>
           </div>
-          <h1 className="ws-rail-title">Files</h1>
+          <h1 className="ws-rail-title">{inTrash ? "Trash" : "Files"}</h1>
           <input ref={input} type="file" hidden onChange={upload} />
-          <button className="ws-primary" type="button" disabled={busy} onClick={() => input.current?.click()}>
-            <Icon name="upload" />
-            Upload file
-          </button>
+          {inTrash ? (
+            <button className="ws-primary danger" type="button" disabled={busy || files.length === 0} onClick={emptyTrash}>
+              <Icon name="trash" />
+              Empty Trash
+            </button>
+          ) : (
+            <button className="ws-primary" type="button" disabled={busy} onClick={() => input.current?.click()}>
+              <Icon name="upload" />
+              Upload file
+            </button>
+          )}
+          {notice && !selected && <p className="ws-help" role="status">{notice}</p>}
         </header>
 
         <div className="ws-filters">
@@ -140,14 +191,14 @@ export default function Files({ initialFileId = null }) {
         <div className="ws-list">
           {files.length === 0 ? (
             <div className="ws-list-empty">
-              <p>{query || extension ? "No files match." : "No files yet."}</p>
+              <p>{query || extension ? "No files match." : inTrash ? "Trash is empty." : "No files yet."}</p>
             </div>
           ) : files.map((item) => (
             <button
               type="button"
               key={item.id}
               className={`ws-row ${selected?.id === item.id ? "active" : ""}`}
-              onClick={() => open(item.id)}
+              onClick={() => (inTrash ? openTrashed(item) : open(item.id))}
             >
               <span className="ws-row-head">
                 <span className="ws-row-title">{item.metadata?.relative_path || item.display_name}</span>
@@ -182,16 +233,29 @@ export default function Files({ initialFileId = null }) {
                 <span className="ws-meta">{selected.mime_type || "Unknown type"}</span>
                 <span className="ws-meta">{size(selected.size_bytes)}</span>
               </div>
-              <div className="ws-toolbar-actions">
-                <a className="ws-action" href={api.fileDownloadUrl(selected.id)}>
-                  <Icon name="download" />
-                  Download
-                </a>
-                <button className="ws-action danger" type="button" onClick={remove}>
-                  <Icon name="trash" />
-                  Delete
-                </button>
-              </div>
+              {inTrash ? (
+                <div className="ws-toolbar-actions">
+                  <button className="ws-action" type="button" onClick={restore}>
+                    <Icon name="file" />
+                    Restore
+                  </button>
+                  <button className="ws-action danger" type="button" onClick={purge}>
+                    <Icon name="trash" />
+                    Delete permanently
+                  </button>
+                </div>
+              ) : (
+                <div className="ws-toolbar-actions">
+                  <a className="ws-action" href={api.fileDownloadUrl(selected.id)}>
+                    <Icon name="download" />
+                    Download
+                  </a>
+                  <button className="ws-action danger" type="button" onClick={remove}>
+                    <Icon name="trash" />
+                    Delete
+                  </button>
+                </div>
+              )}
             </div>
 
             <nav className="ws-tabs" aria-label="File sections">

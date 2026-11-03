@@ -20,8 +20,13 @@ class WorkspaceFilesService:
         settings = get_settings()
         store.initialize_workspace_file_tables()
         self.storage_root = Path(storage_root or settings.workspace_files_dir)
+        self.thumbnails_root = Path(settings.gallery_thumbnails_dir)
         self.max_bytes = settings.workspace_file_max_bytes
         self.max_chars = settings.workspace_extracted_text_max_chars
+        # A collection a crash or a held-open file interrupted is finished here, by
+        # whichever request next touches files.
+        if store.has_pending_operations():
+            self.collect()
 
     def import_bytes(
         self,
@@ -99,14 +104,47 @@ class WorkspaceFilesService:
             self.attach(file_id, FileLinkCreate(link_type=link_type, target_id=target_id))
         return item
 
-    def get(self, file_id: str) -> dict:
-        item = store.get_file(file_id)
+    def get(self, file_id: str, *, include_trashed: bool = False) -> dict:
+        """A file row. Only a live Files item unless ``include_trashed``.
+
+        ``include_trashed`` is for the items that use a file as theirs (a gallery
+        image, a repository file, a patch target): moving the Files item to Trash
+        must not take the file away from them.
+        """
+
+        item = store.get_file(file_id, include_deleted=include_trashed)
         if not item:
             raise LookupError("File not found.")
         return item
 
-    def download_path(self, file_id: str) -> Path:
-        item = self.get(file_id)
+    def trash(self, file_id: str) -> dict:
+        item = store.trash_file(file_id)
+        if not item:
+            raise LookupError("File not found.")
+        return item
+
+    def restore(self, file_id: str) -> dict:
+        item = store.restore_file(file_id)
+        if not item:
+            raise LookupError("This file is not in Trash.")
+        return item
+
+    def purge(self, file_ids: list[str] | None = None) -> list[str]:
+        """Delete Files items in Trash permanently (all of them when ``file_ids`` is None).
+
+        Neo's stored copy goes, unless another item still uses it: then that item
+        keeps it, and it goes when the last user does.
+        """
+
+        purged = store.purge_files(file_ids)
+        self.collect()
+        return purged
+
+    def collect(self) -> int:
+        return store.run_pending_operations([self.storage_root, self.thumbnails_root])
+
+    def download_path(self, file_id: str, *, include_trashed: bool = False) -> Path:
+        item = self.get(file_id, include_trashed=include_trashed)
         path = Path(item["storage_path"]).resolve()
         root = self.storage_root.resolve()
         metadata = item.get("metadata", {})

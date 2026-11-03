@@ -11,7 +11,7 @@ def workspace_text(file_item: dict) -> str:
     metadata = file_item.get("metadata", {})
     if metadata.get("source") != "local_repo":
         raise ValueError("Codebase Index only reads repo-backed workspace files.")
-    path = WorkspaceFilesService().download_path(file_item["id"])
+    path = WorkspaceFilesService().download_path(file_item["id"], include_trashed=True)
     if not Path(path).is_file():
         raise LookupError("Managed workspace file is unavailable.")
     text = file_item.get("extracted_text")
