@@ -167,6 +167,21 @@ def list_all_active_events() -> list[dict]:
         conn.close()
 
 
+def find_event_created_via(created_via_json: str) -> dict | None:
+    """The first event recorded as made by this origin, deleted or not."""
+
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM calendar_events WHERE created_via_json = ? "
+            "ORDER BY created_at ASC LIMIT 1",
+            (created_via_json,),
+        ).fetchone()
+        return _row_to_event(row) if row else None
+    finally:
+        conn.close()
+
+
 def update_event(event_id: str, updates: dict) -> dict | None:
     conn = _connect()
     try:

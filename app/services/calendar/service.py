@@ -418,6 +418,12 @@ class CalendarService:
         )
         return result
 
+    def event_created_via(self, created_via: dict[str, Any]) -> CalendarEvent | None:
+        """The event recorded as made by ``created_via``, including a deleted one."""
+
+        row = store.find_event_created_via(json.dumps(created_via))
+        return _event_row_to_model(row) if row else None
+
     def find_duplicate_event(
         self,
         candidate: CalendarEventCreate,
@@ -551,9 +557,25 @@ def execute_calendar_proposal(
     event: CalendarEvent | None = None
     try:
         if pending.action == "create":
+            # Each event a card makes is stamped with that card. If the server died
+            # after writing the event but before recording the decision, the retry
+            # finds it here, even renamed, moved or deleted since, and adds nothing.
+            made_by = {"calendar_proposal": pending.source_message_id}
+            earlier = calendar.event_created_via(made_by)
+            if earlier is not None:
+                return CalendarProposalExecution(
+                    status="duplicate",
+                    event_id=earlier.id,
+                    note=(
+                        "This was already added to your calendar"
+                        + (" and has since been removed" if earlier.deleted else "")
+                        + ", so I didn't add it again."
+                    ),
+                    event=None if earlier.deleted else earlier,
+                )
             payload: CalendarEventCreate | CalendarEventUpdate = CalendarEventCreate.model_validate(
                 pending.draft or {}
-            )
+            ).model_copy(update={"created_via": made_by})
             duplicate = calendar.find_duplicate_event(payload)
             if duplicate is not None:
                 return CalendarProposalExecution(

@@ -30,8 +30,9 @@ StoreDependency = Annotated[AppStore, Depends(get_store)]
 # Deciding a proposal reads its status, writes the calendar, then stamps the card.
 # Two decisions on one card at once (a double click, two tabs, Approve against
 # Decline) must not both get past the read, or the calendar gets the event twice
-# or keeps one the card says was declined. Neo serves from one process, so
-# deciding one card at a time here is enough.
+# or keeps one the card says was declined. Neo serves from one process (enforced by
+# app/core/server_lock.py), so deciding one card at a time here is enough. A crash
+# between the two writes is covered by the event's link to its card (service).
 _deciding = threading.Lock()
 
 
