@@ -61,6 +61,11 @@ calls a service, and shapes the response. Persistence conventions differ per ser
 
 `app.main:create_app()` builds the FastAPI app at import time (`app = create_app()`):
 
+0. Takes the data directory's server lock (`core/server_lock.py`, `neo-server.lock`): one
+   server process per data directory, released by the operating system when the process ends.
+   A second process refuses to start before it can run the recovery below against live work.
+   Process-local state (guest sessions, the turn queue, live streams, calendar proposal
+   decisions) relies on this.
 1. Registers CORS and the security middleware stack.
 2. Includes every router under `/api` (the `web` router is mounted both at `/` and `/api`).
 3. Runs **every feature's `initialize_*_tables()`** against the base database. Tables are
@@ -311,6 +316,9 @@ Files: `services/search/` (current), `services/web_search/` (audit/store/planner
   page fetch (`web_fetch`, with SSRF/DNS-rebinding protection in `tools/security.py`) ->
   content extraction (`content`) -> evidence assembly -> answer with validated citations
   (`citations`).
+- **Fetching one page directly:** `POST /api/web/fetch` is the only endpoint. It runs the
+  same disclosure check, address validation and per-redirect re-validation as the pipeline,
+  and connects only to the addresses it validated.
 - **Evidence integrity:** snippets are for discovery only. **Claims and citations require
   successfully fetched page content.** Dates in evidence are checked against today
   (`temporal.py`), including release-date safeguards. Provider attempts and evidence are

@@ -173,6 +173,12 @@ curl http://127.0.0.1:8000/api/health/live
 By default, data is created next to the checkout (`neo_memory.db`, `profiles/`, `data/`, all
 git-ignored). Set `NEO_DATA_DIR=/some/path` to keep everything in one folder instead.
 
+Neo runs as **one process per data directory**. Do not start it with `--workers` or run a
+second instance on the same data: a second server refuses to start ("Another Neo server is
+already using ..."). Some state lives only in the running process (guest sessions, the chat
+queue, what Stop cancels), and startup cleans up after a server that is no longer running.
+Separate data directories can run side by side.
+
 ### 2. Frontend
 
 In a second terminal:
@@ -320,5 +326,6 @@ Use `--api-url` or `NEO_API_URL` to point it elsewhere (default `http://127.0.0.
 | Web search returns nothing | Provider disabled, blocked, or rate-limited. Try a keyed provider or fallbacks; see `/api/health`. |
 | `untrusted_host` (400) | Request used a hostname not in loopback or `NEO_TRUSTED_HOSTS`. |
 | Changes to Python code do nothing | No auto-reload; restart uvicorn. Also check you are not hitting a Docker Neo on the same port 8000. |
+| `Another Neo server is already using ...` at startup | A Neo server is already running on that data directory (or uvicorn was started with `--workers`). Stop it, or set a different `NEO_DATA_DIR`. |
 
 Next: [Backend guide](backend.md) and [Frontend guide](frontend.md).

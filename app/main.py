@@ -66,6 +66,7 @@ from app.api.routes.voice import router as voice_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
+from app.core import server_lock
 from app.core.body_limits import BodySizeLimitMiddleware
 from app.core.config import get_settings
 from app.core.origins import ALLOWED_BROWSER_ORIGINS
@@ -89,6 +90,7 @@ from app.services.git.store import initialize_git_tables
 from app.services.github import initialize_github_tables
 from app.services.integrations.store import initialize_integration_tables
 from app.services.isolation import IsolationUnavailable, recover_interrupted_runs
+from app.services.isolation.roots import data_root
 from app.services.keybindings import initialize_keybinding_tables
 from app.services.llm_registry.service import LLMRegistryService
 from app.services.llm_registry.store import initialize_llm_registry_tables
@@ -332,6 +334,10 @@ async def _lifespan(_app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # Before anything else: startup below marks running research and agent work as
+    # interrupted and the lifespan deletes guest storage. A second server on this
+    # data must stop here, not do that to the first one's live work.
+    server_lock.hold(data_root())
     # The schema sits under /api so the session middleware covers it: it maps every
     # route Neo has, which is nothing to hand an unauthenticated caller. FastAPI's
     # /docs and /redoc pages are off because they never worked here: they load
