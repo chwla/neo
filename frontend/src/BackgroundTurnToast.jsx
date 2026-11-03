@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 
+import { showSystemNotification } from "./systemNotification.js";
+
 export const NOTIFY_STORAGE_KEY = "neo-notify-background-chats";
 
 const OUTCOMES = {
@@ -45,25 +47,23 @@ export default function BackgroundTurnToast({ notices, chatTitles, onOpen, onDis
 
   useEffect(() => {
     if (!notices.length || !notificationsEnabled()) return;
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
     for (const notice of notices) {
       if (announced.current.has(notice.id)) continue;
       announced.current.add(notice.id);
-      try {
-        const shown = new Notification(chatTitles.get(notice.chatId) || "Neo", {
-          body: OUTCOMES[notice.outcome] || "Finished",
-          // Coalesced per chat, so a talkative conversation replaces its own
-          // notification instead of stacking five of them.
-          tag: `neo-chat-${notice.chatId}`,
-        });
-        shown.onclick = () => {
+      showSystemNotification(chatTitles.get(notice.chatId) || "Neo", {
+        body: OUTCOMES[notice.outcome] || "Finished",
+        // Coalesced per chat, so a talkative conversation replaces its own
+        // notification instead of stacking five of them.
+        tag: `neo-chat-${notice.chatId}`,
+      }).then((shown) => {
+        // A worker's notification (iOS) brings Neo forward on its own when clicked.
+        if (shown?.kind !== "page") return;
+        shown.notification.onclick = () => {
           window.focus();
           onOpen(notice.chatId);
-          shown.close();
+          shown.notification.close();
         };
-      } catch {
-        // Construction can throw in some contexts; the in-app toast still shows.
-      }
+      });
     }
   }, [notices, chatTitles, onOpen]);
 

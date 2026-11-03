@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "./api.js";
+import { showSystemNotification } from "./systemNotification.js";
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -20,20 +21,14 @@ export default function ReminderToast() {
       const next = data.reminders || [];
       setReminders(next);
       const fresh = next.filter((item) => !notifiedIds.current.has(item.delivery_id));
-      if (fresh.length && typeof Notification !== "undefined") {
-        if (Notification.permission === "default") {
-          await Notification.requestPermission().catch(() => {});
-        }
-        if (Notification.permission === "granted") {
-          for (const item of fresh) {
-            try {
-              new Notification(item.event_title, { body: "Coming up on your calendar" });
-            } catch {
-              // Notification construction can throw in some contexts (e.g. no
-              // user gesture yet); the in-app toast below still shows it.
-            }
-          }
-        }
+      // Permission is not asked for from here: a request that does not follow a click
+      // is ignored, and on iOS refused. Where it was granted in Settings, a system
+      // notification goes out too; the in-app toast below shows every reminder anyway.
+      for (const item of fresh) {
+        await showSystemNotification(item.event_title, {
+          body: "Coming up on your calendar",
+          tag: `neo-reminder-${item.delivery_id}`,
+        });
       }
       for (const item of next) notifiedIds.current.add(item.delivery_id);
     } catch {

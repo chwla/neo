@@ -496,6 +496,31 @@ def create_app() -> FastAPI:
         )
         app.add_api_route("/sw.js", retire_legacy_worker, methods=["GET"], include_in_schema=False)
 
+        # Files the build puts at its root: the manifest and icons that let Neo be added
+        # to an iOS Home Screen, and the worker iOS needs to show notifications. Named
+        # one by one, because every other path is the app and must stay index.html.
+        def root_file(path: Path, media_type: str):
+            def serve() -> FileResponse:
+                headers = {"Cache-Control": "no-cache"}
+                return FileResponse(path, media_type=media_type, headers=headers)
+
+            return serve
+
+        for name, media_type in (
+            ("manifest.webmanifest", "application/manifest+json"),
+            ("neo-notifications-sw.js", "application/javascript"),
+            ("apple-touch-icon.png", "image/png"),
+            ("icon-192.png", "image/png"),
+            ("icon-512.png", "image/png"),
+        ):
+            if (frontend_dir / name).is_file():
+                app.add_api_route(
+                    f"/{name}",
+                    root_file(frontend_dir / name, media_type),
+                    methods=["GET"],
+                    include_in_schema=False,
+                )
+
         @app.get("/{full_path:path}", include_in_schema=False)
         def frontend(full_path: str) -> FileResponse:
             if full_path == "api" or full_path.startswith("api/"):
