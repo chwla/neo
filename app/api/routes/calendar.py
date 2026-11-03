@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +26,13 @@ from app.services.pending_action import (
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+
+# Deciding a proposal reads its status, writes the calendar, then stamps the card.
+# Two decisions on one card at once (a double click, two tabs, Approve against
+# Decline) must not both get past the read, or the calendar gets the event twice
+# or keeps one the card says was declined. Neo serves from one process, so
+# deciding one card at a time here is enough.
+_deciding = threading.Lock()
 
 
 class CalendarEventResponse(BaseModel):
@@ -139,6 +147,11 @@ def approve_proposal(message_id: int, store: StoreDependency):
     what went wrong when the card wrote the event through the generic
     ``POST /calendar/events`` route and kept the decision in React state.
     """
+    with _deciding:
+        return _approve(message_id, store)
+
+
+def _approve(message_id: int, store: AppStore) -> CalendarProposalResolutionResponse:
     message = store.get_chat_message(message_id)
     if message is None or message.response_kind != "calendar_proposal":
         raise HTTPException(404, "Proposal not found.")
@@ -174,6 +187,11 @@ def approve_proposal(message_id: int, store: StoreDependency):
 @router.post("/proposals/{message_id}/decline", response_model=CalendarProposalResolutionResponse)
 def decline_proposal(message_id: int, store: StoreDependency):
     """Record that the user turned a proposal down. Writes nothing to the calendar."""
+    with _deciding:
+        return _decline(message_id, store)
+
+
+def _decline(message_id: int, store: AppStore) -> CalendarProposalResolutionResponse:
     message = store.get_chat_message(message_id)
     if message is None or message.response_kind != "calendar_proposal":
         raise HTTPException(404, "Proposal not found.")
