@@ -34,6 +34,11 @@ _UUID_TEXT_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     r"(?![0-9a-f])"
 )
+# Digests (idempotency keys, fingerprints, content hashes) are lowercase hex. A
+# 64-character one holds a run of 13 to 19 decimal digits that passes the card-number
+# checksum about 1 time in 200, which refused ordinary writes at random. Masked like
+# UUIDs: a card number in text is bounded by spaces or punctuation, never by hex.
+_DIGEST_TEXT_PATTERN = re.compile(r"(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])")
 
 ALLOWED_RECORD_METADATA_KEYS = frozenset({"tags", "user_label", "review_note"})
 _UPDATABLE_RECORD_FIELDS = frozenset(
@@ -157,6 +162,7 @@ class MemoryRepository:
             json.dumps(value, sort_keys=True, default=str) for value in values if value is not None
         )
         material = _UUID_TEXT_PATTERN.sub("<uuid>", material)
+        material = _DIGEST_TEXT_PATTERN.sub("<digest>", material)
         if material and classify_sensitivity(material) is Sensitivity.PROHIBITED:
             raise MemoryProhibitedContentError("prohibited_content_not_persisted")
 
