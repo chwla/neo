@@ -981,7 +981,7 @@ def _stop_profile_work(profile_id: str, *, guest: bool = False) -> None:
     directory = _profile_directory(profile_id, guest=guest)
     if not (directory / "neo.db").exists():
         return
-    from app.api.routes.chat import live_generation_threads
+    from app.api.routes.chat import all_live_generation_threads, live_generation_threads
     from app.services import chat_events
     from app.services.agent_core import store as agent_store
     from app.services.agent_core import worker as agent_worker
@@ -1001,6 +1001,11 @@ def _stop_profile_work(profile_id: str, *, guest: bool = False) -> None:
             requests = set(provider_store.unfinished_request_ids())
             for request_id in requests:
                 provider_streaming.cancel(request_id)
+            # A turn the person already stopped is marked cancelled while its worker and
+            # model thread are still letting go; wait for those too, or their last write
+            # meets a database that is gone.
+            generations |= set(chat_events.existing_generation_ids(all_live_generation_threads()))
+            requests |= set(provider_store.existing_request_ids(provider_streaming.all_live()))
         except sqlite3.Error:
             # A database this broken is one its workers cannot write to either, and
             # it must not stop the user deleting the profile.

@@ -24,7 +24,7 @@ from app.services.provider_runtime.budget import (
     estimate_tokens,
     fit_context,
 )
-from app.services.provider_runtime.errors import safe_error, user_message
+from app.services.provider_runtime.errors import IncompleteResponse, safe_error, user_message
 from app.services.provider_runtime.health import check
 from app.services.provider_runtime.rate_limits import decision
 from app.services.provider_runtime.redaction import safe_stream_text, safe_value
@@ -304,6 +304,8 @@ class ProviderRuntimeService:
             if provider and model:
                 targets.append((provider, model, True))
         for provider, model, _fallback in targets:
+            # What has already reached the person in this attempt; read in the handler below.
+            partial = ""
             try:
                 # The fallback model has its own window, so size the request against the
                 # model actually about to serve it rather than reusing the primary's.
@@ -324,8 +326,8 @@ class ProviderRuntimeService:
                 )
                 tool_calls: list[dict[str, Any]] = []
                 if stream:
-                    partial = ""
                     thinking = ""
+                    finished = False
                     stream_usage: dict[str, int | None] = {}
                     finish_reason: str | None = None
                     store.update_request(request["id"], status="streaming")
@@ -351,12 +353,17 @@ class ProviderRuntimeService:
                             thinking += event.get("content", "")
                             self._thinking(request["id"], thinking)
                         elif event.get("type") == "done":
+                            finished = True
                             finish_reason = event.get("finish_reason")
                             stream_usage = {
                                 key: event.get(key)
                                 for key in _USAGE_KEYS
                                 if event.get(key) is not None
                             }
+                    if not finished:
+                        # A provider ends every reply with a final frame; a stream that
+                        # simply stops was cut off, and must not be stored as complete.
+                        raise IncompleteResponse("the model's stream ended before its final frame")
                     result_content, usage = (
                         partial,
                         stream_usage or {"total_tokens": estimates["total_tokens_estimate"]},
@@ -406,6 +413,25 @@ class ProviderRuntimeService:
                     exc_info=exc,
                 )
                 fallback_chain.append(f"{provider['id']}:{category}")
+                if stream and partial:
+                    # Part of the reply has already reached the person. A retry or a
+                    # fallback model would answer again from the start, and text they have
+                    # read cannot be taken back, so the request fails with what arrived
+                    # kept and they can ask again.
+                    category = "incomplete_response"
+                    return self._finish(
+                        request["id"],
+                        "failed",
+                        route,
+                        category,
+                        user_message(category, route.get("provider")),
+                        attempts,
+                        fallback_chain,
+                        redaction,
+                        latency=int((time.perf_counter() - started) * 1000),
+                        partial=partial,
+                        detail=detail,
+                    )
                 if retryable(exc) and attempts < MAX_RETRIES:
                     time.sleep(backoff_ms(attempts) / 1000)
                     attempts += 1
@@ -435,6 +461,9 @@ class ProviderRuntimeService:
                             latency=int((time.perf_counter() - started) * 1000),
                             thinking=result.thinking,
                             finish_reason=result.finish_reason,
+                            # A streaming caller reads the reply from here; without it the
+                            # retried answer never reached the chat.
+                            partial=safe_stream_text(result.content) if stream else None,
                         )
                     except Exception as retry_exc:
                         category, detail, redaction = safe_error(retry_exc)

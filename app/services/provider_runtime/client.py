@@ -179,22 +179,31 @@ class ProviderRuntimeClient(BaseLLMClient):
             metadata={"temperature": temperature},
         )
         self.request_ids.append(session["id"])
-        yield {"type": "start", "request_id": session["id"]}
         seen = 0
         seen_thinking = 0
         import time
 
-        while session["status"] in {"running", "streaming"}:
-            time.sleep(0.02)
-            session = self.runtime.request(session["id"]) or session
-            partial = (session.get("metadata") or {}).get("partial_response", "")
-            thinking = (session.get("metadata") or {}).get("thinking", "")
-            if len(thinking) > seen_thinking:
-                yield {"type": "thinking", "content": thinking[seen_thinking:]}
-                seen_thinking = len(thinking)
-            if len(partial) > seen:
-                yield {"type": "chunk", "content": partial[seen:]}
-                seen = len(partial)
+        settled = False
+        try:
+            yield {"type": "start", "request_id": session["id"]}
+            while session["status"] in {"running", "streaming"}:
+                time.sleep(0.02)
+                session = self.runtime.request(session["id"]) or session
+                partial = (session.get("metadata") or {}).get("partial_response", "")
+                thinking = (session.get("metadata") or {}).get("thinking", "")
+                if len(thinking) > seen_thinking:
+                    yield {"type": "thinking", "content": thinking[seen_thinking:]}
+                    seen_thinking = len(thinking)
+                if len(partial) > seen:
+                    yield {"type": "chunk", "content": partial[seen:]}
+                    seen = len(partial)
+            settled = True
+        finally:
+            if not settled:
+                # The caller stopped reading before the model finished: the person
+                # pressed Stop, or the turn was cancelled. Stop the model as well,
+                # rather than let it keep generating a reply nobody will see.
+                self.runtime.cancel_stream(session["id"])
         if session["status"] == "completed":
             usage = session.get("provider_usage") or {}
             self.last_metadata = {

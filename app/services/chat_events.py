@@ -578,11 +578,29 @@ def cancel_active_generations() -> list[str]:
     return ids
 
 
+def existing_generation_ids(ids) -> list[str]:
+    """Which of these generation ids are rows in this profile's database."""
+    wanted = [str(item) for item in ids]
+    if not wanted:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            f"SELECT id FROM chat_generations WHERE id IN ({','.join('?' * len(wanted))})", wanted
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    return [str(row["id"]) for row in rows]
+
+
 __all__ = [
     "active_turns",
     "any_active_turn",
     "append",
     "cancel_active_generations",
+    "existing_generation_ids",
     "first_seq_for",
     "first_seq_of_active_turns",
     "has_active_turn",

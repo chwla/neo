@@ -85,7 +85,13 @@ def provider_label(provider_type: str | None) -> str:
     return _PROVIDER_LABELS.get(str(provider_type or "").strip().lower(), _DEFAULT_LABEL)
 
 
+class IncompleteResponse(Exception):
+    """The provider's stream ended before its final frame: the reply was cut off."""
+
+
 def classify(exc: Exception) -> str:
+    if isinstance(exc, IncompleteResponse):
+        return "incomplete_response"
     message = str(exc).lower()
     if isinstance(exc, ProviderConfigurationError) or any(
         key in message for key in ("api key", "auth", "unauthorized", "forbidden", "configured")
@@ -136,6 +142,8 @@ def user_message(category: str | None, provider_type: str | None = None) -> str:
         return f"{label} is not set up correctly. Check the model settings, then try again."
     if category == "unsupported_capability":
         return f"{label} does not support this request. Choose a different model."
+    if category == "incomplete_response":
+        return f"{label} stopped before finishing the reply. What arrived is kept; try again."
     return f"{label} could not finish this response. Try again."
 
 

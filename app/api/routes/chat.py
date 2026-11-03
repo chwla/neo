@@ -112,6 +112,7 @@ _FAILURE_STATUS = {
     "rate_limited": 429,
     "auth_or_config": 502,
     "unsupported_capability": 502,
+    "incomplete_response": 502,
 }
 _FAILURE_HEADLINE = {
     "provider_unavailable": "Model unavailable",
@@ -120,6 +121,7 @@ _FAILURE_HEADLINE = {
     "rate_limited": "Rate limited",
     "auth_or_config": "Model not configured",
     "unsupported_capability": "Model unsupported",
+    "incomplete_response": "Reply cut off",
 }
 
 
@@ -1047,7 +1049,7 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
             thinking = ""
             emitter = _ChatEventEmitter(chat.id, generation_id)
             emitter.event(agent_events.RUN_STARTED, {"objective": generation.prompt})
-            for event in service.stream_message(
+            stream = service.stream_message(
                 chat.id,
                 generation.prompt,
                 existing_user_message_id=generation.user_message_id,
@@ -1059,7 +1061,8 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                 # worker got to it, so a turn that waited its way through the
                 # queue reports the wait the composer showed.
                 turn_started_at=generation.created_at,
-            ):
+            )
+            for event in stream:
                 values: dict[str, object] = {"heartbeat_at": datetime.now(UTC)}
                 if event["type"] == "chunk":
                     partial_response += str(event.get("content") or "")
@@ -1133,7 +1136,9 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
                     **values,
                 ):
                     # The lease is gone. If the user stopped this response, keep the text
-                    # generated so far instead of discarding it.
+                    # generated so far instead of discarding it, and stop the model now
+                    # rather than whenever the abandoned stream is collected.
+                    stream.close()
                     _persist_cancelled_partial(db, generation_id, partial_response, thinking)
                     emitter.event(agent_events.RUN_CANCELLED, {"reply": partial_response})
                     return
@@ -1240,6 +1245,17 @@ def live_generation_threads(generation_ids) -> set[str]:
 
     with _GENERATION_THREADS_LOCK:
         return _GENERATION_THREADS & set(generation_ids)
+
+
+def all_live_generation_threads() -> set[str]:
+    """Every generation with a worker thread in this process, whatever its stored status.
+
+    A turn the person stopped is already marked cancelled while its worker is still
+    letting go, so profile deletion cannot find it by status alone.
+    """
+
+    with _GENERATION_THREADS_LOCK:
+        return set(_GENERATION_THREADS)
 
 
 def _occupied_slots() -> int:

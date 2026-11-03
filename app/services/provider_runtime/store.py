@@ -137,6 +137,24 @@ def unfinished_request_ids() -> list[str]:
     return [str(row["id"]) for row in rows]
 
 
+def existing_request_ids(ids) -> list[str]:
+    """Which of these request ids are rows in this profile's database."""
+    wanted = [str(item) for item in ids]
+    if not wanted:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            f"SELECT id FROM workspace_provider_requests WHERE id IN ({','.join('?' * len(wanted))})",
+            wanted,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    return [str(row["id"]) for row in rows]
+
+
 def list_requests(limit: int = 100) -> list[dict]:
     conn = _connect()
     try:

@@ -30,3 +30,8 @@ def clear(request_id: str) -> None:
 def live(request_ids) -> set[str]:
     """Which of these requests still have a stream thread in this process."""
     return {request_id for request_id in request_ids if request_id in _CANCEL}
+
+
+def all_live() -> set[str]:
+    """Every request with a stream thread in this process, whatever its stored status."""
+    return set(_CANCEL)

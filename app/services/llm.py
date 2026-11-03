@@ -573,41 +573,47 @@ class OllamaClient(BaseLLMClient):
             stream=True,
             timeout=self.timeout,
         )
-        response.raise_for_status()
-        for line in response.iter_lines():
-            if not line:
-                continue
-            chunk = json.loads(line)
-            message = chunk.get("message", {})
-            content = str(message.get("content", ""))
-            thinking = str(message.get("thinking") or message.get("reasoning") or "")
-            if thinking:
-                yield {"type": "thinking", "content": thinking}
-            if content:
-                yield {"type": "chunk", "content": content}
-            if chunk.get("done"):
-                prompt, completion = chunk.get("prompt_eval_count"), chunk.get("eval_count")
-                duration = chunk.get("total_duration")
-                yield {
-                    "type": "done",
-                    "prompt_tokens": prompt,
-                    "completion_tokens": completion,
-                    "total_tokens": (
-                        prompt + completion
-                        if isinstance(prompt, int) and isinstance(completion, int)
-                        else None
-                    ),
-                    "duration_ms": (
-                        int(duration / 1_000_000)
-                        if duration
-                        else int((time.perf_counter() - started) * 1000)
-                    ),
-                    "finish_reason": str(chunk.get("done_reason") or "stop"),
-                    "load_ms": _ns_to_ms(chunk.get("load_duration")),
-                    "prefill_ms": _ns_to_ms(chunk.get("prompt_eval_duration")),
-                    "decode_ms": _ns_to_ms(chunk.get("eval_duration")),
-                }
-                break
+        try:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                message = chunk.get("message", {})
+                content = str(message.get("content", ""))
+                thinking = str(message.get("thinking") or message.get("reasoning") or "")
+                if thinking:
+                    yield {"type": "thinking", "content": thinking}
+                if content:
+                    yield {"type": "chunk", "content": content}
+                if chunk.get("done"):
+                    prompt, completion = chunk.get("prompt_eval_count"), chunk.get("eval_count")
+                    duration = chunk.get("total_duration")
+                    yield {
+                        "type": "done",
+                        "prompt_tokens": prompt,
+                        "completion_tokens": completion,
+                        "total_tokens": (
+                            prompt + completion
+                            if isinstance(prompt, int) and isinstance(completion, int)
+                            else None
+                        ),
+                        "duration_ms": (
+                            int(duration / 1_000_000)
+                            if duration
+                            else int((time.perf_counter() - started) * 1000)
+                        ),
+                        "finish_reason": str(chunk.get("done_reason") or "stop"),
+                        "load_ms": _ns_to_ms(chunk.get("load_duration")),
+                        "prefill_ms": _ns_to_ms(chunk.get("prompt_eval_duration")),
+                        "decode_ms": _ns_to_ms(chunk.get("eval_duration")),
+                    }
+                    break
+        finally:
+            # However the stream ends (finished, failed, or abandoned because the
+            # person pressed Stop), closing the response is what tells the model
+            # server to stop generating.
+            response.close()
 
 
 class OpenAICompatibleClient(BaseLLMClient):
@@ -744,28 +750,33 @@ class OpenAICompatibleClient(BaseLLMClient):
         )
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
-        for line in response.iter_lines(decode_unicode=True):
-            if not line or not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            chunk = json.loads(data)
-            usage = chunk.get("usage") or usage
-            choice = (chunk.get("choices") or [{}])[0]
-            finish_reason = choice.get("finish_reason") or finish_reason
-            delta = choice.get("delta", {})
-            thinking = str(
-                delta.get("reasoning")
-                or delta.get("reasoning_content")
-                or delta.get("thinking")
-                or ""
-            )
-            if thinking:
-                yield {"type": "thinking", "content": thinking}
-            content = str(delta.get("content") or "")
-            if content:
-                yield {"type": "chunk", "content": content}
+        try:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                usage = chunk.get("usage") or usage
+                choice = (chunk.get("choices") or [{}])[0]
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta", {})
+                thinking = str(
+                    delta.get("reasoning")
+                    or delta.get("reasoning_content")
+                    or delta.get("thinking")
+                    or ""
+                )
+                if thinking:
+                    yield {"type": "thinking", "content": thinking}
+                content = str(delta.get("content") or "")
+                if content:
+                    yield {"type": "chunk", "content": content}
+        finally:
+            # Closing the response is what stops a hosted model generating (and
+            # billing) a reply the person stopped.
+            response.close()
         yield {
             "type": "done",
             "prompt_tokens": usage.get("prompt_tokens"),
