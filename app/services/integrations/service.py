@@ -219,7 +219,7 @@ def authorized_access_token(connection_id: str, capability_id: str) -> str:
     return oauth.access_token_for(provider_for(row["provider"]), connection_id)
 
 
-def peek_return_origin(state: str) -> str | None:
+def peek_return_origin(state: str, *, self_origin: str | None = None) -> str | None:
     """Where a flow said it wanted the user returned, if that is still allowed.
 
     Re-validated here rather than trusted because it was validated when the
@@ -235,7 +235,10 @@ def peek_return_origin(state: str) -> str | None:
     if record is None:
         return None
     candidate = record.get("return_origin")
-    return candidate if is_allowed_return_origin(candidate) else None
+    # ``self_origin`` is the origin serving this callback. Without it only the dev
+    # servers passed, so an install serving the interface itself (the normal case)
+    # connected the account and then left the person on a dead-end page.
+    return candidate if is_allowed_return_origin(candidate, self_origin=self_origin) else None
 
 
 def abandon_connection(state: str, *, session_token: str | None) -> None:

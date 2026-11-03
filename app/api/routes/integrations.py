@@ -237,7 +237,7 @@ def callback(request: Request) -> RedirectResponse | HTMLResponse:
     if not state:
         return _callback_error_page("That sign-in link was incomplete.")
 
-    return_origin = service.peek_return_origin(state)
+    return_origin = service.peek_return_origin(state, self_origin=_self_origin(request))
 
     if denied or not code:
         # The user pressed Cancel, or the provider returned no code. Burn the
