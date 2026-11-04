@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 
 from app.core.config import get_settings
+from app.db.foreign_keys import drop_foreign_key
 
 
 def _connect() -> sqlite3.Connection:
@@ -59,7 +60,6 @@ def initialize_git_tables() -> None:
                 FOREIGN KEY (repo_id) REFERENCES workspace_repos(id),
                 FOREIGN KEY (project_id) REFERENCES workspace_projects(id),
                 FOREIGN KEY (task_id) REFERENCES workspace_tasks(id),
-                FOREIGN KEY (agent_run_id) REFERENCES workspace_agent_runs(id),
                 FOREIGN KEY (patch_application_id) REFERENCES workspace_patch_applications(id),
                 FOREIGN KEY (test_run_id) REFERENCES workspace_test_runs(id)
             );
@@ -92,6 +92,10 @@ def initialize_git_tables() -> None:
             ON workspace_git_operations(checkpoint_id, created_at);
         """)
         conn.commit()
+        # As for test runs: ``agent_run_id`` names an agent session, and a key to
+        # the removed agent-runs table made every checkpoint insert fail, which
+        # includes the first one ``initialize`` records.
+        drop_foreign_key(conn, "workspace_git_checkpoints", "agent_run_id", "workspace_agent_runs")
     finally:
         conn.close()
 
