@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from time import monotonic
 from uuid import UUID
@@ -185,6 +186,7 @@ class MemoryExtractionCoordinator:
         adapter: ChatMemoryAdapter,
         *,
         model: ExtractionModel | None = None,
+        model_factory: Callable[[], ExtractionModel] | None = None,
         resolver: DeterministicCorrectionResolver | None = None,
         diagnostics: ExtractionDiagnosticSink | None = None,
         duplicate_finder=None,
@@ -192,6 +194,7 @@ class MemoryExtractionCoordinator:
     ) -> None:
         self.adapter = adapter
         self.model = model
+        self._model_factory = model_factory
         self.resolver = resolver or DeterministicCorrectionResolver()
         self.diagnostics = diagnostics or InMemoryExtractionDiagnostics()
         self.duplicate_finder = duplicate_finder
@@ -708,7 +711,10 @@ class MemoryExtractionCoordinator:
             )
         if request.mode is ExtractionMode.FOREGROUND_DETERMINISTIC:
             return None, self._empty_model_summary(), "foreground_structure_not_deterministic", {}
-        if self.model is None:
+        model = self.model
+        if model is None and self._model_factory is not None:
+            model = self._model_factory()
+        if model is None:
             return None, self._empty_model_summary(), "extraction_model_not_configured", {}
 
         visible = ModelExtractionInput.from_trusted_request(request)
@@ -717,7 +723,7 @@ class MemoryExtractionCoordinator:
         response_meta: dict[str, object] = {}
         for attempt in range(2):
             try:
-                model_response = self.model.extract(visible)
+                model_response = model.extract(visible)
                 response_meta = {
                     "model_version": model_response.model_version,
                     "prompt_version": model_response.prompt_version,

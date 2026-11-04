@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from threading import Lock, Thread
 
@@ -21,6 +22,7 @@ from app.services.memory.adapters import (
 from app.services.memory.contracts import ActorKind, EvidenceSpan, SourceKind
 from app.services.memory.coordinator import MemoryExecutionContext, MemoryMutationCoordinator
 from app.services.memory.extraction import (
+    ExtractionModelProvider,
     OllamaCapabilities,
     OllamaRequestMode,
     build_extraction_model_provider,
@@ -364,6 +366,20 @@ def memory_crypto_for_profile(profile: dict) -> KeyringMemoryCrypto:
     return KeyringMemoryCrypto(ring=ring)
 
 
+def _build_extraction_model(settings: MemorySettings) -> ExtractionModelProvider:
+    request_mode, capabilities = _resolve_ollama_request_mode(settings)
+    return build_extraction_model_provider(
+        settings.extraction_provider,
+        settings.extraction_endpoint,
+        model=settings.extraction_model,
+        connect_timeout_seconds=settings.extraction_connect_timeout_seconds,
+        response_timeout_seconds=settings.extraction_response_timeout_seconds,
+        ollama_request_mode=request_mode,
+        ollama_capabilities=capabilities,
+        two_stage=settings.two_stage_extraction_enabled,
+    )
+
+
 def build_memory_runtime(profile: dict) -> MemoryRuntime:
     profile_id = str(profile["id"])
     guest = bool(profile.get("is_guest"))
@@ -382,22 +398,15 @@ def build_memory_runtime(profile: dict) -> MemoryRuntime:
     )
     generic = GenericMemoryAdapter(coordinator)
     chat = ChatMemoryAdapter(coordinator)
-    model = None
-    if settings.extraction_enabled and settings.live_extraction_model_enabled:
-        request_mode, capabilities = _resolve_ollama_request_mode(settings)
-        model = build_extraction_model_provider(
-            settings.extraction_provider,
-            settings.extraction_endpoint,
-            model=settings.extraction_model,
-            connect_timeout_seconds=settings.extraction_connect_timeout_seconds,
-            response_timeout_seconds=settings.extraction_response_timeout_seconds,
-            ollama_request_mode=request_mode,
-            ollama_capabilities=capabilities,
-            two_stage=settings.two_stage_extraction_enabled,
-        )
     extraction = MemoryExtractionCoordinator(
         chat,
-        model=model,
+        # Negotiation can load another Ollama model. Start it only when
+        # extraction needs a model, after its policy and deterministic checks.
+        model_factory=(
+            partial(_build_extraction_model, settings)
+            if settings.extraction_enabled and settings.live_extraction_model_enabled
+            else None
+        ),
         duplicate_finder=build_semantic_duplicate_finder(
             database_url=database_url,
             owner_id=owner_id,
