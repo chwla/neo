@@ -19,12 +19,22 @@ FORBIDDEN_OPERATIONS = {
 
 
 def validate_workspace(repo: dict) -> Path:
-    configured_root = Path(get_settings().workspace_repos_dir).resolve(strict=True)
-    expected = (configured_root / repo["id"]).resolve(strict=True)
+    try:
+        configured_root = Path(get_settings().workspace_repos_dir).resolve(strict=True)
+        expected = (configured_root / repo["id"]).resolve(strict=True)
+    except OSError:
+        # No managed copy exists for it: a folder attached live (the default) never
+        # has one. The refusal below, not a server error.
+        raise ValueError(
+            "Git operations are restricted to the managed repository workspace."
+        ) from None
     workspace = Path(repo["workspace_path"])
     if workspace.is_symlink():
         raise ValueError("Managed repository workspace may not be a symlink.")
-    resolved = workspace.resolve(strict=True)
+    try:
+        resolved = workspace.resolve(strict=True)
+    except OSError:
+        raise ValueError("The managed repository workspace is missing.") from None
     if resolved != expected or configured_root not in resolved.parents:
         raise ValueError("Git operations are restricted to the managed repository workspace.")
     original = Path(repo["original_path"]).resolve()
