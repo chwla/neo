@@ -23,30 +23,30 @@ def create_checkpoint(arguments: dict, context: ToolContext) -> str:
         raise ValueError("A checkpoint title is required.")
 
     service = GitService()
+    request = CheckpointCreateRequest(
+        title=title,
+        message=str(arguments.get("message") or "") or None,
+        task_id=context.task_id,
+        confirm=True,
+    )
     try:
-        result = service.create_checkpoint(
-            context.repo_id,
-            CheckpointCreateRequest(
-                title=title,
-                message=str(arguments.get("message") or "") or None,
-                task_id=context.task_id,
-                confirm=True,
-            ),
-        )
+        result = service.create_checkpoint(context.repo_id, request)
     except ValueError as exc:
         # The managed copy is only git-initialised on demand, so a first
         # checkpoint has to create the repository before it can commit.
         if "initial" not in str(exc).lower() and "not initialized" not in str(exc).lower():
             raise
-        service.initialize(context.repo_id, GitInitRequest(confirm=True))
-        result = service.create_checkpoint(
-            context.repo_id,
-            CheckpointCreateRequest(title=title, task_id=context.task_id, confirm=True),
+        # Initialising commits the copy as it stands, this session's edits included,
+        # so it records this checkpoint: a second commit right after it would find
+        # nothing left and fail.
+        _state, result = service.initialize(
+            context.repo_id, GitInitRequest(confirm=True), first=request
         )
 
     checkpoint = result.get("checkpoint", result) if isinstance(result, dict) else {}
     sha = str(checkpoint.get("commit_sha") or checkpoint.get("sha") or "")[:12]
-    files = checkpoint.get("files") or []
+    # A checkpoint lists what it committed as ``changed_files``.
+    files = checkpoint.get("changed_files") or []
     return (
         f"Checkpoint '{title}' created in the managed copy"
         f"{f' at {sha}' if sha else ''} ({len(files)} file(s)). "

@@ -186,7 +186,19 @@ class GitService:
             "error": None,
         }
 
-    def initialize(self, repo_id: str, request: GitInitRequest) -> tuple[dict, dict]:
+    def initialize(
+        self,
+        repo_id: str,
+        request: GitInitRequest,
+        first: CheckpointCreateRequest | None = None,
+    ) -> tuple[dict, dict]:
+        """Initialise the managed copy and record its first checkpoint.
+
+        ``first`` is a checkpoint asked for before the copy was initialised (the
+        agent's tool). The first commit takes the copy as it stands, so it is that
+        checkpoint: it gets its title, message and links instead of generic ones.
+        """
+
         if request.confirm is not True:
             raise ValueError("Git initialization requires confirm=true.")
         repo = self._repo(repo_id)
@@ -197,6 +209,15 @@ class GitService:
             checkpoints, _ = store.list_checkpoints(repo_id=repo_id, limit=1)
             return existing, checkpoints[0] if checkpoints else None
         root = validate_workspace(repo)
+        title, message = "Initial workspace checkpoint", "Initial Neo-managed repository snapshot."
+        commit_message, links = "Neo initial workspace checkpoint", {}
+        if first is not None:
+            self._validate_associations(repo, first)
+            title, message = validate_message(first.title), first.message
+            commit_message = validate_message(first.message) if first.message else title
+            links = first.model_dump(
+                include={"task_id", "agent_run_id", "patch_application_id", "test_run_id"}
+            )
         created_at = store.now_iso()
         outputs: list[str] = []
         try:
@@ -205,11 +226,16 @@ class GitService:
             outputs.append(run_git(root, ["config", "--local", "user.name", "Neo"]).stdout)
             outputs.append(run_git(root, ["config", "--local", "user.email", "neo@local"]).stdout)
             before = parse_status(run_git(root, ["status", "--porcelain=v1"]).stdout)
-            if not before:
+            if before:
+                run_git(root, ["add", "--", "."])
+                commit = run_git(root, ["commit", "-m", commit_message])
+                outputs.extend([commit.stdout, commit.stderr])
+            elif run_git(root, ["rev-parse", "HEAD"], check=False).returncode != 0:
                 raise ValueError("Managed repository has no files to checkpoint.")
-            run_git(root, ["add", "--", "."])
-            commit = run_git(root, ["commit", "-m", "Neo initial workspace checkpoint"])
-            outputs.extend([commit.stdout, commit.stderr])
+            # Otherwise an earlier initialization committed and failed before recording
+            # it (the dangling key in git/store.py did that to every one since
+            # 2026-08-22). The managed copy never takes the original's .git, so that
+            # commit is Neo's own snapshot: record it rather than refuse forever.
             head = self._head(root)
             branch = self._branch(root)
             changed_files, stats = self._checkpoint_details(root, head)
@@ -219,8 +245,9 @@ class GitService:
                     "repo_id": repo_id,
                     "project_id": repo.get("project_id"),
                     "commit_sha": head,
-                    "title": "Initial workspace checkpoint",
-                    "message": "Initial Neo-managed repository snapshot.",
+                    "title": title,
+                    "message": message,
+                    **links,
                     "changed_files": changed_files,
                     "stats": stats,
                     "status": "created",
