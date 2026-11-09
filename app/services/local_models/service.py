@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.services.local_models import catalog, installer, probe, wording
-from app.services.local_models.sizing import rank
+from app.services.local_models.sizing import evaluate, rank
 from app.services.local_models.types import GOALS, Machine, Recommendation
 
 # The question the wizard asks first, in the words it asks it. Deliberately phrased as
@@ -103,8 +103,16 @@ class LocalModelsService:
             raise LookupError(f"No model called '{model_id}' in the catalog.")
 
         found = probe.detect()
-        ranked = rank([row], found, goals=chosen, limit=1, include_unfit=True)
-        presented = self._present(ranked[0], found, installer.installed_tags())
+        models = catalog.get_models()
+        # Ranked among the whole catalog, so that its score means what it means in the
+        # list: quality is judged as a share of the best model there is.
+        ranked = rank(models, found, goals=chosen, limit=len(models), include_unfit=True)
+        item = next((each for each in ranked if each.model.get("id") == model_id), None)
+        if item is None:
+            # Not a candidate for these goals at all -- a model that cannot see, asked
+            # about for pictures -- but how it would fit is still worth answering.
+            item = Recommendation(model=row, fit=evaluate(row, found, goal=chosen[0]), score=0.0)
+        presented = self._present(item, found, installer.installed_tags())
         presented["manual_steps"] = catalog.manual_steps(row)
         return presented
 

@@ -77,6 +77,21 @@ FAILED_CACHE_TTL_SECONDS = 15
 # does not push the model into swap.
 MEMORY_RESERVE_GB = 2.0
 
+# The share of a computer's memory a model can count on however busy the machine is at
+# the moment of the scan. Also what the scan assumes is free when it cannot read the
+# figure at all, so every path that has to guess guesses the same way.
+#
+# Free memory is a snapshot of what other programs happen to hold, not a limit on what a
+# model can have. A 16 GB laptop with a browser and an editor open routinely reports
+# about 1 GB free, and budgeting from that alone -- less the reserve above, so zero --
+# rejected every model in the catalog on a machine that runs small and mid-sized ones
+# without trouble. When a model loads, the operating system makes room by compressing
+# and paging out whatever is idle, and the engine itself counts that room as available.
+# Half of total memory is left to the operating system and the apps that stay open,
+# which is more than the system needs on its own, so the reserve is not taken out of it
+# as well: counting that room twice would leave a 4 GB computer with nothing.
+ASSUMED_FREE_SHARE = 0.5
+
 # What fraction of unified memory to assume a GPU may use, when the operating system
 # itself will not say. Apple's default wired limit has long sat near three quarters of
 # physical memory; this is only ever a fallback, and using it always leaves a note.
@@ -410,7 +425,7 @@ def _available_memory_gb(scan: _Scan, total_gb: float) -> float:
 
     if available is None:
         # Better to under-promise than to invent a number: assume half is spoken for.
-        available = total_gb * 0.5
+        available = total_gb * ASSUMED_FREE_SHARE
 
     # Inside a cgroup, the kernel's idea of what is available ignores the ceiling; what
     # is left of the allowance is the smaller and truer figure.
@@ -1161,7 +1176,7 @@ def _usable_memory_gb(
         # Any other shared-memory design -- a Jetson, an APU, integrated graphics the
         # engine can use. There is one pool, so the budget is the pool's free share and
         # not the token amount the card claims as its own.
-        return max(0.0, available_gb - MEMORY_RESERVE_GB)
+        return _system_memory_budget_gb(scan, total_gb, available_gb)
 
     sized = [gpu for gpu in gpus if gpu.memory_gb > 0]
     if sized:
@@ -1170,7 +1185,33 @@ def _usable_memory_gb(
         # the sum here would recommend models that cannot load.
         return max(gpu.memory_gb for gpu in sized)
 
-    return max(0.0, available_gb - MEMORY_RESERVE_GB)
+    return _system_memory_budget_gb(scan, total_gb, available_gb)
+
+
+def _system_memory_budget_gb(scan: _Scan, total_gb: float, available_gb: float) -> float:
+    """What a model running from system memory may occupy.
+
+    What is free now, less the reserve, when the machine is quiet enough for that to be
+    the larger figure; otherwise the share of memory any model can count on once idle
+    programs make way. Without that floor a busy computer was told it could run nothing
+    at all, and was told so as though the scan had failed.
+    """
+
+    free_now = max(0.0, available_gb - MEMORY_RESERVE_GB)
+    floor = max(0.0, total_gb * ASSUMED_FREE_SHARE)
+    if free_now >= floor:
+        return free_now
+    # Said only when less than half was measured free. Below that the advice is real:
+    # a model will run, but it takes its room from programs that are open now.
+    if 0 < available_gb < floor:
+        scan.note(
+            "memory_busy",
+            "info",
+            "Other apps are using most of this computer's memory right now. Neo has "
+            "judged models by what they can use once some of those apps close, so "
+            "closing a few before you start a model will keep it quick.",
+        )
+    return floor
 
 
 # The names a container uses for the machine it is running on. They matter as a
@@ -1276,7 +1317,9 @@ def _machine_from_engine_host(
                 "has judged models against what your graphics can use.",
             )
     else:
-        usable = max(0.0, (available_gb or total_gb * 0.5) - MEMORY_RESERVE_GB)
+        usable = _system_memory_budget_gb(
+            scan, total_gb, available_gb or total_gb * ASSUMED_FREE_SHARE
+        )
 
     if not available_gb:
         available_gb = total_gb

@@ -18,18 +18,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.local_models.sizing import weights_gb
+from app.services.local_models.sizing import (
+    READING_PACE,
+    SLOW_SHARE_OF_READING,
+    weights_gb,
+)
 from app.services.local_models.types import Fit, Machine
 
-# An average adult reads continuous non-fiction prose at around 240 words per minute
-# (Brysbaert's 2019 meta-analysis of 190 studies puts silent non-fiction reading at
-# 238 wpm), which is 4 words a second.
-READING_WORDS_PER_SECOND = 4.0
-
-# English text runs about three quarters of a word per unit of generation -- the widely
-# used approximation of ~4 characters each. Used only to convert a generation rate into
-# a reading rate, so the exact figure matters less than the comparison it supports.
-WORDS_PER_UNIT = 0.75
+# Reading pace -- how fast a person reads, in the units a model generates -- is defined
+# beside the ranking in sizing.py, so that the speed a model is described at and the
+# speed it is ranked at can never disagree.
 
 # Assumed download speed, in megabytes per second. Ookla's global median for fixed
 # broadband has been near 100 Mbit/s; 50 Mbit/s is roughly 6 MB/s and is deliberately
@@ -44,8 +42,7 @@ def describe_speed(tokens_per_sec: float | None) -> str:
     if not tokens_per_sec:
         return "Neo could not work out how fast this would be on your computer."
 
-    reading_pace = READING_WORDS_PER_SECOND / WORDS_PER_UNIT  # ~5.3 units per second
-    ratio = tokens_per_sec / reading_pace
+    ratio = tokens_per_sec / READING_PACE
 
     if ratio >= 4.0:
         return "Replies appear much faster than you can read them."
@@ -53,7 +50,7 @@ def describe_speed(tokens_per_sec: float | None) -> str:
         return "Replies appear faster than you can read them."
     if ratio >= 0.9:
         return "Replies arrive at about reading speed."
-    if ratio >= 0.4:
+    if ratio >= SLOW_SHARE_OF_READING:
         return "Replies come in slower than reading speed, but steadily."
     return "Replies come in slowly. Expect to wait for longer answers."
 
@@ -64,15 +61,14 @@ def describe_speed_short(tokens_per_sec: float | None) -> str:
     if not tokens_per_sec:
         return "Speed unknown"
 
-    reading_pace = READING_WORDS_PER_SECOND / WORDS_PER_UNIT
-    ratio = tokens_per_sec / reading_pace
+    ratio = tokens_per_sec / READING_PACE
     if ratio >= 4.0:
         return "Very fast"
     if ratio >= 1.5:
         return "Faster than reading"
     if ratio >= 0.9:
         return "Reading speed"
-    if ratio >= 0.4:
+    if ratio >= SLOW_SHARE_OF_READING:
         return "A little slow"
     return "Slow"
 

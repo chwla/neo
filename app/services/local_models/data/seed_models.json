@@ -1,269 +1,218 @@
 {
+  "quality_source": {
+    "what": "How capable each model is, per goal, all from one dataset. general: Artificial Analysis Intelligence Index with thinking off where the model allows it. thinking: the same index with thinking on, at the effort Artificial Analysis lists as the model's default, for models that can do both. coding: Artificial Analysis's SciCode score, with thinking off where the model allows it; SciCode is the index's coding evaluation that separates local models, while its other one, Terminal-Bench 4.0, scores almost all of them at zero. vision: Artificial Analysis's MMMU-Pro score, with thinking off where the model allows it.",
+    "measured_by": "Artificial Analysis, Intelligence Index v4.3.2, as published 2026-10-28",
+    "archived_at": "https://web.archive.org/web/20261028010405/https://artificialanalysis.ai/models/granite-4-2-8b",
+    "why_this_snapshot": "The newest archived page that embeds Artificial Analysis's full per-model dataset under a single index version: 715 models, old and new, each matched here to its Hugging Face repository through the dataset's own weights link. The leaderboard page stopped embedding the dataset on 2026-09-10, and Intelligence Index v5.0 (2026-11-03) had scored only 99 models, few of them small enough to run locally. Values identical to the 2026-10-16 and 2026-10-21 archives, so v4.3.2 did not change inside the window.",
+    "thinking_off_ratios": {
+      "index": 0.5656,
+      "index_measured_both_ways": "gpt-6-sol, gpt-5-6-luna, gpt-6-1-terra, gpt-6-luna, gpt-5-6-terra, qwen3-8-27b, grok-4-3, deepseek-v4-1-flash, deepseek-v4-pro",
+      "scicode": 0.8017,
+      "scicode_measured_both_ways": "gpt-6-sol, gpt-5-6-luna, gpt-5-6-sol, gpt-6-1-terra, gpt-6-luna, gpt-5-6-terra, qwen3-8-27b, grok-4-3, deepseek-v4-1-flash, deepseek-v4-pro",
+      "use": "Medians, over every model this dataset measured both with thinking off and on, of the thinking-off figure as a share of the thinking-on one. Used only to fill a thinking-off figure the dataset does not have; every such figure is marked estimated."
+    },
+    "notes": "gpt-oss and Muse Glimmer always reason (they offer effort levels but no off switch), and LFM2.5 8B reasons before every answer, so each has one figure, measured thinking at the default effort. Ministral 3 and Qwen3 Coder Next never think. Figures shown as Artificial Analysis estimates are its own, published beside its measurements; this catalog marks them estimated rather than treating them as measured."
+  },
+  "quality_estimates": {
+    "Qwen/Qwen3.5-0.8B": "Artificial Analysis estimated this model's index (thinking off and on) from the evaluations it ran rather than measuring the full set, and ran no SciCode on it; its coding figure is Qwen3.5 9B's, scaled by the two models' general figures.",
+    "Qwen/Qwen3.5-2B": "Artificial Analysis estimated this model's index (thinking off and on) from the evaluations it ran rather than measuring the full set, and ran no SciCode on it; its coding figure is Qwen3.5 9B's, scaled by the two models' general figures.",
+    "Qwen/Qwen3.5-4B": "Artificial Analysis estimated this model's index (thinking off and on) from the evaluations it ran rather than measuring the full set, and ran no SciCode on it; its coding figure is Qwen3.5 9B's, scaled by the two models' general figures.",
+    "Qwen/Qwen3.5-9B": "Its figure with thinking off is Artificial Analysis's estimate from the evaluations it ran (with thinking on it was measured in full). SciCode was run only with thinking on; the coding figure is that score times the thinking-off ratio below.",
+    "google/gemma-4-E4B-it": "Its figure with thinking off is Artificial Analysis's estimate from the evaluations it ran (with thinking on it was measured in full). SciCode was run only with thinking on; the coding figure is that score times the thinking-off ratio below.",
+    "google/gemma-4-12B-it": "Artificial Analysis estimated this model's index (thinking off and on) from the evaluations it ran rather than measuring the full set, and ran no SciCode on it; its coding figure is Gemma 4 E4B's, scaled by the two models' general figures.",
+    "google/gemma-4-26B-A4B-it": "Artificial Analysis estimated this model's index (thinking off and on) from the evaluations it ran rather than measuring the full set. SciCode was run only with thinking on; the coding figure is that score times the thinking-off ratio below.",
+    "google/gemma-4-31B-it": "Its figure with thinking off is Artificial Analysis's estimate from the evaluations it ran (with thinking on it was measured in full). SciCode was run only with thinking on; the coding figure is that score times the thinking-off ratio below.",
+    "Qwen/Qwen3.6-35B-A3B": "Its figure with thinking off is Artificial Analysis's estimate from the evaluations it ran (with thinking on it was measured in full). SciCode was run only with thinking on; the coding figure is that score times the thinking-off ratio below.",
+    "ibm-granite/granite-4.2-3b": "Measured only with thinking on, which is its default; Neo turns thinking off unless asked. Its general and coding figures are the measurements times the thinking-off ratios below.",
+    "ibm-granite/granite-4.2-8b": "Measured only with thinking on, which is its default; Neo turns thinking off unless asked. Its general and coding figures are the measurements times the thinking-off ratios below.",
+    "ibm-granite/granite-4.2-30b": "Measured only with thinking on, which is its default; Neo turns thinking off unless asked. Its general and coding figures are the measurements times the thinking-off ratios below.",
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": "Measured only with thinking on, which is its default; Neo turns thinking off unless asked. Its general and coding figures are the measurements times the thinking-off ratios below.",
+    "CohereLabs/North-Mini-Code-1.0": "Measured only with thinking on, which is its default; Neo turns thinking off unless asked. Its general and coding figures are the measurements times the thinking-off ratios below.",
+    "LiquidAI/LFM2.5-8B-A1B": "Artificial Analysis estimated its index from the evaluations it ran rather than measuring the full set, and ran no SciCode on it; its coding figure is LFM2.5 2.6B's measured score (a sibling Ollama does not carry), scaled by the two models' general figures."
+  },
+  "catalog_notes": {
+    "ollama_weights_gb": "The bare Ollama tag's download, summed from the registry manifests (weights, vision encoder and draft model). Ollama ships many tags as two builds, llama.cpp for Windows, Linux and graphics cards and MLX for Apple silicon, and this is the larger of the two: overstating memory is the safe direction. ollama_quantization names the llama.cpp build's format.",
+    "cache_fields": "layers, kv_heads, key_length and value_length describe the layers whose key/value cache grows with the conversation, read from each model's config.json and checked against the files Ollama ships. Qwen3.5, Qwen3.6, Qwen3.8, Qwen3 Coder Next, Nemotron 3.5 and LFM2.5 interleave linear-attention, Mamba or convolution layers that keep a fixed-size state; Gemma 4, gpt-oss, Muse Glimmer and North Mini Code interleave sliding-window layers whose cache stops at the window (128 to 4,096 tokens), and Gemma 4 E4B's last 18 layers reuse earlier layers' caches. None of those grow, so only full-attention layers are counted. The fixed part left out is at most about 0.8 GB (Gemma 4 31B's sliding-window cache) and under 0.35 GB for every other model."
+  },
   "models": [
     {
-      "id": "Qwen/Qwen3-0.6B",
-      "display_name": "Qwen3 0.6B",
-      "ollama": "qwen3:0.6b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 0.52,
-      "parameters_b": 0.752,
-      "goals": [
-        "offline",
-        "chat"
-      ],
-      "license": "Apache 2.0",
-      "layers": 28,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 40960
-    },
-    {
-      "id": "unsloth/Llama-3.2-1B-Instruct",
-      "display_name": "Llama 3.2 1B",
-      "ollama": "llama3.2:1b",
+      "id": "Qwen/Qwen3.5-0.8B",
+      "display_name": "Qwen3.5 0.8B",
+      "ollama": "qwen3.5:0.8b",
       "ollama_quantization": "Q8_0",
       "ollama_weights_gb": 1.32,
-      "parameters_b": 1.236,
-      "goals": [
-        "offline",
-        "chat"
-      ],
-      "license": "Llama 3.2 Community",
-      "layers": 16,
-      "kv_heads": 8,
-      "key_length": 64,
-      "value_length": 64,
-      "context_length": 131072
-    },
-    {
-      "id": "unsloth/gemma-3-1b-it",
-      "display_name": "Gemma 3 1B",
-      "ollama": "gemma3:1b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 0.81,
-      "parameters_b": 1.0,
-      "goals": [
-        "offline",
-        "chat"
-      ],
-      "license": "Gemma",
-      "layers": 26,
-      "kv_heads": 1,
-      "key_length": 256,
-      "value_length": 256,
-      "context_length": 32768
-    },
-    {
-      "id": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
-      "display_name": "SmolLM2 1.7B",
-      "ollama": "smollm2:1.7b",
-      "ollama_quantization": "Q8_0",
-      "ollama_weights_gb": 1.82,
-      "parameters_b": 1.711,
-      "goals": [
-        "offline",
-        "chat"
-      ],
-      "license": "Apache 2.0",
-      "layers": 24,
-      "kv_heads": 32,
-      "key_length": 64,
-      "value_length": 64,
-      "context_length": 8192
-    },
-    {
-      "id": "Qwen/Qwen3-1.7B",
-      "display_name": "Qwen3 1.7B",
-      "ollama": "qwen3:1.7b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 1.36,
-      "parameters_b": 2.032,
-      "goals": [
-        "offline",
-        "chat"
-      ],
-      "license": "Apache 2.0",
-      "layers": 28,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 40960
-    },
-    {
-      "id": "unsloth/Llama-3.2-3B-Instruct",
-      "display_name": "Llama 3.2 3B",
-      "ollama": "llama3.2:3b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 2.02,
-      "parameters_b": 3.213,
+      "parameters_b": 0.873,
       "goals": [
         "chat",
-        "offline"
-      ],
-      "license": "Llama 3.2 Community",
-      "layers": 28,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072
-    },
-    {
-      "id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-      "display_name": "Qwen2.5 Coder 1.5B",
-      "ollama": "qwen2.5-coder:1.5b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 0.99,
-      "parameters_b": 1.544,
-      "goals": [
-        "coding",
-        "offline"
-      ],
-      "license": "Apache 2.0",
-      "layers": 28,
-      "kv_heads": 2,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 32768
-    },
-    {
-      "id": "microsoft/Phi-4-mini-instruct",
-      "display_name": "Phi-4 Mini",
-      "ollama": "phi4-mini:3.8b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 2.49,
-      "parameters_b": 3.836,
-      "goals": [
-        "chat",
-        "reasoning"
-      ],
-      "license": "MIT",
-      "layers": 32,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072
-    },
-    {
-      "id": "unsloth/gemma-3-4b-it",
-      "display_name": "Gemma 3 4B",
-      "ollama": "gemma3:4b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 2.5,
-      "parameters_b": 4.3,
-      "goals": [
-        "chat",
+        "offline",
         "images"
       ],
-      "license": "Gemma",
-      "layers": 34,
-      "kv_heads": 4,
+      "quality": {
+        "general": 5.4,
+        "coding": 9.63,
+        "thinking": 6.13,
+        "vision": 25.66,
+        "estimated": true
+      },
+      "license": "Apache 2.0",
+      "layers": 6,
+      "kv_heads": 2,
       "key_length": 256,
       "value_length": 256,
-      "context_length": 131072,
+      "context_length": 262144,
       "vision": true
     },
     {
-      "id": "Qwen/Qwen3-4B",
-      "display_name": "Qwen3 4B",
-      "ollama": "qwen3:4b",
+      "id": "ibm-granite/granite-4.2-3b",
+      "display_name": "Granite 4.2 3B",
+      "ollama": "granite4.2:3b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 2.5,
-      "parameters_b": 4.022,
+      "ollama_weights_gb": 2.24,
+      "parameters_b": 3.66,
       "goals": [
         "chat",
+        "offline",
         "reasoning"
       ],
+      "quality": {
+        "general": 5.12,
+        "coding": 20.32,
+        "thinking": 9.06,
+        "estimated": true
+      },
       "license": "Apache 2.0",
-      "layers": 36,
+      "layers": 40,
       "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 40960
+      "key_length": 64,
+      "value_length": 64,
+      "context_length": 131072
     },
     {
-      "id": "mistralai/Mistral-7B-Instruct-v0.3",
-      "display_name": "Mistral 7B",
-      "ollama": "mistral:7b",
+      "id": "mistralai/Ministral-3-3B-Instruct-2512",
+      "display_name": "Ministral 3 3B",
+      "ollama": "ministral-3:3b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 4.37,
-      "parameters_b": 7.248,
+      "ollama_weights_gb": 2.95,
+      "parameters_b": 3.849,
       "goals": [
         "chat",
-        "writing"
+        "offline",
+        "images"
       ],
+      "quality": {
+        "general": 4.84,
+        "coding": 15.28,
+        "vision": 38.09
+      },
       "license": "Apache 2.0",
-      "layers": 32,
+      "layers": 26,
       "kv_heads": 8,
       "key_length": 128,
       "value_length": 128,
-      "context_length": 32768
+      "context_length": 262144,
+      "vision": true
     },
     {
-      "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
-      "display_name": "Qwen2.5 Coder 7B",
-      "ollama": "qwen2.5-coder:7b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 4.68,
-      "parameters_b": 7.616,
+      "id": "Qwen/Qwen3.5-2B",
+      "display_name": "Qwen3.5 2B",
+      "ollama": "qwen3.5:2b",
+      "ollama_quantization": "Q8_0",
+      "ollama_weights_gb": 3.12,
+      "parameters_b": 2.274,
       "goals": [
-        "coding"
+        "chat",
+        "offline",
+        "images"
       ],
+      "quality": {
+        "general": 6.19,
+        "coding": 11.03,
+        "thinking": 6.94,
+        "vision": 42.66,
+        "estimated": true
+      },
       "license": "Apache 2.0",
-      "layers": 28,
-      "kv_heads": 4,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 32768
+      "layers": 6,
+      "kv_heads": 2,
+      "key_length": 256,
+      "value_length": 256,
+      "context_length": 262144,
+      "vision": true
     },
     {
-      "id": "Qwen/Qwen3-8B",
-      "display_name": "Qwen3 8B",
-      "ollama": "qwen3:8b",
+      "id": "Qwen/Qwen3.5-4B",
+      "display_name": "Qwen3.5 4B",
+      "ollama": "qwen3.5:4b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 5.23,
-      "parameters_b": 8.191,
+      "ollama_weights_gb": 3.97,
+      "parameters_b": 4.66,
+      "goals": [
+        "chat",
+        "offline",
+        "reasoning",
+        "images"
+      ],
+      "quality": {
+        "general": 10.81,
+        "coding": 19.29,
+        "thinking": 13.12,
+        "vision": 62.08,
+        "estimated": true
+      },
+      "license": "Apache 2.0",
+      "layers": 8,
+      "kv_heads": 4,
+      "key_length": 256,
+      "value_length": 256,
+      "context_length": 262144,
+      "vision": true
+    },
+    {
+      "id": "LiquidAI/LFM2.5-8B-A1B",
+      "display_name": "LFM2.5 8B",
+      "ollama": "lfm2.5:8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 5.16,
+      "parameters_b": 8.468,
+      "goals": [
+        "chat",
+        "offline",
+        "reasoning"
+      ],
+      "quality": {
+        "general": 7.22,
+        "coding": 12.35,
+        "estimated": true
+      },
+      "license": "LFM Open License 1.0",
+      "layers": 6,
+      "kv_heads": 8,
+      "key_length": 64,
+      "value_length": 64,
+      "context_length": 128000,
+      "sparse": true,
+      "experts": 32,
+      "experts_used": 4,
+      "active_parameters_b": 1.5
+    },
+    {
+      "id": "ibm-granite/granite-4.2-8b",
+      "display_name": "Granite 4.2 8B",
+      "ollama": "granite4.2:8b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 5.35,
+      "parameters_b": 8.792,
       "goals": [
         "chat",
         "reasoning",
         "coding"
       ],
-      "license": "Apache 2.0",
-      "layers": 36,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 40960
-    },
-    {
-      "id": "unsloth/Meta-Llama-3.1-8B-Instruct",
-      "display_name": "Llama 3.1 8B",
-      "ollama": "llama3.1:8b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 4.92,
-      "parameters_b": 8.03,
-      "goals": [
-        "chat",
-        "writing"
-      ],
-      "license": "Llama 3.1 Community",
-      "layers": 32,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072
-    },
-    {
-      "id": "ibm-granite/granite-3.3-8b-instruct",
-      "display_name": "Granite 3.3 8B",
-      "ollama": "granite3.3:8b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 4.94,
-      "parameters_b": 8.171,
-      "goals": [
-        "chat",
-        "coding"
-      ],
+      "quality": {
+        "general": 6.27,
+        "coding": 25.24,
+        "thinking": 11.08,
+        "estimated": true
+      },
       "license": "Apache 2.0",
       "layers": 40,
       "kv_heads": 8,
@@ -272,131 +221,137 @@
       "context_length": 131072
     },
     {
-      "id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-      "display_name": "DeepSeek R1 8B",
-      "ollama": "deepseek-r1:8b",
+      "id": "mistralai/Ministral-3-8B-Instruct-2512",
+      "display_name": "Ministral 3 8B",
+      "ollama": "ministral-3:8b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 5.23,
-      "parameters_b": 8.191,
-      "goals": [
-        "reasoning"
-      ],
-      "license": "MIT",
-      "layers": 36,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072
-    },
-    {
-      "id": "Qwen/Qwen2.5-VL-7B-Instruct",
-      "display_name": "Qwen2.5 VL 7B",
-      "ollama": "qwen2.5vl:7b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 5.97,
-      "parameters_b": 8.292,
-      "goals": [
-        "images",
-        "chat"
-      ],
-      "license": "Apache 2.0",
-      "layers": 28,
-      "kv_heads": 4,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 128000,
-      "vision": true
-    },
-    {
-      "id": "unsloth/gemma-3-12b-it",
-      "display_name": "Gemma 3 12B",
-      "ollama": "gemma3:12b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 7.31,
-      "parameters_b": 12.187,
+      "ollama_weights_gb": 6.02,
+      "parameters_b": 8.918,
       "goals": [
         "chat",
         "writing",
         "images"
       ],
-      "license": "Gemma",
-      "layers": 48,
+      "quality": {
+        "general": 5.48,
+        "coding": 20.72,
+        "vision": 45.95
+      },
+      "license": "Apache 2.0",
+      "layers": 34,
       "kv_heads": 8,
-      "key_length": 256,
-      "value_length": 256,
-      "context_length": 131072,
+      "key_length": 128,
+      "value_length": 128,
+      "context_length": 262144,
       "vision": true
     },
     {
-      "id": "Qwen/Qwen3-14B",
-      "display_name": "Qwen3 14B",
-      "ollama": "qwen3:14b",
+      "id": "Qwen/Qwen3.5-9B",
+      "display_name": "Qwen3.5 9B",
+      "ollama": "qwen3.5:9b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 9.28,
-      "parameters_b": 14.768,
+      "ollama_weights_gb": 7.64,
+      "parameters_b": 9.653,
       "goals": [
         "chat",
         "reasoning",
-        "coding"
+        "coding",
+        "images"
       ],
+      "quality": {
+        "general": 13.27,
+        "coding": 23.66,
+        "thinking": 11.2,
+        "vision": 66.76,
+        "estimated": true
+      },
       "license": "Apache 2.0",
-      "layers": 40,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 40960
+      "layers": 8,
+      "kv_heads": 4,
+      "key_length": 256,
+      "value_length": 256,
+      "context_length": 262144,
+      "vision": true
     },
     {
-      "id": "microsoft/phi-4",
-      "display_name": "Phi-4",
-      "ollama": "phi4:14b",
+      "id": "google/gemma-4-12B-it",
+      "display_name": "Gemma 4 12B",
+      "ollama": "gemma4:12b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 9.05,
-      "parameters_b": 14.66,
+      "ollama_weights_gb": 8.02,
+      "parameters_b": 11.96,
       "goals": [
+        "chat",
+        "writing",
         "reasoning",
-        "chat"
+        "images"
       ],
-      "license": "MIT",
-      "layers": 40,
-      "kv_heads": 10,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 16384
-    },
-    {
-      "id": "Qwen/Qwen2.5-Coder-14B-Instruct",
-      "display_name": "Qwen2.5 Coder 14B",
-      "ollama": "qwen2.5-coder:14b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 8.99,
-      "parameters_b": 14.77,
-      "goals": [
-        "coding"
-      ],
+      "quality": {
+        "general": 9.38,
+        "coding": 24.63,
+        "thinking": 14.18,
+        "vision": 61.97,
+        "estimated": true
+      },
       "license": "Apache 2.0",
-      "layers": 48,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 32768
+      "layers": 8,
+      "kv_heads": 1,
+      "key_length": 512,
+      "value_length": 512,
+      "context_length": 262144,
+      "vision": true
     },
     {
-      "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
-      "display_name": "DeepSeek R1 14B",
-      "ollama": "deepseek-r1:14b",
+      "id": "mistralai/Ministral-3-14B-Instruct-2512",
+      "display_name": "Ministral 3 14B",
+      "ollama": "ministral-3:14b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 8.99,
-      "parameters_b": 14.77,
+      "ollama_weights_gb": 9.08,
+      "parameters_b": 13.945,
       "goals": [
-        "reasoning"
+        "chat",
+        "writing",
+        "images"
       ],
-      "license": "MIT",
-      "layers": 48,
+      "quality": {
+        "general": 6.04,
+        "coding": 23.84,
+        "vision": 49.83
+      },
+      "license": "Apache 2.0",
+      "layers": 40,
       "kv_heads": 8,
       "key_length": 128,
       "value_length": 128,
-      "context_length": 131072
+      "context_length": 262144,
+      "vision": true
+    },
+    {
+      "id": "google/gemma-4-E4B-it",
+      "display_name": "Gemma 4 E4B",
+      "ollama": "gemma4:e4b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 9.46,
+      "parameters_b": 7.996,
+      "goals": [
+        "chat",
+        "offline",
+        "images"
+      ],
+      "quality": {
+        "general": 7.46,
+        "coding": 19.58,
+        "thinking": 8.91,
+        "vision": 51.21,
+        "estimated": true
+      },
+      "license": "Apache 2.0",
+      "layers": 4,
+      "kv_heads": 2,
+      "key_length": 512,
+      "value_length": 512,
+      "context_length": 131072,
+      "vision": true
     },
     {
       "id": "openai/gpt-oss-20b",
@@ -409,8 +364,12 @@
         "chat",
         "reasoning"
       ],
+      "quality": {
+        "general": 8.97,
+        "coding": 38.89
+      },
       "license": "Apache 2.0",
-      "layers": 24,
+      "layers": 12,
       "kv_heads": 8,
       "key_length": 64,
       "value_length": 64,
@@ -421,176 +380,260 @@
       "active_parameters_b": 4.193
     },
     {
-      "id": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-      "display_name": "Mistral Small 24B",
-      "ollama": "mistral-small3.2:24b",
+      "id": "ibm-granite/granite-4.2-30b",
+      "display_name": "Granite 4.2 30B",
+      "ollama": "granite4.2:30b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 15.18,
-      "parameters_b": 24.011,
+      "ollama_weights_gb": 17.72,
+      "parameters_b": 29.277,
       "goals": [
         "chat",
         "writing",
-        "images"
-      ],
-      "license": "Apache 2.0",
-      "layers": 40,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072,
-      "vision": true
-    },
-    {
-      "id": "mistralai/Devstral-Small-2507",
-      "display_name": "Devstral 24B",
-      "ollama": "devstral:24b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 14.33,
-      "parameters_b": 23.572,
-      "goals": [
+        "reasoning",
         "coding"
       ],
+      "quality": {
+        "general": 7.17,
+        "coding": 30.34,
+        "thinking": 12.68,
+        "estimated": true
+      },
       "license": "Apache 2.0",
-      "layers": 40,
+      "layers": 64,
       "kv_heads": 8,
       "key_length": 128,
       "value_length": 128,
       "context_length": 131072
     },
     {
-      "id": "unsloth/gemma-3-27b-it",
-      "display_name": "Gemma 3 27B",
-      "ollama": "gemma3:27b",
+      "id": "meta-models/Muse-Glimmer-30B",
+      "display_name": "Muse Glimmer 30B",
+      "ollama": "muse-glimmer:30b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 16.56,
-      "parameters_b": 27.432,
+      "ollama_weights_gb": 18.16,
+      "parameters_b": 29.777,
       "goals": [
-        "writing",
         "chat",
+        "reasoning",
+        "coding",
         "images"
       ],
-      "license": "Gemma",
-      "layers": 62,
-      "kv_heads": 16,
+      "quality": {
+        "general": 17.48,
+        "coding": 44.91,
+        "vision": 74.34
+      },
+      "license": "Apache 2.0",
+      "layers": 13,
+      "kv_heads": 2,
       "key_length": 128,
       "value_length": 128,
       "context_length": 131072,
       "vision": true
     },
     {
-      "id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
-      "display_name": "Qwen3 Coder 30B",
-      "ollama": "qwen3-coder:30b",
+      "id": "Qwen/Qwen3.8-27B",
+      "display_name": "Qwen3.8 27B",
+      "ollama": "qwen3.8:27b",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 18.56,
-      "parameters_b": 30.532,
+      "ollama_weights_gb": 18.17,
+      "parameters_b": 27.781,
+      "goals": [
+        "chat",
+        "writing",
+        "reasoning",
+        "coding",
+        "images"
+      ],
+      "quality": {
+        "general": 20.15,
+        "coding": 36.23,
+        "thinking": 33.68,
+        "vision": 69.94
+      },
+      "license": "Apache 2.0",
+      "layers": 16,
+      "kv_heads": 4,
+      "key_length": 256,
+      "value_length": 256,
+      "context_length": 262144,
+      "vision": true
+    },
+    {
+      "id": "CohereLabs/North-Mini-Code-1.0",
+      "display_name": "North Mini Code 30B",
+      "ollama": "north-mini-code-1.0",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 18.59,
+      "parameters_b": 30.484,
       "goals": [
         "coding"
       ],
+      "quality": {
+        "general": 5.61,
+        "coding": 31.09,
+        "thinking": 9.91,
+        "estimated": true
+      },
       "license": "Apache 2.0",
-      "layers": 48,
+      "layers": 13,
       "kv_heads": 4,
+      "key_length": 128,
+      "value_length": 128,
+      "context_length": 500000,
+      "sparse": true,
+      "experts": 128,
+      "experts_used": 8,
+      "active_parameters_b": 3.0
+    },
+    {
+      "id": "google/gemma-4-26B-A4B-it",
+      "display_name": "Gemma 4 26B",
+      "ollama": "gemma4:26b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 18.73,
+      "parameters_b": 25.806,
+      "goals": [
+        "chat",
+        "writing",
+        "reasoning",
+        "coding",
+        "images"
+      ],
+      "quality": {
+        "general": 13.13,
+        "coding": 32.11,
+        "thinking": 16.67,
+        "vision": 66.71,
+        "estimated": true
+      },
+      "license": "Apache 2.0",
+      "layers": 5,
+      "kv_heads": 2,
+      "key_length": 512,
+      "value_length": 512,
+      "context_length": 262144,
+      "vision": true,
+      "sparse": true,
+      "experts": 128,
+      "experts_used": 8,
+      "active_parameters_b": 3.8
+    },
+    {
+      "id": "google/gemma-4-31B-it",
+      "display_name": "Gemma 4 31B",
+      "ollama": "gemma4:31b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 20.39,
+      "parameters_b": 31.273,
+      "goals": [
+        "chat",
+        "writing",
+        "reasoning",
+        "coding",
+        "images"
+      ],
+      "quality": {
+        "general": 13.92,
+        "coding": 36.47,
+        "thinking": 14.67,
+        "vision": 70.35,
+        "estimated": true
+      },
+      "license": "Apache 2.0",
+      "layers": 10,
+      "kv_heads": 4,
+      "key_length": 512,
+      "value_length": 512,
+      "context_length": 262144,
+      "vision": true
+    },
+    {
+      "id": "Qwen/Qwen3.6-35B-A3B",
+      "display_name": "Qwen3.6 35B",
+      "ollama": "qwen3.6:35b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 23.11,
+      "parameters_b": 35.952,
+      "goals": [
+        "chat",
+        "writing",
+        "reasoning",
+        "coding",
+        "images"
+      ],
+      "quality": {
+        "general": 15.23,
+        "coding": 29.32,
+        "thinking": 18.23,
+        "vision": 71.04,
+        "estimated": true
+      },
+      "license": "Apache 2.0",
+      "layers": 10,
+      "kv_heads": 2,
+      "key_length": 256,
+      "value_length": 256,
+      "context_length": 262144,
+      "vision": true,
+      "sparse": true,
+      "experts": 256,
+      "experts_used": 8,
+      "active_parameters_b": 3.0
+    },
+    {
+      "id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+      "display_name": "Nemotron 3.5 Lightning 30B",
+      "ollama": "nemotron-3.5-lightning:30b",
+      "ollama_quantization": "Q4_K_M",
+      "ollama_weights_gb": 25.43,
+      "parameters_b": 31.578,
+      "goals": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "quality": {
+        "general": 7.27,
+        "coding": 25.7,
+        "thinking": 12.86,
+        "estimated": true
+      },
+      "license": "OpenMDW 1.1",
+      "layers": 6,
+      "kv_heads": 2,
       "key_length": 128,
       "value_length": 128,
       "context_length": 262144,
       "sparse": true,
       "experts": 128,
-      "experts_used": 8,
-      "active_parameters_b": 3.353
+      "experts_used": 6,
+      "active_parameters_b": 3.0
     },
     {
-      "id": "Qwen/Qwen3-32B",
-      "display_name": "Qwen3 32B",
-      "ollama": "qwen3:32b",
+      "id": "Qwen/Qwen3-Coder-Next",
+      "display_name": "Qwen3 Coder Next 80B",
+      "ollama": "qwen3-coder-next",
       "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 20.2,
-      "parameters_b": 32.762,
-      "goals": [
-        "reasoning",
-        "writing",
-        "coding"
-      ],
-      "license": "Apache 2.0",
-      "layers": 64,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 40960
-    },
-    {
-      "id": "Qwen/Qwen2.5-Coder-32B-Instruct",
-      "display_name": "Qwen2.5 Coder 32B",
-      "ollama": "qwen2.5-coder:32b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 19.85,
-      "parameters_b": 32.764,
+      "ollama_weights_gb": 51.74,
+      "parameters_b": 79.674,
       "goals": [
         "coding"
       ],
+      "quality": {
+        "general": 9.24,
+        "coding": 36.23
+      },
       "license": "Apache 2.0",
-      "layers": 64,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 32768
-    },
-    {
-      "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-      "display_name": "DeepSeek R1 32B",
-      "ollama": "deepseek-r1:32b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 19.85,
-      "parameters_b": 32.764,
-      "goals": [
-        "reasoning"
-      ],
-      "license": "MIT",
-      "layers": 64,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072
-    },
-    {
-      "id": "mistralai/Mixtral-8x7B-Instruct-v0.1",
-      "display_name": "Mixtral 8x7B",
-      "ollama": "mixtral:8x7b",
-      "ollama_quantization": "Q4_0",
-      "ollama_weights_gb": 26.44,
-      "parameters_b": 46.703,
-      "goals": [
-        "chat",
-        "writing"
-      ],
-      "license": "Apache 2.0",
-      "layers": 32,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 32768,
+      "layers": 12,
+      "kv_heads": 2,
+      "key_length": 256,
+      "value_length": 256,
+      "context_length": 262144,
       "sparse": true,
-      "experts": 8,
-      "experts_used": 2,
-      "active_parameters_b": 12.88
-    },
-    {
-      "id": "unsloth/Llama-3.3-70B-Instruct",
-      "display_name": "Llama 3.3 70B",
-      "ollama": "llama3.3:70b",
-      "ollama_quantization": "Q4_K_M",
-      "ollama_weights_gb": 42.52,
-      "parameters_b": 70.554,
-      "goals": [
-        "writing",
-        "reasoning",
-        "chat"
-      ],
-      "license": "Llama 3.3 Community",
-      "layers": 80,
-      "kv_heads": 8,
-      "key_length": 128,
-      "value_length": 128,
-      "context_length": 131072
+      "experts": 512,
+      "experts_used": 10,
+      "active_parameters_b": 3.0
     },
     {
       "id": "openai/gpt-oss-120b",
@@ -600,11 +643,16 @@
       "ollama_weights_gb": 65.37,
       "parameters_b": 116.829,
       "goals": [
+        "chat",
         "reasoning",
         "writing"
       ],
+      "quality": {
+        "general": 11.6,
+        "coding": 34.03
+      },
       "license": "Apache 2.0",
-      "layers": 36,
+      "layers": 18,
       "kv_heads": 8,
       "key_length": 64,
       "value_length": 64,

@@ -1,9 +1,13 @@
-"""Will this model run on this computer, and what will it feel like?
+"""Will this model run on this computer, what will it feel like, and is it the best choice?
 
 Pure functions: no probing, no catalog loading, no network. Everything takes a
 ``Machine`` and a catalog row and returns a verdict, which is what lets the whole matrix
 -- Apple, NVIDIA, AMD and no graphics card at all, crossed with dense and sparse models
 and every quantization -- be tested without owning any of that hardware.
+
+Which model is *best* rests on how capable each one measured, not on its size: the
+catalog carries independent measurements per goal, and ``rank`` weighs them against
+whether replies would keep up and whether the model fits with room.
 
 Every constant below is either derived from a published source or measured by
 ``scripts/calibrate_local_models.py`` on real hardware. See
@@ -16,7 +20,9 @@ tell.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from app.services.local_models.types import (
@@ -160,17 +166,23 @@ RUNTIME_OVERHEAD_GB = 0.25
 # Published peak memory bandwidth, GB/s. Decoding is bound by reading the active weights
 # once per token, so this is what sets the ceiling on how fast replies arrive.
 #
-# Scanned in order and matched as a substring, so this MUST stay most-specific-first --
-# "m4 max" has to be tested before "m4", or a Max would be judged at a third of its real
-# bandwidth. Where a part ships in variants with different bandwidth, the *lower* figure
-# is used: under-promising speed is the safe direction to be wrong in.
+# One table per accelerator, and only the machine's own accelerator's table is consulted.
+# A single shared table matched processor names against graphics parts: an Intel
+# "Core m3" read as an Apple M3, at twice the bandwidth its memory has.
 #
-# Deliberately incomplete. A part that is not listed falls back to a conservative
-# per-vendor figure rather than being guessed at, because a fallback that flatters the
-# machine produces exactly the confidently-wrong recommendation this feature exists to
-# prevent. Add parts here only with a published source.
-GPU_BANDWIDTH_GBPS: tuple[tuple[str, float], ...] = (
-    # Apple. M5 from Apple Newsroom (Oct 2025); M3/M4 families from their published
+# Scanned in order, so each table MUST stay most-specific-first -- "m4 max" has to be
+# tested before "m4", or a Max would be judged at a third of its real bandwidth. A part
+# matches as a whole token, so "a10" never matches an A100 or an A1000. Where a part ships
+# in variants with different bandwidth, the *lower* figure is used: under-promising speed
+# is the safe direction to be wrong in.
+#
+# Figures are the makers' published specifications -- for graphics cards, memory bus
+# width times data rate. Deliberately incomplete: a part that is not listed falls back to
+# a conservative per-vendor figure rather than being guessed at, because a fallback that
+# flatters the machine produces exactly the confidently-wrong recommendation this feature
+# exists to prevent. Add parts here only with a published source.
+_APPLE_BANDWIDTH: tuple[tuple[str, float], ...] = (
+    # M5 from Apple Newsroom (Oct 2025); M1 to M4 families from their published
     # specifications. M4 Max ships at 410 and 546 GB/s; M3 Max at 300 and 409.6.
     ("m5", 153.0),
     ("m4 max", 410.0),
@@ -180,17 +192,147 @@ GPU_BANDWIDTH_GBPS: tuple[tuple[str, float], ...] = (
     ("m3 max", 300.0),
     ("m3 pro", 153.6),
     ("m3", 102.4),
-    # NVIDIA GeForce RTX 40 series, from published specifications.
+    ("m2 ultra", 800.0),
+    ("m2 max", 400.0),
+    ("m2 pro", 200.0),
+    ("m2", 100.0),
+    ("m1 ultra", 800.0),
+    ("m1 max", 400.0),
+    ("m1 pro", 200.0),
+    ("m1", 68.25),
+)
+
+_NVIDIA_BANDWIDTH: tuple[tuple[str, float], ...] = (
+    # GeForce RTX 50.
+    ("5090", 1792.0),
+    ("5080", 960.0),
+    ("5070 ti", 896.0),
+    ("5070", 672.0),
+    ("5060 ti", 448.0),
+    ("5060", 448.0),
+    ("5050", 320.0),
+    # GeForce RTX 40. The 4070 Ti is 192-bit at 21 Gbps; 672 GB/s is the Ti SUPER's.
     ("4090", 1008.0),
+    ("4080 super", 736.0),
     ("4080", 716.8),
-    ("4070 ti", 672.0),
+    ("4070 ti super", 672.0),
+    ("4070 ti", 504.0),
+    ("4070 super", 504.0),
     ("4070", 504.0),
     ("4060 ti", 288.0),
     ("4060", 272.0),
+    # GeForce RTX 30. The 3060 and 3050 each have a narrower-bus variant.
+    ("3090 ti", 1008.0),
+    ("3090", 936.0),
+    ("3080 ti", 912.0),
+    ("3080", 760.0),
+    ("3070 ti", 608.0),
+    ("3070", 448.0),
+    ("3060 ti", 448.0),
+    ("3060", 240.0),
+    ("3050", 168.0),
+    # GeForce RTX 20 and GTX 16/10.
+    ("2080 ti", 616.0),
+    ("2080 super", 496.0),
+    ("2080", 448.0),
+    ("2070 super", 448.0),
+    ("2070", 448.0),
+    ("2060 super", 448.0),
+    ("2060", 336.0),
+    ("1660 super", 336.0),
+    ("1660 ti", 288.0),
+    ("1660", 192.0),
+    ("1650 super", 192.0),
+    ("1650", 128.0),
+    ("1080 ti", 484.0),
+    ("1080", 320.0),
+    ("1070 ti", 256.0),
+    ("1070", 256.0),
+    ("1060", 192.0),
+    ("1050 ti", 112.0),
+    ("1050", 112.0),
+    # Workstation and data centre. H100 and A100 at their PCIe figures, the lower ones.
+    ("rtx 6000 ada", 960.0),
+    ("rtx a6000", 768.0),
+    ("rtx a5000", 768.0),
+    ("rtx a4000", 448.0),
+    ("quadro rtx 6000", 672.0),
+    ("h100", 2000.0),
+    ("a100", 1555.0),
+    ("v100", 900.0),
+    ("l40s", 864.0),
+    ("l40", 864.0),
+    ("a10", 600.0),
+    ("l4", 300.0),
+    ("t4", 320.0),
 )
 
+# Laptop parts share desktop names but not desktop memory: a "4090 Laptop GPU" is a
+# 256-bit card at 576 GB/s, not the desktop 4090's 1008. Laptop names are matched here
+# only, and an unlisted one falls back rather than borrowing its desktop namesake's figure.
+_NVIDIA_LAPTOP_BANDWIDTH: tuple[tuple[str, float], ...] = (
+    ("4090", 576.0),
+    ("4080", 432.0),
+    ("4070", 256.0),
+    ("4060", 256.0),
+    ("4050", 192.0),
+    ("3080 ti", 512.0),
+    ("3080", 384.0),
+    ("3070 ti", 448.0),
+    ("3070", 384.0),
+    ("3060", 336.0),
+    ("3050 ti", 192.0),
+    ("3050", 168.0),
+    ("1660 ti", 288.0),
+    ("1650", 128.0),
+    ("1050", 112.0),
+)
+_LAPTOP_MARKERS: tuple[str, ...] = ("laptop", "mobile", "max-q", "max-p")
+
+_AMD_BANDWIDTH: tuple[tuple[str, float], ...] = (
+    # Radeon RX 9000, 7000 and 6000 desktop cards. Mobile parts ("7600M") are a different
+    # token and fall back.
+    ("9070 xt", 640.0),
+    ("9070", 640.0),
+    ("9060 xt", 320.0),
+    ("7900 xtx", 960.0),
+    ("7900 xt", 800.0),
+    ("7900 gre", 576.0),
+    ("7800 xt", 624.0),
+    ("7700 xt", 432.0),
+    ("7600 xt", 288.0),
+    ("7600", 288.0),
+    ("6950 xt", 576.0),
+    ("6900 xt", 512.0),
+    ("6800 xt", 512.0),
+    ("6800", 512.0),
+    ("6750 xt", 432.0),
+    ("6700 xt", 384.0),
+    ("6650 xt", 280.0),
+    ("6600 xt", 256.0),
+    ("6600", 224.0),
+)
+
+_INTEL_BANDWIDTH: tuple[tuple[str, float], ...] = (
+    # Arc desktop cards.
+    ("b580", 456.0),
+    ("b570", 380.0),
+    ("a770", 560.0),
+    ("a750", 512.0),
+    ("a580", 512.0),
+    ("a380", 186.0),
+)
+
+GPU_BANDWIDTH_GBPS: dict[str, tuple[tuple[str, float], ...]] = {
+    "metal": _APPLE_BANDWIDTH,
+    "cuda": _NVIDIA_BANDWIDTH,
+    "rocm": _AMD_BANDWIDTH,
+    "vulkan": _INTEL_BANDWIDTH + _AMD_BANDWIDTH,
+    "sycl": _INTEL_BANDWIDTH,
+}
+
 # For parts not in the table. Chosen low on purpose.
-#   metal  - below the slowest Apple silicon listed above.
+#   metal  - the slowest Apple silicon listed above.
 #   cuda   - below the slowest RTX 40 card; an unlisted card is as likely to be old as new.
 #   rocm   - the same reasoning.
 #   cpu    - dual-channel DDR4-3200 is 2 x 3200 x 8 = 51.2 GB/s theoretical, and real
@@ -199,7 +341,7 @@ GPU_BANDWIDTH_GBPS: tuple[tuple[str, float], ...] = (
 #   sycl     bounded by DDR rather than by the GPU; above the CPU figure only because the
 #            shader cores keep more requests in flight.
 FALLBACK_BANDWIDTH_GBPS: dict[str, float] = {
-    "metal": 100.0,
+    "metal": 68.25,
     "cuda": 200.0,
     "rocm": 200.0,
     "vulkan": 60.0,
@@ -251,15 +393,39 @@ SPEED_TARGET: dict[str, float] = {
 # The goal only a model that can see is any use for.
 VISION_GOAL = "images"
 
-# (capability, responsiveness, headroom, context_reach), summing to 1.
-GOAL_WEIGHTS: dict[str, tuple[float, float, float, float]] = {
-    "chat": (0.35, 0.35, 0.20, 0.10),
-    "writing": (0.45, 0.25, 0.20, 0.10),
-    "coding": (0.40, 0.20, 0.15, 0.25),
-    "reasoning": (0.50, 0.15, 0.15, 0.20),
-    "images": (0.45, 0.25, 0.20, 0.10),
-    "offline": (0.35, 0.30, 0.25, 0.10),
-}
+# The goal someone raises Neo's effort for. The default effort turns thinking off, so every
+# other goal judges a model the way it will actually answer -- without thinking -- and
+# "Difficult problems" alone judges it thinking.
+THINKING_GOAL = "reasoning"
+
+CODING_GOAL = "coding"
+
+# A model that lists "chat" among its goals is a general-purpose assistant, and a sensible
+# choice for any of these whether or not it lists them. One that does not is a specialist
+# -- a coding, reasoning or vision model -- and a first choice only for what it was built
+# for. Scoring specialists a little lower was not enough: a small coding model came first
+# for writing on every computer where it was the fastest thing that fit.
+GENERAL_PURPOSE_GOAL = "chat"
+GENERAL_GOALS = frozenset({"chat", "writing", "offline", "coding", "reasoning"})
+
+# How fast a person reads, in the units a model generates. An average adult reads
+# continuous non-fiction at around 240 words a minute (Brysbaert's 2019 meta-analysis of
+# 190 studies puts silent non-fiction reading at 238 wpm), which is 4 words a second.
+# English runs about three quarters of a word per unit of generation -- the widely used
+# approximation of ~4 characters each.
+READING_WORDS_PER_SECOND = 4.0
+WORDS_PER_UNIT = 0.75
+READING_PACE = READING_WORDS_PER_SECOND / WORDS_PER_UNIT  # ~5.3 a second
+
+# Below this share of reading pace, the screen tells someone to expect to wait for longer
+# answers (wording.describe_speed). A model that slow earns nothing for keeping up.
+SLOW_SHARE_OF_READING = 0.4
+
+# Quality lost to compression, as a share of the model's measured quality per unit of
+# perplexity increase. Measurements are of each model as its maker released it, but what
+# runs here is compressed. A quarter per unit is the weight compression always had in this
+# ranking: next to nothing at the usual 4-bit build, a real loss at 2-bit.
+QUALITY_LOSS_PER_PERPLEXITY = 0.25
 
 # Boundaries on required/usable memory.
 #
@@ -273,6 +439,26 @@ TIER_BOUNDARIES: tuple[tuple[FitTier, float], ...] = (
     ("comfortable", 0.70),
     ("good", 0.90),
     ("tight", 1.00),
+)
+
+# What fitting costs a model in the ranking. "comfortable" and "good" both mean it fits
+# comfortably -- that is what each says on screen -- so neither costs anything. Only
+# "tight" does, falling to half value at the very edge: a model that only just fits is one
+# long conversation or one more open app away from slowing down, so it should be chosen
+# over a model with room only when it is clearly better, not marginally. Charging for
+# headroom below that point is what put an 8B model ahead of a 27B one on a 24 GB card.
+FIT_COSTS_FROM = dict(TIER_BOUNDARIES)["good"]
+EDGE_OF_FIT_VALUE = 0.5
+
+# Except where the goal itself asks for room. Working with no internet is, in its own
+# words, small and self-contained -- a laptop away from a desk -- so it is charged from
+# the end of "comfortable", the tier that promises room to keep using other apps.
+FIT_COSTS_FROM_BY_GOAL: dict[str, float] = {"offline": dict(TIER_BOUNDARIES)["comfortable"]}
+
+# Shown beside a model whose quality is an estimate rather than a measurement.
+ESTIMATED_QUALITY_CAVEAT = (
+    "This model's quality has not been measured independently, so its place in this list "
+    "is an estimate."
 )
 
 
@@ -325,19 +511,25 @@ def active_parameters_b(model: dict[str, Any]) -> float:
 def kv_bytes_per_token(model: dict[str, Any]) -> float:
     """Bytes of conversation cache one token costs.
 
-    Every layer keeps one key and one value vector per key/value head:
+    Each layer whose cache grows with the conversation keeps one key and one value
+    vector per key/value head for every token:
 
         layers x kv_heads x (key_length + value_length) x bytes per element
+
+    ``layers`` counts only those layers, and ``kv_heads`` and the widths are theirs.
+    Many current models interleave layers whose cache does not grow: linear-attention,
+    Mamba and convolution layers hold a fixed-size state, a sliding-window layer holds
+    at most its window, and a layer that reuses an earlier layer's cache holds none of
+    its own. Counting those at full context overstated Gemma 4 31B's cache at 8K by
+    about 8 GB, enough to reject it on a 24 GB card that runs it. The catalog says how
+    each row was counted.
+
+    What this leaves out is fixed rather than growing: at most about 0.8 GB, for Gemma
+    4 31B's sliding-window layers, and under 0.35 GB for every other catalog model.
 
     Key and value widths are read separately rather than derived as embedding/heads.
     Gemma-class models declare a key length of 512 against an embedding of 2560 over 8
     heads, where deriving it would be wrong by more than half.
-
-    This is an upper bound for architectures that bound the cache below the full
-    context -- a sliding window caps local layers at the window size however long the
-    conversation runs. Over-estimating means recommending a slightly smaller model than
-    strictly necessary, which is the safe direction; the opposite error puts someone
-    into swap.
     """
 
     layers = int(model.get("layers") or 0)
@@ -357,14 +549,30 @@ def required_memory_gb(model: dict[str, Any], quantization: str, context: int) -
     return (weights + cache) / 1e9 + RUNTIME_OVERHEAD_GB
 
 
+def _names_part(name: str, part: str) -> bool:
+    """Whether ``part`` appears in ``name`` as a whole token, not inside a longer one."""
+
+    return re.search(rf"(?<![a-z0-9]){re.escape(part)}(?![a-z0-9])", name) is not None
+
+
 def bandwidth_gbps(machine: Machine) -> float:
     """This machine's memory bandwidth, from the table or a conservative fallback."""
 
-    name = (machine.gpu_name or machine.cpu_name or "").lower()
-    for part, value in GPU_BANDWIDTH_GBPS:
-        if part in name:
+    fallback = FALLBACK_BANDWIDTH_GBPS.get(machine.accelerator, FALLBACK_BANDWIDTH_GBPS["cpu"])
+    table = GPU_BANDWIDTH_GBPS.get(machine.accelerator)
+    if not table:
+        # The processor itself. Its name says nothing about its memory, and matching it
+        # against graphics parts is how a Core m3 became an Apple M3.
+        return fallback
+    # On Apple silicon the chip is the graphics, so its name is the processor's too.
+    chip = machine.cpu_name if machine.accelerator == "metal" else ""
+    name = (machine.gpu_name or chip).lower()
+    if machine.accelerator == "cuda" and any(marker in name for marker in _LAPTOP_MARKERS):
+        table = _NVIDIA_LAPTOP_BANDWIDTH
+    for part, value in table:
+        if _names_part(name, part):
             return value
-    return FALLBACK_BANDWIDTH_GBPS.get(machine.accelerator, FALLBACK_BANDWIDTH_GBPS["cpu"])
+    return fallback
 
 
 def estimate_tokens_per_sec(
@@ -470,71 +678,102 @@ def evaluate(
     )
 
 
-def _capability_score(model: dict[str, Any], quantization: str, goal: str) -> float:
-    """How good this model is, before considering whether it fits.
+def measured_quality(model: dict[str, Any], goal: str) -> float | None:
+    """How capable this model is at ``goal``, as independently measured, or ``None``.
 
-    Capability rises with size but with steeply diminishing returns, so a logarithm
-    rather than the parameter count itself: the step from 3B to 8B matters far more than
-    the step from 60B to 70B. Total parameters are used, not active ones -- a sparse
-    model knows what its full weights know, it just reads them selectively.
+    Quality is measured rather than inferred from size, because size predicts it badly
+    across generations: Mixtral 8x7B is twice the size of Gemma 3 27B and measured a tenth
+    as capable, and a size-based score recommended it first on the largest computers.
+    The catalog's ``quality_source`` says where every figure comes from.
     """
 
-    parameters = float(model.get("parameters_b") or 0.0)
-    if parameters <= 0:
-        return 0.0
-    # log10(0.5B)=-0.3 through log10(70B)=1.85, mapped onto roughly 0..100.
-    size_score = max(0.0, (math.log10(parameters) + 0.5) / 2.4) * 100.0
-    # Perplexity cost is an increase, so it subtracts. Scaled so that Q2_K's 0.87 is a
-    # heavy penalty and Q5_K_M's 0.014 is almost none.
-    size_score -= quality_cost(quantization) * 25.0
-    if goal in (model.get("goals") or []):
-        # Built for this job. Enough to break a tie, not enough to beat a much better
-        # model that happens not to advertise the goal.
-        size_score += 12.0
-    return max(0.0, min(100.0, size_score))
+    figures = model.get("quality") or {}
+    if goal == VISION_GOAL:
+        keys: tuple[str, ...] = ("vision",)
+    elif goal == CODING_GOAL:
+        keys = ("coding",)
+    elif goal == THINKING_GOAL:
+        # A model that cannot switch thinking off has one figure, measured thinking.
+        keys = ("thinking", "general")
+    else:
+        keys = ("general",)
+    for key in keys:
+        value = figures.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value)
+    return None
 
 
-def _responsiveness_score(tokens_per_sec: float | None, goal: str) -> float:
+def _stand_in_quality(model: dict[str, Any], goal: str, models: Sequence[dict[str, Any]]) -> float:
+    """Quality for a model nobody measured: no better than the weakest measured model its size.
+
+    Deliberately pessimistic. Every older model in the catalog measured far below what its
+    size suggests, so a size-based guess would put an unmeasured old model above newer
+    measured ones -- the exact failure measured quality exists to fix.
+    """
+
+    size = float(model.get("parameters_b") or 0.0)
+    peers: list[float] = []
+    everyone: list[float] = []
+    for other in models:
+        value = measured_quality(other, goal)
+        if value is None or (other.get("quality") or {}).get("estimated"):
+            continue
+        everyone.append(value)
+        other_size = float(other.get("parameters_b") or 0.0)
+        if size > 0 and size / 2 <= other_size <= size * 2:
+            peers.append(value)
+    pool = peers or everyone
+    return min(pool) if pool else 0.0
+
+
+def suits(model: dict[str, Any], goal: str) -> bool:
+    """Whether this model is a sensible first choice for ``goal`` at all."""
+
+    goals = model.get("goals") or []
+    if goal == VISION_GOAL:
+        return bool(model.get("vision"))
+    return goal in goals or (GENERAL_PURPOSE_GOAL in goals and goal in GENERAL_GOALS)
+
+
+def _responsiveness(tokens_per_sec: float | None, goal: str) -> float:
+    """How well replies keep up, from 0 to 1.
+
+    Zero at the pace where the screen tells someone to expect to wait, full at the
+    pace where the goal stops feeling slow, and logarithmic in between because speed is
+    felt in proportion: going from 3 to 6 a second matters as much as from 10 to 20. A
+    straight line made a model at twice reading speed worth half of one at five times
+    it, which is how a 1B model came first for chat on computers that run a 4B model
+    faster than anyone reads.
+    """
+
     if not tokens_per_sec:
         return 0.0
+    floor = READING_PACE * SLOW_SHARE_OF_READING
     target = SPEED_TARGET.get(goal, 20.0)
-    # Full marks at the target; above it, more speed stops mattering because nobody
-    # reads faster than they read.
-    return max(0.0, min(100.0, tokens_per_sec / target * 100.0))
-
-
-def _headroom_score(ratio: float) -> float:
-    """Reward leaving memory free, without a cliff at a tier boundary.
-
-    A step function here would invert the ranking of two models separated by a rounding
-    error, so this is continuous and the tiers are only ever labels on top of it.
-    """
-
-    if ratio <= 0 or ratio == float("inf"):
+    if tokens_per_sec <= floor:
         return 0.0
-    return max(0.0, min(100.0, (1.0 - ratio) * 100.0 + 30.0))
+    if tokens_per_sec >= target:
+        return 1.0
+    return math.log(tokens_per_sec / floor) / math.log(target / floor)
 
 
-def _context_score(context: int, goal: str) -> float:
-    target = CONTEXT_TARGET.get(goal, 8192)
-    return max(0.0, min(100.0, context / target * 100.0))
+def _fit_value(ratio: float, goal: str) -> float:
+    """What fitting costs, from 1 down to half at the very edge. Continuous, never a cliff."""
+
+    start = FIT_COSTS_FROM_BY_GOAL.get(goal, FIT_COSTS_FROM)
+    if ratio <= start:
+        return 1.0
+    if ratio >= 1.0:
+        return EDGE_OF_FIT_VALUE
+    share = (ratio - start) / (1.0 - start)
+    return 1.0 - share * (1.0 - EDGE_OF_FIT_VALUE)
 
 
-def _goal_score(model: dict[str, Any], fit: Fit, goal: str) -> tuple[float, ScoreParts]:
-    weights = GOAL_WEIGHTS.get(goal, GOAL_WEIGHTS["chat"])
-    parts = ScoreParts(
-        capability=_capability_score(model, fit.quantization, goal),
-        responsiveness=_responsiveness_score(fit.tokens_per_sec, goal),
-        headroom=_headroom_score(fit.headroom_ratio),
-        context_reach=_context_score(fit.context, goal),
-    )
-    score = (
-        parts.capability * weights[0]
-        + parts.responsiveness * weights[1]
-        + parts.headroom * weights[2]
-        + parts.context_reach * weights[3]
-    )
-    return score, parts
+def _compression_retained(quantization: str) -> float:
+    """The share of measured quality that survives compression to ``quantization``."""
+
+    return max(0.0, 1.0 - quality_cost(quantization) * QUALITY_LOSS_PER_PERPLEXITY)
 
 
 def rank(
@@ -547,6 +786,15 @@ def rank(
     include_unfit: bool = True,
 ) -> list[Recommendation]:
     """Score every model for this machine and goal, best first.
+
+    A model's score is its measured quality for the goal -- as a share of the best in
+    the catalog -- discounted for replies that cannot keep up, for a fit that leaves no
+    room, and for a conversation it cannot hold. Multiplied rather than added, so that no
+    amount of quality buys back a model too slow to use, and no amount of speed makes a
+    weak model the best choice.
+
+    Models built for something else come after every model suited to the goal, whatever
+    they score: a coding model is not the answer to "help me write", however fast it is.
 
     Models that do not fit are kept, scored zero and sorted last, with the reason
     attached. Dropping them silently leaves someone wondering where a model they had
@@ -565,30 +813,79 @@ def rank(
     # choice. Scoring it lower was not enough: a strong text-only model outscored every
     # vision model on capability and came first for "Pictures and screenshots".
     needs_vision = VISION_GOAL in chosen
-    results: list[Recommendation] = []
 
-    for model in models:
+    # Every model's quality for every chosen goal, measured or stood in for, and the best
+    # in the catalog. Judged against the whole catalog rather than what fits, so that a
+    # model's score means the same thing on every computer.
+    quality: dict[int, dict[str, float]] = {}
+    estimated: set[int] = set()
+    for index, model in enumerate(models):
+        quality[index] = {}
+        for each in chosen:
+            value = measured_quality(model, each)
+            if value is None:
+                value = _stand_in_quality(model, each, models)
+                estimated.add(index)
+            quality[index][each] = value
+        if (model.get("quality") or {}).get("estimated"):
+            estimated.add(index)
+    best = {
+        each: max((quality[index][each] for index in quality), default=0.0) or 1.0
+        for each in chosen
+    }
+
+    fitting: list[tuple[float, Recommendation]] = []
+    unfit: list[Recommendation] = []
+    for index, model in enumerate(models):
         if needs_vision and not model.get("vision"):
             continue
         fit = evaluate(model, machine, goal=chosen[0], context=context)
+        if index in estimated:
+            caveats = [text for text in (fit.data_caveat, ESTIMATED_QUALITY_CAVEAT) if text]
+            fit = replace(fit, data_caveat=" ".join(caveats))
         if fit.tier == "too_big":
             if include_unfit:
-                results.append(Recommendation(model=model, fit=fit, score=0.0))
+                unfit.append(Recommendation(model=model, fit=fit, score=0.0))
             continue
 
-        scored = [_goal_score(model, fit, each) for each in chosen]
-        count = len(scored)
-        score = sum(each_score for each_score, _ in scored) / count
-        parts = ScoreParts(
-            capability=sum(p.capability for _, p in scored) / count,
-            responsiveness=sum(p.responsiveness for _, p in scored) / count,
-            headroom=sum(p.headroom for _, p in scored) / count,
-            context_reach=sum(p.context_reach for _, p in scored) / count,
-        )
-        results.append(Recommendation(model=model, fit=fit, score=score, parts=parts))
+        retained = _compression_retained(fit.quantization)
+        capabilities, speeds, fits, reaches, scores = [], [], [], [], []
+        for each in chosen:
+            capability = 100.0 * quality[index][each] * retained / best[each]
+            speed = _responsiveness(fit.tokens_per_sec, each)
+            fit_value = _fit_value(fit.headroom_ratio, each)
+            reach = min(1.0, fit.context / CONTEXT_TARGET.get(each, 8192))
+            capabilities.append(capability)
+            speeds.append(speed)
+            fits.append(fit_value)
+            reaches.append(reach)
+            scores.append(capability * speed * fit_value * reach)
 
-    # Unfit models all score zero, so the secondary key keeps them in a sensible order
-    # among themselves -- closest to fitting first, which is the most useful thing to
-    # tell someone who is wondering what they would need.
-    results.sort(key=lambda item: (-item.score, item.fit.headroom_ratio))
-    return results[:limit]
+        count = len(chosen)
+        parts = ScoreParts(
+            capability=sum(capabilities) / count,
+            responsiveness=100.0 * sum(speeds) / count,
+            headroom=100.0 * sum(fits) / count,
+            context_reach=100.0 * sum(reaches) / count,
+        )
+        suited = sum(1 for each in chosen if suits(model, each)) / count
+        recommendation = Recommendation(
+            model=model, fit=fit, score=sum(scores) / count, parts=parts
+        )
+        fitting.append((suited, recommendation))
+
+    # Suited models first, then by score. Among models too slow to score at all, the more
+    # capable one first, so the order still means something on the slowest computers.
+    fitting.sort(
+        key=lambda pair: (
+            -pair[0],
+            -pair[1].score,
+            -pair[1].parts.capability,
+            pair[1].fit.headroom_ratio,
+        )
+    )
+    # Unfit models all score zero, so they are ordered among themselves by how close each
+    # comes to fitting, which is the most useful thing to tell someone who is wondering
+    # what they would need.
+    unfit.sort(key=lambda item: item.fit.headroom_ratio)
+    return ([item for _, item in fitting] + unfit)[:limit]
