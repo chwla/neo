@@ -5,7 +5,8 @@ import sys
 import time
 from typing import Any
 
-from app.cli.client import ApiError, ApiUnavailableError, NeoApiClient
+from app.cli import session as cli_session
+from app.cli.client import ApiError, ApiUnavailableError, NeoApiClient, NotSignedIn
 from app.cli.config import from_args
 from app.cli.formatters import emit
 
@@ -15,7 +16,10 @@ EXIT_INPUT = 1
 EXIT_UNAVAILABLE = 2
 EXIT_API = 3
 EXIT_DENIED = 4
-GLOBAL_FLAGS_WITH_VALUE = {"--api", "--api-url", "--timeout"}
+#: Same code as a denied confirmation: the command was refused for want of a
+#: decision from the person -- here, signing in.
+EXIT_NOT_SIGNED_IN = 4
+GLOBAL_FLAGS_WITH_VALUE = {"--api", "--api-url", "--timeout", "--profile"}
 GLOBAL_FLAGS_BOOL = {"--json", "--no-color"}
 
 
@@ -68,10 +72,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--profile",
+        help="The profile to sign in as (for `neo login`), by username.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status")
     sub.add_parser("health")
+    login = sub.add_parser("login", help="Sign in to a profile; the session is kept for later commands.")
+    login.add_argument(
+        "--password-stdin", action="store_true",
+        help="Read the password from standard input instead of prompting.",
+    )
+    sub.add_parser("logout", help="Forget the stored session and end it on the server.")
+    sub.add_parser("whoami", help="Show which profile the CLI is signed in as.")
 
     agents = sub.add_parser("agents")
     agents_sub = agents.add_subparsers(dest="agents_command", required=True)
@@ -364,7 +379,10 @@ def confirm(args, message: str) -> bool:
     if getattr(args, "yes", False):
         return True
     print(message)
-    answer = input("Continue? [y/N] ").strip().lower()
+    try:
+        answer = input("Continue? [y/N] ").strip().lower()
+    except EOFError:
+        return False
     return answer in {"y", "yes"}
 
 
@@ -378,15 +396,89 @@ class SafetyDenied(RuntimeError):
 
 
 def command_status(client: NeoApiClient) -> dict[str, Any]:
+    """Health works without a sign-in; the model details need one and are optional."""
+
     health = client.get("/api/health")
-    providers = client.get("/api/llm/providers")
-    routes = client.get("/api/llm/routes")
-    return {"health": health, "llm_providers": providers, "llm_routes": routes}
+    result: dict[str, Any] = {"health": health, "signed_in": client.signed_in}
+    if client.signed_in:
+        try:
+            result["llm_providers"] = client.get("/api/llm/providers")
+            result["llm_routes"] = client.get("/api/llm/routes")
+        except NotSignedIn:
+            result["signed_in"] = False
+            result["note"] = "The stored session has expired. Run `neo login`."
+    else:
+        result["note"] = "Not signed in. Run `neo login` to see models and routes."
+    return result
+
+
+def command_login(args, client: NeoApiClient) -> dict[str, Any]:
+    import getpass
+
+    profiles = client.get("/api/account-profiles")
+    listed = profiles.get("profiles", profiles) if isinstance(profiles, dict) else profiles
+    if not listed:
+        raise ValueError("No profiles exist yet. Create one in the Neo interface first.")
+    wanted = (getattr(args, "profile", None) or "").strip()
+    if wanted:
+        matches = [item for item in listed if item.get("username", "").lower() == wanted.lower()]
+        if not matches:
+            names = ", ".join(item.get("username", "?") for item in listed)
+            raise ValueError(f"No profile named {wanted!r}. Profiles: {names}")
+        chosen = matches[0]
+    elif len(listed) == 1:
+        chosen = listed[0]
+    else:
+        if not sys.stdin.isatty():
+            raise ValueError("Several profiles exist; pass --profile <username>.")
+        for index, item in enumerate(listed, start=1):
+            print(f"  {index}. {item.get('username')}")
+        answer = input("Profile number: ").strip()
+        try:
+            chosen = listed[int(answer) - 1]
+        except (ValueError, IndexError) as exc:
+            raise ValueError("That is not one of the listed profiles.") from exc
+    if args.password_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+    else:
+        password = getpass.getpass(f"Password for {chosen.get('username')}: ")
+    if not password:
+        raise ValueError("A password is required.")
+    cookies = client.cookies_after(
+        "POST", f"/api/account-profiles/{chosen['id']}/unlock", {"password": password}
+    )
+    token = cookies.get("neo_profile_session")
+    if not token:
+        raise RuntimeError("The server accepted the password but set no session cookie.")
+    path = cli_session.save(
+        client.base_url, session=token, csrf=cookies.get("neo_csrf", ""), profile=chosen
+    )
+    return {"signed_in": True, "profile": chosen.get("username"), "session_file": str(path)}
+
+
+def command_logout(client: NeoApiClient) -> dict[str, Any]:
+    ended = False
+    if client.signed_in:
+        try:
+            client.post("/api/account-profiles/session/end", {})
+            ended = True
+        except (ApiError, ApiUnavailableError):
+            ended = False
+    cli_session.clear()
+    return {"signed_in": False, "server_session_ended": ended}
 
 
 def handle(args, client: NeoApiClient) -> Any:
     if args.command in {"status", "health"}:
         return command_status(client)
+    if args.command == "login":
+        return command_login(args, client)
+    if args.command == "logout":
+        return command_logout(client)
+    if args.command == "whoami":
+        if not client.signed_in:
+            raise NotSignedIn()
+        return client.get("/api/account-profiles/session/current")
     if args.command == "agents":
         if args.agents_command == "list":
             return client.get("/api/agents/definitions")
@@ -673,9 +765,9 @@ def handle_memory(args, client: NeoApiClient) -> Any:
             },
         )
     if args.memory_command == "list":
-        return client.get("/api/memory/items")
+        return client.get("/api/memory")
     if args.memory_command == "show":
-        return client.get(f"/api/memory/items/{args.memory_id}")
+        return client.get(f"/api/memory/{args.memory_id}")
     if args.memory_command == "prune-preview":
         return client.post("/api/memory/prune/preview", {})
     if args.memory_command == "prune-apply":
@@ -851,28 +943,69 @@ def handle_commands(args, client: NeoApiClient) -> Any:
     proposed = client.post("/api/command-sandbox/propose", payload)
     if args.commands_command == "propose":
         return proposed
-    require_confirm(args, "Approve this allowlisted command in Neo's managed workspace?")
-    client.post(f"/api/command-sandbox/runs/{proposed['id']}/approve", {"confirm": True})
+    from app.services.isolation.launch import UNSANDBOXED_EXPOSURE
+
+    require_confirm(
+        args,
+        "Approve this allowlisted command in Neo's managed workspace?\n  "
+        + " ".join(command)
+        + f"\n  {UNSANDBOXED_EXPOSURE}",
+    )
+    client.post(
+        f"/api/command-sandbox/runs/{proposed['id']}/approve",
+        {"confirm": True, "acknowledge_unsandboxed": True},
+    )
     return client.post(f"/api/command-sandbox/runs/{proposed['id']}/execute")
+
+
+def _client_for(api_url: str, timeout: float) -> NeoApiClient:
+    """A client carrying the stored sign-in for ``api_url``, when there is one."""
+
+    stored = cli_session.load(api_url)
+    return NeoApiClient(
+        api_url,
+        timeout=timeout,
+        session_token=(stored or {}).get("session"),
+        csrf_token=(stored or {}).get("csrf"),
+    )
+
+
+def _tolerant_stdout() -> None:
+    """Never die on a character the console cannot show (cp1252 consoles, redirected output)."""
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
 
 
 def main(argv: list[str] | None = None, client: NeoApiClient | None = None) -> int:
     parser = build_parser()
+    _tolerant_stdout()
     try:
         parse_argv = normalize_global_args(sys.argv[1:] if argv is None else argv)
         args = parser.parse_args(parse_argv)
         config = from_args(args)
         api_url = getattr(args, "tui_api", None) or config.api_url
-        api = client or NeoApiClient(api_url, timeout=config.timeout)
+        api = client or _client_for(api_url, config.timeout)
         result = handle(args, api)
         if args.command == "tui" and args.snapshot:
             print(result)
             return 0
+        if args.command == "tui":
+            return int(result or 0)
         emit(result, json_output=args.json)
         return 0
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return 130
     except SafetyDenied as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_DENIED
+    except NotSignedIn as exc:
+        print(exc.detail, file=sys.stderr)
+        return EXIT_NOT_SIGNED_IN
     except ApiUnavailableError as exc:
         print(f"Neo API unavailable: {exc}", file=sys.stderr)
         return EXIT_UNAVAILABLE

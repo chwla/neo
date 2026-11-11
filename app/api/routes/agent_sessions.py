@@ -9,8 +9,10 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.core import shutdown
 from app.services.agent_core import events as event_types
 from app.services.agent_core.service import (
+    AgentCoreConflict,
     AgentCoreService,
     AgentCoreValidationError,
     ApprovalDecision,
@@ -19,6 +21,7 @@ from app.services.agent_core.service import (
     SessionCreate,
     SessionUpdate,
 )
+from app.services.agent_core.types import TERMINAL_STATUSES
 from app.services.agent_core.workspace import WorkspaceError
 
 router = APIRouter(prefix="/agent-sessions", tags=["agent-sessions"])
@@ -38,6 +41,8 @@ def _service() -> AgentCoreService:
 def _raise(exc: Exception):
     if isinstance(exc, LookupError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, AgentCoreConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, AgentCoreValidationError | WorkspaceError | ValueError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # "This external executor cannot run, and here is what to fix" is the
@@ -102,6 +107,9 @@ def stream_events(session_id: str, after: int = Query(default=0, ge=0)):
         cursor = after
         idle_since = time.monotonic()
         while True:
+            if shutdown.requested():
+                yield shutdown.SHUTDOWN_LINE
+                return
             batch = service.events(session_id, after=cursor)
             for event in batch:
                 cursor = event["seq"]
@@ -112,12 +120,12 @@ def stream_events(session_id: str, after: int = Query(default=0, ge=0)):
                 idle_since = time.monotonic()
             else:
                 session = service.get(session_id)
-                if session.status in {"completed", "failed", "cancelled"}:
+                if session.status in TERMINAL_STATUSES:
                     return
                 if time.monotonic() - idle_since > STREAM_IDLE_TIMEOUT:
                     yield json.dumps({"type": "idle", "seq": cursor}) + "\n"
                     return
-                time.sleep(POLL_INTERVAL)
+                shutdown.wait(POLL_INTERVAL)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 

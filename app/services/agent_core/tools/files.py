@@ -1,4 +1,4 @@
-"""File tools: read, list, glob, grep, write, edit, delete.
+"""File tools: read, list, glob, grep, create directories, write, edit, delete.
 
 These are the agent's hands. Everything resolves through
 ``agent_core.workspace``, so containment is enforced in one place rather than
@@ -20,17 +20,13 @@ import re
 from pathlib import Path
 
 from app.core import textio
+from app.core.fs_errors import permission_message
+from app.core.paths import is_reparse_point, walk_contained
 from app.services.agent_core import journal
-from app.services.agent_core.tools.base import AgentTool, ToolContext
+from app.services.agent_core.tools.base import AgentTool, ToolContext, ok
+from app.services.agent_core.types import Evidence
 from app.services.agent_core.workspace import WorkspaceError, is_live, repo_root, resolve
-
-#: A bind-mounted folder keeps its host ownership, so a container running as a
-#: different uid can read everything and write nothing. Saying so beats "Errno 13".
-PERMISSION_HINT = (
-    "Permission denied writing {path}. If Neo is running in a container, the "
-    "mounted folder belongs to a different user than the container runs as -- set "
-    "NEO_UID and NEO_GID to your own (`id -u` / `id -g`) and restart."
-)
+from app.services.isolation import safe_fs
 
 MAX_READ_BYTES = 200_000
 MAX_MATCHES = 100
@@ -42,15 +38,21 @@ _BINARY_PROBE = 8192
 
 def _is_binary(path: Path) -> bool:
     try:
-        return b"\x00" in path.open("rb").read(_BINARY_PROBE)
+        with path.open("rb") as handle:
+            return b"\x00" in handle.read(_BINARY_PROBE)
     except OSError:
         return False
 
 
 def _iter_files(root: Path):
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and not path.is_symlink():
-            yield path
+    """Every file the agent may see, in a stable order.
+
+    Through ``walk_contained``, which never enters a symlink or a junction: a
+    walk that follows one reads a folder outside the workspace, whatever the
+    per-path checks in ``workspace.resolve`` would have said about it.
+    """
+
+    yield from sorted(walk_contained(root), key=lambda path: path.relative_to(root).as_posix())
 
 
 def read_file(arguments: dict, context: ToolContext):
@@ -83,7 +85,10 @@ def list_dir(arguments: dict, context: ToolContext):
     if not target.exists() or not target.is_dir():
         raise WorkspaceError(f"'{raw or '.'}' is not a directory.")
     entries = []
-    for child in sorted(target.iterdir())[:MAX_ENTRIES]:
+    # Links are left out: nothing under one can be read or written, so listing
+    # it would only invite a call that is refused.
+    children = [child for child in sorted(target.iterdir()) if not is_reparse_point(child)]
+    for child in children[:MAX_ENTRIES]:
         entries.append(f"{child.name}/" if child.is_dir() else child.name)
     return "\n".join(entries) or "(empty directory)"
 
@@ -130,6 +135,38 @@ def grep(arguments: dict, context: ToolContext):
     return "\n".join(results) or "(no matches)"
 
 
+def create_directory(arguments: dict, context: ToolContext):
+    root = repo_root(context.repo_id)
+    raw = arguments.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        raise WorkspaceError("`path` must be a non-empty relative path.")
+    path = resolve(root, raw)
+    relative = path.relative_to(root).as_posix()
+    try:
+        if safe_fs.supported():
+            safe_fs.mkdir(root, relative)
+        else:
+            # Windows uses the same containment and reparse-point checks as
+            # other workspace tools. Only create the leaf, never its parents.
+            path.mkdir(exist_ok=True)
+        if not resolve(root, relative).is_dir():
+            raise WorkspaceError(f"'{relative}' is not a directory.")
+    except PermissionError as exc:
+        raise WorkspaceError(permission_message(relative, exc, target=path.parent)) from exc
+    except FileNotFoundError as exc:
+        raise WorkspaceError(f"The parent folder for '{relative}' does not exist.") from exc
+    except FileExistsError as exc:
+        raise WorkspaceError(f"'{relative}' already exists and is not a directory.") from exc
+
+    call_id = context.extras["call_id"]
+    detail = f"Verified directory {relative}/ in the attached workspace."
+    if not is_live(context.repo_id):
+        detail += " Empty directories in a managed copy are not included in file delivery."
+    return ok(call_id, "create_directory", detail, Evidence(
+        kind="file_verify", tool_call_id=call_id, passed=True, detail=detail
+    ))
+
+
 def write_file(arguments: dict, context: ToolContext):
     root = repo_root(context.repo_id)
     path = resolve(root, str(arguments.get("path", "")))
@@ -141,13 +178,16 @@ def write_file(arguments: dict, context: ToolContext):
     live = is_live(context.repo_id)
     if live:
         journal.record_before(context.session_id, context.repo_id, root, relative)
-    path.parent.mkdir(parents=True, exist_ok=True)
     # A file Neo is replacing keeps the line endings it already had; a new one
-    # gets LF. Either way the platform never gets to decide.
+    # gets LF. Either way the platform never gets to decide. The write is atomic:
+    # if it is refused, what was there before is still there.
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         textio.write_text(path, content)
     except PermissionError as exc:
-        raise WorkspaceError(PERMISSION_HINT.format(path=relative)) from exc
+        raise WorkspaceError(permission_message(relative, exc, target=path)) from exc
+    except textio.NotTextError as exc:
+        raise WorkspaceError(str(exc)) from exc
     if live:
         journal.record_after(context.session_id, root, relative)
     return f"{'Updated' if existed else 'Created'} {relative} ({len(content)} characters)."
@@ -172,7 +212,14 @@ def edit_file(arguments: dict, context: ToolContext):
     if old == new:
         raise WorkspaceError("`old_string` and `new_string` are identical.")
 
-    text = textio.read_text(path)
+    # Read in the encoding the file is actually in. Decoding a cp1252 file as
+    # UTF-8 "with replacement" and writing it back destroyed every accented
+    # character in it, far from the line being edited.
+    try:
+        current = textio.read_editable(path)
+    except textio.NotTextError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    text = current.text
     occurrences = text.count(old)
     if occurrences == 0:
         raise WorkspaceError("`old_string` was not found in that file.")
@@ -187,9 +234,13 @@ def edit_file(arguments: dict, context: ToolContext):
     if live:
         journal.record_before(context.session_id, context.repo_id, root, relative)
     try:
-        textio.write_text(path, text.replace(old, new))
+        textio.write_text(
+            path, text.replace(old, new), newline=current.newline, encoding=current.encoding
+        )
     except PermissionError as exc:
-        raise WorkspaceError(PERMISSION_HINT.format(path=relative)) from exc
+        raise WorkspaceError(permission_message(relative, exc, target=path)) from exc
+    except textio.NotTextError as exc:
+        raise WorkspaceError(str(exc)) from exc
     if live:
         journal.record_after(context.session_id, root, relative)
     return f"Edited {relative} ({occurrences} replacement{'s' if occurrences != 1 else ''})."
@@ -208,7 +259,7 @@ def delete_file(arguments: dict, context: ToolContext):
     try:
         path.unlink()
     except PermissionError as exc:
-        raise WorkspaceError(PERMISSION_HINT.format(path=relative)) from exc
+        raise WorkspaceError(permission_message(relative, exc, target=path)) from exc
     return f"Deleted {relative}."
 
 
@@ -220,6 +271,26 @@ def _text(handler):
 
 
 TOOLS = [
+    AgentTool(
+        name="create_directory",
+        description=(
+            "Create and verify an empty directory inside the attached workspace. "
+            "The parent directory must already exist."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path relative to the workspace root."},
+            },
+            "required": ["path"],
+        },
+        risk="workspace_write",
+        requires_repo=True,
+        handler=create_directory,
+        path_arguments=("path",),
+        summary=lambda a: f"Create folder {a.get('path')}",
+        supports_undo=False,
+    ),
     AgentTool(
         name="read_file",
         description="Read a text file from the repository, with line numbers.",

@@ -120,7 +120,7 @@ class CompletionAdjudicator:
             # than letting an outage upgrade the outcome.
             return StopVerdict(
                 stop_reason="unverified_complete",
-                summary=session.summary or "The run finished; completion could not be adjudicated.",
+                summary=session.summary or "Neo could not verify that the request was completed.",
             )
 
         summary = str(decoded.get("summary") or "").strip() or "The run finished."

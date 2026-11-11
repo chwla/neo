@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
-from app.core.config import get_settings
+from app.core.config import active_profile_database_url, get_base_settings, get_settings
 
 MAX_CONCURRENT_TURNS_KEY = "max_concurrent_turns"
 MAX_CONCURRENT_EXTERNAL_TURNS_KEY = "max_concurrent_external_turns"
@@ -26,7 +26,8 @@ MAX_CONCURRENT_TURNS = 10
 
 
 def _db_path() -> str:
-    url = get_settings().database_url
+    # Settings overlays read this store; rebuilding settings here would recurse.
+    url = active_profile_database_url.get() or get_base_settings().database_url
     return url.replace("sqlite:///", "", 1) if url.startswith("sqlite:///") else "neo_memory.db"
 
 

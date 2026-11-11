@@ -145,7 +145,7 @@ def _tool_call_id(index: int, raw: dict[str, Any]) -> str:
     return str(raw.get("id") or f"call_{index}")
 
 
-def _decode_arguments(value: Any) -> dict[str, Any]:
+def _decode_arguments(value: Any) -> dict[str, Any] | None:
     """OpenAI sends arguments as a JSON *string*; Ollama sends an object."""
 
     if isinstance(value, dict):
@@ -154,9 +154,9 @@ def _decode_arguments(value: Any) -> dict[str, Any]:
         try:
             decoded = json.loads(value)
         except json.JSONDecodeError:
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
-    return {}
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return {} if value is None else None
 
 
 def normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:

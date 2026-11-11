@@ -79,7 +79,17 @@ command or test suite would run with your whole user account, so Neo never runs 
 unattended there: every launch needs your approval of that exact command, after Neo
 has said what running it unsandboxed exposes. AUTO mode asks too. The rule is enforced
 at the moment each process starts (`app/services/isolation/launch.py`), not only in
-the interface.
+the interface. On Windows, Neo never starts a `.cmd` or `.bat` file (which `cmd.exe`
+would re-parse): `npm` and `npx` run as `node` with their own script, and any other
+batch shim is refused.
+
+File edits are the same on every platform. A write goes to a temporary file beside the
+target and is renamed over it, so a write that is refused -- the file open in another
+program, read-only, the disk full -- leaves the original bytes in place. A file that is
+not UTF-8 is edited in its own encoding, or the edit is refused; it is never rewritten
+with replacement characters. Undo, patch apply, delivery and checkpoints use anchored
+writes that cannot be redirected out of the folder by a symlink or junction, on macOS,
+Linux and Windows alike.
 
 ### Reaching your folder
 
@@ -123,9 +133,14 @@ managed attachment alike:
   configured root, so it holds inside a container too.
 - Neo's own data directory is refused, including any folder that contains it: it holds
   every profile's database and the connector key.
+- On Windows, `%APPDATA%`, `%LOCALAPPDATA%` and `%PROGRAMDATA%` are refused whole (browser
+  profiles, saved credentials and the DPAPI keys all live there), as is anything under
+  `AppData`; on Linux, `~/.config`, `~/.gnupg`, `~/.docker`, `~/.kube` and the keyrings.
+  These are decided from the path alone, before Neo looks inside the folder.
 - Symlinks and Windows junctions are refused, `..` cannot escape the root, and the system
   trees (`/etc`, `/usr`, `/System`, …), the account containers (`/Users`, `/home`) and
-  `$HOME` itself stay refused as they always were.
+  `$HOME` itself stay refused as they always were. Neo's own file tools (`glob`, `grep`,
+  `list_dir`) never follow a link or junction out of the folder either.
 
 Other broad folders such as `Desktop` and `Documents` are not refused by name. Attaching
 one indexes everything in it, so pick the project folder inside instead.
@@ -152,15 +167,29 @@ untouched, on every platform.
 Requirements:
 
 - Python 3.12 or newer
-- Node.js 22 or a compatible current LTS release
+- Node.js 20 or newer (22 is what CI builds with)
 - npm
 - optionally Ollama or an OpenAI-compatible model endpoint
 
 ```bash
 python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --no-deps -e ".[dev]"
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+On Windows (PowerShell) the same steps are:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install --no-deps -e ".[dev]"
+.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+`requirements.txt` holds the exact versions Neo is tested with; `pyproject.toml` carries only
+lower bounds, and installing from it alone resolves to a different, untested set. Stop the
+server with Ctrl+C: it exits within a few seconds even while a browser tab holds a stream open.
 
 In another terminal:
 
@@ -278,17 +307,26 @@ add an authenticated TLS reverse proxy before exposure.
 
 ## Supported platforms and browsers
 
-| Target | Status |
-|---|---|
-| macOS, native | Supported. Commands and tests run in the Seatbelt sandbox. |
-| Linux, native | Installs, starts and serves (CI, Python 3.12 and 3.14). Commands and tests need per-run approval (no sandbox). |
-| Windows, native | Installs, starts and serves (CI, Python 3.12 and 3.14). Commands and tests need per-run approval (no sandbox). Agent undo, patch apply, delivery and checkpoint restore are unavailable: Neo cannot guarantee on Windows that a restoring write stays inside the folder, so it refuses rather than risk it. |
-| Docker | Verified: the image builds, starts and serves on Linux Docker Engine (CI) and Docker Desktop. Same command rules as Linux. |
-| Chrome, Edge 111+ / Firefox 121+ / Safari 16.2+ (iOS 16.2+) | The supported floor (`browserslist` in `frontend/package.json`). |
+One code path runs on macOS, Linux and Windows. The table says exactly what differs; a
+row that says "supported" has that capability working the same way on every platform.
 
-Every push runs `.github/workflows/ci.yml`: lint and a startup check on macOS, Linux and
-Windows, the frontend production build, and the Docker image smoke test.
-`docs/release-readiness.md` records what each target has been verified to do.
+| Capability | macOS | Linux | Windows | Docker |
+|---|---|---|---|---|
+| Install, start, serve, chat, memory, notes, search, agent file tools | supported | supported | supported | supported |
+| Agent undo, patch apply, delivery, Git init and checkpoints (anchored writes) | supported | supported | supported | supported |
+| AUTO mode edits files unattended (managed copy and live folder) | supported | supported | supported | supported |
+| Commands and test runs sandboxed | Seatbelt | **no**: each run needs your approval | **no**: each run needs your approval | **no**: each run needs your approval |
+| External coding CLIs (Claude Code, Codex, …) | supported | **refused** (no validated sandbox) | **refused** (no validated sandbox) | **refused** |
+| External CLI sign-in through a terminal | supported | supported | **no** (no pseudo-terminal) | n/a |
+| Browsers | Chrome, Edge 111+ / Firefox 121+ / Safari 16.2+ (iOS 16.2+): the floor in `browserslist` (`frontend/package.json`) |
+
+A Linux or Windows sandbox for commands, tests and external CLIs is not in this release; the
+per-run approval, with the exposure spelled out on the card, is the rule until it is.
+
+Every push runs `.github/workflows/ci.yml`: lint, the workspace-containment and data-safety
+checks, the agent-loop and CLI checks, and a startup smoke on macOS, Linux and Windows
+(Python 3.12, 3.13 and 3.14), the frontend production build on all three, and the Docker
+image smoke test. The scripts are in `.github/scripts/`.
 
 ## Validation
 
@@ -315,7 +353,8 @@ curl -fsS http://127.0.0.1:8000/api/health/ready
 ```text
 app/                 FastAPI routes, services, persistence, models, CLI, and TUI
 frontend/            React/Vite application and browser API client
-.github/workflows/   CI: lint and startup on macOS/Linux/Windows, frontend build, Docker smoke
+.github/workflows/   CI: lint, safety checks and startup on macOS/Linux/Windows, frontend build, Docker smoke
+.github/scripts/     The checks CI runs: agent tools, workspace safety, CLI and platform behaviour, smoke
 docs/                Setup, backend and frontend guides
 docker/searxng/      Settings for the SearXNG that runs inside Neo's process
 Dockerfile           Production frontend/backend image

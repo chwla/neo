@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.paths import is_reparse_point
 from app.services.files.safety import extension_for, is_preview_supported
 from app.services.repos.safety import ensure_inside
 
@@ -85,7 +86,8 @@ def scan_repo(
             if (
                 name in IGNORED_DIRS
                 or (name.startswith(".") and name != ".neo")
-                or path.is_symlink()
+                # A junction is a directory that is not a symlink; both lead out.
+                or is_reparse_point(path)
             ):
                 ignored_dirs += 1
             else:
@@ -101,7 +103,7 @@ def scan_repo(
                 name in IGNORED_NAMES
                 or name.startswith(".")
                 or any(fnmatch.fnmatch(name.lower(), pattern) for pattern in IGNORED_PATTERNS)
-                or source.is_symlink()
+                or is_reparse_point(source)
             ):
                 ignored_files += 1
                 continue

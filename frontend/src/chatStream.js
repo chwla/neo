@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { entryFromEvent } from "./AgentTurn.jsx";
 
-const TERMINAL_EVENTS = new Set(["run.completed", "run.failed", "run.cancelled"]);
+const TERMINAL_EVENTS = new Set([
+  "run.completed",
+  "run.failed",
+  "run.cancelled",
+  "run.interrupted",
+]);
 
 //: How long a batch may wait when there are no frames to ride on -- a hidden
 //: tab, where `requestAnimationFrame` stops. Short enough that a turn finishing
@@ -81,7 +86,7 @@ function reduce(state, event) {
         statusText: "Queued - waiting for a free slot",
       };
     case "run.started":
-      return { ...moved, sessionStatus: "running" };
+      return { ...moved, sessionStatus: "running", statusText: "" };
     case "chunk":
       return moved.kind === "agent"
         ? { ...moved, entries: [...moved.entries, entryFromEvent(event)].filter(Boolean) }
@@ -100,6 +105,7 @@ function reduce(state, event) {
       return {
         ...moved,
         sessionStatus: "running",
+        statusText: "",
         entries: [...moved.entries, entryFromEvent(event)].filter(Boolean),
       };
     case "step.started":
@@ -201,6 +207,7 @@ export function useChatStreams({ onTurnEnd } = {}) {
     let queue = [];
     let frame = 0;
     let backstop = 0;
+    let serverStopping = false;
 
     function flush() {
       if (frame) cancelAnimationFrame(frame);
@@ -231,6 +238,12 @@ export function useChatStreams({ onTurnEnd } = {}) {
         return;
       }
       cursorRef.current = Math.max(cursorRef.current ?? 0, event.seq || 0);
+      if (event.type === "server.shutdown") {
+        // Neo is stopping. Reconnecting at the idle pace would hammer a server
+        // that is on its way down, so the next attempt waits longer.
+        serverStopping = true;
+        return;
+      }
       if (event.type === "idle") return;
       queue.push(event);
       if (!frame) frame = requestAnimationFrame(flush);
@@ -249,7 +262,9 @@ export function useChatStreams({ onTurnEnd } = {}) {
         if (cancelled) return;
         // The server closed on its idle timeout. Reopening is how the next turn
         // arrives -- including one started somewhere else entirely.
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        const pause = serverStopping ? 3000 : 400;
+        serverStopping = false;
+        await new Promise((resolve) => setTimeout(resolve, pause));
       }
     }
 

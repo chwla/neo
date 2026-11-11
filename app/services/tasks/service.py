@@ -139,6 +139,7 @@ class TasksService:
             parent_task_id = _validate_parent_task(payload.parent_task_id)
             if parent_task_id == task_id:
                 raise TasksValidationError("A task cannot be its own parent.")
+            _refuse_parent_cycle(task_id, parent_task_id)
             updates["parent_task_id"] = parent_task_id
         if payload.tags is not None:
             updates["tags"] = _normalize_tags(payload.tags)
@@ -326,6 +327,25 @@ def _validate_project(project_id: str | None) -> str | None:
     if projects_store.get_project(project_id) is None:
         raise TasksValidationError("Project not found.")
     return project_id
+
+
+def _refuse_parent_cycle(task_id: str, parent_task_id: str | None) -> None:
+    """Refuse a parent that is this task's own descendant.
+
+    Walked up from the new parent: if the walk reaches ``task_id`` the link would
+    close a loop, and every subtask walk afterwards would run forever.
+    """
+
+    seen: set[str] = set()
+    current = parent_task_id
+    while current:
+        if current == task_id:
+            raise TasksValidationError("A task cannot be moved under one of its own subtasks.")
+        if current in seen:
+            return  # an existing loop elsewhere; not made worse by this change
+        seen.add(current)
+        row = store.get_task(current, include_deleted=True)
+        current = (row or {}).get("parent_task_id")
 
 
 def _validate_parent_task(parent_task_id: str | None) -> str | None:

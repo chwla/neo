@@ -198,6 +198,25 @@ _META_LANGUAGE = re.compile(
     re.IGNORECASE,
 )
 
+# These are gates for retaining the semantic router, never permission to run
+# a capability. Chat need not classify an ordinary offline question with
+# another full inference. Ambiguous scheduling/live-data requests still do.
+_QUICK_CAPABILITY_CUE = re.compile(
+    r"\b(?:calendar|schedule|reschedule|appointments?|meetings?|events?|remind|reminder|"
+    r"book|booked|booking|cancel|move|plans?|busy|free|available|availability|connect|email|"
+    r"lunch|dinner|breakfast|dentist|doctor|flight|trip|birthday|anniversary|party|"
+    r"today|tonight|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|"
+    r"saturday|sunday|week|weekend|month|year|morning|afternoon|evening|"
+    r"at\s+\d|in\s+\d+\s+(?:minutes?|hours?|days?))\b",
+    re.IGNORECASE,
+)
+_QUICK_LOCAL_TASK = re.compile(
+    r"^\s*(?:(?:can|could|would)\s+you\s+|please\s+)?"
+    r"(?:write|rewrite|proofread|translate|summari[sz]e|debug|refactor|calculate)\b|"
+    r"^\s*what\s+can\s+you\s+(?:do|di)\b",
+    re.IGNORECASE,
+)
+
 _CURRENCY_CODES = {
     "dollar": "USD",
     "dollars": "USD",
@@ -641,6 +660,34 @@ class SearchIntentResolver:
                 **context,
             )
         return None
+
+    def resolve_without_model(
+        self, query: str, *, web_enabled: bool, timezone: str | None = None,
+        locale: str | None = None,
+    ) -> ResolvedSearchIntent | None:
+        """Skip auxiliary inference only when no live capability is indicated.
+
+        Explicit routes have already been resolved by the caller. With search
+        enabled, unfamiliar factual questions still reach the semantic router.
+        Memory recall remains part of answer context on the direct route.
+        """
+        cleaned = _SPACE.sub(" ", query or "").strip()
+        # These English cues cannot exclude a capability in another language.
+        if any(char.isalpha() and not char.isascii() for char in cleaned):
+            return None
+        if not cleaned or any(pattern.search(cleaned) for pattern in (
+            _QUICK_CAPABILITY_CUE, _WEATHER_SIGNAL, _CONNECTOR_SIGNAL,
+            _EXPLICIT_WEB_COMMAND, _CURRENT_WEB_SIGNAL,
+        )):
+            return None
+        if web_enabled and (current_status_cue(cleaned) or not _QUICK_LOCAL_TASK.search(cleaned)):
+            return None
+        return self._result(
+            SearchIntentKind.NONE, query, cleaned,
+            "Answer directly without an auxiliary routing call.",
+            _DETERMINISTIC_CONFIDENCE, decision_source="structured", route="direct",
+            timezone=timezone, locale=locale,
+        )
 
     def route_with_model(
         self,

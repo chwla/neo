@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.agent_core.types import ToolCall
-from app.services.disclosure import Label, invocation_label, public
+from app.services.disclosure import Label, invocation_label
 from app.services.llm import LLMMessage
 
 _FENCE = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -36,9 +36,8 @@ _SALVAGE_LEFTOVERS = re.compile(
 )
 
 _REPAIR_PROMPT = (
-    "That response was not valid JSON. Reply with nothing but a single fenced "
-    "```json block containing an object with a `tool_calls` array, or with plain "
-    "prose if no tool is needed."
+    "Use only the available tools and supply their required arguments. "
+    "If no available tool can fulfill the request, explain what is missing in plain prose."
 )
 
 
@@ -116,7 +115,10 @@ def _looks_like_a_tool_attempt(text: str) -> bool:
     answer and must not be second-guessed.
     """
 
-    return "tool_calls" in text or bool(_FENCE.search(text))
+    return bool(
+        re.search(r'"tool_calls"\s*:|<tool_call>|<function=', text)
+        or re.match(r'\s*\{\s*"name"\s*:', _extract_json_object(text) or "")
+    )
 
 
 def parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
@@ -131,9 +133,11 @@ def parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
         raise ToolProtocolError(f"Tool call block was not valid JSON: {exc}") from exc
     if not isinstance(decoded, dict):
         raise ToolProtocolError("Tool call block must be a JSON object.")
-    raw_calls = decoded.get("tool_calls")
-    if raw_calls is None:
+    if "tool_calls" not in decoded:
+        if "name" in decoded and ("arguments" in decoded or "parameters" in decoded):
+            raise ToolProtocolError("A tool request must use the `tool_calls` array.")
         return []
+    raw_calls = decoded["tool_calls"]
     if not isinstance(raw_calls, list):
         raise ToolProtocolError("`tool_calls` must be an array.")
 
@@ -146,7 +150,7 @@ def parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
             raise ToolProtocolError("Each tool call needs a `name`.")
         if name not in allowed:
             raise ToolProtocolError(f"Tool '{name}' is not available.")
-        arguments = raw.get("arguments") or {}
+        arguments = raw.get("arguments", {})
         if not isinstance(arguments, dict):
             raise ToolProtocolError(f"Arguments for '{name}' must be an object.")
         calls.append(ToolCall(id=f"call_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments))
@@ -223,8 +227,13 @@ def request_tool_calls(
     "stopped talking", not as "succeeded".
     """
 
-    allowed = {schema.get("function", schema).get("name") for schema in schemas}
-    allowed.discard(None)
+    functions = [schema.get("function", schema) for schema in schemas]
+    required = {
+        function["name"]: (function.get("parameters") or {}).get("required", [])
+        for function in functions
+        if function.get("name")
+    }
+    allowed = set(required)
     call_label = invocation_label(message.source_label for message in messages)
 
     def meta(result: Any) -> dict[str, Any]:
@@ -239,69 +248,60 @@ def request_tool_calls(
             if value is not None
         }
 
-    if bool(getattr(client, "supports_tools", lambda: False)()):
-        result = client.chat_with_metadata(
-            messages, temperature=temperature, num_predict=num_predict, tools=schemas
-        )
-        calls = [
-            ToolCall(id=call["id"], name=call["name"], arguments=call.get("arguments") or {})
-            for call in result.tool_calls
-            if call.get("name") in allowed
-        ]
-        if not calls:
-            # The model may have written the call into its prose instead. Only
-            # reachable when the structured field was empty, so a genuine final
-            # answer is untouched.
-            calls = salvage_tool_calls(result.content, allowed)
-            if calls:
-                return ModelTurn(
-                    _strip_salvaged(result.content), calls, result.finish_reason, meta(result),
-                    call_label,
-                )
-        return ModelTurn(result.content, calls, result.finish_reason, meta(result), call_label)
-
+    native = bool(getattr(client, "supports_tools", lambda: False)())
     attempt_messages = list(messages)
     for attempt in range(2):
         result = client.chat_with_metadata(
-            attempt_messages, temperature=temperature, num_predict=num_predict
+            attempt_messages, temperature=temperature, num_predict=num_predict,
+            **({"tools": schemas} if native else {}),
         )
+        content = result.content
         try:
-            calls = parse_text_tool_calls(result.content, allowed)
-        except ToolProtocolError:
-            # A model ignoring the JSON protocol for its own native format is
-            # answering correctly in the wrong dialect; take it before retrying.
-            salvaged = salvage_tool_calls(result.content, allowed)
-            if salvaged:
-                return ModelTurn(
-                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result),
-                    call_label,
-                )
-            # Prose that merely mentions a tool is a final answer, not a broken
-            # attempt, so only a real attempt is worth a repair round trip.
-            if attempt == 0 and _looks_like_a_tool_attempt(result.content):
-                attempt_messages = [
-                    *attempt_messages,
-                    LLMMessage(role="assistant", content=result.content, source_label=call_label),
-                    LLMMessage(
-                        role="user", content=_REPAIR_PROMPT,
-                        source_label=public("builtin:tool_repair"),
-                    ),
-                ]
-                continue
-            raise
-        if not calls:
-            salvaged = salvage_tool_calls(result.content, allowed)
-            if salvaged:
-                return ModelTurn(
-                    _strip_salvaged(result.content), salvaged, result.finish_reason, meta(result),
-                    call_label,
-                )
-        return ModelTurn(
-            _strip_tool_block(result.content) if calls else result.content,
-            calls,
-            result.finish_reason,
-            meta(result),
-            call_label,
-        )
+            calls = []
+            if native and result.tool_calls:
+                for raw in result.tool_calls:
+                    name = raw["name"]
+                    arguments = raw.get("arguments")
+                    if not isinstance(arguments, dict):
+                        raise ToolProtocolError(f"Arguments for '{name}' must be an object.")
+                    calls.append(ToolCall(id=raw["id"], name=name, arguments=arguments))
+            else:
+                calls = salvage_tool_calls(content, allowed)
+                if calls:
+                    content = _strip_salvaged(content)
+                elif _looks_like_a_tool_attempt(content):
+                    calls = parse_text_tool_calls(content, allowed)
+                    if not calls and re.search(r"<tool_call>|<function=", content):
+                        raise ToolProtocolError("The response did not contain a usable call.")
+                    if calls:
+                        payload = _extract_json_object(content)
+                        content = "" if content.strip() == payload else _strip_tool_block(content)
+
+            for call in calls:
+                if call.name not in allowed:
+                    raise ToolProtocolError(f"Tool '{call.name}' is not available.")
+                missing = set(required[call.name]) - call.arguments.keys()
+                if missing:
+                    raise ToolProtocolError(
+                        f"'{call.name}' needs these arguments: {', '.join(sorted(missing))}."
+                    )
+            return ModelTurn(content, calls, result.finish_reason, meta(result), call_label)
+        except ToolProtocolError as exc:
+            if result.finish_reason == "length":
+                return ModelTurn("", [], result.finish_reason, meta(result), call_label)
+            if attempt:
+                raise
+            format_hint = (
+                "Use the provider's tool call field." if native else
+                'Use a fenced JSON object with a "tool_calls" array, "name" and "arguments".'
+            )
+            attempt_messages = [
+                *attempt_messages,
+                LLMMessage(
+                    role="user",
+                    content=f"The last tool request failed: {exc}\n{_REPAIR_PROMPT} {format_hint}",
+                    source_label=call_label,
+                ),
+            ]
 
     raise ToolProtocolError("The model did not produce a usable tool call.")

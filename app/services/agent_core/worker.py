@@ -16,8 +16,9 @@ import threading
 import uuid
 
 from app.services.agent_core import events, store
+from app.services.agent_core.completion import CompletionAdjudicator
 from app.services.agent_core.loop import AgentLoop, resume_after_approval
-from app.services.agent_core.types import EXTERNAL_EXECUTORS
+from app.services.agent_core.types import EXTERNAL_EXECUTORS, TERMINAL_STATUSES
 
 _LOG = logging.getLogger(__name__)
 
@@ -25,8 +26,25 @@ _LOG = logging.getLogger(__name__)
 #: one held by a live worker in another process.
 PROCESS_WORKER_ID = str(uuid.uuid4())
 
-_ACTIVE: set[str] = set()
+#: How many heartbeats fit in one lease window.
+HEARTBEATS_PER_LEASE = 3
+
+#: Session id -> the profile storage it runs in. Keyed by profile because the
+#: concurrency cap is a per-profile preference: counting every profile's runs
+#: against each profile's cap let one account's work stall everyone else's.
+_ACTIVE: dict[str, str] = {}
+#: Sessions that were cancelled while their worker thread is still inside a model
+#: call. The thread is still alive -- profile deletion waits on it -- but it no
+#: longer holds a turn slot, or one stuck call would block the slot for as long
+#: as the provider took to answer.
+_RELEASED: set[str] = set()
 _LOCK = threading.Lock()
+
+
+def _profile_key() -> str:
+    from app.core.config import active_profile_storage_dir
+
+    return active_profile_storage_dir.get() or ""
 
 
 def _run_guarded(session_id: str, approval_id: str | None, loop_factory) -> None:
@@ -40,8 +58,28 @@ def _run_guarded(session_id: str, approval_id: str | None, loop_factory) -> None
     def beat() -> None:
         # A long tool call can outlast the lease window; refreshing from a side
         # thread keeps a live worker from looking abandoned to the next claimant.
-        while not stop_heartbeat.wait(store.LEASE_SECONDS / 3):
-            if not store.heartbeat(session_id, lease_token):
+        # A heartbeat that cannot be written means the lease will expire and a
+        # second worker may claim this run while this one is still going. So a
+        # lost lease, or a beat that keeps failing, cancels the run rather than
+        # ending this thread silently.
+        failures = 0
+        while not stop_heartbeat.wait(store.LEASE_SECONDS / HEARTBEATS_PER_LEASE):
+            try:
+                alive = store.heartbeat(session_id, lease_token)
+            except Exception:
+                failures += 1
+                _LOG.warning("agent_heartbeat_failed session=%s", session_id, exc_info=True)
+                if failures < HEARTBEATS_PER_LEASE - 1:
+                    continue
+                alive = False
+            else:
+                failures = 0
+            if not alive:
+                _LOG.warning("agent_lease_lost session=%s", session_id)
+                try:
+                    store.cancel_session(session_id)
+                except Exception:
+                    _LOG.warning("agent_lease_cancel_failed session=%s", session_id, exc_info=True)
                 return
 
     heart = threading.Thread(target=beat, name=f"neo-agent-hb-{session_id[:8]}", daemon=True)
@@ -69,7 +107,7 @@ def _run_guarded(session_id: str, approval_id: str | None, loop_factory) -> None
     except Exception as exc:
         _LOG.warning("agent_session_failed session=%s", session_id, exc_info=exc)
         session = store.get_session(session_id)
-        if session and session["status"] not in {"completed", "failed", "cancelled"}:
+        if session and session["status"] not in TERMINAL_STATUSES:
             store.update_session(
                 session_id,
                 {
@@ -90,7 +128,8 @@ def _run_guarded(session_id: str, approval_id: str | None, loop_factory) -> None
             # deleted profile has no database left -- or the id would hold one of
             # the process's turn slots until restart.
             with _LOCK:
-                _ACTIVE.discard(session_id)
+                _ACTIVE.pop(session_id, None)
+                _RELEASED.discard(session_id)
 
 
 def start(session_id: str, *, approval_id: str | None = None, loop_factory=None) -> None:
@@ -105,7 +144,7 @@ def start(session_id: str, *, approval_id: str | None = None, loop_factory=None)
     with _LOCK:
         if session_id in _ACTIVE:
             return
-        _ACTIVE.add(session_id)
+        _ACTIVE[session_id] = _profile_key()
 
     factory = loop_factory or default_loop_factory
     context = contextvars.copy_context()
@@ -123,15 +162,40 @@ def is_active(session_id: str) -> bool:
 
 
 def active_ids() -> set[str]:
-    """Sessions this process is running right now.
+    """Every session with a worker thread in this process, whatever its profile.
 
-    Read by the concurrency cap, which has to count a run that has been handed a
-    thread but has not yet flipped its row to ``running``.  Counting only the
-    database would let a second turn in through that window.
+    For callers that must not touch a run that is still going: profile deletion,
+    which waits for these threads, and the lease sweep, which leaves them alone.
     """
 
     with _LOCK:
         return set(_ACTIVE)
+
+
+def slot_holders() -> set[str]:
+    """The current profile's sessions that are using a turn slot right now.
+
+    Read by the concurrency cap, which has to count a run that has been handed a
+    thread but has not yet flipped its row to ``running``.  Counting only the
+    database would let a second turn in through that window. Only this profile's
+    runs count, and not one that has been cancelled and is merely letting go.
+    """
+
+    profile = _profile_key()
+    with _LOCK:
+        return {
+            session_id
+            for session_id, owner in _ACTIVE.items()
+            if owner == profile and session_id not in _RELEASED
+        }
+
+
+def release_slot(session_id: str) -> None:
+    """Give back a cancelled run's turn slot without waiting for its thread."""
+
+    with _LOCK:
+        if session_id in _ACTIVE:
+            _RELEASED.add(session_id)
 
 
 def default_loop_factory() -> AgentLoop:
@@ -142,7 +206,14 @@ def default_loop_factory() -> AgentLoop:
         # argument, and a truncated turn costs an extra round trip to recover.
         return get_llm_client(num_predict=8192, timeout=900, route_name="agent")
 
-    return AgentLoop(llm_factory=llm, context_window=_context_window())
+    def completion_client() -> object:
+        return get_llm_client(num_predict=400, timeout=60, route_name="agent")
+
+    return AgentLoop(
+        llm_factory=llm,
+        adjudicator=CompletionAdjudicator(completion_client),
+        context_window=_context_window(),
+    )
 
 
 def _context_window() -> int | None:

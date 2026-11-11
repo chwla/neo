@@ -57,3 +57,6 @@ searxng
 
 # Not part of the image
 tests
+
+# Local audit notes, evidence, screenshots, and investigation tooling.
+/audit/

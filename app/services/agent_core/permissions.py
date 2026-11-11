@@ -124,6 +124,42 @@ def _escapes_hard_forbidden(relative_path: str) -> bool:
     return False
 
 
+#: A run from before provenance was recorded: nothing says what it read.
+LEGACY_CONTEXT_TAG = "legacy_context"
+
+#: How each private source is named to the person being asked.
+_SOURCE_NAMES = {
+    "memory": "your memories",
+    "gallery": "your gallery",
+    "calendar": "your calendar",
+    "skill": "an installed skill",
+    "chat_private": "this conversation",
+    "project": "this project",
+    "agent_def": "this agent's instructions",
+    "notes": "your notes",
+    "files": "your files",
+    LEGACY_CONTEXT_TAG: "earlier context whose source was not recorded",
+}
+
+#: Tools that only change the workspace: nothing leaves the machine when they run.
+_WORKSPACE_ONLY_EGRESS = frozenset({"write_file", "edit_file", "delete_file"})
+
+
+def _join_words(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _normal_relative(value: str) -> list[str] | None:
+    """A relative path as its segments, or ``None`` if it is not a plain one."""
+
+    segments = [part for part in value.replace("\\", "/").split("/") if part not in {"", "."}]
+    if not segments or ".." in segments:
+        return None
+    return [path_key(part) for part in segments]
+
+
 def resolve_outcome(risk: str, mode: str) -> Outcome:
     """The overlay lookup, with an unknown combination failing closed."""
 
@@ -156,10 +192,18 @@ class EgressContext:
         return not self.label.is_public()
 
     def describe(self) -> str:
+        """What was read, in words a person recognises -- never the internal tag."""
+
         if self.label.is_unknown():
             return "data of unrecorded origin"
-        tags = ", ".join(sorted(self.label.tags)) or "your data"
-        return tags
+        named = sorted({_SOURCE_NAMES.get(tag, "your private data") for tag in self.label.tags})
+        return _join_words(named) or "your private data"
+
+    @property
+    def legacy_only(self) -> bool:
+        """Restricted only because the run predates provenance records."""
+
+        return self.label.is_private() and set(self.label.tags) == {LEGACY_CONTEXT_TAG}
 
 
 @dataclass(frozen=True)
@@ -192,7 +236,16 @@ def grant_matches(grant: Grant, tool: AgentTool, arguments: dict[str, Any]) -> b
         argument = str(predicate.get("argument") or "path")
         prefix = str(predicate.get("value") or "")
         value = arguments.get(argument)
-        return isinstance(value, str) and bool(prefix) and value.startswith(prefix)
+        if not isinstance(value, str):
+            return False
+        # By whole path segments, compared the way the filesystem reads them. A
+        # string prefix made a grant for ``src`` also cover ``src_private`` and
+        # ``src/../secrets``.
+        scope = _normal_relative(prefix)
+        target = _normal_relative(value)
+        if scope is None or target is None:
+            return False
+        return target[: len(scope)] == scope
     if kind == "exact_arguments":
         return dict(predicate.get("value") or {}) == dict(arguments)
     # An unrecognised predicate grants nothing.
@@ -251,13 +304,19 @@ class PermissionResolver:
         # 5. Egress. Checked before the mode overlay, because the mode's job is to
         #    say how freely the agent may act on the *workspace*, and this is a
         #    different question: may what this turn has read go outward at all.
-        if egress is not None and egress.restricted and (
+        #    A run restricted only because it predates provenance records has no
+        #    known private read behind it, so a write that stays in the workspace is
+        #    left to the mode and the session's grants below.
+        legacy_workspace_write = (
+            egress is not None and egress.legacy_only and tool.name in _WORKSPACE_ONLY_EGRESS
+        )
+        if egress is not None and egress.restricted and not legacy_workspace_write and (
             tool.name in EGRESS_TOOLS or tool.source == "connector"
         ):
             destination = EGRESS_TOOLS.get(tool.name, "a connected service")
             reason = (
-                f"This turn has read {egress.describe()}, so sending anything to "
-                f"{destination} needs your approval."
+                f"This run has read {egress.describe()}, and {tool.name} sends data to "
+                f"{destination}, so it needs your approval."
             )
             if tool.risk == "command" and not isolated:
                 # The same card is the person's only chance to hear that the command
@@ -278,7 +337,9 @@ class PermissionResolver:
         # 8. A write the run cannot undo (a live folder on a platform with no safe
         #    restore) is not done unprompted. Unlike a command it may be granted for
         #    the session, because the predicate a person agrees to is a path.
-        unrecoverable_write = tool.risk == "workspace_write" and not undo_available
+        unrecoverable_write = tool.risk == "workspace_write" and (
+            not undo_available or not tool.supports_undo
+        )
         if unrecoverable_write and outcome == "allow":
             outcome = "ask"
 

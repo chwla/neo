@@ -99,6 +99,55 @@ def validate_repo_root(raw_path: str) -> Path:
     return resolved
 
 
+#: Refused at attach time in addition to the isolation layer's own list. Kept
+#: apart from it because that list is also what a sandboxed run is denied, and a
+#: run may legitimately read, say, ``~/.config/git``; attaching the whole of
+#: ``~/.config`` as a workspace is a different thing.
+ATTACH_PRIVATE = (
+    ".config",
+    ".local/share/keyrings",
+    ".gnupg",
+    ".docker",
+    ".kube",
+    ".azure",
+    ".password-store",
+    "AppData",
+)
+
+#: Windows keeps what POSIX keeps in dotfiles under these: browser profiles
+#: (``Google\Chrome\User Data``, ``Microsoft\Edge\User Data``, Firefox), saved
+#: credentials (``Microsoft\Credentials``, ``Microsoft\Vault``), the DPAPI master
+#: keys (``Microsoft\Protect``) and every other application's private state.
+_WINDOWS_PRIVATE_VARIABLES = ("APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ALLUSERSPROFILE")
+
+
+def _private_app_roots(environ: dict[str, str] | None = None) -> list[Path]:
+    """Per-user and machine-wide application data trees, where the platform has them.
+
+    Read from the environment as well as derived from the home directory, because a
+    redirected profile puts ``%APPDATA%`` somewhere other than the home folder's
+    own ``AppData``. Each is resolved, so an 8.3 short name or an extended-length
+    spelling of the same folder compares equal to the long one.
+    """
+
+    env = os.environ if environ is None else environ
+    raw: list[str] = []
+    for variable in _WINDOWS_PRIVATE_VARIABLES:
+        value = env.get(variable)
+        if value:
+            raw.append(value)
+    local = env.get("LOCALAPPDATA")
+    if local:
+        raw.append(local + "Low")
+    roots: list[Path] = []
+    for value in raw:
+        try:
+            roots.append(Path(value).resolve())
+        except OSError:
+            continue
+    return roots
+
+
 def _sensitive_overlap(resolved: Path) -> str | None:
     """The credential or private-app path ``resolved`` is, sits inside, or contains.
 
@@ -111,6 +160,15 @@ def _sensitive_overlap(resolved: Path) -> str | None:
 
     from app.services.isolation.roots import HOME_PRIVATE
 
+    # Whole trees first, and before anything looks inside the folder: these are
+    # refused by where they are, not by what a walk of them would find.
+    for root in _private_app_roots():
+        if same_path(resolved, root) or is_within(root, resolved):
+            return str(root)
+    home = Path.home().resolve()
+    if same_path(resolved.parent, home) and resolved.name.upper().startswith("NTUSER.DAT"):
+        return str(resolved)
+
     bases: list[Path] = []
     for raw in (str(Path.home()), *split_roots(get_settings().workspace_live_roots)):
         try:
@@ -118,7 +176,7 @@ def _sensitive_overlap(resolved: Path) -> str | None:
         except OSError:
             continue
     for base in bases:
-        for name in HOME_PRIVATE:
+        for name in (*HOME_PRIVATE, *ATTACH_PRIVATE):
             path = base / name
             if is_within(path, resolved) or (is_within(resolved, path) and path.exists()):
                 return str(path)

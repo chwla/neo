@@ -30,7 +30,7 @@ from app.services.provider_runtime.rate_limits import decision
 from app.services.provider_runtime.redaction import safe_stream_text, safe_value
 from app.services.provider_runtime.retries import MAX_RETRIES, backoff_ms, retryable
 from app.services.provider_runtime.router import select
-from app.services.provider_runtime.streaming import cancel, clear, start
+from app.services.provider_runtime.streaming import cancel, clear, notify, start
 from app.services.provider_runtime.types import RuntimeResult
 from app.services.provider_runtime.usage import summary
 
@@ -330,7 +330,7 @@ class ProviderRuntimeService:
                     finished = False
                     stream_usage: dict[str, int | None] = {}
                     finish_reason: str | None = None
-                    store.update_request(request["id"], status="streaming")
+                    store.update_request(request["id"], status="streaming", metadata=safe_metadata)
                     for event in client.chat_stream(
                         messages, num_predict=max_tokens, **_sampling(metadata)
                     ):
@@ -497,12 +497,14 @@ class ProviderRuntimeService:
         metadata = current.get("metadata") or {}
         metadata["partial_response"] = safe_stream_text(partial)
         store.update_request(request_id, metadata=metadata)
+        notify(request_id)
 
     def _thinking(self, request_id: str, thinking: str) -> None:
         current = store.get_request(request_id) or {}
         metadata = current.get("metadata") or {}
         metadata["thinking"] = safe_stream_text(thinking)
         store.update_request(request_id, metadata=metadata)
+        notify(request_id)
 
     def _finish(
         self,
@@ -552,6 +554,7 @@ class ProviderRuntimeService:
             metadata=metadata,
             completed_at=store.now(),
         )
+        notify(request_id)
         return RuntimeResult(
             request_id=request_id,
             tool_calls=list(tool_calls or []),
@@ -572,14 +575,17 @@ class ProviderRuntimeService:
             error_detail=detail or "",
         )
 
-    def warm(self, route_name: str = "chat") -> dict[str, Any]:
+    def warm(
+        self, route_name: str = "chat", *, prefix: str | None = None,
+        reasoning: bool = False,
+    ) -> dict[str, Any]:
         """Load the routed chat model before the first message needs it.
 
-        Local Ollama only, and only when nothing would be lost: the model is not
-        already loaded, and no other chat model is loaded that the load might
-        evict on a machine short of memory. The setting ``chat_model_warmup``
-        turns it off. Loads at the context size an ordinary turn asks for, so
-        the first message reuses the instance instead of reloading it.
+        Local Ollama only. An optional public prefix prepares the selected
+        model's prompt cache, including when its weights are already loaded.
+        Legacy load-only calls remain conservative about other loaded models.
+        Foreground streams take priority. Context sizing and keep-alive match
+        ordinary turns; no answer settings or conversation content are changed.
         """
 
         settings = get_settings()
@@ -597,7 +603,7 @@ class ProviderRuntimeService:
         loaded = ollama_loaded_model_names(base_url)
         if loaded is None:
             return {"status": "unreachable"}
-        if name in loaded:
+        if name in loaded and not prefix:
             return {"status": "already_loaded"}
         ignored = {name}
         try:
@@ -605,25 +611,45 @@ class ProviderRuntimeService:
         except Exception:
             pass
         others = [item for item in loaded if item not in ignored]
-        if others:
+        if others and not prefix:
             return {"status": "skipped", "reason": "another model is loaded", "loaded": others}
+        # Preparation is only speculative. Never put it behind an active answer
+        # in the provider's queue, or run it alongside that answer on the CPU.
+        from app.services.provider_runtime.streaming import all_live
+
+        if all_live():
+            return {"status": "busy"}
         # An ordinary turn: a prompt of roughly a thousand tokens plus the answer limit.
         num_ctx = fit_context(
-            1200 + settings.chat_num_predict,
+            1200 + settings.chat_num_predict
+            + (settings.chat_thinking_headroom_tokens if reasoning else 0),
             model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
         )
         started = time.perf_counter()
         try:
-            requests.post(
-                f"{base_url}/api/chat",
-                json={
-                    "model": name,
-                    "messages": [],
-                    "keep_alive": settings.ollama_keep_alive,
-                    "options": {"num_ctx": num_ctx},
-                },
-                timeout=provider.get("timeout_seconds") or 120,
-            ).raise_for_status()
+            if prefix:
+                num_ctx = _reuse_loaded_context(provider, model, num_ctx)
+                client = build_client(
+                    provider, model, num_predict=1, num_ctx=num_ctx, disable_thinking=True,
+                )
+                # One discarded token forces evaluation of the public system
+                # prefix. Empty requests only load weights and leave the first
+                # actual message paying the entire prompt-evaluation cost.
+                client.chat_with_metadata(
+                    [LLMMessage(role="system", content=prefix)],
+                    temperature=0.0, num_predict=1,
+                )
+            else:
+                requests.post(
+                    f"{base_url}/api/chat",
+                    json={
+                        "model": name,
+                        "messages": [],
+                        "keep_alive": settings.ollama_keep_alive,
+                        "options": {"num_ctx": num_ctx},
+                    },
+                    timeout=provider.get("timeout_seconds") or 120,
+                ).raise_for_status()
         except Exception as exc:
             return {"status": "failed", "error": type(exc).__name__}
         finally:
@@ -632,6 +658,7 @@ class ProviderRuntimeService:
             "status": "warmed",
             "model": name,
             "num_ctx": num_ctx,
+            "prefix_prepared": bool(prefix),
             "ms": int((time.perf_counter() - started) * 1000),
         }
 
@@ -661,4 +688,6 @@ class ProviderRuntimeService:
 
     def cancel_stream(self, request_id: str) -> dict | None:
         cancel(request_id)
-        return store.update_request(request_id, status="cancelled", completed_at=store.now())
+        result = store.update_request(request_id, status="cancelled", completed_at=store.now())
+        notify(request_id)
+        return result

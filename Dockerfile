@@ -33,7 +33,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEO_PORT=8000 \
     NEO_DATA_DIR=/app/data \
     NEO_FRONTEND_DIR=/app/app/static \
-    NEO_ENVIRONMENT=production \
     NEO_CONNECTOR_MASTER_KEY_FILE=/app/data/secrets/connector-master-key \
     NEO_SEARCH_PROVIDER=searxng \
     NEO_WEB_SEARCH_FALLBACK_PROVIDERS=duckduckgo,bing_html \
@@ -116,4 +115,5 @@ USER 10001:0
 HEALTHCHECK --interval=30s --timeout=20s --start-period=30s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=5)"]
 
+# app.runtime bounds graceful shutdown, so `docker stop` ends cleanly inside its grace period.
 CMD ["python", "-m", "app.runtime"]

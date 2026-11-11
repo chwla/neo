@@ -17,10 +17,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.api.deps import get_store
 from app.api.routes.accounts import session_for
+from app.core import shutdown
 from app.core.config import active_profile_storage_dir, get_settings
 from app.db.session import SessionLocal
 from app.models import Chat, ChatGeneration, ChatMessage, Project
@@ -33,7 +34,7 @@ from app.services.agent_core import events as agent_events
 from app.services.agent_core import store as agent_store
 from app.services.agent_core import worker as agent_worker
 from app.services.agent_core.types import EXTERNAL_EXECUTORS, Executor
-from app.services.chat import NeoChatService
+from app.services.chat import NeoChatService, chat_prompt_prefix
 from app.services.disclosure.chat_rows import derived_metadata, joined_rows
 from app.services.disclosure.labels import Label, public, to_json
 from app.services.llm import (
@@ -71,8 +72,28 @@ GENERATION_LEASE_SECONDS = 120
 #: response nobody reads. Anything below the line is still reachable by search
 #: and still opens by permalink.
 SIDEBAR_CHAT_CEILING = 200
-_GENERATION_THREADS: set[str] = set()
+#: Generation id -> the profile storage it runs in. The concurrency cap is a
+#: per-profile preference, so only the current profile's turns may count against
+#: it; one shared set let one account's replies queue everyone else's.
+_GENERATION_THREADS: dict[str, str] = {}
+#: Generations the person stopped whose worker thread is still letting go. Alive
+#: (profile deletion waits for them) but no longer holding a turn slot.
+_RELEASED_GENERATIONS: set[str] = set()
 _GENERATION_THREADS_LOCK = Lock()
+
+
+def _slot_profile() -> str:
+    return active_profile_storage_dir.get() or ""
+
+
+def _generation_slot_holders() -> set[str]:
+    profile = _slot_profile()
+    with _GENERATION_THREADS_LOCK:
+        return {
+            identifier
+            for identifier, owner in _GENERATION_THREADS.items()
+            if owner == profile and identifier not in _RELEASED_GENERATIONS
+        }
 
 #: Serialises the read-decide-write in ``create_chat``. Two clicks of New chat
 #: land in two threadpool threads, and without this both can see no empty chat
@@ -442,6 +463,8 @@ class ChatToolCatalogEntry(BaseModel):
     requires_repo: bool
     source: Literal["built_in", "connector"]
     enabled: bool
+    available: bool
+    unavailable_reason: str | None = None
     tool_id: str | None = None
     server_name: str | None = None
     group: str | None = None
@@ -1202,7 +1225,8 @@ def _run_chat_generation(profile: dict, generation_id: str) -> None:
         finally:
             db.close()
             with _GENERATION_THREADS_LOCK:
-                _GENERATION_THREADS.discard(generation_id)
+                _GENERATION_THREADS.pop(generation_id, None)
+                _RELEASED_GENERATIONS.discard(generation_id)
             # After the discard, never before: until this turn has let go of its
             # slot, the pump would count it and find no room for the turn waiting
             # on it. Still inside ``profile_database``, so the pump reads the
@@ -1222,7 +1246,8 @@ def _spawn_generation(profile: dict, generation_id: str) -> None:
     with _GENERATION_THREADS_LOCK:
         if generation_id in _GENERATION_THREADS:
             return
-        _GENERATION_THREADS.add(generation_id)
+        # Every caller is inside the profile's own database context.
+        _GENERATION_THREADS[generation_id] = _slot_profile()
     try:
         Thread(
             target=_run_chat_generation,
@@ -1232,7 +1257,7 @@ def _spawn_generation(profile: dict, generation_id: str) -> None:
         ).start()
     except Exception:
         with _GENERATION_THREADS_LOCK:
-            _GENERATION_THREADS.discard(generation_id)
+            _GENERATION_THREADS.pop(generation_id, None)
         raise
 
 
@@ -1244,7 +1269,7 @@ def live_generation_threads(generation_ids) -> set[str]:
     """
 
     with _GENERATION_THREADS_LOCK:
-        return _GENERATION_THREADS & set(generation_ids)
+        return set(_GENERATION_THREADS) & set(generation_ids)
 
 
 def all_live_generation_threads() -> set[str]:
@@ -1288,9 +1313,8 @@ def _occupied_slots() -> int:
         for identifier, heartbeat in running_sessions.items()
         if not _heartbeat_is_stale(heartbeat)
     }
-    with _GENERATION_THREADS_LOCK:
-        generations |= set(_GENERATION_THREADS)
-    sessions |= agent_worker.active_ids()
+    generations |= _generation_slot_holders()
+    sessions |= agent_worker.slot_holders()
     return len(generations) + len(sessions)
 
 
@@ -1307,7 +1331,7 @@ def _running_session_ids() -> set[str]:
         for identifier, heartbeat in running_sessions.items()
         if not _heartbeat_is_stale(heartbeat)
     }
-    return sessions | agent_worker.active_ids()
+    return sessions | agent_worker.slot_holders()
 
 
 def _external_free_slots() -> int:
@@ -1757,34 +1781,81 @@ def create_chat(request: ChatCreateRequest, response: Response, store: StoreDepe
 
 
 #: When this process last asked each profile's chat model to load.
-_LAST_WARMUP: dict[str, float] = {}
+_LAST_WARMUP: dict[tuple, float] = {}
+_WARMUP_PENDING: set[tuple] = set()
+_WARMUP_LOCK = Lock()
 #: At most one warm-up request per profile in this window.
 WARMUP_INTERVAL_SECONDS = 60.0
 
 
+class ChatWarmRequest(BaseModel):
+    effort: Literal["low", "high"] = "low"
+    timezone: str | None = Field(default=None, max_length=80)
+
+
 @router.post("/chat-model/warm", status_code=status.HTTP_202_ACCEPTED)
-def warm_chat_model() -> dict[str, str]:
+def warm_chat_model(payload: ChatWarmRequest | None = None) -> dict[str, str]:
     """Ask the local chat model to load, so the next message does not pay for it.
 
     The browser calls this when a conversation is opened. It returns at once and
     loads in the background; the runtime decides whether loading is worthwhile.
     """
 
-    key = get_settings().database_url
-    now = time.monotonic()
-    if now - _LAST_WARMUP.get(key, 0.0) < WARMUP_INTERVAL_SECONDS:
-        return {"status": "recent"}
-    _LAST_WARMUP[key] = now
+    from app.services.provider_runtime.router import select
+    from app.services.provider_runtime.streaming import all_live
+
+    payload = payload or ChatWarmRequest()
+    if not get_settings().chat_model_warmup:
+        return {"status": "disabled"}
+    if all_live_generation_threads() or all_live():
+        # The answer itself is already preparing the model. Retrying afterwards
+        # would unnecessarily replace its useful conversation cache.
+        return {"status": "in_use"}
+    try:
+        route = select("chat", "chat")
+    except Exception:
+        return {"status": "no_route"}
+    if route["provider"] != "ollama":
+        return {"status": "not_local"}
+    prefix = chat_prompt_prefix(
+        reasoning=payload.effort == "high", carries_workspace=True, timezone=payload.timezone,
+    )
+    # Include the selected model and exact dated/mode-specific prefix. A switch
+    # within the old profile-only cooldown must not leave the new model cold.
+    key = (get_settings().database_url, route["provider_id"], route["model_id"], prefix)
+    with _WARMUP_LOCK:
+        if key in _WARMUP_PENDING:
+            return {"status": "started"}
+        if _WARMUP_PENDING:
+            return {"status": "busy"}
+        if time.monotonic() - _LAST_WARMUP.get(key, 0.0) < WARMUP_INTERVAL_SECONDS:
+            return {"status": "recent"}
+        _WARMUP_PENDING.add(key)
     context = contextvars.copy_context()
 
     def run() -> None:
         try:
-            result = ProviderRuntimeService(initialize=False).warm("chat")
+            result = ProviderRuntimeService(initialize=False).warm(
+                "chat", prefix=prefix, reasoning=payload.effort == "high",
+            )
+            if result.get("status") == "warmed":
+                with _WARMUP_LOCK:
+                    _LAST_WARMUP[key] = time.monotonic()
             _CHAT_LOG.info("chat_model_warmup %s", result)
         except Exception:  # pragma: no cover - warming is best effort
             _CHAT_LOG.debug("chat_model_warmup_failed", exc_info=True)
+        finally:
+            with _WARMUP_LOCK:
+                _WARMUP_PENDING.discard(key)
 
-    threading.Thread(target=lambda: context.run(run), name="chat-model-warmup", daemon=True).start()
+    try:
+        threading.Thread(
+            target=lambda: context.run(run), name="chat-model-warmup", daemon=True,
+        ).start()
+    except Exception:
+        with _WARMUP_LOCK:
+            _WARMUP_PENDING.discard(key)
+        raise
     return {"status": "started"}
 
 
@@ -2294,6 +2365,9 @@ def stream_chat_events(
         cursor = max(0, after)
         idle_since = time.monotonic()
         while True:
+            if shutdown.requested():
+                yield shutdown.SHUTDOWN_LINE
+                return
             seen = chat_events.event_counter()
             batch = chat_events.list_events(chat_id, after=cursor)
             for event in batch:
@@ -2360,6 +2434,9 @@ def stream_all_chat_events(request: Request, after: int | None = None) -> Stream
         last_pump = 0.0
         with chat_events.event_reader() as read_events:
             while True:
+                if shutdown.requested():
+                    yield shutdown.SHUTDOWN_LINE
+                    return
                 seen = chat_events.event_counter()
                 batch = read_events(after=cursor)
                 for event in batch:
@@ -2456,6 +2533,11 @@ def cancel_chat_generation(
         generation.completed_at = datetime.now(UTC)
         store.db.commit()
         store.db.refresh(generation)
+        # Its slot comes back now rather than when the worker lets go, which
+        # can be as long as the provider takes to answer.
+        with _GENERATION_THREADS_LOCK:
+            if generation_id in _GENERATION_THREADS:
+                _RELEASED_GENERATIONS.add(generation_id)
         # The worker will notice at its next event, but it may be blocked on the
         # provider for a while yet. Saying so here is what makes Stop feel like
         # it stopped something.
@@ -2549,26 +2631,41 @@ def update_chat_message(
     cleaned = request.content.strip()
     if not cleaned:
         raise HTTPException(status_code=422, detail="Message content is required")
+    settings = get_settings()
+    profile = session_for(http_request)
+    use_memory = (
+        profile is not None
+        and settings.memory_enabled
+        and not settings.memory_incognito
+        and request.memory_enabled
+        and not request.memory_incognito
+    )
+    # Built *before* this request writes anything. Building the runtime may run
+    # the profile's memory migration on its own connection with BEGIN IMMEDIATE;
+    # done after the supersede UPDATE below, that waited on the write lock this
+    # very request already held, and failed after the full busy timeout.
+    runtime = build_memory_runtime(profile) if use_memory else None
     try:
         _supersede_generations_for_messages(store.db, chat_id, [message_id])
-        settings = get_settings()
-        profile = session_for(http_request)
-        if (
-            profile is not None
-            and settings.memory_enabled
-            and not settings.memory_incognito
-            and request.memory_enabled
-            and not request.memory_incognito
-        ):
-            runtime = build_memory_runtime(profile)
+        if runtime is not None:
             _detach_sources_for_message(runtime, store.db, message_id, reason="replacement")
         message = store.update_chat_message_content(message_id, cleaned)
         store.db.commit()
+    except OperationalError as exc:
+        store.db.rollback()
+        _CHAT_LOG.warning("chat_message_edit_busy chat=%s message=%s", chat_id, message_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Neo is busy saving. Try the edit again in a moment.",
+        ) from exc
     except Exception as exc:
         store.db.rollback()
+        _CHAT_LOG.warning(
+            "chat_message_edit_failed chat=%s message=%s", chat_id, message_id, exc_info=exc
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"The message could not be updated safely: {exc}",
+            detail="The message could not be updated safely.",
         ) from exc
     store.db.refresh(message)
     return _chat_message_read(message)
@@ -2940,20 +3037,22 @@ def update_chat(chat_id: int, request: ChatUpdateRequest, store: StoreDependency
 
 @router.get("/chats/{chat_id}/tools", response_model=ChatToolsRead)
 def list_chat_tools(chat_id: int, store: StoreDependency) -> ChatToolsRead:
-    """Every tool this chat's agent could use, toggle-annotated.
-
-    Returns the full candidate set regardless of the chat's current repo or
-    permission mode -- a repo-only tool can be pre-toggled off before any
-    repository is attached, and its ``requires_repo`` flag is what a caller
-    uses to explain that instead of hiding the row.
-    """
+    """List Neo's tool preferences and availability for this chat."""
 
     chat = _get_required_chat(store, chat_id)
     from app.services.agent_core.tools.connectors import chat_tools_catalog
     from app.services.agent_core.tools.registry import ToolRegistry
+    from app.services.agent_core.workspace import has_workspace, is_live
 
-    registry = ToolRegistry()
-    catalog = chat_tools_catalog(registry, set(chat.disabled_tools or []))
+    has_repo = has_workspace(chat.repo_id)
+    catalog = chat_tools_catalog(
+        ToolRegistry(),
+        set(chat.disabled_tools or []),
+        mode=chat.agent_mode or "normal",
+        has_repo=has_repo,
+        live=has_repo and is_live(chat.repo_id),
+        skills=skills_resolver.effective_skills(chat.skill_overrides or {}),
+    )
     return ChatToolsRead(tools=catalog)
 
 

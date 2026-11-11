@@ -208,6 +208,8 @@ def _help_text(executor: str) -> str:
             [binary, "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=detect.PROBE_TIMEOUT_SECONDS,
             stdin=subprocess.DEVNULL,
             env=env_module.build_env(

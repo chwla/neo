@@ -358,7 +358,12 @@ def _row_to_session(row: sqlite3.Row) -> dict:
     data["external_models"] = _loads(data.pop("external_models_json", None), {}) or {}
     data["external_efforts"] = _loads(data.pop("external_efforts_json", None), {}) or {}
     data["handoff"] = _loads(data.pop("handoff_json", None), None)
-    data["egress_tags"] = _loads(data.pop("egress_tags_json", None), []) or []
+    raw_egress = data.pop("egress_tags_json", None)
+    data["egress_tags"] = _loads(raw_egress, []) or []
+    # NULL means the run's starting context was never classified (a row from
+    # before provenance was recorded); "[]" means it was, and nothing private was
+    # in it. The two must not be read as the same thing: see ``AgentLoop.run``.
+    data["egress_marked"] = raw_egress is not None
     data.setdefault("executor", "neo")
     return data
 
@@ -1323,6 +1328,11 @@ def list_tool_calls(session_id: str) -> list[dict]:
 #: minutes without the loop getting a chance to heartbeat.
 LEASE_SECONDS = 300
 
+#: What an interrupted run says about itself, in the run view and the chat.
+INTERRUPTED_DETAIL = (
+    "Neo stopped while this run was in progress. Send the request again to continue."
+)
+
 
 def _stale_before() -> str:
     from datetime import timedelta
@@ -1386,28 +1396,55 @@ def release_session(session_id: str, lease_token: str) -> None:
         conn.close()
 
 
-def recover_interrupted_sessions() -> int:
-    """Fail sessions abandoned by a dead worker, at startup.
+def interrupt_abandoned_sessions(
+    *, only_stale: bool, keep: set[str] | frozenset[str] = frozenset()
+) -> list[str]:
+    """Mark runs no worker is advancing as interrupted; returns their ids.
 
-    A process restart leaves rows in 'running' that nothing will ever advance.
-    Marking them failed is honest; leaving them active would show the user a
-    spinner for a run that no longer exists.
+    A process that dies leaves rows in 'running' that nothing will ever advance,
+    and leaving them there shows the user a spinner for a run that no longer
+    exists. ``only_stale=False`` is for startup: this process holds the data
+    directory's lock, so every running row belongs to a dead one. ``only_stale=True``
+    is the periodic sweep, which leaves alone anything still heartbeating or
+    listed in ``keep`` (the sessions this process is running right now).
     """
 
     conn = _connect()
     try:
-        cursor = conn.execute(
-            "UPDATE workspace_agent_sessions"
-            " SET status = 'failed', stop_reason = 'failed',"
-            "     error = 'Neo restarted while this run was in progress.',"
-            "     completed_at = ?, updated_at = ?, worker_id = NULL, lease_token = NULL"
-            " WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)",
-            (now_iso(), now_iso(), _stale_before()),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        query = "SELECT id FROM workspace_agent_sessions WHERE status = 'running'"
+        params: tuple = ()
+        if only_stale:
+            query += " AND (heartbeat_at IS NULL OR heartbeat_at < ?)"
+            params = (_stale_before(),)
+        ids = [
+            str(row["id"])
+            for row in conn.execute(query, params).fetchall()
+            if str(row["id"]) not in keep
+        ]
+        for session_id in ids:
+            conn.execute(
+                "UPDATE workspace_agent_sessions"
+                " SET status = 'interrupted', stop_reason = 'interrupted',"
+                "     error = ?, summary = COALESCE(summary, ?),"
+                "     completed_at = ?, updated_at = ?, worker_id = NULL, lease_token = NULL"
+                " WHERE id = ? AND status = 'running'",
+                (INTERRUPTED_DETAIL, INTERRUPTED_DETAIL, now_iso(), now_iso(), session_id),
+            )
         conn.commit()
-        return cursor.rowcount
+        return ids
+    except sqlite3.OperationalError:
+        # No such table: a database that has never held an agent run.
+        conn.rollback()
+        return []
     finally:
         conn.close()
+
+
+def recover_interrupted_sessions() -> int:
+    """Startup recovery for the database in context: every running row is abandoned."""
+
+    return len(interrupt_abandoned_sessions(only_stale=False))
 
 
 def insert_file_snapshot(item: dict) -> None:

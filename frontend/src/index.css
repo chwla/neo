@@ -3184,16 +3184,23 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
   overflow-wrap: anywhere;
 }
 
-/* The Tools panel a chat opens from the "+" menu: 4 toggles, one per category
-   of built-in tool, each disabling/enabling every tool in it for this chat. */
+/* One preference per group of built-in tools, with availability shown separately. */
 .chat-tools-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
 }
 .chat-tools-toolbar p { margin: 0; color: var(--neo-muted); font-size: 11.5px; line-height: 1.6; }
+.agent-run-outcome {
+  color: var(--neo-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-run-outcome strong { text-transform: capitalize; }
+.agent-run-outcome p { margin: 3px 0 0; }
 
 .chat-tools-list {
   display: grid;

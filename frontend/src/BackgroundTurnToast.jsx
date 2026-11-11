@@ -8,6 +8,7 @@ const OUTCOMES = {
   "run.completed": "Finished replying",
   "run.failed": "Stopped with an error",
   "run.cancelled": "Stopped",
+  "run.interrupted": "Interrupted when Neo stopped",
 };
 
 /**

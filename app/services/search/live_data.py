@@ -370,12 +370,16 @@ def local_datetime_answer(
     normalized = query.lower()
     wants_time = bool(re.search(r"\btime\b", normalized))
     wants_date = bool(re.search(r"\b(date|day|today)\b", normalized)) or not wants_time
+    # Day and hour are interpolated by hand: the ``%-d``/``%-I`` "no padding"
+    # flags are a glibc extension that the C runtime on Windows rejects outright.
+    date_text = f"{instant:%A, %B} {instant.day}, {instant.year}"
+    time_text = f"{instant.hour % 12 or 12}:{instant:%M %p}"
     if wants_time and wants_date:
-        answer = f"It is {instant:%A, %B %-d, %Y at %-I:%M %p} ({zone.key})."
+        answer = f"It is {date_text} at {time_text} ({zone.key})."
     elif wants_time:
-        answer = f"It is {instant:%-I:%M %p} ({zone.key})."
+        answer = f"It is {time_text} ({zone.key})."
     else:
-        answer = f"Today is {instant:%A, %B %-d, %Y} ({zone.key})."
+        answer = f"Today is {date_text} ({zone.key})."
     return LocalDateTimeResult(
         timezone=zone.key,
         locale=locale or "en",

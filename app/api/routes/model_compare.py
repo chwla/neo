@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.core import shutdown
 from app.services.model_compare import runner
 from app.services.model_compare.service import (
     DEFAULT_DEPTH,
@@ -197,6 +198,11 @@ async def run(http: Request, payload: ComparisonRequest) -> StreamingResponse:
         """
 
         while run_id in runner.active_runs():
+            if shutdown.requested():
+                # The server is stopping: end the models rather than hold the
+                # connection, and with it the process, until the run finishes.
+                runner.cancel(run_id)
+                return
             if await http.is_disconnected():
                 _LOG.debug("Comparison %s abandoned by its client", run_id)
                 runner.cancel(run_id)

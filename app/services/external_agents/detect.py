@@ -217,6 +217,8 @@ def _run(argv: list[str], executor_spec: ExecutorSpec) -> subprocess.CompletedPr
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=PROBE_TIMEOUT_SECONDS,
             stdin=subprocess.DEVNULL,
             env=env_module.build_env(

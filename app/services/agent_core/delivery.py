@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.core import textio
+from app.core.paths import walk_contained
 from app.services.agent_core.workspace import WorkspaceError, repo_root
 from app.services.isolation import fs_ops, safe_fs
 from app.services.repos import store as repos_store
@@ -119,9 +120,7 @@ def _untracked_changes(root: Path, known: set[str]) -> list[FileChange]:
     """
 
     changes: list[FileChange] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
+    for path in sorted(walk_contained(root)):
         relative = path.relative_to(root).as_posix()
         if relative in known or path.name in IGNORED_NAMES:
             continue

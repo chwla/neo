@@ -39,22 +39,33 @@ class UnsafePath(OSError):
 
 
 class PlatformUnsupported(UnsafePath, ValueError):
-    """This platform cannot do anchored operations at all (Windows).
+    """This platform cannot do anchored operations at all.
 
     Also a ``ValueError`` -- as ``io.UnsupportedOperation`` is both -- so every route
     that turns a ``ValueError`` into a 400 reports the reason instead of a 500.
     """
 
 
-#: Windows has no ``openat``: ``dir_fd``, ``O_DIRECTORY`` and ``O_NOFOLLOW`` do not
-#: exist there, so the walk below cannot be built, and a containment check followed
-#: by a write by path is exactly the race this module exists to refuse. Rather than
-#: an ``AttributeError`` part way in, or a weaker write presented as this one, every
-#: operation is refused up front with a reason a person can act on.
-_SUPPORTED = os.name != "nt"
+#: Windows has no ``openat`` -- ``dir_fd``, ``O_DIRECTORY`` and ``O_NOFOLLOW`` do not
+#: exist there -- but it has the same primitive: a handle-relative open that does
+#: not follow links. ``_safe_fs_windows`` builds the walk from that, and every
+#: operation below hands over to it. Only if those entry points cannot be loaded
+#: at all is the platform refused, up front, with a reason a person can act on --
+#: never a weaker write by path presented as this one.
+_WINDOWS = os.name == "nt"
+_windows = None
+if _WINDOWS:
+    try:
+        from app.services.isolation import _safe_fs_windows as _windows
+
+        _windows._load()
+    except Exception:  # noqa: BLE001 - any failure here means "cannot anchor"
+        _windows = None
+_SUPPORTED = not _WINDOWS or _windows is not None
 PLATFORM_UNSUPPORTED_MESSAGE = (
-    "Undo, patch apply, delivery and checkpoint restore are not available on Windows in "
-    "this release: Neo cannot guarantee there that a restoring write stays inside the folder."
+    "Undo, patch apply, delivery and checkpoints are not available on this computer: "
+    "Neo could not load the Windows file operations that keep a restoring write "
+    "inside the folder."
 )
 
 
@@ -75,6 +86,71 @@ def _relative_parts(relative: str | os.PathLike[str]) -> tuple[str, ...]:
         if part in _REFUSED_PARTS:
             raise UnsafePath(f"{text!r} contains {part!r}, which can leave the tree")
     return parts
+
+
+class _WindowsWalk:
+    """Open handles for a path's directories on Windows, closed on the way out.
+
+    The same shape as :class:`_Walk`, with handles in place of descriptors. A
+    refusal from the handle layer arrives as a ``ValueError`` and leaves as
+    :class:`UnsafePath`; a missing directory stays a ``FileNotFoundError``.
+    """
+
+    def __init__(self, root, parts: tuple[str, ...], *, create: bool):
+        self._root = root
+        self._parts = parts
+        self._create = create
+        self._handles: list[int] = []
+
+    def __enter__(self) -> tuple[int, str]:
+        if _windows is None:
+            raise PlatformUnsupported(PLATFORM_UNSUPPORTED_MESSAGE)
+        if isinstance(self._root, int):
+            raise UnsafePath("a tree root must be named by its path on Windows")
+        try:
+            handle = _windows.open_root(self._root)
+            self._handles.append(handle)
+            for name in self._parts[:-1]:
+                handle = _windows.open_dir(handle, name, create=self._create)
+                self._handles.append(handle)
+            _windows.check_name(self._parts[-1])
+            return handle, self._parts[-1]
+        except BaseException as exc:
+            self.__exit__(None, None, None)
+            self._handles.clear()
+            raise _windows_refusal(exc) from exc
+
+    def __exit__(self, *exc_info) -> None:
+        for handle in reversed(self._handles):
+            _windows.close(handle)
+
+
+def _windows_refusal(exc: BaseException) -> BaseException:
+    """Translate the handle layer's refusals into this module's exceptions."""
+
+    if isinstance(exc, UnsafePath) or not isinstance(exc, Exception):
+        return exc
+    if isinstance(exc, ValueError):
+        return UnsafePath(str(exc))
+    if isinstance(exc, FileNotFoundError | PermissionError):
+        return exc
+    if isinstance(exc, OSError):
+        return UnsafePath(f"the path could not be opened: {exc}")
+    return exc
+
+
+def _windows_plain_file(info, name: str) -> None:
+    """Refuse a target that is not a plain, unshared file."""
+
+    if info.is_reparse_point:
+        raise UnsafePath(f"{name!r} is a link or junction; writing it would follow it out")
+    if info.is_directory:
+        raise UnsafePath(f"{name!r} is a directory, not a file")
+    if info.links != 1:
+        raise UnsafePath(
+            f"{name!r} has {info.links} hard links, so writing it would also write "
+            "whatever else points at the same data"
+        )
 
 
 def _open_root(root: int | str | os.PathLike[str]) -> int:
@@ -115,6 +191,10 @@ def _open_root(root: int | str | os.PathLike[str]) -> int:
 def root_identity(root: int | str | os.PathLike[str]) -> tuple[int, int]:
     """Device and inode of an anchored root, for cross-process binding."""
 
+    if _WINDOWS:
+        with _WindowsWalk(root, ("-",), create=False) as (handle, _name):
+            info = _windows._info(handle)
+            return info.volume, info.index
     fd = _open_root(root)
     try:
         info = os.fstat(fd)
@@ -227,6 +307,18 @@ def write_file(
     """
 
     parts = _relative_parts(relative)
+    if _WINDOWS:
+        # ``permission_mode`` has no meaning here: Windows files carry no mode
+        # bits, and the new file inherits the folder's access list as any other.
+        with _WindowsWalk(root, parts, create=create_parents) as (handle, name):
+            try:
+                before = _windows.inspect(handle, name)
+                if before is not None:
+                    _windows_plain_file(before, name)
+                _windows.write(handle, name, data, unchanged_since=before)
+            except Exception as exc:
+                raise _windows_refusal(exc) from exc
+        return
     with _Walk(root, parts, create=create_parents) as (dir_fd, name):
         before = _check_target(dir_fd, name)
         temporary = f".neo-write-{secrets.token_hex(6)}"
@@ -307,6 +399,16 @@ def read_file(root: str | os.PathLike[str], relative: str | os.PathLike[str]) ->
     """Read a file through the same anchored walk, refusing links on the way."""
 
     parts = _relative_parts(relative)
+    if _WINDOWS:
+        with _WindowsWalk(root, parts, create=False) as (handle, name):
+            try:
+                data, info = _windows.read(handle, name)
+            except Exception as exc:
+                raise _windows_refusal(exc) from exc
+            # Decided from the handle that was read, so there is no gap between
+            # checking the file and opening it.
+            _windows_plain_file(info, name)
+            return data
     with _Walk(root, parts, create=False) as (dir_fd, name):
         before = _check_target(dir_fd, name)
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
@@ -331,6 +433,14 @@ def file_mode(root: str | os.PathLike[str], relative: str | os.PathLike[str]) ->
     """Return a regular file's mode through an anchored directory walk."""
 
     parts = _relative_parts(relative)
+    if _WINDOWS:
+        with _WindowsWalk(root, parts, create=False) as (handle, name):
+            found = _windows.inspect(handle, name)
+            if found is None:
+                raise FileNotFoundError(name)
+            _windows_plain_file(found, name)
+            # No mode bits on Windows; the one every restore accepts.
+            return 0o644
     with _Walk(root, parts, create=False) as (dir_fd, name):
         info = _check_target(dir_fd, name)
         if info is None:
@@ -342,6 +452,18 @@ def delete(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> No
     """Remove a file, refusing anything that is not a plain file in this tree."""
 
     parts = _relative_parts(relative)
+    if _WINDOWS:
+        with _WindowsWalk(root, parts, create=False) as (handle, name):
+            try:
+                removed = _windows.delete(handle, name)
+            except PermissionError:
+                raise
+            except OSError as exc:
+                raise UnsafePath(f"{name!r} could not be removed: {exc}") from exc
+            if removed is not None:
+                # Deleted only if it was a plain file; anything else was left alone.
+                _windows_plain_file(removed, name)
+        return
     with _Walk(root, parts, create=False) as (dir_fd, name):
         _check_target(dir_fd, name)
         try:
@@ -352,13 +474,38 @@ def delete(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> No
             raise UnsafePath(f"{name!r} could not be removed: {exc}") from exc
 
 
+def mkdir(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> None:
+    """Create the leaf directory without following links or creating parents."""
+
+    parts = _relative_parts(relative)
+    if _WINDOWS:
+        _windows_make_directory(root, parts, parents=False)
+        return
+    with _Walk(root, parts, create=False) as (dir_fd, name):
+        fd = _open_child_dir(dir_fd, name, create=True)
+        os.close(fd)
+
+
 def makedirs(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> None:
     """Create a directory and its parents, following no links on the way."""
 
     parts = _relative_parts(relative)
+    if _WINDOWS:
+        _windows_make_directory(root, parts, parents=True)
+        return
     with _Walk(root, parts, create=True) as (dir_fd, name):
         fd = _open_child_dir(dir_fd, name, create=True)
         os.close(fd)
+
+
+def _windows_make_directory(root, parts: tuple[str, ...], *, parents: bool) -> None:
+    with _WindowsWalk(root, parts, create=parents) as (handle, name):
+        try:
+            _windows.close(_windows.open_dir(handle, name, create=True))
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            raise _windows_refusal(exc) from exc
 
 
 def exists(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> bool:
@@ -366,6 +513,14 @@ def exists(root: str | os.PathLike[str], relative: str | os.PathLike[str]) -> bo
         parts = _relative_parts(relative)
     except UnsafePath:
         return False
+    if _WINDOWS:
+        try:
+            with _WindowsWalk(root, parts, create=False) as (handle, name):
+                return _windows.inspect(handle, name) is not None
+        except PlatformUnsupported:
+            raise
+        except (OSError, ValueError):
+            return False
     try:
         with _Walk(root, parts, create=False) as (dir_fd, name):
             try:

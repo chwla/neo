@@ -373,33 +373,6 @@ export const api = {
   resolveRules: (payload) => request("/rules/resolve", { method: "POST", body: JSON.stringify(payload) }),
   importRepoRules: (repoId) => request(`/rules/repos/${repoId}/import`, { method: "POST" }),
   ruleLogs: () => request("/rules/resolution-logs?limit=50"),
-  recoveryRuns: (params = {}) => {
-    const search = new URLSearchParams();
-    if (params.runType) search.set("run_type", params.runType);
-    if (params.scan) search.set("scan", "true");
-    search.set("limit", String(params.limit ?? 100));
-    return request(`/recovery/runs?${search.toString()}`);
-  },
-  recoveryRun: (runType, runId) => request(`/recovery/runs/${runType}/${runId}`),
-  resumeRecoveryRun: (runType, runId) => request(`/recovery/runs/${runType}/${runId}/resume`, {
-    method: "POST", body: JSON.stringify({ confirm: true }),
-  }),
-  retryRecoveryRun: (runType, runId, payload = {}) => request(`/recovery/runs/${runType}/${runId}/retry`, {
-    method: "POST", body: JSON.stringify({ confirm: true, ...payload }),
-  }),
-  forkRecoveryRun: (runType, runId, payload = {}) => request(`/recovery/runs/${runType}/${runId}/fork`, {
-    method: "POST", body: JSON.stringify({ confirm: true, ...payload }),
-  }),
-  repairRecoveryRun: (runType, runId, targetStatus) => request(`/recovery/runs/${runType}/${runId}/repair-state`, {
-    method: "POST", body: JSON.stringify({ confirm: true, target_status: targetStatus }),
-  }),
-  recoveryEvents: (params = {}) => {
-    const search = new URLSearchParams();
-    if (params.runType) search.set("run_type", params.runType);
-    if (params.runId) search.set("run_id", params.runId);
-    search.set("limit", String(params.limit ?? 100));
-    return request(`/recovery/events?${search.toString()}`);
-  },
   lspStatus: () => request("/lsp/status"),
   lspServers: () => request("/lsp/servers"),
   lspStart: (workspaceId, language = "python") => request(`/lsp/workspaces/${workspaceId}/start`, {
@@ -727,14 +700,6 @@ export const api = {
         effort: context.effort ?? null,
       }),
     }),
-  streamMessage: (chatId, prompt, onEvent, llmId = null, context = {}) =>
-    streamRequest(`/chats/${chatId}/messages/stream`, {
-      prompt,
-      llm_id: llmId,
-      memory_enabled: context.memoryEnabled ?? true,
-      memory_incognito: context.memoryIncognito ?? false,
-      effort: context.effort ?? null,
-    }, onEvent),
   /**
    * Start the next turn. `context.mode` picks which kind: "chat" for a reply,
    * "agent" for a run. One call either way, because from the thread's point of
@@ -771,13 +736,7 @@ export const api = {
     request(`/chats/${chatId}`, { method: "PATCH", body: JSON.stringify(changes) }),
   // Ask the local chat model to load while the user is still reading or typing,
   // so the first message does not pay for it. The server decides whether to.
-  warmChatModel: () => request("/chat-model/warm", { method: "POST" }),
-  /**
-   * Tail a chat's live log. Both kinds of turn append to it, so this is the
-   * only live connection a thread needs, whatever it is doing.
-   */
-  streamChatEvents: (chatId, after, onEvent, signal) =>
-    streamGet(`/chats/${chatId}/events?after=${after || 0}`, onEvent, signal),
+  warmChatModel: (options = {}) => request("/chat-model/warm", { method: "POST", body: JSON.stringify(options) }),
   // One tail over every chat in the profile. Omitting `after` asks the server
   // where to start; it answers with a `cursor` record on the stream itself, so
   // there is no gap between deciding and subscribing.

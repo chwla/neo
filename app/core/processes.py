@@ -124,7 +124,64 @@ def _kernel32():
     kernel.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
     kernel.CloseHandle.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.SetInformationJobObject.restype = wintypes.BOOL
+    kernel.SetInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
     return ctypes, kernel
+
+
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+
+def _kill_on_job_close(ctypes, kernel, job) -> None:
+    """Have Windows end the job's processes when Neo's handle to it closes.
+
+    That handle closes when Neo exits however it exits -- a crash included -- so a
+    test suite or a build Neo started cannot outlive it.
+    """
+
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = (
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        )
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = tuple((name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        ))
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = (
+            ("BasicLimitInformation", BasicLimits),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        )
+
+    limits = ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel.SetInformationJobObject(
+        job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
+    ):
+        _LOG.warning("process_tree_job_limits_failed error=%s", ctypes.get_last_error())
 
 
 def _windows_job_for(process: subprocess.Popen):
@@ -135,6 +192,7 @@ def _windows_job_for(process: subprocess.Popen):
     if not job:
         _LOG.warning("process_tree_job_unavailable error=%s", ctypes.get_last_error())
         return None
+    _kill_on_job_close(ctypes, kernel, job)
     if not kernel.AssignProcessToJobObject(job, int(process._handle)):  # type: ignore[attr-defined]
         _LOG.warning("process_tree_job_assign_failed error=%s", ctypes.get_last_error())
         kernel.CloseHandle(job)

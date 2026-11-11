@@ -33,6 +33,9 @@ StopReason = Literal[
     "failed",
     "cancelled",
     "budget_exhausted",
+    # The server stopped (a crash, a kill, a restart) while the run was working.
+    # Not ``failed``: nothing about the task went wrong, and it can be resumed.
+    "interrupted",
 ]
 
 SessionStatus = Literal[
@@ -42,13 +45,14 @@ SessionStatus = Literal[
     "completed",
     "failed",
     "cancelled",
+    "interrupted",
 ]
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
 ToolOutcome = Literal["ok", "error", "denied", "proposed"]
 
-TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled", "interrupted"})
 ACTIVE_STATUSES: frozenset[str] = frozenset({"queued", "running", "waiting_approval"})
 
 # Stop reasons that leave the session in a non-failed terminal state.
@@ -58,6 +62,7 @@ _STATUS_FOR_STOP: dict[str, SessionStatus] = {
     "blocked": "completed",
     "failed": "failed",
     "cancelled": "cancelled",
+    "interrupted": "interrupted",
     "budget_exhausted": "completed",
 }
 

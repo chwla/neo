@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.child_env import child_environment, project_interpreter, resolve_program
 from app.core.paths import remove_tree
 from app.core.processes import ProcessTree
 from app.services import isolation
@@ -46,13 +47,31 @@ def _read_limited(stream, limit: int) -> tuple[str, bool]:
     return data.decode("utf-8", errors="replace"), size > limit
 
 
-def _resolved_argv(command: list[str]) -> list[str]:
-    executable = sys.executable if command[0] == "python" else shutil.which(command[0])
-    if not executable:
+def _resolved_argv(command: list[str], cwd: Path, path: str) -> tuple[list[str], str | None]:
+    """The argv to start, and a note for the person when ``python`` is not the project's.
+
+    ``python`` means the project's own interpreter when the project has a virtual
+    environment, so its tests see its packages; otherwise the ``python`` on PATH;
+    and Neo's own interpreter only as a last resort, said out loud.
+    """
+
+    note = None
+    python = None
+    if command[0] == "python":
+        python = project_interpreter(cwd) or shutil.which("python", path=path)
+        if python is None:
+            python = sys.executable
+            note = (
+                "No project virtual environment or python on PATH was found, so the "
+                "tests ran with Neo's own interpreter, which has only Neo's packages."
+            )
+    try:
+        prefix = resolve_program(command[0], cwd, path, python=python)
+    except FileNotFoundError as exc:
         raise RuntimeError(
-            f"Allowlisted executable '{command[0]}' is not installed in this runtime."
-        )
-    return [executable, *command[1:]]
+            f"Allowlisted executable '{command[0]}' is not installed on this machine."
+        ) from exc
+    return [*prefix, *command[1:]], note
 
 
 def _active_profile_id() -> str:
@@ -72,19 +91,16 @@ def execute(
 ) -> ExecutionResult:
     started = time.monotonic()
     home = tempfile.mkdtemp(prefix="neo-test-home-")
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": home,
-        "CI": "true",
-        "NO_COLOR": "1",
-        "PYTHONUNBUFFERED": "1",
-    }
+    # The same allowlisted environment the command sandbox gives its children:
+    # a bare one left Windows programs without SystemRoot, TEMP or PATHEXT.
+    environment = child_environment(cwd, home=Path(home))
     timed_out = False
     error = None
     exit_code = None
     unsandboxed = False
+    interpreter_note = None
     try:
-        argv = _resolved_argv(command)
+        argv, interpreter_note = _resolved_argv(command, cwd, environment["PATH"])
         # A test suite is the repository's own code, and on this path the repository
         # is one an agent has just edited -- a `conftest.py` or an npm script it
         # wrote runs here. So the launch goes through ``isolation.launch``: isolated
@@ -140,7 +156,10 @@ def execute(
                 except subprocess.TimeoutExpired:
                     timed_out = True
                     tree.kill()
-                    tree.process.wait()
+                    try:
+                        tree.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        _LOG.warning("test_runner_process_still_open pid=%s", tree.process.pid)
                 finally:
                     tree.close()
                 stdout_text, stdout_truncated = _read_limited(stdout_file, STDOUT_LIMIT)
@@ -152,6 +171,8 @@ def execute(
     finally:
         remove_tree(home, ignore_errors=True)
 
+    if interpreter_note:
+        stderr_text = f"{interpreter_note}\n{stderr_text}" if stderr_text else interpreter_note
     combined = stdout_text + (("\n" if stdout_text and stderr_text else "") + stderr_text)
     combined_truncated = len(combined.encode("utf-8")) > COMBINED_LIMIT
     if combined_truncated:

@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.accounts import session_for
+from app.core import shutdown
 from app.core.config import get_settings
 from app.services.disclosure import Labeled, content_hash, public
 from app.services.notes import Note, NotesService
@@ -249,6 +250,9 @@ async def research_events(job_id: str):
         last_pct = -1
         last_step = ""
         while True:
+            if shutdown.requested():
+                yield _sse_event(shutdown.SHUTDOWN_EVENT)
+                break
             current = get_job(job_id)
             if not current:
                 yield _sse_event({"type": "error", "message": "Job not found"})

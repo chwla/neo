@@ -38,6 +38,9 @@ dependencies = [
 neo = "app.cli.main:main"
 
 [project.optional-dependencies]
+# The exact versions Neo is tested with are in requirements.txt. Install those first
+# (`pip install -r requirements.txt`) and then this package with --no-deps, as the
+# README shows: the lower bounds here alone resolve to a different, untested set.
 dev = [
     "ruff>=0.6",
 ]

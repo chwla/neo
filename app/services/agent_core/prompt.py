@@ -124,7 +124,11 @@ def build_environment(session: AgentSession, repo: dict | None, project: dict | 
                 "wants it delivered."
             )
     else:
-        lines.append("- No repository is attached; file and command tools are unavailable.")
+        lines.append(
+            "- No folder is attached; file and command tools are unavailable. If the request "
+            "needs local files or folders, explain that it is blocked and ask the user to "
+            "choose Open a folder in the + menu. Do not substitute an unrelated tool."
+        )
     if project:
         lines.append(f"- Project: {project.get('title')}")
     return "\n".join(lines)

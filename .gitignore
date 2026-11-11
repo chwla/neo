@@ -101,3 +101,9 @@ Thumbs.db
 # profiles/accounts/<id>/, so "git add -A" was one command away from committing
 # somebody's uploads. The whole directory is runtime state; none of it is source.
 profiles/
+
+# The running server's lock; runtime state, never source.
+neo-server.lock
+
+# Local audit notes, evidence, screenshots, and investigation tooling.
+/audit/

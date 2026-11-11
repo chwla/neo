@@ -90,6 +90,14 @@ def is_live(repo_id: str | None) -> bool:
     return bool(repo) and repo.get("access") == repos_store.LIVE
 
 
+def has_workspace(repo_id: str | None) -> bool:
+    """Whether the attached root is currently usable by workspace tools."""
+    try:
+        return repo_root(repo_id).is_dir()
+    except (WorkspaceError, OSError):
+        return False
+
+
 def normalize_relative(raw_path: str) -> str:
     """Reject anything that is not a plain relative path inside the tree.
 

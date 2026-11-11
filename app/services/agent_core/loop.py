@@ -39,8 +39,9 @@ from app.services.agent_core.tool_protocol import (
     request_tool_calls,
 )
 from app.services.agent_core.tools.base import ToolContext
-from app.services.agent_core.tools.registry import ToolRegistry
+from app.services.agent_core.tools.registry import ToolRegistry, effective_disabled_tools
 from app.services.agent_core.types import (
+    TERMINAL_STATUSES,
     AgentSession,
     Budgets,
     Grant,
@@ -49,7 +50,7 @@ from app.services.agent_core.types import (
     ToolResult,
     status_for_stop_reason,
 )
-from app.services.agent_core.workspace import is_live
+from app.services.agent_core.workspace import has_workspace, is_live
 from app.services.disclosure import Label, from_json, join, public, to_json
 from app.services.disclosure.gate import ApprovedCall
 from app.services.isolation import launch
@@ -60,6 +61,10 @@ _LOG = logging.getLogger(__name__)
 
 class Suspended(Exception):
     """The loop stopped mid-turn to wait for a human decision."""
+
+
+#: Marks a run from before provenance was recorded, whose context is unknown.
+LEGACY_CONTEXT_TAG = permissions.LEGACY_CONTEXT_TAG
 
 
 def _to_llm_messages(rows: list[dict]) -> list[LLMMessage]:
@@ -195,9 +200,8 @@ class AgentLoop:
         """Drive a session until it finishes, blocks, or needs a decision."""
 
         session = self._session(session_id)
-        if session.status in {"completed", "failed", "cancelled"}:
+        if session.status in TERMINAL_STATUSES:
             return session
-
 
         if session.status == "queued":
             history = self._chat_history(session)
@@ -206,10 +210,15 @@ class AgentLoop:
             self._emit(session_id, events.RUN_STARTED, {"objective": session.objective})
             self._seed_transcript(session, history)
         else:
-            if not (store.get_session(session_id) or {}).get("egress_tags"):
-                # A pre-upgrade run may have seeded private transcript rows
-                # without provenance. Treat it as restricted on resume.
-                store.update_session(session_id, {"egress_tags": ["legacy_context"]})
+            if not (store.get_session(session_id) or {}).get("egress_marked"):
+                # A run started before provenance was recorded may have seeded
+                # private transcript rows without saying so. Treat it as restricted
+                # on resume. Only such a row has no marker at all: a run whose
+                # starting context was classified and found public carries an
+                # explicit empty list, and resuming it changes nothing -- reading
+                # "empty" as "unknown" made every run restricted after its first
+                # approval pause, which stopped grants and AUTO mode from applying.
+                store.update_session(session_id, {"egress_tags": [LEGACY_CONTEXT_TAG]})
             store.update_session(session_id, {"status": "running"})
 
         deadline = time.monotonic() + session.budgets.max_seconds
@@ -218,6 +227,15 @@ class AgentLoop:
             session = self._session(session_id)
             if self._cancelled(session_id):
                 return self._session(session_id)
+
+            # Calls a previous pass left unanswered -- the rest of a batch whose
+            # first call paused for approval, or one cut short by a restart --
+            # run before the model is asked anything else.
+            try:
+                self._run_calls(session_id, self._unanswered_calls(session_id))
+            except Suspended:
+                return self._session(session_id)
+            self._answer_orphaned_calls(session_id)
 
             stop = self._budget_breach(session, deadline)
             if stop:
@@ -343,8 +361,10 @@ class AgentLoop:
                         )
                         if identity_label.is_private():
                             tags.update(identity_label.tags)
-        if tags:
-            store.update_session(session.id, {"egress_tags": sorted(tags)})
+        # Written even when empty. The stored empty list is the record that this
+        # run's starting context was looked at and held nothing private; a row
+        # with no value at all is one that was never classified.
+        store.update_session(session.id, {"egress_tags": sorted(tags)})
 
     @staticmethod
     def _raise_model_label(session_id: str, label: Label) -> None:
@@ -360,9 +380,10 @@ class AgentLoop:
             store.update_session(session_id, {"egress_tags": sorted(current | tags)})
 
     def _seed_transcript(self, session: AgentSession, history: list[dict] | None = None) -> None:
+        has_repo = has_workspace(session.repo_id)
         schemas = self.registry.schemas(
             mode=session.mode,
-            has_repo=bool(session.repo_id),
+            has_repo=has_repo,
             live=is_live(session.repo_id),
             disabled=frozenset(session.disabled_tools),
             skills=session.skills,
@@ -377,7 +398,7 @@ class AgentLoop:
                     session,
                     tool_schemas=schemas,
                     native_tools=native,
-                    environment=build_environment(session, repo, project),
+                    environment=build_environment(session, repo if has_repo else None, project),
                 ),
                 "source_label": self._egress(session.id).label,
             },
@@ -468,7 +489,7 @@ class AgentLoop:
         budget = context_budget(self.context_window, session.budgets.context_fraction)
         schemas = self.registry.schemas(
             mode=session.mode,
-            has_repo=bool(session.repo_id),
+            has_repo=has_workspace(session.repo_id),
             live=is_live(session.repo_id),
             disabled=frozenset(session.disabled_tools),
             skills=session.skills,
@@ -476,6 +497,82 @@ class AgentLoop:
         return request_tool_calls(self.llm_factory(), fit(messages, budget), schemas)
 
     # --- tool execution ------------------------------------------------------
+
+    @staticmethod
+    def _open_batch(session_id: str) -> tuple[list[ToolCall], set[str], bool]:
+        """The last assistant turn's calls, which are answered, and whether it is last.
+
+        ``True`` when nothing but tool results follows that turn, which is when
+        the calls still missing a result can simply be run.
+        """
+
+        rows = store.list_messages(session_id)
+        index = next(
+            (
+                position
+                for position in range(len(rows) - 1, -1, -1)
+                if rows[position]["role"] == "assistant" and rows[position].get("tool_calls")
+            ),
+            None,
+        )
+        if index is None:
+            return [], set(), True
+        calls = []
+        for raw in rows[index].get("tool_calls") or []:
+            try:
+                calls.append(ToolCall(**raw))
+            except Exception:  # a malformed stored call cannot be run or answered
+                continue
+        after = rows[index + 1:]
+        answered = {str(row.get("tool_call_id")) for row in after if row["role"] == "tool"}
+        return calls, answered, all(row["role"] == "tool" for row in after)
+
+    def _unanswered_calls(self, session_id: str) -> list[ToolCall]:
+        """Calls from the last model turn that have no result yet, in order.
+
+        A model may ask for several tools in one turn. When one of them needs the
+        user's approval the run suspends, and only that one call used to be run on
+        resume: the rest were never executed and never answered. The model was
+        left guessing, and a provider that checks the protocol rejected the next
+        request outright, because every call id must have a result.
+
+        The call waiting on a decision is left out: it is answered by the
+        approval path, not here.
+        """
+
+        calls, answered, trailing = self._open_batch(session_id)
+        if not trailing:
+            return []
+        pending = store.pending_approval(session_id)
+        waiting = {pending["call_id"]} if pending else set()
+        return [call for call in calls if call.id not in answered and call.id not in waiting]
+
+    def _answer_orphaned_calls(self, session_id: str) -> None:
+        """Give every call of the last model turn a result before the next request.
+
+        The invariant a provider enforces: an assistant turn's tool calls are each
+        followed by a tool message. A call can still be missing one when other
+        messages were appended after the batch (the user steering a paused run),
+        at which point it can no longer be run in place. It is answered as not
+        run, so the transcript stays valid and the model can ask again.
+        """
+
+        calls, answered, trailing = self._open_batch(session_id)
+        if trailing:
+            return
+        for call in calls:
+            if call.id in answered:
+                continue
+            store.append_message(
+                session_id,
+                {
+                    "role": "tool",
+                    "content": "This call was not run. Call the tool again if it is still needed.",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "source_label": public("builtin:unanswered_tool_call"),
+                },
+            )
 
     def _run_calls(self, session_id: str, calls: list[ToolCall]) -> None:
         for call in calls:
@@ -507,7 +604,7 @@ class AgentLoop:
                 )
                 continue
 
-            if call.name in session.disabled_tools:
+            if call.name in effective_disabled_tools(set(session.disabled_tools)):
                 self._record(
                     session,
                     call,
@@ -732,7 +829,10 @@ class AgentLoop:
 
         session = self._session(session_id)
         transcript = _to_llm_messages(store.list_messages(session_id))
+        self._emit(session_id, events.STATUS, {"content": "Checking whether the task is complete"})
         verdict = self.adjudicator.adjudicate(session, transcript)
+        if self._cancelled(session_id):
+            return self._session(session_id)
 
         if verdict.continue_working:
             store.update_session(session_id, {"adjudications": session.adjudications + 1})

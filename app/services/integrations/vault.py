@@ -119,9 +119,17 @@ class ConnectorKeyUnavailable(IntegrationVaultError):
 
 
 def _windows_sid() -> str:
-    completed = subprocess.run(  # noqa: S603 - fixed argv
-        ["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True, check=False
-    )
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, check=False,
+            # The console code page, not cp1252: account names are OEM-encoded here.
+            encoding="oem", errors="replace", timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ConnectorKeyUnavailable(
+            "Neo could not determine the current Windows account (whoami did not answer)."
+        ) from exc
     fields = [field.strip().strip('"') for field in completed.stdout.strip().split('","')]
     sid = fields[-1].strip('"') if fields else ""
     if completed.returncode != 0 or not sid.startswith("S-1-"):
@@ -132,10 +140,16 @@ def _windows_sid() -> str:
 def _restrict_windows_key(path: Path) -> None:
     """Remove inherited access, leaving full control to the current account only."""
 
-    completed = subprocess.run(  # noqa: S603 - fixed argv, path chosen by Neo
-        ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{_windows_sid()}:F"],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, path chosen by Neo
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{_windows_sid()}:F"],
+            capture_output=True, text=True, check=False,
+            encoding="oem", errors="replace", timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ConnectorKeyUnavailable(
+            f"Neo could not restrict access to {path.name} (icacls did not answer)."
+        ) from exc
     if completed.returncode != 0:
         raise ConnectorKeyUnavailable(
             f"Neo could not restrict access to the connector key at {path}: "

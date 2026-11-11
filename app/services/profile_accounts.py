@@ -535,12 +535,28 @@ def create_profile(username: str, password: str, avatar_data: str | None = None)
     }
 
 
+#: Unicode categories a name may not contain: controls, format characters
+#: (zero-width joiners, bidi overrides and the like) and line/paragraph separators.
+#: A name is shown in the picker, the sidebar and a console; each of these either
+#: renders as nothing or changes how the rest of the line reads.
+_REFUSED_NAME_CATEGORIES = {"Cc", "Cf", "Zl", "Zp", "Co", "Cn"}
+
+
 def _normalize_username(username: str) -> str:
-    username = " ".join(username.split())
+    import unicodedata
+
+    # NFC first, so two spellings of the same accented letter are one name to the
+    # case-insensitive uniqueness check as well as to the eye.
+    username = " ".join(unicodedata.normalize("NFC", username).split())
     if not username:
         raise HTTPException(status_code=422, detail="Username is required.")
     if len(username) > 48:
         raise HTTPException(status_code=422, detail="Username must be 48 characters or fewer.")
+    if any(unicodedata.category(character) in _REFUSED_NAME_CATEGORIES for character in username):
+        raise HTTPException(
+            status_code=422,
+            detail="Username may not contain control or invisible formatting characters.",
+        )
     return username
 
 

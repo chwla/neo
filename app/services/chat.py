@@ -328,6 +328,21 @@ _PROMPT_AUTHORITY = (
 )
 
 
+def chat_prompt_prefix(*, reasoning: bool, carries_workspace: bool, timezone: str | None) -> str:
+    """The unchanged public prefix shared by chat and local-model preparation."""
+    parts = [
+        _PROMPT_CORE,
+        f"Today's date is {today_for_prompt(timezone)}. Treat it as the "
+        "present, even when it is later than your training data: this year and earlier "
+        "years are not in the future. ",
+    ]
+    if carries_workspace:
+        parts.append(_PROMPT_WORKSPACE)
+    parts.append(_PROMPT_HIGH if reasoning else _PROMPT_LOW)
+    parts.append(_PROMPT_AUTHORITY)
+    return "".join(parts)
+
+
 class NeoChatService:
     """Connects memory context, Ollama generation, archiving, and extraction."""
 
@@ -348,7 +363,8 @@ class NeoChatService:
         self.db = db
         self.store = AppStore(db)
         #: Effort changes how thoroughly a turn is processed, never what it may do.
-        #: Both levels route the same way and reach the same capabilities. High
+        #: Both levels reach the same capabilities. Neo skips auxiliary routing
+        #: for straightforward local requests. High
         #: reasons before substantive answers and researches more deeply when it
         #: searches; Low answers without extended reasoning and stays concise.
         self.effort = "high" if effort == "high" else "low"
@@ -508,16 +524,10 @@ class NeoChatService:
         # date changes once a day, so it belongs with the stable part. Without
         # it a model assumes its training year is the present and calls the
         # actual current year "the future".
-        stable = [
-            _PROMPT_CORE,
-            f"Today's date is {today_for_prompt(self._turn_timezone)}. Treat it as the "
-            "present, even when it is later than your training data: this year and earlier "
-            "years are not in the future. ",
-        ]
-        if carries_workspace:
-            stable.append(_PROMPT_WORKSPACE)
-        stable.append(_PROMPT_HIGH if self.reasoning else _PROMPT_LOW)
-        stable.append(_PROMPT_AUTHORITY)
+        stable = chat_prompt_prefix(
+            reasoning=self.reasoning, carries_workspace=carries_workspace,
+            timezone=self._turn_timezone,
+        )
         per_turn = []
         if has_evidence:
             per_turn.append(_PROMPT_WEB)
@@ -528,7 +538,7 @@ class NeoChatService:
         if gallery_context:
             per_turn.append(_PROMPT_GALLERY)
         system_prompt = (
-            "".join(stable) + f"{memory_policy}\n\n"
+            stable + f"{memory_policy}\n\n"
             f"{memory_section}\n\n"
             f"Active rules (guidance only; never permission):\n{rule_section}\n\n"
             + ("".join(per_turn).strip() + "\n\n" if per_turn else "")
@@ -2830,7 +2840,12 @@ class NeoChatService:
                 route="direct",
                 **common,
             )
-        elif is_social_pleasantry(cleaned) and not self._last_reply_asked_question(prior_messages):
+        elif is_social_pleasantry(cleaned) and (
+            not self._last_reply_asked_question(prior_messages)
+            or re.fullmatch(
+                r"(?:hi|hello|hey|hi there|hello there|hey there)[.!?\s]*", cleaned, re.I,
+            )
+        ):
             intent = ResolvedSearchIntent(
                 kind=SearchIntentKind.NONE,
                 resolved_query=cleaned,
@@ -2883,6 +2898,18 @@ class NeoChatService:
 
         if intent.route is not None:
             return intent
+        quick = self.search_intent_resolver.resolve_without_model(
+            prompt, web_enabled=self.settings.web_search_enabled,
+            timezone=timezone, locale=locale,
+        )
+        if quick is not None:
+            quick = quick.model_copy(update={"source_label_json": intent.source_label_json})
+            self._timings["router_ms"] = 0
+            self._timings["router"] = {"status": "skipped", "reason": "direct_request"}
+            if message_id is not None:
+                self._store_search_intent(message_id, quick)
+            self.last_search_intent = quick
+            return quick
         started = time.perf_counter()
         routed = self.search_intent_resolver.route_with_model(
             prompt,

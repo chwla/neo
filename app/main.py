@@ -66,14 +66,18 @@ from app.api.routes.voice import router as voice_router
 from app.api.routes.web import router as web_router
 from app.api.routes.web_search import router as web_search_router
 from app.api.routes.workspaces import router as workspaces_router
-from app.core import server_lock
+from app.core import server_lock, shutdown
 from app.core.body_limits import BodySizeLimitMiddleware
 from app.core.config import get_settings
 from app.core.origins import ALLOWED_BROWSER_ORIGINS
+from app.db.session import checkpoint_databases
+from app.services.agent_core.recovery import (
+    recover_all_profiles_at_startup,
+    start_lease_sweep,
+)
 from app.services.agent_core.store import (
     delete_chatless_sessions,
     initialize_agent_core_tables,
-    recover_interrupted_sessions,
 )
 from app.services.agent_framework import AgentDefinitionService, initialize_agent_framework_tables
 from app.services.appearance import initialize_appearance_tables
@@ -323,21 +327,57 @@ def _warm_embedded_searxng() -> None:
     threading.Thread(target=warm_up, name="searxng-warmup", daemon=True).start()
 
 
-@asynccontextmanager
-async def _lifespan(_app: FastAPI):
+def _claim_data_and_recover() -> None:
+    """Take this data directory, then settle what a previous process left behind.
+
+    The order matters: recovery marks running research and agent work as
+    interrupted and guest cleanup deletes guest storage. A second server on the
+    same data must stop at the lock, not do that to the first one's live work.
+    All of it runs when the server starts rather than when ``app.main`` is
+    imported, so tooling can import the application while Neo is serving.
+    """
+
+    server_lock.hold(data_root())
     # Guest sessions live only in this process's memory, so guest storage found at
     # startup belongs to a process that crashed or was killed before shutdown
     # cleanup ran, and no session can ever reach it again.
     cleanup_guests()
+    recover_interrupted_research_jobs()
+    try:
+        recover_interrupted_runs()
+    except IsolationUnavailable as exc:
+        # Records of runs a crash interrupted can only be settled by the sandbox
+        # that launched them. Without one -- Neo nested in another sandbox, a
+        # failed probe, a data directory moved to another platform -- refusing to
+        # start would lock the user out of everything else. The records stay, and
+        # ``isolation.run`` retries recovery before it launches anything.
+        _LOG.warning("isolation_recovery_deferred reason=%s", exc)
+    # A restart leaves agent sessions in 'running' that no worker will ever
+    # advance, in every profile's own database. This process holds the data
+    # directory's lock, so none of them can belong to a live worker.
+    recover_all_profiles_at_startup()
+    # Runs from before every run was a turn of a chat have nowhere left to be
+    # opened from, so they are dropped once rather than kept as orphans.
+    delete_chatless_sessions()
+    start_lease_sweep()
+    start_reminder_sweep()
+    _warm_embedded_searxng()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    await run_in_threadpool(_claim_data_and_recover)
+    shutdown.reset()
+    shutdown.watch_signals()
     yield
+    # Long-lived streams watch this and end themselves, so the server is not left
+    # waiting on a browser tab that would otherwise hold its connection forever.
+    shutdown.begin()
     cleanup_guests()
+    await run_in_threadpool(checkpoint_databases)
 
 
 def create_app() -> FastAPI:
-    # Before anything else: startup below marks running research and agent work as
-    # interrupted and the lifespan deletes guest storage. A second server on this
-    # data must stop here, not do that to the first one's live work.
-    server_lock.hold(data_root())
     # The schema sits under /api so the session middleware covers it: it maps every
     # route Neo has, which is nothing to hand an unauthenticated caller. FastAPI's
     # /docs and /redoc pages are off because they never worked here: they load
@@ -428,7 +468,6 @@ def create_app() -> FastAPI:
     initialize_context_memory_tables()
     initialize_memory_retrieval_tables()
     initialize_research_tables()
-    recover_interrupted_research_jobs()
     initialize_workspace_file_tables()
     initialize_gallery_tables()
     initialize_chat_preference_tables()
@@ -450,26 +489,16 @@ def create_app() -> FastAPI:
     initialize_web_search_tables()
     initialize_workspace_orchestration_tables()
     initialize_continuity_tables()
-    try:
-        recover_interrupted_runs()
-    except IsolationUnavailable as exc:
-        # Records of runs a crash interrupted can only be settled by the sandbox
-        # that launched them. Without one -- Neo nested in another sandbox, a
-        # failed probe, a data directory moved to another platform -- refusing to
-        # start would lock the user out of everything else. The records stay, and
-        # ``isolation.run`` retries recovery before it launches anything.
-        _LOG.warning("isolation_recovery_deferred reason=%s", exc)
-    # A restart leaves agent sessions in 'running' that no worker will ever
-    # advance. The previous runner had an equivalent helper that nothing called,
-    # so runs stayed active forever; this one is wired up.
-    recover_interrupted_sessions()
-    # Runs from before every run was a turn of a chat have nowhere left to be
-    # opened from, so they are dropped once rather than kept as orphans.
-    delete_chatless_sessions()
-    start_reminder_sweep()
-    _warm_embedded_searxng()
-
     frontend_dir = Path(get_settings().frontend_dir).resolve()
+    if not (frontend_dir / "index.html").is_file():
+        # Only the Docker build puts the interface in app/static. A native install
+        # that ran `npm run build` has it in frontend/dist; serve that rather than
+        # answering every page with a 404 until NEO_FRONTEND_DIR is set.
+        from app.core.paths import install_root
+
+        built = install_root() / "frontend" / "dist"
+        if (built / "index.html").is_file():
+            frontend_dir = built
     index_file = frontend_dir / "index.html"
     assets_dir = frontend_dir / "assets"
     if index_file.is_file():

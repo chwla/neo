@@ -42,6 +42,10 @@ ALLOWED: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 TIMEOUTS_MS = {"read_only": 10_000, "test": 120_000, "build": 180_000}
 SHELL = ("&&", "||", ";", "|", ">", "<", "`", "$(", "${")
+#: What cmd.exe honours on top of the above. Refused on every platform, not only
+#: Windows: a command proposed on one machine may be approved and run on another,
+#: and none of the allowlisted programs needs any of these in an argument.
+CMD_SHELL = ("&", "^", "%", "!", '"', "\n", "\r")
 FORBIDDEN = {
     "sudo",
     "chmod",
@@ -181,8 +185,10 @@ def validate(command: list[str], category: str, cwd: str) -> dict:
             reasons.append("signature verification formats are forbidden for git")
         for arg in command:
             norm = arg.replace("\\", "/")
-            if any(token in arg for token in SHELL):
+            if any(token in arg for token in SHELL) or any(token in arg for token in CMD_SHELL):
                 reasons.append("shell syntax is forbidden")
+            if any(ord(character) < 32 or character == "\x7f" for character in arg):
+                reasons.append("control characters are forbidden in arguments")
             if norm.startswith(("/", "~/")) or ".." in PurePosixPath(norm).parts:
                 reasons.append("absolute or traversal command paths are forbidden")
             if "=" in arg and any(

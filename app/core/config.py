@@ -593,6 +593,11 @@ def get_settings() -> Settings:
                 "llm_config_path": str(root / "neo_llms.json"),
             }
         )
+    # The profile's own web-search choices, where it has made any. Imported here
+    # because the preferences store reads its database through these settings.
+    from app.services import search_prefs
+
+    updates.update(search_prefs.overlay())
     return settings.model_copy(update=updates)
 
 

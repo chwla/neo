@@ -52,6 +52,29 @@ class _BodyTooLarge(Exception):
     pass
 
 
+#: How much of an over-limit body is read and discarded before answering. A client
+#: still sending when the connection closes sees a reset instead of the 413, so the
+#: body is drained first -- up to a point, since the point of the limit is that an
+#: arbitrary amount is never read.
+DRAIN_CEILING = 64 * MIB
+
+
+async def _drain(receive, already: int, ceiling: int) -> None:
+    """Read and discard the rest of the body, so the client gets to see the answer."""
+
+    total = already
+    try:
+        while total < ceiling:
+            message = await receive()
+            if message["type"] != "http.request":
+                return
+            total += len(message.get("body", b""))
+            if not message.get("more_body", False):
+                return
+    except Exception:  # noqa: BLE001 - the client went away; nothing to drain
+        return
+
+
 async def _send_413(send, limit: int) -> None:
     body = json.dumps(
         {"detail": f"Request body is too large. The limit here is {limit // MIB} MB."}
@@ -86,6 +109,7 @@ class BodySizeLimitMiddleware:
                 except ValueError:
                     declared = limit + 1
                 if declared > limit:
+                    await _drain(receive, 0, min(declared, DRAIN_CEILING))
                     await _send_413(send, limit)
                     return
 
@@ -108,6 +132,7 @@ class BodySizeLimitMiddleware:
             if exceeded:
                 if not replaced:
                     replaced = True
+                    await _drain(receive, received, DRAIN_CEILING)
                     await _send_413(send, limit)
                 return
             await send(message)
@@ -121,4 +146,5 @@ class BodySizeLimitMiddleware:
                 raise
         if exceeded and not replaced:
             replaced = True
+            await _drain(receive, received, DRAIN_CEILING)
             await _send_413(send, limit)

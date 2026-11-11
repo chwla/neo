@@ -10,6 +10,7 @@ from app.services.provider_runtime.errors import (
     user_message,
 )
 from app.services.provider_runtime.service import ProviderRuntimeService
+from app.services.provider_runtime.streaming import wait_for_update
 
 
 def _failure(
@@ -181,13 +182,13 @@ class ProviderRuntimeClient(BaseLLMClient):
         self.request_ids.append(session["id"])
         seen = 0
         seen_thinking = 0
-        import time
-
         settled = False
         try:
             yield {"type": "start", "request_id": session["id"]}
             while session["status"] in {"running", "streaming"}:
-                time.sleep(0.02)
+                # CPU-only inference shares this machine with Neo. Polling and
+                # reopening SQLite 50 times/second competes with prompt evaluation.
+                wait_for_update(session["id"])
                 session = self.runtime.request(session["id"]) or session
                 partial = (session.get("metadata") or {}).get("partial_response", "")
                 thinking = (session.get("metadata") or {}).get("thinking", "")

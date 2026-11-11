@@ -17,13 +17,14 @@ Both need a language model. Neo does not ship one; see [Choose a model](#choose-
 |---|---|---|
 | Docker + Docker Compose | Option A | Docker Desktop on macOS and Windows. |
 | Python 3.12+ | Option B | `python3 --version` |
-| Node.js 22 (or current LTS) + npm | Option B | `node --version` |
+| Node.js 20 or newer + npm (CI uses 22) | Option B | `node --version` |
 | A model endpoint | Both | [Ollama](https://ollama.com) (default) or any OpenAI-compatible endpoint. |
 
-Platform support: macOS, Linux and Windows all run the same code. The one platform-specific
-feature is the sandbox for external coding CLIs (Claude Code, Codex, ...), which only runs on a
-validated macOS install; everywhere else those CLIs refuse to run. Everything else works the
-same.
+Platform support: macOS, Linux and Windows all run the same code, including agent undo,
+patch apply, delivery and Git checkpoints. What differs is the sandbox: only a validated macOS
+install has one, so elsewhere Neo's own commands and test runs each need your approval and
+external coding CLIs (Claude Code, Codex, ...) refuse to run. The README's "Supported platforms"
+table lists every difference.
 
 ---
 
@@ -145,23 +146,38 @@ says so rather than replacing it; run as the original user again.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"      # Windows: .venv\Scripts\python
+.venv/bin/python -m pip install -r requirements.txt   # the tested versions
+.venv/bin/python -m pip install --no-deps -e ".[dev]"
 # optional speech-to-text:
 .venv/bin/python -m pip install -e ".[voice]"
 ```
 
-Create a `.env` in the repo root (or export variables) with at least a search provider if you
-want web search; local runs default to search **disabled**:
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install --no-deps -e ".[dev]"
+```
+
+Create a `.env` in the repo root (copy `.env.example`; on Windows `copy .env.example .env`) or
+export variables, with at least a search provider if you want web search; local runs default to
+search **disabled**. Each profile can also pick its own provider in Settings > Web search.
 
 ```bash
 NEO_SEARCH_PROVIDER=duckduckgo
 NEO_DEFAULT_MODEL=llama3.2:3b
 ```
 
+On a native Windows install set `NEO_WORKSPACE_LIVE_ROOTS` to the folders Agent Mode may
+attach, separated by `;` (for example `C:\Users\you\code;D:\projects`); unset, any folder
+outside the refused trees is allowed.
+
 Start the API:
 
 ```bash
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Windows: .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 There is **no auto-reload**; restart after changing backend code. Confirm it is up:
@@ -202,8 +218,8 @@ backend from the dev origin directly, without the proxy.
 cd frontend && npm run build
 ```
 
-Point `NEO_FRONTEND_DIR` at `frontend/dist` (default is `app/static`) and the backend serves the
-interface itself on port 8000, exactly as the Docker image does.
+The backend serves `frontend/dist` itself on port 8000 when it exists (the Docker image uses
+`app/static`); set `NEO_FRONTEND_DIR` to serve a build from somewhere else.
 
 ### 4. Checks
 
@@ -212,9 +228,15 @@ interface itself on port 8000, exactly as the Docker image does.
 cd frontend && npm run build
 ```
 
-The test suites (backend, frontend unit, browser end-to-end) and benchmarks are maintained in a
-separate, private repository and run against an exact Neo commit; `docs/release-readiness.md`
-records the results for each release candidate.
+The checks CI runs are in `.github/scripts/` and work locally against this checkout:
+
+```bash
+.venv/bin/python -m unittest discover -s .github/scripts -p "check_*.py" -v
+.venv/bin/python .github/scripts/smoke_neo.py
+```
+
+The larger test suites (frontend unit, browser end-to-end) and benchmarks are maintained in a
+separate, private repository and run against an exact Neo commit.
 
 ---
 
@@ -271,15 +293,21 @@ install**. Set `NEO_EXTERNAL_AGENTS_ENABLED=true` and, if needed, `NEO_CLAUDE_CO
 
 ### Command line
 
-Installing the package adds a `neo` command that talks to a running server:
+Installing the package adds a `neo` command that talks to a running server. Everything beyond
+the health check needs a profile session, the same one the browser holds, so sign in once:
 
 ```bash
-.venv/bin/neo status
-.venv/bin/neo health
+.venv/bin/neo status                 # works without signing in
+.venv/bin/neo login --profile you    # prompts for the profile's password
+.venv/bin/neo memory list
 .venv/bin/neo tui
+.venv/bin/neo logout
 ```
 
-Use `--api-url` or `NEO_API_URL` to point it elsewhere (default `http://127.0.0.1:8000`).
+The session is kept in `%APPDATA%\neo\cli-session.json` on Windows and
+`~/.config/neo/cli-session.json` elsewhere, readable by you only; `NEO_CLI_SESSION_FILE` moves
+it. A command that needs a session you do not have exits with code 4 and says so. Use
+`--api-url` or `NEO_API_URL` to point the CLI elsewhere (default `http://127.0.0.1:8000`).
 
 ---
 

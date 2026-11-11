@@ -3649,6 +3649,7 @@ function mergeLiveRun(run, live, messageId) {
       todo: live.todo ?? run.session.todo,
     },
     pending_approval: live.approval ?? null,
+    liveStatusText: live.statusText,
     liveEntries: live.messageId === messageId || !live.messageId ? live.entries : null,
   };
 }
@@ -4145,6 +4146,24 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     setSelectedLlmId(next.active_id || "");
   }, []);
 
+  // Start as soon as the configured model is known, alongside the remaining
+  // bootstrap requests. Model/mode changes prepare their own prompt prefix.
+  useEffect(() => {
+    if (!selectedLlmId) return undefined;
+    let cancelled = false;
+    let retry;
+    const prepare = () => {
+      api.warmChatModel({
+        effort: activeChat?.effort || "low",
+        timezone: browserChatContext().timezone,
+      }).then((result) => {
+        if (!cancelled && result.status === "busy") retry = setTimeout(prepare, 2000);
+      }).catch(() => {});
+    };
+    prepare();
+    return () => { cancelled = true; clearTimeout(retry); };
+  }, [selectedLlmId, activeChat?.effort]);
+
   /**
    * Put a chat's thread on screen, or refresh the one that is there.
    *
@@ -4194,9 +4213,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
       view.controller = null;
       setPendingChatId(null);
     }
-    // Fire and forget: loading the model is the server's call and must never
-    // hold up or break opening the conversation.
-    api.warmChatModel().catch(() => {});
     setActiveChat(mergeServerChat(thread.chat));
     setMessages(thread.messages);
     // Same tick as the messages, so anything it clears goes in the same render.
@@ -5283,6 +5299,15 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     setShowOpenFolder(true);
   }
 
+  async function handleOpenToolsPanel() {
+    try {
+      if (!activeChat) await createActiveChat(selectedProjectId, { resetMessages: false });
+      setShowChatTools(true);
+    } catch (error) {
+      setStatusError(`Could not open Tools: ${errorMessage(error)}`);
+    }
+  }
+
   async function handleCompactConversation() {
     if (!activeChat?.id || compacting) return;
     setStatusError("");
@@ -5316,7 +5341,6 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
 
   async function handleLlmChange(llmId) {
     const previous = selectedLlmId;
-    setSelectedLlmId(llmId);
     try {
       const config = await api.selectLlm(llmId);
       setLlms(config.llms || []);
@@ -5592,7 +5616,7 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
     }),
     onEffortChange: (next) => updateChatAgentSettings({ effort: next }),
     onOpenFolder: handleOpenFolder,
-    onOpenToolsPanel: () => setShowChatTools(true),
+    onOpenToolsPanel: handleOpenToolsPanel,
     onOpenSkillsPanel: () => setShowSkills(true),
     onOpenUsagePanel: () => setShowUsage(true),
     onOpenDisclosurePicker: openDisclosurePicker,
@@ -5950,7 +5974,17 @@ function NeoApp({ profile, onProfileUpdated, onSwitchProfile, theme, onThemeChan
           />
         )}
         {showChatTools && activeChat?.id && (
-          <ChatToolsPanel chatId={activeChat.id} onClose={() => setShowChatTools(false)} />
+          <ChatToolsPanel
+            key={activeChat.id}
+            chatId={activeChat.id}
+            mode={activeChat.agent_mode}
+            executor={activeChat.executor}
+            onClose={() => setShowChatTools(false)}
+            onOpenFolder={() => {
+              setShowChatTools(false);
+              handleOpenFolder();
+            }}
+          />
         )}
         {/* Opens without a chat, like the skills panel: the question it answers
             is about the account, not about this conversation. */}

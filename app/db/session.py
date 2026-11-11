@@ -71,6 +71,26 @@ def release_database(database_url: str) -> None:
         bind.dispose()
 
 
+def checkpoint_databases() -> None:
+    """Fold every open database's write-ahead log back into its file.
+
+    Run at shutdown. Without it a clean stop left megabytes of ``-wal`` beside
+    each database, and a copy of the ``.db`` file alone -- the obvious way to
+    back Neo up -- silently missed whatever was still in the log.
+    """
+
+    with _sessionmakers_lock:
+        binds = [maker.kw.get("bind") for maker in _sessionmakers.values()]
+    for bind in {engine, *[item for item in binds if item is not None]}:
+        if not str(bind.url).startswith("sqlite"):
+            continue
+        try:
+            with bind.connect() as connection:
+                connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:  # noqa: BLE001 - best effort; the log is replayed on next open
+            continue
+
+
 class _ProfileAwareSessionFactory:
     """Keep legacy ``SessionLocal()`` callers isolated to the active profile."""
 

@@ -36,9 +36,11 @@ API it talks to see [backend.md](backend.md).
 - Libraries: **TipTap 3** (notes editor and extensions), **marked** (markdown in notes),
   **perfect-freehand** (sketches), **three** (a chat background effect). Chat markdown is rendered
   by Neo's own small renderer (`markdown.js`), not a library.
-- No service worker. `main.jsx` actively unregisters any left by older builds and clears
-  Cache Storage. The app renders under `React.StrictMode`, so effects mount, unmount and remount
-  in development; anything with a loop or listener must tear down cleanly.
+- One service worker, `neo-notifications-sw.js`, registered by `main.jsx` only so iOS can show
+  reminder notifications; it caches nothing. `main.jsx` unregisters any other worker left by
+  older builds and clears Cache Storage. The app renders under `React.StrictMode`, so effects
+  mount, unmount and remount in development; anything with a loop or listener must tear down
+  cleanly.
 
 ## Directory layout
 
@@ -300,8 +302,7 @@ Neo's test suites and benchmarks live in a separate, private repository and run 
 disposable copy of one exact Neo commit; this repository carries none of them. The suite covers
 the frontend's pure modules under Node's test runner (a loader imports the real `.jsx` sources;
 there is no jsdom), browser end-to-end runs in real browsers, and benchmarks driven over the Chrome
-DevTools Protocol against a production build. `docs/release-readiness.md` records what was run
-against which commit.
+DevTools Protocol against a production build.
 
 When you fix a race or a rule, add a module-level test there that fails without the fix.
 

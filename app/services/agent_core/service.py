@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.services.agent_core import delivery, journal, store, worker
 from app.services.agent_core.permissions import grant_matches
 from app.services.agent_core.types import (
+    TERMINAL_STATUSES,
     AgentSession,
     Budgets,
     Executor,
@@ -30,6 +31,10 @@ MAX_OBJECTIVE = 20_000
 
 class AgentCoreValidationError(ValueError):
     pass
+
+
+class AgentCoreConflict(AgentCoreValidationError):
+    """The request is well formed but the run is no longer in a state to take it."""
 
 
 class SessionCreate(BaseModel):
@@ -105,7 +110,7 @@ def _budgets_for(executor: str, handoff: dict | None) -> Budgets:
     longer, so a session budget left at the default would kill a healthy run
     partway through -- and a chain, being several such runs in series, needs
     room for all of them. The per-process timeout is separate and lives in
-    ``external_agents.runner``; this is only the session-level ceiling.
+    the external CLI's own process handling; this is only the session-level ceiling.
     """
 
     from app.core.config import get_settings
@@ -414,11 +419,14 @@ class AgentCoreService:
     def cancel(self, session_id: str) -> AgentSession:
         self.get(session_id)
         store.cancel_session(session_id)
+        # The worker notices at its next check, which may be a model call away.
+        # Its turn slot is given back now, so stopping a run frees room at once.
+        worker.release_slot(session_id)
         return self.get(session_id)
 
     def set_mode(self, session_id: str, payload: SessionUpdate) -> AgentSession:
         session = self.get(session_id)
-        if session.status in {"completed", "failed", "cancelled"}:
+        if session.status in TERMINAL_STATUSES:
             raise AgentCoreValidationError("This run has already finished.")
         store.update_session(session_id, {"mode": payload.mode})
         return self.get(session_id)
@@ -431,7 +439,7 @@ class AgentCoreService:
         """
 
         session = self.get(session_id)
-        if session.status in {"completed", "failed", "cancelled"}:
+        if session.status in TERMINAL_STATUSES:
             raise AgentCoreValidationError("This run has already finished.")
         store.append_message(session_id, {
             "role": "user", "content": payload.content.strip(),
@@ -445,7 +453,11 @@ class AgentCoreService:
         return self.get(session_id)
 
     def decide(self, session_id: str, approval_id: str, payload: ApprovalDecision) -> AgentSession:
-        self.get(session_id)  # 404s for an unknown session before touching approvals
+        session = self.get(session_id)  # 404s for an unknown session
+        if session.status in TERMINAL_STATUSES:
+            # Deciding an approval restarts the worker; on a run that was stopped
+            # there is nothing left to resume, and saying "ok" would be untrue.
+            raise AgentCoreConflict("This run has already finished.")
         approval = store.get_approval(approval_id)
         if approval is None or approval["session_id"] != session_id:
             raise LookupError("Approval not found.")

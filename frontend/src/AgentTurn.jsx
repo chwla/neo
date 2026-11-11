@@ -9,7 +9,7 @@ import {
 import { COPY_FAILED_MESSAGE, copyText } from "./clipboard.js";
 import { MessageActionsMenu } from "./MessageActionsMenu.jsx";
 
-const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
 //: The agent is mid-step in these. `waiting_approval` is deliberately not one of
 //: them: the run is open but the agent is waiting on you, so the composer offers
 //: send rather than stop, exactly as chat does between answers.
@@ -162,14 +162,14 @@ function AgentBubble({ role, text, html, markdown, entry, onCopy, extraActions, 
 }
 
 /** The same waiting bubble chat shows, so a working agent reads the same way. */
-function AgentWorkingBubble({ sender = "Neo" }) {
+function AgentWorkingBubble({ sender = "Neo", statusText }) {
   return (
     <article className="neo-chat-message assistant thinking">
       <div className="message-stack">
         <span className="message-sender">{sender}</span>
         <div className="message-bubble pending-message-bubble">
           <div className="pending-message-header">
-            <span>{sender} is working</span>
+            <span role="status">{statusText || `${sender} is working`}</span>
           </div>
         </div>
       </div>
@@ -431,11 +431,21 @@ export default function AgentTurn({ run, entries, traceOpen, busy, onDecide, pat
               />
             );
           })}
-          {working && !approval ? <AgentWorkingBubble sender={engine} /> : null}
+          {working && !approval ? (
+            <AgentWorkingBubble sender={engine} statusText={run.liveStatusText} />
+          ) : null}
         </div>
       ) : null}
 
       {approval ? <ApprovalCard approval={approval} busy={busy} onDecide={onDecide} /> : null}
+      {!active && ["blocked", "failed", "budget_exhausted", "unverified_complete", "interrupted"].includes(session.stop_reason) ? (
+        <div className="agent-run-outcome" role="status">
+          <strong>{session.stop_reason === "unverified_complete"
+            ? "Completion unverified"
+            : statusLabel(session.stop_reason)}</strong>
+          {session.summary ? <p>{session.summary}</p> : null}
+        </div>
+      ) : null}
       <DiffView patch={patch} onClose={onClosePatch} />
       <TodoPanel items={session.todo} />
     </div>

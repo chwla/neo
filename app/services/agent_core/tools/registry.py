@@ -74,7 +74,9 @@ def default_tools() -> list[AgentTool]:
 #: offered the tool at all, which is a truer off switch than a second toggle.
 TOOL_GROUPS: dict[str, list[str]] = {
     "shell": ["run_command", "run_tests"],
-    "file_operations": ["read_file", "list_dir", "write_file", "edit_file", "delete_file"],
+    "file_operations": [
+        "read_file", "list_dir", "create_directory", "write_file", "edit_file", "delete_file"
+    ],
     "search": ["glob", "grep", "find_symbol", "web_search", "web_fetch"],
     "memory": ["recall_memory"],
     "gallery": ["search_gallery", "view_image"],
@@ -90,6 +92,14 @@ TOOL_GROUPS: dict[str, list[str]] = {
 TOOL_TO_GROUP: dict[str, str] = {
     name: group for group, names in TOOL_GROUPS.items() for name in names
 }
+
+
+def effective_disabled_tools(disabled: set[str] | frozenset[str]) -> frozenset[str]:
+    # Preserve a fully disabled File operations group saved before this tool existed.
+    previous_file_tools = {"read_file", "list_dir", "write_file", "edit_file", "delete_file"}
+    if previous_file_tools <= disabled:
+        return frozenset(disabled | {"create_directory"})
+    return frozenset(disabled)
 
 
 def truncate_output(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
@@ -114,6 +124,28 @@ class ToolRegistry:
     def all(self) -> list[AgentTool]:
         return list(self._tools.values())
 
+    def unavailable_reason(
+        self,
+        tool: AgentTool,
+        *,
+        mode: PermissionMode,
+        has_repo: bool,
+        live: bool = False,
+        disabled: frozenset[str] = frozenset(),
+        skills: list[dict] | None = None,
+    ) -> str | None:
+        if tool.name in effective_disabled_tools(disabled):
+            return "disabled"
+        if tool.name == "load_skill" and not skills:
+            return "no_skills"
+        if tool.requires_repo and not has_repo:
+            return "folder_required"
+        if live and tool.name in LIVE_WITHHELD:
+            return "live_folder"
+        if self.resolver.resolve(tool=tool, arguments={}, mode=mode).outcome == "deny":
+            return "not_permitted"
+        return None
+
     def available(
         self,
         *,
@@ -123,22 +155,12 @@ class ToolRegistry:
         disabled: frozenset[str] = frozenset(),
         skills: list[dict] | None = None,
     ) -> list[AgentTool]:
-        chosen = []
-        for tool in self._tools.values():
-            if tool.name in disabled:
-                continue
-            if tool.name == "load_skill" and not skills:
-                # Nothing to load. Offering the tool would advertise a library
-                # this chat has turned off, which is the opposite of the point.
-                continue
-            if tool.requires_repo and not has_repo:
-                continue
-            if live and tool.name in LIVE_WITHHELD:
-                continue
-            if self.resolver.resolve(tool=tool, arguments={}, mode=mode).outcome == "deny":
-                continue
-            chosen.append(tool)
-        return chosen
+        return [
+            tool for tool in self._tools.values()
+            if self.unavailable_reason(
+                tool, mode=mode, has_repo=has_repo, live=live, disabled=disabled, skills=skills
+            ) is None
+        ]
 
     def schemas(
         self,
@@ -211,7 +233,7 @@ class ToolRegistry:
         # Withholding a tool from the schema is advice; a model can still name
         # one it saw in an earlier turn, or that it invented. Refusing here as
         # well is what makes it a rule.
-        if call.name in disabled:
+        if call.name in effective_disabled_tools(disabled):
             return ToolResult(
                 call_id=call.id,
                 name=call.name,

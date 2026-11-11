@@ -35,5 +35,8 @@ EVIDENCE_RECORDED = "evidence.recorded"
 RUN_COMPLETED = "run.completed"
 RUN_FAILED = "run.failed"
 RUN_CANCELLED = "run.cancelled"
+#: The server stopped while the run was working. Terminal for the stream; the run
+#: itself can be resumed.
+RUN_INTERRUPTED = "run.interrupted"
 
-TERMINAL_EVENTS = frozenset({RUN_COMPLETED, RUN_FAILED, RUN_CANCELLED})
+TERMINAL_EVENTS = frozenset({RUN_COMPLETED, RUN_FAILED, RUN_CANCELLED, RUN_INTERRUPTED})

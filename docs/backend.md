@@ -420,7 +420,10 @@ external coding CLIs, plus Neo's own git, command sandbox, test runner and langu
   disclosure assembly (`disclosure`: the only place their input is built; the user previews and
   approves any earlier message), snapshots of what changed, and usage windows.
 - On **Linux, Windows and Docker** external CLIs refuse to run. Neo-side tooling still works
-  there with ordinary permissions and Git hardening, but is not OS-isolated.
+  there with ordinary permissions and Git hardening, but is not OS-isolated: each command or
+  test run needs the person's approval. Anchored writes (`safe_fs`) work on all three --
+  Windows through handle-relative opens in `_safe_fs_windows.py` -- so undo, patch apply,
+  delivery and checkpoints behave the same everywhere.
 - `services/disclosure/` labels data provenance and gates outbound disclosure.
   A private disclosure runs in a separate full copy and its changes need exact-diff review.
 

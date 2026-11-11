@@ -26,20 +26,11 @@ import logging
 from pathlib import Path
 
 from app.core import textio
+from app.core.fs_errors import permission_message
 from app.services.agent_core import store
 from app.services.agent_core.delivery import DeliveryPlan, FileChange
 from app.services.agent_core.workspace import repo_root
 from app.services.isolation import fs_ops, safe_fs
-
-#: Bind mounts keep the host's ownership, so a container running as a different
-#: uid than the folder's owner can read every file and write none of them. The
-#: error the OS gives for that is "Permission denied", which reads as a Neo bug
-#: rather than a mount that needs one flag.
-_PERMISSION_HINT = (
-    "{path}: permission denied. If Neo is in a container, the mounted folder is "
-    "owned by a different user than the container runs as -- set NEO_UID/NEO_GID "
-    "to your own (`id -u`/`id -g`) and restart."
-)
 
 _LOG = logging.getLogger(__name__)
 
@@ -55,6 +46,20 @@ def _read_raw(root: Path, relative_path: str) -> bytes | None:
         return raw if len(raw) <= MAX_SNAPSHOT_BYTES else None
     except FileNotFoundError:
         return None
+
+
+def _snapshot_text(raw: bytes | None) -> str | None:
+    """The text to keep for undo, or ``None`` when it could not restore the file.
+
+    The snapshot is stored as text and written back as UTF-8. For a file in any
+    other encoding that would "restore" bytes the file never held, so such a file
+    is recorded as existing but not snapshotted -- undo then leaves it alone and
+    says so, instead of corrupting it.
+    """
+
+    if raw is None or not textio.is_utf8(raw):
+        return None
+    return textio.decode(raw)
 
 
 def _read_text(root: Path, relative_path: str) -> str | None:
@@ -112,7 +117,7 @@ def record_before(session_id: str, repo_id: str, root: Path, relative_path: str)
                 "repo_id": repo_id,
                 "relative_path": relative_path,
                 "existed_before": existed,
-                "before_text": textio.decode(raw) if raw is not None else None,
+                "before_text": _snapshot_text(raw),
                 "before_newline": _newline(raw) if raw is not None else textio.LF,
                 "created_at": store.now_iso(),
             }
@@ -216,7 +221,12 @@ def undo(session_id: str, repo_id: str) -> dict:
         existed = bool(record["existed_before"])
         before = record["before_text"]
         if existed and before is None:
-            skipped.append({"path": relative, "reason": "This file was too large to snapshot."})
+            skipped.append(
+                {
+                    "path": relative,
+                    "reason": "This file was too large, or not UTF-8 text, to snapshot.",
+                }
+            )
             continue
 
         # Drift: if the file no longer holds what the run left, someone has
@@ -248,8 +258,8 @@ def undo(session_id: str, repo_id: str) -> dict:
                 removed.append(relative)
             except safe_fs.UnsafePath as exc:
                 skipped.append({"path": relative, "reason": str(exc)})
-            except PermissionError:
-                skipped.append({"path": relative, "reason": _PERMISSION_HINT.format(path=relative)})
+            except PermissionError as exc:
+                skipped.append({"path": relative, "reason": permission_message(relative, exc)})
             except OSError as exc:
                 skipped.append({"path": relative, "reason": str(exc)})
             continue
@@ -264,8 +274,8 @@ def undo(session_id: str, repo_id: str) -> dict:
             restored.append(relative)
         except safe_fs.UnsafePath as exc:
             skipped.append({"path": relative, "reason": str(exc)})
-        except PermissionError:
-            skipped.append({"path": relative, "reason": _PERMISSION_HINT.format(path=relative)})
+        except PermissionError as exc:
+            skipped.append({"path": relative, "reason": permission_message(relative, exc)})
         except OSError as exc:
             skipped.append({"path": relative, "reason": str(exc)})
 

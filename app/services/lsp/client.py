@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -181,6 +182,18 @@ class JsonRpcClient:
 
     def _kill(self) -> None:
         if self.process.poll() is None:
+            # ``tsserver`` and friends are started by a wrapper; killing only the
+            # wrapper leaves the real server running. End the tree.
+            if os.name == "nt":
+                subprocess.run(  # noqa: S603 - fixed argv
+                    ["taskkill", "/T", "/F", "/PID", str(self.process.pid)],
+                    capture_output=True, check=False, timeout=15,
+                )
+            else:
+                try:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             self.process.kill()
         self._closed = True
 

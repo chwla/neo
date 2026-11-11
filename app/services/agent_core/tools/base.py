@@ -77,6 +77,8 @@ class AgentTool:
     #: invalidate.
     source: Literal["built_in", "connector"] = "built_in"
     origin_id: str | None = None
+    #: Directory creation is outside the file snapshot journal.
+    supports_undo: bool = True
 
     @property
     def category(self) -> str:

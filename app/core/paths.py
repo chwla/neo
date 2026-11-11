@@ -108,6 +108,78 @@ def is_reparse_point(path: Path) -> bool:
         return True
 
 
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def entry_is_link(entry: os.DirEntry) -> bool:
+    """Whether a directory entry redirects somewhere else, of any kind.
+
+    A symlink everywhere; on Windows also a junction, a mount point or any other
+    reparse point -- none of which ``is_symlink`` reports -- read from the entry's
+    own attributes rather than by asking what it points at.
+    """
+
+    try:
+        if entry.is_symlink():
+            return True
+        if IS_WINDOWS:
+            if entry.is_junction():
+                return True
+            attributes = entry.stat(follow_symlinks=False).st_file_attributes
+            return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+        return False
+    except OSError:
+        # An entry that cannot be inspected is not one to assume is safe.
+        return True
+
+
+def walk_contained(root: Path, *, skip_dirs: frozenset[str] = frozenset()):
+    """Yield every regular file under ``root`` without ever leaving it.
+
+    ``Path.rglob`` and ``os.walk`` decide what to descend into by asking whether
+    a name is a directory, and a junction or a directory symlink answers yes. A
+    walk that then filters only the *files* it yields has already followed the
+    link: that is how ``glob`` and ``grep`` read a folder outside the workspace.
+
+    Here every entry is checked before it is used. A link is skipped whether it
+    names a file or a directory, so nothing beneath one is listed or read, and a
+    directory is only entered if its real location is still inside ``root`` --
+    which also covers a mount point or a reparse kind not known about today.
+    Results are sorted, so output is stable across platforms.
+    """
+
+    try:
+        real_root = os.path.realpath(root)
+    except OSError:
+        return
+    pending = [str(root)]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError:
+            continue
+        directories = []
+        for entry in entries:
+            if entry_is_link(entry):
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name in skip_dirs:
+                        continue
+                    real = os.path.realpath(entry.path)
+                    if not is_within(Path(real_root), Path(real)):
+                        continue
+                    directories.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    yield Path(entry.path)
+            except OSError:
+                continue
+        # Depth-first in name order: reversed, because the stack pops from the end.
+        pending.extend(reversed(directories))
+
+
 def split_roots(raw: str) -> list[str]:
     """Parse a configured list of directories.
 
