@@ -132,6 +132,28 @@ class AgentLoopChecks(unittest.TestCase):
         })
         return session["id"]
 
+    def test_every_run_in_a_chat_seeds_its_history(self):
+        # History rows carry their chat_messages id. Copying it into the transcript,
+        # whose ids are one key across all runs, failed every run after the first
+        # in a chat with "UNIQUE constraint failed: workspace_agent_messages.id".
+        history = [
+            {"id": 1, "role": "user", "content": "hi", "provenance": "user_input"},
+            {"id": 2, "role": "assistant", "content": "hello"},
+        ]
+        loop, _ = self._loop([], [])
+        with patch("app.services.agent_core.store.chat_history_before", return_value=history):
+            for anchor in (3, 5):
+                session_id = self.store.insert_session({
+                    "id": self.store.new_id(), "objective": "edit files", "title": "check",
+                    "mode": "normal", "repo_id": "repo-check", "status": "queued",
+                    "chat_id": 8, "anchor_message_id": anchor,
+                    "created_at": self.store.now_iso(), "updated_at": self.store.now_iso(),
+                })["id"]
+                loop.run(session_id)
+                self.assertEqual(self.store.get_session(session_id)["status"], "completed")
+                seeded = [m["content"] for m in self.store.list_messages(session_id)[1:3]]
+                self.assertEqual(seeded, ["hi", "hello"])
+
     def test_batch_after_an_approval_is_fully_executed(self):
         from app.services.agent_core.loop import resume_after_approval
 

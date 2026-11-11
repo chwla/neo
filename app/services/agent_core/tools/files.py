@@ -167,6 +167,29 @@ def create_directory(arguments: dict, context: ToolContext):
     ))
 
 
+COMPLETE_TASK_PARAMETER = {
+    "type": "boolean",
+    "description": (
+        "Set true on the LAST file operation if it completes the entire user request. "
+        "A successful verified save ends the task without another model call. "
+        "Leave false if requested work, tests, explanation, or delivery remains."
+    ),
+}
+
+
+def _verified_save(path, expected: str, context: ToolContext, name: str, detail: str):
+    # Match the text writer's newline normalization and encoding preservation.
+    # This checks persistence only; it must never claim compilation or tests passed.
+    actual = textio.read_editable(path).text
+    if actual != expected.replace("\r\n", "\n").replace("\r", "\n"):
+        raise WorkspaceError(f"Saved contents of '{path.name}' did not match the requested text.")
+    call_id = context.extras["call_id"]
+    detail += " Saved contents checked; execution was not checked."
+    return ok(call_id, name, detail, Evidence(
+        kind="file_verify", tool_call_id=call_id, passed=True, detail=detail
+    ))
+
+
 def write_file(arguments: dict, context: ToolContext):
     root = repo_root(context.repo_id)
     path = resolve(root, str(arguments.get("path", "")))
@@ -190,7 +213,10 @@ def write_file(arguments: dict, context: ToolContext):
         raise WorkspaceError(str(exc)) from exc
     if live:
         journal.record_after(context.session_id, root, relative)
-    return f"{'Updated' if existed else 'Created'} {relative} ({len(content)} characters)."
+    return _verified_save(
+        path, content, context, "write_file",
+        f"{'Updated' if existed else 'Created'} {relative} ({len(content)} characters).",
+    )
 
 
 def edit_file(arguments: dict, context: ToolContext):
@@ -243,7 +269,10 @@ def edit_file(arguments: dict, context: ToolContext):
         raise WorkspaceError(str(exc)) from exc
     if live:
         journal.record_after(context.session_id, root, relative)
-    return f"Edited {relative} ({occurrences} replacement{'s' if occurrences != 1 else ''})."
+    return _verified_save(
+        path, text.replace(old, new), context, "edit_file",
+        f"Edited {relative} ({occurrences} replacement{'s' if occurrences != 1 else ''}).",
+    )
 
 
 def delete_file(arguments: dict, context: ToolContext):
@@ -281,6 +310,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path relative to the workspace root."},
+                "complete_task": COMPLETE_TASK_PARAMETER,
             },
             "required": ["path"],
         },
@@ -365,7 +395,10 @@ TOOLS = [
         description="Create or overwrite a file in the repository.",
         parameters={
             "type": "object",
-            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"}, "content": {"type": "string"},
+                "complete_task": COMPLETE_TASK_PARAMETER,
+            },
             "required": ["path", "content"],
         },
         risk="workspace_write",
@@ -384,6 +417,7 @@ TOOLS = [
                 "old_string": {"type": "string"},
                 "new_string": {"type": "string"},
                 "replace_all": {"type": "boolean"},
+                "complete_task": COMPLETE_TASK_PARAMETER,
             },
             "required": ["path", "old_string", "new_string"],
         },

@@ -290,6 +290,12 @@ def validate_browse_path(raw_path: str) -> Path:
     if is_reparse_point(resolved):
         raise ValueError("That folder is a symlink or junction.")
     roots = _live_roots()
+    # Direct host mode can browse local paths without an explicit root. Bound
+    # the picker to the user's home; containers still need a real host mount.
+    if not roots and not in_container():
+        home = Path.home().expanduser().resolve()
+        if home.is_dir():
+            roots = [home]
     if not roots:
         # ``validate_live_root`` reads an empty root list as "no restriction
         # configured", which is right for attaching a folder the server can

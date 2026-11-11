@@ -98,6 +98,18 @@ def _configured_roots() -> list[str]:
     return [part for part in split_roots(get_settings().workspace_live_roots) if part.strip()]
 
 
+def _browse_roots() -> list[str]:
+    """Configured roots, or the host user's home when Neo runs outside Docker."""
+
+    from pathlib import Path
+
+    roots = _configured_roots()
+    if roots or in_container():
+        return roots
+    home = Path.home().expanduser().resolve()
+    return [str(home)] if home.is_dir() else []
+
+
 def _live_repos_by_path() -> dict[str, str]:
     """Live repositories keyed by the folder they were opened from."""
 
@@ -200,7 +212,7 @@ def list_roots() -> dict:
         if repo.get("access") == store.LIVE
     ]
     return {
-        "roots": _configured_roots(),
+        "roots": _browse_roots(),
         "recent": recent[:10],
         "containerized": in_container(),
     }
@@ -222,7 +234,7 @@ def browse_folders(path: str | None = None) -> dict:
 
     from pathlib import Path
 
-    roots = _configured_roots()
+    roots = _browse_roots()
     target: Path | None = None
 
     if path is None:

@@ -29,7 +29,7 @@ from typing import Any
 
 from app.services.agent_core import events, journal, permissions, store
 from app.services.agent_core.approvals import arguments_hash
-from app.services.agent_core.completion import CompletionAdjudicator
+from app.services.agent_core.completion import CompletionAdjudicator, evidence_verdict
 from app.services.agent_core.context import context_budget, fit
 from app.services.agent_core.permissions import PermissionResolver
 from app.services.agent_core.prompt import build_environment, build_system_prompt
@@ -237,6 +237,15 @@ class AgentLoop:
                 return self._session(session_id)
             self._answer_orphaned_calls(session_id)
 
+            # Also runs after approval/restart: the persisted batch and tool results
+            # are the authority, rather than a transient flag in the worker.
+            session = self._session(session_id)
+            if self._cancelled(session_id):
+                return session
+            finished = self._finish_file_task(session)
+            if finished is not None:
+                return finished
+
             stop = self._budget_breach(session, deadline)
             if stop:
                 return self._finish(session, "budget_exhausted", stop)
@@ -252,6 +261,13 @@ class AgentLoop:
                 store.update_session(session_id, {"error": str(exc)})
                 return self._finish(session, "failed", f"The model call failed: {exc}")
 
+            if self._cancelled(session_id):
+                return self._session(session_id)
+            if turn.truncated:
+                # A partial model response cannot assert that the whole task is
+                # finished, even if a complete file call preceded the cutoff.
+                for call in turn.tool_calls:
+                    call.arguments.pop("complete_task", None)
             store.update_session(session_id, {"iterations": session.iterations + 1})
             self._raise_model_label(session_id, turn.source_label)
 
@@ -413,9 +429,13 @@ class AgentLoop:
                 source_label = Label.private("chat_private")
             else:
                 source_label = Label.unknown("legacy_chat_assistant")
+            # A history row's `id` is its chat_messages id. Transcript ids are one
+            # global key across every run, so reusing it made the second agent run
+            # in a chat fail on rows the first run had already copied.
+            seeded = {key: value for key, value in row.items() if key != "id"}
             store.append_message(
                 session.id,
-                {**row, "source_label": join(Label.private("chat_private"), source_label)},
+                {**seeded, "source_label": join(Label.private("chat_private"), source_label)},
             )
         store.append_message(session.id, {
             "role": "user", "content": session.objective,
@@ -823,6 +843,42 @@ class AgentLoop:
         store.update_session(session.id, updates)
 
     # --- stopping ------------------------------------------------------------
+
+    def _finish_file_task(self, session: AgentSession) -> AgentSession | None:
+        """Accept an explicit final file action only after its saved result exists.
+
+        The model decides whether all requested work fits in this batch; the
+        runtime checks execution. Merely creating a file never ends a task.
+        Failed/proposed/denied actions and unfinished batches cannot finish it.
+        """
+
+        calls, answered, clean = self._open_batch(session.id)
+        file_tools = {"write_file", "edit_file", "create_directory"}
+        if (
+            session.mode == "plan" or not calls or not clean
+            or calls[-1].arguments.get("complete_task") is not True
+            or any(call.name not in file_tools or call.id not in answered for call in calls)
+            or session.consecutive_errors
+            or any(item.status != "completed" for item in session.todo)
+            or not evidence_verdict(session.evidence)
+        ):
+            return None
+        results = {row["call_id"]: row for row in store.list_tool_calls(session.id)}
+        verified = {
+            item.tool_call_id for item in session.evidence
+            if item.kind == "file_verify" and item.passed
+        }
+        if any(
+            results.get(call.id, {}).get("status") != "ok" or call.id not in verified
+            for call in calls
+        ):
+            return None
+        summary = "\n".join(results[call.id]["content"] for call in calls)
+        store.append_message(session.id, {
+            "role": "assistant", "content": summary, "source_label": self._egress(session.id).label,
+        })
+        self._emit(session.id, events.CHUNK, {"content": summary})
+        return self._finish(session, "verified_complete", summary)
 
     def _adjudicate(self, session_id: str) -> AgentSession | None:
         """Decide what an empty tool-call turn means. ``None`` means keep working."""

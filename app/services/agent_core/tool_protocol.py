@@ -122,7 +122,13 @@ def _looks_like_a_tool_attempt(text: str) -> bool:
 
 
 def parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
-    """Parse the fallback protocol. Raises ``ToolProtocolError`` on malformed input."""
+    """Parse the fallback protocol. Raises ``ToolProtocolError`` on malformed input.
+
+    A lone ``{"name": ..., "parameters": ...}`` object is taken as one call. That
+    is Llama 3.x's trained format, and small models keep producing it even after
+    being asked for the array; refusing it cost a whole extra model call (about a
+    minute on CPU) only to end the run on a call that was perfectly clear.
+    """
 
     payload = _extract_json_object(text)
     if payload is None:
@@ -135,8 +141,9 @@ def parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
         raise ToolProtocolError("Tool call block must be a JSON object.")
     if "tool_calls" not in decoded:
         if "name" in decoded and ("arguments" in decoded or "parameters" in decoded):
-            raise ToolProtocolError("A tool request must use the `tool_calls` array.")
-        return []
+            decoded = {"tool_calls": [decoded]}
+        else:
+            return []
     raw_calls = decoded["tool_calls"]
     if not isinstance(raw_calls, list):
         raise ToolProtocolError("`tool_calls` must be an array.")
@@ -150,7 +157,7 @@ def parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
             raise ToolProtocolError("Each tool call needs a `name`.")
         if name not in allowed:
             raise ToolProtocolError(f"Tool '{name}' is not available.")
-        arguments = raw.get("arguments", {})
+        arguments = raw.get("arguments", raw.get("parameters", {}))
         if not isinstance(arguments, dict):
             raise ToolProtocolError(f"Arguments for '{name}' must be an object.")
         calls.append(ToolCall(id=f"call_{uuid.uuid4().hex[:12]}", name=name, arguments=arguments))

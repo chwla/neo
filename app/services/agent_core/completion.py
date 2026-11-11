@@ -27,10 +27,15 @@ _SYSTEM = (
     "Judge only from the recorded actions and evidence supplied. Do not assume an action "
     "succeeded because it was attempted.\n"
     "complete=true only when the recorded actions actually accomplished the objective.\n"
+    "Judge the user's requested scope. Do not add requirements. A request to create "
+    "a file containing code does not by itself require running a test suite or compiling. "
+    "A checked file save proves the content was saved, not that the program works. "
+    "Missing optional tests alone must not restart a completed file task. "
+    "If testing was requested, assess the actual test evidence.\n"
     "blocked=true ONLY when the agent cannot make further progress without something it "
     "cannot get by itself: user input, credentials, a missing repository, or a capability "
-    "it does not have. Work that is merely unfinished, described but not performed, or not "
-    "yet verified is NOT blocked -- it is incomplete, so return complete=false, blocked=false "
+    "it does not have. Requested work that is unfinished or described but not performed "
+    "is incomplete, so return complete=false, blocked=false "
     "and list what still needs doing in unmet_criteria."
 )
 

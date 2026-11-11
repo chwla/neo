@@ -31,6 +31,10 @@ jobs:
         run: python -m ruff check app
       - name: Verify agent tool availability and filesystem behavior
         run: python -m unittest discover -s .github/scripts -p check_agent_tools.py -v
+      - name: Verify folder browsing and Agent Mode execution
+        run: python -m unittest discover -s .github/scripts -p check_folder_agent.py -v
+      - name: Verify a final file action ends the run without extra model calls
+        run: python -m unittest discover -s .github/scripts -p check_agent_completion.py -v
       - name: Verify Quick routing, prompt size and streaming latency
         run: python -m unittest discover -s .github/scripts -p check_chat_latency.py -v
       - name: Verify local startup preparation preserves chat prompts

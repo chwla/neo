@@ -107,6 +107,23 @@ class AgentToolsChecks(unittest.TestCase):
                 self.assertEqual(result.content, "")
                 self.assertEqual(len(client.requests), 2)
 
+    def test_bare_call_is_accepted_without_a_retry(self):
+        # Llama 3.x writes {"name", "parameters"} and small ones repeat it after a
+        # repair prompt. A real tool with complete arguments is taken as it is;
+        # an unknown tool still fails rather than being guessed at.
+        schemas = self.registry.schemas(mode="normal", has_repo=True)
+        bare = LLMChatResult(content='{"name":"create_directory","parameters":{"path":"A"}}')
+        client = Model(bare)
+        result = request_tool_calls(client, [], schemas)
+        self.assertEqual([call.name for call in result.tool_calls], ["create_directory"])
+        self.assertEqual(result.tool_calls[0].arguments, {"path": "A"})
+        self.assertEqual(result.content, "")
+        self.assertEqual(len(client.requests), 1)
+
+        unknown = LLMChatResult(content='{"name":"mkdir","parameters":{"path":"A"}}')
+        with self.assertRaisesRegex(ToolProtocolError, "'mkdir' is not available"):
+            request_tool_calls(Model(unknown, unknown), [], schemas)
+
     def test_native_invalid_arguments_are_never_dispatched(self):
         schemas = self.registry.schemas(mode="normal", has_repo=True)
         raw = [{"id": "bad", "function": {"name": "create_directory", "arguments": '{"path":'}}]
