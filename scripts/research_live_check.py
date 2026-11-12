@@ -123,7 +123,7 @@ def report(data: dict, seconds: float) -> int:
         broken = True  # the run never reached an end
     if status == "failed" and not any(word in detail for word in UNRECOVERABLE):
         broken = True
-    if status == "completed" and read and not claims and not unverified and "## What could not" \
+    if status == "completed" and read and not claims and not unverified and "## Open questions" \
             not in (data.get("report") or ""):
         broken = True
     print(f"\nVERDICT    {'BROKEN' if broken else 'OK'}")

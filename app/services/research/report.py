@@ -12,6 +12,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,27 +80,46 @@ Never repeat a proposition in different words.
 Output: {"sentences": ["..."]}
 """
 
+#: How the run ended, as the closing sentence of "About this research".
 _COMPLETION_TEXT = {
-    CompletionStatus.COMPLETED: "every question it pursued is established",
-    CompletionStatus.COMPLETED_WITH_GAPS: "some questions remain open",
-    CompletionStatus.CEILING_REACHED: "it stopped before every question was settled",
-    CompletionStatus.BLOCKED: "web search was unavailable",
-    CompletionStatus.CANCELLED: "the run was cancelled",
-    CompletionStatus.FAILED: "the run failed",
+    CompletionStatus.COMPLETED: "Research ended once every question it pursued was established",
+    CompletionStatus.COMPLETED_WITH_GAPS: "Research ended with some questions still open",
+    CompletionStatus.CEILING_REACHED: "Research ended early, before every question was settled",
+    CompletionStatus.BLOCKED: "Web search was unavailable",
+    CompletionStatus.CANCELLED: "The run was cancelled",
+    CompletionStatus.FAILED: "The run failed",
 }
 _HEDGE = {
     SupportStatus.PARTIALLY_SUPPORTED: " (partially supported)",
     SupportStatus.CONFLICTING_EVIDENCE: " (sources conflict)",
     SupportStatus.INHERENTLY_UNCERTAIN: " (uncertain)",
 }
-#: How each strength reads beside a finding.
+#: How each strength reads beside a finding. A verified finding carries no label: it is the
+#: default a reader assumes, and labelling every sentence buries the ones that need a caveat.
 STRENGTH_LABEL = {
-    "verified": "verified",
     "limited": "limited support",
-    "single_source": "one source",
+    "single_source": "single source",
     "disputed": "sources disagree",
     "one_side_only": "one side only",
 }
+#: The planner's own name for the dimension holding the query itself; never a reader's heading.
+_ANCHOR_DIMENSION = "The question as asked"
+#: Phrases in the confidence reasons that only make sense to someone who knows the pipeline.
+_PLAIN_REASONS = {
+    "only lower-provenance sources agree": "the sources that agree are not verified publishers",
+    "it rests on independent secondary sources; no original source was consulted": (
+        "it rests on secondary sources; no original source was found"
+    ),
+}
+#: Leading request phrasing that makes a poor title ("research on X" → "X").
+_QUERY_PREFIX = re.compile(
+    r"^\s*(?:please\s+)?(?:"
+    r"(?:do\s+(?:some\s+|a\s+)?)?research(?:\s+(?:on|about|into|for))?"
+    r"|look\s+(?:up|into)|find\s+out(?:\s+about)?|tell\s+me\s+about|investigate"
+    r"|give\s+me\s+(?:an?\s+)?(?:overview|report|summary|comparison)\s+(?:of|on|about)"
+    r")\s*[:,-]?\s+",
+    re.IGNORECASE,
+)
 _CLAIM_ID = r"[A-Za-z][A-Za-z0-9_.-]*"
 _CLAIM_REF = re.compile(rf"\{{({_CLAIM_ID})\}}")
 #: A run of claim references, with any brackets or separators the writer wrapped around it.
@@ -170,7 +190,7 @@ class ReportContext:
 
     def line(self, claim: Claim) -> str:
         label = STRENGTH_LABEL.get(claim.strength)
-        badge = f" _({label})_" if label else _HEDGE.get(claim.support, "")
+        badge = f" *({label})*" if label else _HEDGE.get(claim.support, "")
         text = f"{claim.text}{badge} {self.cite(claim)}".strip()
         self.record(text, [claim.id])
         return text
@@ -352,6 +372,8 @@ def render(
             continue
         context.section = section.key
         body = section.render(context)
+        while body and not body[0].strip():
+            body = body[1:]
         if not body:
             continue
         rendered.append(section.key)
@@ -383,14 +405,20 @@ def render_failure(
     query: str, depth: DepthMode, detail: str, metrics: ResearchMetrics
 ) -> RenderedReport:
     lines = [
-        f"# {query}",
+        f"# {_clean_title(query)}",
         "",
-        "**Research could not be completed.** " + (detail or "The run failed."),
+        f"*{_depth_label(depth)} research · could not be completed*",
+        "",
+        "## Summary",
+        "",
+        "> **Research could not be completed.** " + (detail or "The run failed."),
         "",
         "No findings are reported, because nothing gathered in this run could be verified.",
         "",
-        f"_Depth: {depth.value.replace('_', ' ')} · searches run: {metrics.searches_run} · "
-        f"sources reviewed: {metrics.sources_reviewed}_",
+        "## About this research",
+        "",
+        f"{_depth_label(depth)} depth · {_count(metrics.searches_run, 'search', 'searches')} · "
+        f"{_count(metrics.sources_reviewed, 'page')} read.",
     ]
     return RenderedReport(text="\n".join(lines) + "\n", sections=["failure"], report_type="failed")
 
@@ -398,27 +426,37 @@ def render_failure(
 # --- sections --------------------------------------------------------------------------
 
 
-def _count(number: int, noun: str) -> str:
-    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+def _count(number: int, noun: str, plural: str | None = None) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {plural or noun + 's'}"
 
 
-def _header(context: ReportContext) -> list[str]:
-    metrics = context.metrics
-    # The assessment's headline counts evidence sufficiency. Presentation must also show
-    # unresolved conflicts, rather than announcing a settled answer above its disagreement.
-    reasons = " ".join(
-        reason
-        for reason in context.confidence_reasons[:3]
-        if not re.fullmatch(r"\d+ of \d+ core questions are established\.", reason)
-    )
-    stop = _COMPLETION_TEXT[context.completion]
-    if context.stop_detail and context.completion in (
-        CompletionStatus.CEILING_REACHED,
-        CompletionStatus.COMPLETED_WITH_GAPS,
-    ):
-        # The actual reason, never a stock phrase: a stall, the time limit and an exhausted
-        # search are different things to the reader.
-        stop = f"{context.stop_detail}; {stop}"
+def _depth_label(depth: DepthMode) -> str:
+    return depth.value.replace("_", " ").capitalize()
+
+
+def _clean_title(query: str) -> str:
+    text = normalize_ws(query)
+    text = _QUERY_PREFIX.sub("", text) or text
+    text = re.sub(r"(?i)(?<=\s)vs\.?(?=\s)", "vs.", text)
+    return text[:1].upper() + text[1:]
+
+
+def _title(context: ReportContext) -> str:
+    """The query as a heading: request phrasing dropped, the subjects' own capitalisation."""
+    title = _clean_title(context.query)
+    entities = sorted(context.plan.understanding.entities, key=lambda e: -len(e.name))
+    for entity in entities:
+        if entity.name.strip():
+            title = re.sub(
+                rf"(?i)(?<!\w){re.escape(entity.name)}(?!\w)",
+                lambda _match, name=entity.name: name,
+                title,
+            )
+    return title[:1].upper() + title[1:]
+
+
+def _core_standing(context: ReportContext) -> tuple[int, int]:
+    """Established core questions (a material disagreement is not established), and all of them."""
     core = [t for t in context.plan.top_targets() if t.tier == Tier.CORE]
     open_ids = {target.id for target, _, _ in _open_questions(context)}
     established = sum(
@@ -426,23 +464,21 @@ def _header(context: ReportContext) -> list[str]:
         for t in core
         if context.emap.state(t.id).sufficiency == Sufficiency.ESTABLISHED and t.id not in open_ids
     )
-    facts = " · ".join(
-        [
-            f"{established} of {_count(len(core), 'core question')} established",
-            f"{_count(metrics.sources_used, 'source')} cited",
-            _count(metrics.independent_domains, "independent source"),
-            f"{metrics.primary_sources} from original records",
-            _count(max(metrics.open_gaps, len(open_ids)), "open question"),
-            f"research stopped because {stop}",
-        ]
-    )
-    return [
-        f"# {context.query}",
-        "",
-        f"**Confidence: {context.confidence.value.capitalize()}.** {reasons}".strip(),
-        "",
-        f"_{facts}._",
+    return established, len(core)
+
+
+def _header(context: ReportContext) -> list[str]:
+    """Title and one line of standing. Why, and how the run went, close the report instead:
+    the reader wants the answer first, and the method once they decide to trust it."""
+    established, core = _core_standing(context)
+    facts = [
+        f"{_depth_label(context.depth)} research",
+        f"{context.confidence.value} confidence",
+        f"{_count(context.metrics.sources_used, 'source')} cited",
     ]
+    if core:
+        facts.append(f"{established} of {_count(core, 'core question')} answered")
+    return [f"# {_title(context)}", "", f"*{' · '.join(facts)}*"]
 
 
 def _summary_applies(context: ReportContext) -> bool:
@@ -617,22 +653,47 @@ def _summary_boundary(context: ReportContext) -> tuple[list[str], bool]:
         return [], False
     names = list(
         dict.fromkeys(
-            dimension.name if (dimension := context.plan.dimension(t.dimension_id)) else t.text
+            dimension.name
+            if (dimension := context.plan.dimension(t.dimension_id))
+            and dimension.name != _ANCHOR_DIMENSION
+            else t.text
             for t in unanswered
         )
     )
+    names = [_reader_name(name) for name in names]
     if contested:
         return [
-            f"> Sources disagree about {'; '.join(names)}. The findings below are a qualified "
-            "answer.",
+            f"> **Sources disagree** about {'; '.join(names)}, so the findings below are a "
+            "qualified answer.",
             "",
         ], True
     if POLICIES[context.depth].report_shape == "brief" and len(names) > 1:
         others = len(names) - 1
-        named = f"{names[0]} (and {_count(others, 'other open question')}, listed below)"
+        named = f"{names[0]} (and {_count(others, 'other open question')})"
     else:
         named = "; ".join(names)
-    return ["", f"> Caveat: the evidence found does not settle {named}."], False
+    return [
+        "",
+        f"> **Still open:** the evidence found does not settle {named}. "
+        "See *Open questions* below.",
+    ], False
+
+
+_QUESTION_WORD = re.compile(
+    r"(?i)^(?:how|what|why|which|who|when|where|is|are|do|does|did|can|could|should|will)\b"
+)
+
+
+def _reader_name(name: str) -> str:
+    """A dimension or question name as it reads mid-sentence."""
+    if name.endswith("?") or _QUESTION_WORD.match(name):
+        # A question stays a question; lower-casing it mid-sentence reads as broken grammar.
+        return f"“{name.rstrip('?')}?”"
+    # "Game type" → "game type", but never "War of the Five Kings" → "war of the Five Kings".
+    first, _, rest = name.partition(" ")
+    if first[:1].isupper() and first[1:].islower() and rest == rest.lower():
+        return first.lower() + (" " + rest if rest else "")
+    return name
 
 
 def _comparison_applies(context: ReportContext) -> bool:
@@ -651,18 +712,53 @@ def _row_has_content(context: ReportContext, row: ComparisonDimension) -> bool:
     return any(count >= 2 for count in entities_per_question.values())
 
 
+#: Past this, a table cell is a paragraph squeezed into a column: compare in blocks instead.
+_TABLE_CELL_CHARS = 140
+
+
 def _comparison(context: ReportContext) -> list[str]:
     by_id = {claim.id: claim for claim in context.claims}
     rows = [row for row in context.comparison if _row_has_content(context, row)]
     entity_ids = list(dict.fromkeys(e for row in rows for e in row.entity_claim_ids))
     with_takeaway = any(i in by_id for row in rows for i in row.comparison_claim_ids)
-    header = ["Dimension", *[context.entity_name(e) for e in entity_ids]]
-    if with_takeaway:
-        header.append("Takeaway")
-    lines = [
-        "| " + " | ".join(_cell(h) for h in header) + " |",
-        "| " + " | ".join("---" for _ in header) + " |",
-    ]
+    names = [context.entity_name(e) for e in entity_ids]
+    table = _comparison_cells(context, rows, entity_ids, with_takeaway)
+    longest = max((len(cell) for cells in table for cell in cells[1:]), default=0)
+    if longest <= _TABLE_CELL_CHARS:
+        header = ["", *names, *(["Takeaway"] if with_takeaway else [])]
+        lines = [
+            "| " + " | ".join(_cell(h) for h in header) + " |",
+            "| " + " | ".join("---" for _ in header) + " |",
+        ]
+        for cells in table:
+            cells = [f"**{_heading(cells[0])}**", *cells[1:]]
+            lines.append("| " + " | ".join(_cell(cell) for cell in cells) + " |")
+        return lines
+    lines: list[str] = []
+    for cells in table:
+        if len(table) > 1 or cells[0] != _ANCHOR_DIMENSION:
+            lines.extend([f"### {_heading(cells[0])}", ""])
+        for name, cell in zip(names, cells[1 : 1 + len(names)], strict=True):
+            lines.append(f"- **{name}** — {cell}")
+        lines.append("")
+        if with_takeaway:
+            lines.extend([f"**Takeaway:** {cells[-1]}", ""])
+    return lines[:-1]
+
+
+def _heading(name: str) -> str:
+    return "Overview" if name == _ANCHOR_DIMENSION else name
+
+
+def _comparison_cells(
+    context: ReportContext,
+    rows: list[ComparisonDimension],
+    entity_ids: list[str],
+    with_takeaway: bool,
+) -> list[list[str]]:
+    """One list per row: its name, a cell per entity, then its takeaway when there is one."""
+    by_id = {claim.id: claim for claim in context.claims}
+    table = []
     for row in rows:
         cells = [row.name]
         takeaway = next((by_id[i] for i in row.comparison_claim_ids if i in by_id), None)
@@ -688,8 +784,8 @@ def _comparison(context: ReportContext) -> list[str]:
             if takeaway is not None:
                 context.rendered_claims.add(takeaway.id)
             cells.append(context.line(takeaway) if takeaway else "No verified comparison")
-        lines.append("| " + " | ".join(_cell(cell) for cell in cells) + " |")
-    return lines
+        table.append(cells)
+    return table
 
 
 def _absence_cause(context: ReportContext, row: ComparisonDimension, entity_id: str) -> str:
@@ -720,16 +816,19 @@ def _findings_claims(context: ReportContext) -> list[Claim]:
 def _findings(context: ReportContext) -> list[str]:
     lines: list[str] = []
     claims = _findings_claims(context)
+    grouped = []
     for dimension in context.plan.decomposition.dimensions:
         question_ids = {t.id for t in context.plan.targets if t.dimension_id == dimension.id}
         own = sorted(
             (claim for claim in claims if claim.question_id in question_ids),
             key=lambda claim: (-_focus_score(context, claim), *_strength_order(context, claim)),
         )
-        if not own:
-            continue
-        if len(context.plan.decomposition.dimensions) > 1:
-            lines.extend([f"### {dimension.name}", ""])
+        if own:
+            grouped.append((dimension, own))
+    for dimension, own in grouped:
+        # A heading per aspect only when there is more than one to tell apart.
+        if len(grouped) > 1:
+            lines.extend([f"### {_heading(dimension.name)}", ""])
         if context.depth == DepthMode.DEEP:
             for supported, heading in ((True, "Supported findings"), (False, "Qualified findings")):
                 group = [c for c in own if (c.support == SupportStatus.SUPPORTED) == supported]
@@ -886,7 +985,7 @@ _REFUSED_STATUSES = frozenset({401, 403, 429, 451})
 
 
 def _gaps_applies(context: ReportContext) -> bool:
-    return bool(_open_questions(context)) or context.removed_count > 0
+    return bool(_open_questions(context))
 
 
 def _refused_hosts(context: ReportContext) -> list[str]:
@@ -917,18 +1016,18 @@ def _open_questions(context: ReportContext) -> list[tuple]:
 
 
 _NEED_PHRASES = {
-    NeedKind.INSUFFICIENT: "not established by the evidence found",
-    NeedKind.SUBJECT_IMBALANCE: "established for only some of the options",
+    NeedKind.INSUFFICIENT: "the sources found do not establish it",
+    NeedKind.SUBJECT_IMBALANCE: "answered for only some of the options",
     NeedKind.CONFLICT_MATERIAL: "sources conflict",
     NeedKind.STALE: "only outdated evidence was found",
-    NeedKind.SCOPE_UNRESOLVED: "evidence found is for a different scope",
+    NeedKind.SCOPE_UNRESOLVED: "the evidence found covers a different scope",
 }
 
 
 def _gaps(context: ReportContext) -> list[str]:
+    """The questions still open, and why. How the run went belongs to "About this research"."""
     lines: list[str] = []
     for target, state, needs in _open_questions(context)[:10]:
-        subject = target.text.rstrip("?")
         if state.sufficiency == Sufficiency.HEDGED:
             phrases = ["only individual reports support a general answer"]
         else:
@@ -937,21 +1036,48 @@ def _gaps(context: ReportContext) -> list[str]:
             )
         if state.status == TargetStatus.UNRESOLVABLE:
             phrases.append("every route to the original record was unreadable")
-        lines.append(f"- {subject}: {'; '.join(phrases) or 'not established'}.")
+        lines.append(f"- **{target.text}** — {'; '.join(phrases) or 'not established'}.")
+    return lines
+
+
+def _plain_reasons(text: str) -> str:
+    for jargon, plain in _PLAIN_REASONS.items():
+        text = text.replace(jargon, plain)
+    return text
+
+
+def _confidence_reasons(context: ReportContext) -> list[str]:
+    """Why confidence is what it is, per limiting question, in words a reader can act on."""
+    lines = []
+    for reason in context.confidence_reasons:
+        if re.fullmatch(r"\d+ of \d+ core questions are established\.", reason):
+            continue  # Stated in the confidence line itself.
+        match = re.fullmatch(r"“(.+?)”: (.+?)\.?", reason)
+        if match:
+            lines.append(f"- *{match.group(1)}* — {_plain_reasons(match.group(2))}.")
+        else:
+            lines.append(f"- {_plain_reasons(reason)}")
+    return lines
+
+
+def _run_notes(context: ReportContext) -> list[str]:
+    """What limited the run beyond the evidence itself: refusals, withheld drafts, scope."""
+    lines = []
     refused = _refused_hosts(context)
-    if refused and lines:
+    if refused:
         shown = ", ".join(refused[:4]) + (" and others" if len(refused) > 4 else "")
         lines.append(
-            f"- {len(refused)} site(s) refused access, so pages that may hold the answer "
-            f"could not be read: {shown}."
+            f"- {_count(len(refused), 'site')} refused access, so pages that may hold the "
+            f"answer could not be read: {shown}."
         )
     if context.removed_count:
         lines.append(
-            f"- {context.removed_count} draft statement(s) were withheld because "
-            "verification did not confirm them against the cited evidence"
+            f"- {_count(context.removed_count, 'draft statement')} "
+            f"{'was' if context.removed_count == 1 else 'were'} left out because "
+            "verification could not confirm them against the cited evidence"
             + (
-                "; the passages they drew on are quoted under Unverified evidence."
-                if context.unverified
+                "; the passages they drew on are quoted under *Unverified excerpts*."
+                if context.unverified and context.claims
                 else "."
             )
         )
@@ -962,33 +1088,75 @@ def _gaps(context: ReportContext) -> list[str]:
     )
     if narrowed:
         lines.append(
-            f"- {narrowed} statement(s) cite only the evidence that shares their scope: "
+            f"- {_count(narrowed, 'statement')} cite only the evidence that shares their scope: "
             "figures stated for a different place, population, version or period were not "
             "combined with them."
         )
     return lines
 
 
+def _about(context: ReportContext) -> list[str]:
+    """The method, after the answer: confidence and why, how the run went, what it left out."""
+    established, core = _core_standing(context)
+    standing = f"{established} of {_count(core, 'core question')} established." if core else ""
+    lines = [f"**Confidence: {context.confidence.value}.** {standing}".strip()]
+    if reasons := _confidence_reasons(context):
+        lines.extend(["", *reasons])
+    metrics = context.metrics
+    ran = " · ".join(
+        [
+            f"{_depth_label(context.depth)} depth",
+            _count(metrics.searches_run, "search", "searches"),
+            f"{_count(metrics.sources_reviewed, 'page')} read",
+            f"{_count(metrics.sources_used, 'source')} cited "
+            f"({metrics.independent_domains} independent, "
+            f"{metrics.primary_sources or 'none'} from original records)",
+        ]
+    )
+    stop = _COMPLETION_TEXT[context.completion]
+    if context.stop_detail and context.completion in (
+        CompletionStatus.CEILING_REACHED,
+        CompletionStatus.COMPLETED_WITH_GAPS,
+    ):
+        # The actual reason, never a stock phrase: a stall, the time limit and an exhausted
+        # search are different things to the reader.
+        stop = f"{stop} ({context.stop_detail.rstrip('.')})"
+    lines.extend(["", f"**How it ran.** {ran}. {stop}."])
+    if notes := _run_notes(context):
+        lines.extend(["", *notes])
+    if not_covered := _not_covered(context):
+        lines.extend(["", "### Not covered at this depth", "", *not_covered])
+    if context.unverified and context.claims:
+        lines.extend(["", "### Unverified excerpts", "", *_unverified_section(context)])
+    return lines
+
+
 def _unverified_applies(context: ReportContext) -> bool:
-    return bool(context.unverified)
+    # With verified findings, these quotes sit in "About this research"; without any, they
+    # are all the run found, so they are shown in the body.
+    return bool(context.unverified) and not context.claims
+
+
+def _excerpt(text: str, limit: int = 300) -> str:
+    text = normalize_ws(text)
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(",;:-")
+    return f"{cut}…"
 
 
 def _unverified_section(context: ReportContext) -> list[str]:
     lines = [
-        "_Read and accepted as relevant, but no finding drawn from these passages passed "
-        "verification. They are quoted, not stated as findings._",
+        "*Read and judged relevant, but no finding drawn from these passages passed "
+        "verification. They are quoted, not stated as findings.*",
         "",
     ]
     for item in context.unverified:
         number = context.citation_numbers.get(item.source_id)
-        quote = normalize_ws(item.excerpt)[:300]
-        context.record(f'"{quote}"', [], [item.evidence_id])
-        lines.append(f'- "{quote}"' + (f" [{number}]" if number else ""))
+        quote = _excerpt(item.excerpt)
+        context.record(f"“{quote}”", [], [item.evidence_id])
+        lines.append(f"- “{quote}”" + (f" [{number}]" if number else ""))
     return lines
-
-
-def _not_covered_applies(context: ReportContext) -> bool:
-    return bool(_not_covered(context))
 
 
 def _not_covered(context: ReportContext) -> list[str]:
@@ -1024,20 +1192,39 @@ _PROVENANCE_LABEL = {
 
 
 def _sources(context: ReportContext) -> list[str]:
+    """A numbered list of links, the number matching the report's [n] citations."""
     lines = []
     for source_id, number in sorted(context.citation_numbers.items(), key=lambda item: item[1]):
         source = context.sources_by_id[source_id]
         details = [source.host]
         if source.assessment is not None:
-            # An unlabelled source is left unlabelled: "source" would say nothing.
+            # An unlabelled source is left unlabelled: "source" would say nothing. Provenance
+            # is in the Sources tab; "unverified" beside every blog post reads as an alarm.
             role = _ROLE_LABEL.get(source.assessment.role.value)
-            details.extend(filter(None, (role, _PROVENANCE_LABEL[source.assessment.provenance])))
-        if source.modified_date or source.published_date:
-            details.append(source.modified_date or source.published_date)
-        lines.append(
-            f"[{number}] {source.title or source.host} ({' · '.join(details)}): {source.url}"
-        )
+            if role:
+                details.append(role)
+            if source.assessment.provenance == Provenance.A:
+                details.append(_PROVENANCE_LABEL[Provenance.A])
+        if date := _source_date(source.modified_date or source.published_date):
+            details.append(date)
+        title = re.sub(r"[\[\]]", "", normalize_ws(source.title or source.host)) or source.host
+        lines.append(f"{number}. [{title}]({_link_url(source.url)}) — {' · '.join(details)}")
     return lines
+
+
+def _source_date(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        day = date.fromisoformat(value[:10])
+    except ValueError:
+        return value
+    return f"{day.day} {day:%b %Y}"
+
+
+def _link_url(url: str) -> str:
+    """A URL that cannot end a Markdown link early."""
+    return url.strip().replace(" ", "%20").replace("(", "%28").replace(")", "%29")
 
 
 _MECH = _typed_section(ClaimType.MECHANISM)
@@ -1061,18 +1248,17 @@ SECTIONS: list[Section] = [
     Section("limitations", lambda c: "Limitations", _LIMIT[0], _LIMIT[1]),
     Section("agreement", lambda c: "Where sources agree", _agreement_applies, _agreement),
     Section("conflicts", lambda c: "Conflicting findings", _conflicts_applies, _conflicts),
-    Section(
-        "unverified", lambda c: "Unverified evidence", _unverified_applies, _unverified_section
-    ),
     Section("recommendation", _recommendation_title, _recommendation_applies, _recommendation),
-    Section("gaps", lambda c: "What could not be established", _gaps_applies, _gaps),
     Section(
-        "not_covered",
-        lambda c: "Not covered at this depth",
-        _not_covered_applies,
-        _not_covered,
+        "unverified",
+        lambda c: "Relevant excerpts (unverified)",
+        _unverified_applies,
+        _unverified_section,
     ),
+    Section("gaps", lambda c: "Open questions", _gaps_applies, _gaps),
     Section("sources", lambda c: "Sources", _sources_applies, _sources),
+    # Last, and the UI keeps it folded: the method matters once the answer has been read.
+    Section("about", lambda c: "About this research", lambda c: True, _about),
 ]
 
 
@@ -1335,22 +1521,25 @@ def _explanatory_details(
 
 
 def _detail_sections(context: ReportContext) -> list[str]:
-    grouped: dict[tuple[str | None, str], list[tuple[str, Claim]]] = defaultdict(list)
+    """One heading per question, then a paragraph per aspect led by what kind of detail it is."""
+    grouped: dict[str | None, dict[str, list[tuple[str, Claim]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for parent_id, aspect, detail in context.details:
-        grouped[(detail.question_id, aspect)].append((parent_id, detail))
+        grouped[detail.question_id][aspect].append((parent_id, detail))
     lines = []
-    for (question_id, aspect), details in grouped.items():
+    for question_id, aspects in grouped.items():
         target = context.plan.target(question_id)
-        title = _ASPECT_TITLES[aspect]
-        if target is not None:
-            title = f"{target.text.rstrip('?')}: {title}"
-        lines.extend([f"### {title}", ""])
-        paragraph = []
-        for parent_id, detail in details:
-            text = f"{detail.text} {context.cite(detail)}".strip()
-            context.record(text, [parent_id], detail.evidence_ids)
-            paragraph.append(text)
-        lines.extend([" ".join(paragraph), ""])
+        if target is not None and len(grouped) > 1:
+            lines.extend([f"### {target.text}", ""])
+        for aspect, details in aspects.items():
+            paragraph = []
+            for parent_id, detail in details:
+                text = f"{detail.text} {context.cite(detail)}".strip()
+                context.record(text, [parent_id], detail.evidence_ids)
+                paragraph.append(text)
+            lead = f"**{_ASPECT_TITLES[aspect]}.** " if len(aspects) > 1 else ""
+            lines.extend([lead + " ".join(paragraph), ""])
     return lines[:-1]
 
 

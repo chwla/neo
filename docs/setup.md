@@ -287,9 +287,11 @@ Standard. With a GPU or a hosted API, a few minutes.
   stopped. Findings are never invented to fill a report.
 - Only one research run uses a local model server at a time; a second one waits ("Waiting
   for another research run") rather than slowing both down.
-- Findings carry a strength: verified, limited support, one source, sources disagree, or one
-  side only. Passages that were read but could not be verified are quoted under "Unverified
-  evidence", not stated as findings.
+- Findings carry a strength: verified, limited support, single source, sources disagree, or
+  one side only. Verified findings are unlabelled; in the app the others mark their citation
+  pill (hover it for why), and "sources disagree" / "one side only" stay visible in the text.
+  Confidence, how the run went and passages that were read but could not be verified are
+  under "About this research" at the end of the report, never stated as findings.
 - If Ollama is not running, research says so within seconds; if web search is unavailable it
   stops before planning. A slow first answer while the model loads is not treated as a failure.
 - To check research on your own machine, run

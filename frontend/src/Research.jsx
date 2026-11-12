@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api.js";
-import { renderMarkdown } from "./markdown.js";
+import ResearchReport, { parseReport, revealAbout, tidyTitle } from "./ResearchReport.jsx";
 import Icon from "./WorkspaceIcon.jsx";
 
 /* Depth changes how thoroughly Neo investigates, not how long the report is. */
@@ -126,13 +126,19 @@ export function phaseOf(run) {
   return [PHASES[latest?.phase] || run?.current_step || "Queued", latest];
 }
 
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 /**
- * Where the answer stands, from the same target states the report is written from.
+ * Where the answer stands, in a few plain facts for the run's header, from the same target
+ * states the report is written from.
  *
  * Counted over the questions the plan asked, not the per-subject parts they were researched
- * through, so "3 of 4" means what a reader would count.
+ * through, so "3 of 4" means what a reader would count. Why, and how the run went, are in the
+ * report's "About this research".
  */
-export function standingOf(run, metrics, states) {
+export function heroFacts(run, metrics, states) {
   const top = (states || []).filter((state) => !plannedChild(run?.plan, state.target_id));
   const core = top.filter((state) => state.tier === "core");
   const contested = (targetId) => (states || []).some((state) => {
@@ -141,26 +147,13 @@ export function standingOf(run, metrics, states) {
       && (state.needs || []).some((need) => need.material && need.kind === "conflict_material");
   });
   const established = core.filter((state) => state.sufficiency === "established" && !contested(state.target_id));
-  const decisive = established.filter((state) => state.basis === "decisive").length;
-  const open = Math.max(metrics?.open_gaps ?? 0, core.length - established.length);
-  const parts = [];
-  if (core.length) {
-    parts.push(`${established.length} of ${core.length} core question${core.length === 1 ? "" : "s"} established`);
-    if (established.length) {
-      parts.push(`${decisive} by the original record, ${established.length - decisive} by independent sources`);
-    }
-  }
+  const facts = [];
   if (metrics?.sources_used) {
-    parts.push(`${metrics.sources_used} sources cited (${metrics.independent_domains} independent)`);
+    facts.push(`${plural(metrics.sources_used, "source")} cited`);
+    if (metrics.independent_domains) facts.push(`${metrics.independent_domains} independent`);
   }
-  if (open) parts.push(`${open} open question${open === 1 ? "" : "s"}`);
-  return parts;
-}
-
-export function confidenceReasonsOf(run) {
-  // The standing line already counts settled questions, including material disagreements.
-  return (run?.metadata?.confidence_reasons || [])
-    .filter((reason) => !/^\d+ of \d+ core questions are established\.$/.test(reason));
+  if (core.length) facts.push(`${established.length} of ${plural(core.length, "question")} answered`);
+  return facts;
 }
 
 export function minutes(seconds) {
@@ -375,7 +368,10 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
 
   const [phaseLabel, latest] = useMemo(() => phaseOf(run), [run]);
   const completion = useMemo(() => completionOf(run), [run]);
-  const standing = useMemo(() => standingOf(run, metrics, targetStates), [run, metrics, targetStates]);
+  const facts = useMemo(() => heroFacts(run, metrics, targetStates), [run, metrics, targetStates]);
+  // The report's own title: the question with request phrasing dropped ("research on X" → "X").
+  const reportTitle = useMemo(() => tidyTitle(parseReport(run?.report).title), [run?.report]);
+  const confidence = run?.metadata?.confidence || "";
 
   const stats = [
     ["Searches", (run?.generated_queries || []).length],
@@ -383,8 +379,6 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     ["Evidence", accepted.length],
     ["Open questions", openQuestions],
   ];
-
-  const reportHtml = useMemo(() => (run?.report ? renderMarkdown(run.report) : ""), [run?.report]);
 
   function stopPlanning() {
     planRequest.current?.controller.abort();
@@ -685,24 +679,36 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
             </div>
           ) : (
             <article className="rs-run">
-              <h1 className="rs-question-title">{run.user_query}</h1>
-              <div className="rs-run-facts">
-                <span className="rs-chip">{words(run.depth)}</span>
-                <span>{relativeTime(run.created_at)}</span>
-                {completion && !live && (
-                  <span className={`rs-chip ${completion[1]}`.trim()}>{completion[0]}</span>
+              <header className="rs-hero">
+                <div className="rs-hero-eyebrow">
+                  <span>{words(run.depth)} research</span>
+                  <span>{relativeTime(run.created_at)}</span>
+                  {!live && runClock(latest, false) && <span>{runClock(latest, false)}</span>}
+                </div>
+                <h1 className="rs-question-title">{(!live && reportTitle) || run.user_query}</h1>
+                {!live && (confidence || facts.length > 0 || completion) && (
+                  <div className="rs-hero-meta">
+                    {confidence && (
+                      <button
+                        type="button"
+                        className={`rs-conf ${confidence}`}
+                        title="Why this confidence level"
+                        onClick={() => {
+                          setTab("report");
+                          window.requestAnimationFrame(revealAbout);
+                        }}
+                      >
+                        <i aria-hidden="true" />
+                        {confidence[0].toUpperCase() + confidence.slice(1)} confidence
+                      </button>
+                    )}
+                    {completion && completion[0] !== "Complete" && (
+                      <span className={`rs-chip ${completion[1]}`.trim()}>{completion[0]}</span>
+                    )}
+                    {facts.length > 0 && <span className="rs-hero-facts">{facts.join(" · ")}</span>}
+                  </div>
                 )}
-                {run.metadata?.confidence && !live && (
-                  <span className={`rs-chip ${run.metadata.confidence === "low" ? "warn" : ""}`.trim()}>
-                    {run.metadata.confidence} confidence
-                  </span>
-                )}
-              </div>
-              {!live && run.metadata?.answer && <p className="rs-run-answer">{run.metadata.answer}</p>}
-              {!live && standing.length > 0 && <p className="rs-run-standing">{standing.join(" · ")}</p>}
-              {!live && (run.metadata?.confidence_reasons || []).length > 0 && (
-                <p className="rs-run-standing">{confidenceReasonsOf(run).join(" ")}</p>
-              )}
+              </header>
 
               {(live || run.status === "failed") && (
                 <div className="rs-progress-card">
@@ -743,11 +749,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
 
               {tab === "report" && (
                 run.report ? (
-                  <div
-                    className="rs-report"
-                    // The report is Neo's own Markdown, escaped by renderMarkdown.
-                    dangerouslySetInnerHTML={{ __html: reportHtml }}
-                  />
+                  <ResearchReport markdown={run.report} />
                 ) : (
                   <Placeholder icon={live ? "refresh" : "book"}>
                     {live ? "The report is written once claims are verified. Evidence and sources fill in as they arrive." : "No report was produced for this run."}

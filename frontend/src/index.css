@@ -465,7 +465,8 @@ html { --neo-press: opacity(.75); }
   .reminder-toast-dismiss, .repo-file-list button, .repos-list button, .research-back,
   .research-start-btn, .row-actions-menu button, .row-actions-trigger, .rs-btn, .rs-depth,
   .rs-error button, .rs-evidence figcaption a, .rs-histrow, .rs-notice button, .rs-rail-clear,
-  .rs-rail-confirm button, .rs-source, .rs-tab, .rs-toggle, .set-nav-item, .set-row,
+  .rs-rail-confirm button, .rs-source, .rs-tab, .rs-toggle, .rs-cite, .rs-conf, .rs-srccard,
+  .set-nav-item, .set-row,
   .settings-actions button,
   .settings-dialog :not(.dialog-title-row):not(.modal-header) > button, .settings-link,
   .settings-section > button, .settings-section > form > button, .settings-section li button,
@@ -4026,10 +4027,31 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 
 /* --- run ----------------------------------------------------------------- */
 .rs-run { display: block; }
-.rs-question-title { margin: 0 0 10px; color: var(--neo-text); font-size: 23px; font-weight: 600; letter-spacing: -.025em; line-height: 1.32; }
-.rs-run-answer { margin: -8px 0 18px; color: var(--neo-text); font-size: 14px; line-height: 1.6; }
-.rs-run-standing { margin: -12px 0 18px; color: var(--neo-fg-13); font-size: 12px; line-height: 1.6; }
-.rs-run-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 20px; color: var(--neo-faint); font: 10.5px "JetBrains Mono", monospace; }
+.rs-hero { margin-bottom: 22px; }
+.rs-hero-eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; margin-bottom: 10px; color: var(--neo-fg-12); font: 10.5px "JetBrains Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
+.rs-hero-eyebrow span + span::before { content: "·"; margin: 0 8px; color: var(--neo-fg-15); }
+.rs-question-title { margin: 0 0 14px; color: var(--neo-text); font-size: 27px; font-weight: 650; letter-spacing: -.03em; line-height: 1.25; text-wrap: balance; }
+.rs-hero-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; color: var(--neo-fg-11); font-size: 12.5px; }
+.rs-conf {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--rs-edge-lit);
+  border-radius: 20px;
+  background: transparent;
+  padding: 0 11px 0 9px;
+  color: var(--neo-fg-5);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+}
+.rs-conf:hover { border-color: var(--neo-fg-15); background: var(--neo-lift-a04); transition-duration: 0s; }
+.rs-conf i { width: 7px; height: 7px; border-radius: 50%; background: var(--neo-green); }
+.rs-conf.medium i { background: var(--neo-warn-text); }
+.rs-conf.low i { background: var(--neo-danger); }
+.rs-hero-facts { color: var(--neo-fg-11); }
 
 .rs-progress-card { margin-bottom: 22px; border: 1px solid var(--rs-edge); border-radius: 10px; background: var(--neo-panel); padding: 14px 16px; }
 .rs-progress-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
@@ -4065,46 +4087,174 @@ input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; flex: 0
 .rs-placeholder .ws-icon { width: 22px; height: 22px; color: var(--neo-fg-15); }
 .rs-placeholder p { margin: 0; max-width: 420px; font-size: 12.5px; line-height: 1.65; }
 
-/* --- report -------------------------------------------------------------- */
-.rs-report { color: var(--neo-fg-3); font-size: 15px; line-height: 1.78; }
-.rs-report > *:first-child { margin-top: 0; }
-.rs-report h1, .rs-report h2, .rs-report h3, .rs-report h4, .rs-report h5, .rs-report h6 {
-  margin: 30px 0 11px;
+/* --- report --------------------------------------------------------------
+   Read like an article: the answer as a lede, prose at a comfortable measure,
+   citations as small pills that open their sources, the method folded away. */
+.rs-report { max-width: 740px; color: var(--neo-fg-3); font-size: 15px; line-height: 1.75; }
+.rs-lede { color: var(--neo-text); font-size: 16.5px; line-height: 1.75; }
+.rs-lede p { margin: 0 0 14px; }
+.rs-lede > :last-child, .rs-prose > :last-child { margin-bottom: 0; }
+
+.rs-sec { margin-top: 38px; }
+.rs-sec > h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 14px;
   color: var(--neo-text);
-  font-weight: 600;
+  font-size: 19px;
+  font-weight: 650;
   letter-spacing: -.02em;
+  line-height: 1.3;
 }
-.rs-report h1 { font-size: 22px; }
-.rs-report h2 { font-size: 18px; border-bottom: 1px solid var(--rs-edge); padding-bottom: 8px; }
-.rs-report h3 { font-size: 15.5px; }
-.rs-report h4, .rs-report h5, .rs-report h6 { font-size: 13.5px; }
-.rs-report p { margin: 0 0 15px; }
-.rs-report ul, .rs-report ol { margin: 0 0 15px; padding-left: 22px; }
-.rs-report ul { list-style: disc; }
-.rs-report ol { list-style: decimal; }
-.rs-report li::marker { color: var(--neo-fg-12); }
-.rs-report li { margin-bottom: 7px; }
-.rs-report a { color: var(--neo-green); text-decoration: underline; text-underline-offset: 2px; }
-.rs-report code { border-radius: 3px; background: var(--neo-lift-a06); padding: 1px 5px; font: 12.5px "JetBrains Mono", monospace; }
-.rs-report pre {
-  overflow-x: auto;
-  margin: 0 0 15px;
+.rs-sec > h2 em { border-radius: 20px; background: var(--neo-lift-a08); padding: 1px 7px; color: var(--neo-fg-11); font: 10px "JetBrains Mono", monospace; font-style: normal; letter-spacing: 0; }
+.rs-prose h3 { margin: 24px 0 8px; color: var(--neo-fg-2); font-size: 15.5px; font-weight: 600; letter-spacing: -.01em; }
+.rs-prose h3:first-child { margin-top: 0; }
+.rs-prose h4 { margin: 18px 0 6px; color: var(--neo-fg-4); font-size: 13.5px; font-weight: 600; }
+.rs-prose p { margin: 0 0 14px; }
+.rs-prose ul, .rs-prose ol { margin: 0 0 16px; padding-left: 20px; }
+.rs-prose ul { list-style: disc; }
+.rs-prose ol { list-style: decimal; }
+.rs-prose li { margin-bottom: 9px; padding-left: 3px; }
+.rs-prose li::marker { color: var(--neo-fg-14); }
+.rs-prose strong { color: var(--neo-fg-2); font-weight: 600; }
+.rs-prose a { color: var(--neo-green); text-decoration: underline; text-decoration-color: var(--neo-accent-a40); text-underline-offset: 2px; }
+.rs-prose code { border-radius: 3px; background: var(--neo-lift-a06); padding: 1px 5px; font: 12.5px "JetBrains Mono", monospace; }
+.rs-prose pre { overflow-x: auto; margin: 0 0 15px; border: 1px solid var(--rs-edge); border-radius: 8px; background: var(--neo-panel); padding: 13px 15px; }
+.rs-prose pre code { background: transparent; padding: 0; line-height: 1.65; }
+.rs-prose hr { border: 0; border-top: 1px solid var(--rs-edge); margin: 26px 0; }
+
+/* A caveat on the answer: set apart, never shouted. */
+.rs-callout {
+  margin: 0 0 16px;
+  border: 1px solid var(--neo-warn-a28);
+  border-radius: 9px;
+  background: var(--neo-warn-a06);
+  padding: 11px 14px;
+  color: var(--neo-fg-5);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.rs-callout strong { color: var(--neo-warn-dim); }
+.rs-lede .rs-callout { margin-top: 4px; }
+
+/* Tables scroll inside their own frame rather than pushing the page sideways. */
+.rs-table { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--rs-edge); border-radius: 10px; }
+.rs-table table { width: 100%; border-collapse: collapse; font-size: 13.5px; line-height: 1.6; }
+.rs-table th, .rs-table td { border-bottom: 1px solid var(--rs-edge); padding: 10px 14px; text-align: left; vertical-align: top; }
+.rs-table th + th, .rs-table td + td { border-left: 1px solid var(--rs-edge); }
+.rs-table tbody tr:last-child td { border-bottom: 0; }
+.rs-table th { background: var(--neo-lift-a03); color: var(--neo-fg-5); font-size: 12px; font-weight: 600; white-space: nowrap; }
+
+/* Side-by-side comparison: one card per subject, the takeaway beneath. */
+.rs-sec-comparison ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin: 0 0 12px; padding: 0; list-style: none; }
+.rs-sec-comparison li { margin: 0; border: 1px solid var(--rs-edge); border-radius: 10px; background: var(--neo-panel); padding: 13px 15px; font-size: 14px; line-height: 1.65; }
+.rs-cmp-name { display: block; margin-bottom: 6px; color: var(--neo-text); font-size: 13px; font-weight: 650; letter-spacing: -.005em; }
+.rs-takeaway { margin: 0 0 18px; border-left: 3px solid var(--neo-accent-a40); padding: 2px 0 2px 14px; font-size: 14.5px; }
+.rs-takeaway strong { display: block; margin-bottom: 2px; color: var(--neo-green); font: 600 9.5px "JetBrains Mono", monospace; letter-spacing: .12em; text-transform: uppercase; }
+
+/* Citations. */
+.rs-cite {
+  display: inline-flex;
+  max-width: 180px;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  border: 0;
+  border-radius: 20px;
+  background: var(--neo-lift-a08);
+  padding: 0 8px;
+  color: var(--neo-fg-9);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 19px;
+  letter-spacing: 0;
+  vertical-align: 1px;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.rs-cite:hover, .rs-cite[aria-expanded="true"] { background: var(--neo-accent-a16); color: var(--neo-green); transition-duration: 0s; }
+.rs-cite:focus-visible { outline: 2px solid var(--neo-accent-a50); outline-offset: 1px; }
+.rs-cite.weak::before { content: ""; width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--neo-warn-text); }
+.rs-cite-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-cite-more { flex: 0 0 auto; color: var(--neo-fg-12); }
+.rs-cite:hover .rs-cite-more, .rs-cite[aria-expanded="true"] .rs-cite-more { color: inherit; }
+.rs-cite-group { white-space: nowrap; }
+.rs-flag { display: inline-block; margin: 0 1px 0 3px; border: 1px solid var(--neo-warn-a35); border-radius: 20px; padding: 0 7px; color: var(--neo-warn-dim); font-size: 10.5px; line-height: 17px; vertical-align: 1px; white-space: nowrap; }
+
+/* The popover is portalled to <body>, so it uses the app's tokens, not .rs ones. */
+.rs-cite-pop {
+  position: fixed;
+  z-index: 400;
+  display: grid;
+  width: min(360px, calc(100vw - 16px));
+  max-height: min(340px, calc(100vh - 16px));
+  overflow-y: auto;
+  gap: 2px;
+  border: 1px solid var(--neo-line-bright);
+  border-radius: 11px;
+  background: var(--neo-panel-raised);
+  padding: 6px;
+  box-shadow: 0 14px 36px var(--neo-shadow-a35);
+}
+.rs-cite-note { margin: 0 0 4px; border-radius: 7px; background: var(--neo-warn-a06); padding: 7px 10px; color: var(--neo-warn-dim); font-size: 11.5px; line-height: 1.5; }
+.rs-cite-src { display: flex; align-items: flex-start; gap: 10px; border-radius: 7px; padding: 8px 9px; color: inherit; text-decoration: none; }
+a.rs-cite-src:hover { background: var(--neo-lift-a05); }
+.rs-cite-src > .ws-icon { flex: 0 0 auto; width: 12px; height: 12px; margin-top: 3px; color: var(--neo-fg-14); }
+a.rs-cite-src:hover > .ws-icon { color: var(--neo-green); }
+.rs-cite-n, .rs-src-n { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-items: center; border-radius: 6px; background: var(--neo-lift-a08); color: var(--neo-fg-9); font: 600 10px "JetBrains Mono", monospace; }
+.rs-cite-body, .rs-src-body { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.rs-cite-body strong, .rs-src-body strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--neo-fg-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.rs-cite-body span, .rs-src-body span { overflow: hidden; color: var(--neo-fg-12); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Sources as cards. */
+.rs-srclist { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.rs-srclist li { display: flex; min-width: 0; }
+.rs-srccard {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: flex-start;
+  gap: 10px;
   border: 1px solid var(--rs-edge);
-  border-radius: 7px;
+  border-radius: 9px;
   background: var(--neo-panel);
-  padding: 13px 15px;
+  padding: 11px 12px;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color .12s ease, background .12s ease;
 }
-.rs-report pre code { background: transparent; padding: 0; line-height: 1.65; }
-.rs-report blockquote {
-  margin: 0 0 15px;
-  border-left: 2px solid var(--neo-line-bright);
-  padding: 2px 0 2px 15px;
-  color: var(--neo-fg-8);
+a.rs-srccard:hover { border-color: var(--neo-accent-a28); background: var(--neo-panel-raised); transition-duration: 0s; }
+.rs-srccard > .ws-icon { flex: 0 0 auto; width: 12px; height: 12px; margin-top: 4px; color: var(--neo-fg-14); }
+a.rs-srccard:hover > .ws-icon { color: var(--neo-green); }
+
+/* The method, folded until wanted. */
+.rs-about { margin-top: 38px; border: 1px solid var(--rs-edge); border-radius: 10px; background: var(--neo-panel); }
+.rs-about > summary { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px; color: var(--neo-fg-4); font-size: 13.5px; font-weight: 600; list-style: none; cursor: pointer; }
+.rs-about > summary::-webkit-details-marker { display: none; }
+.rs-about > summary small { color: var(--neo-fg-12); font-size: 12px; font-weight: 400; }
+.rs-about > summary .ws-icon { width: 13px; height: 13px; align-self: center; margin-left: auto; color: var(--neo-fg-13); transition: transform .15s ease; }
+.rs-about[open] > summary .ws-icon { transform: rotate(90deg); }
+.rs-about > summary:hover { color: var(--neo-fg-2); }
+.rs-about-body { border-top: 1px solid var(--rs-edge); padding: 14px 16px 16px; color: var(--neo-fg-6); font-size: 13.5px; line-height: 1.65; }
+.rs-about-body h3 { margin-top: 20px; font-size: 13.5px; }
+.rs-about-body li { margin-bottom: 6px; }
+
+@media (max-width: 640px) {
+  .rs-question-title { font-size: 22px; }
+  .rs-lede { font-size: 15.5px; }
+  .rs-sec { margin-top: 30px; }
 }
-.rs-report hr { border: 0; border-top: 1px solid var(--rs-edge); margin: 26px 0; }
-.rs-report table { width: 100%; border-collapse: collapse; margin: 0 0 15px; font-size: 13px; }
-.rs-report th, .rs-report td { border: 1px solid var(--rs-edge); padding: 8px 11px; text-align: left; vertical-align: top; }
-.rs-report th { background: var(--neo-lift-a03); color: var(--neo-fg-6); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .rs-about > summary .ws-icon { transition: none; } }
 
 /* --- evidence ------------------------------------------------------------ */
 .rs-groups { display: grid; gap: 26px; }
