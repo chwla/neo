@@ -83,6 +83,25 @@ def token_set(text: str) -> set[str]:
     return set(tokens(text))
 
 
+def stem(token: str) -> str:
+    """A crude English stem, so "photos", "posting" and "posted" meet "photo" and "post"."""
+    if len(token) > 5 and token.endswith("ing"):
+        return token[:-3]
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 4 and token.endswith(("sses", "xes", "zes", "ches", "shes")):
+        return token[:-2]
+    if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return token[:-1]
+    if len(token) > 4 and token.endswith("ed"):
+        return token[:-2]
+    return token
+
+
+def stem_set(text: str) -> set[str]:
+    return {stem(token) for token in tokens(text)}
+
+
 def jaccard(left: set, right: set) -> float:
     if not left or not right:
         return 0.0
@@ -140,6 +159,23 @@ _ACRONYM = re.compile(r"\b[A-Z][A-Z0-9&]{1,7}s?\b")
 
 def _singular(form: str) -> str:
     return form[:-1] if len(form) > 4 and form.endswith("s") else form
+
+
+def names_as_words(text: str, names: list[str]) -> bool:
+    """Whether ``text`` uses one of ``names`` as whole words, in any spacing or punctuation.
+
+    Stricter than :func:`names_entity`, for deciding whom a sentence is about: "GTA VI" does
+    not name "GTA V", nor "instant" "Insta". A possessive or plural ending still counts.
+    """
+    lowered = (text or "").lower()
+    for name in names:
+        words = _WORD.findall(name.lower())
+        if not words or len("".join(words)) < 2:
+            continue
+        joined = r"[\W_]*".join(re.escape(word) for word in words)
+        if re.search(rf"(?<![a-z0-9]){joined}(?:'?s|es)?(?![a-z0-9])", lowered):
+            return True
+    return False
 
 
 def names_entity(text: str, names: list[str], other_names: list[str]) -> bool | None:

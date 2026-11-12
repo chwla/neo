@@ -920,6 +920,7 @@ export const api = {
     request("/search/test", { method: "POST", body: JSON.stringify(payload) }),
 
   researchClear: () => request("/research/clear", { method: "DELETE" }),
+  researchDelete: (jobId) => request(`/research/${encodeURIComponent(jobId)}`, { method: "DELETE" }),
   researchStart: (payload) =>
     request("/research/start", { method: "POST", body: JSON.stringify(payload) }),
   researchList: (limit = 20) => request(`/research/list?limit=${limit}`),
@@ -934,7 +935,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   researchEvents: (jobId) => `${API_BASE}/research/${jobId}/events`,
-  researchPlan: (payload) => request("/research/plan", { method: "POST", body: JSON.stringify(payload) }),
+  researchPlan: (payload, signal) =>
+    request("/research/plan", { method: "POST", body: JSON.stringify(payload), signal }),
+  researchPlanCancel: () => request("/research/plan", { method: "DELETE" }),
+  researchEstimates: () => request("/research/estimates"),
   providerRuntimeStatus: () => request("/providers/runtime/status"),
   providerRuntimeHealth: () => request("/providers/runtime/health"),
   providerRuntimeRequests: () => request("/providers/runtime/requests"),

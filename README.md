@@ -191,6 +191,10 @@ python -m venv .venv
 lower bounds, and installing from it alone resolves to a different, untested set. Stop the
 server with Ctrl+C: it exits within a few seconds even while a browser tab holds a stream open.
 
+Web search needs no setup: the first start installs Neo's built-in SearXNG in the background
+(about 20 MB into `data/searxng`, its packages kept apart from Neo's), and it is the default
+search provider. Run `python scripts/setup_searxng.py` to install it ahead of time instead.
+
 In another terminal:
 
 ```bash

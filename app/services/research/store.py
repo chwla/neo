@@ -243,8 +243,14 @@ def update_job_status(job_id: str, status: str, **kwargs) -> None:
                 if key == "metadata_json":
                     val = _server_metadata(conn, job_id, val)
                 vals.append(json.dumps(val) if val is not None else None)
-        vals.append(job_id)
-        conn.execute(f"UPDATE research_jobs SET {', '.join(sets)} WHERE id = ?", vals)
+        vals.extend([job_id, status])
+        # A finished run stays finished: a late write from a worker that has not noticed the
+        # cancel (or the end) cannot turn it back into a running or completed one.
+        conn.execute(
+            f"UPDATE research_jobs SET {', '.join(sets)} WHERE id = ? "
+            "AND (status NOT IN ('completed', 'failed', 'cancelled') OR status = ?)",
+            vals,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -318,6 +324,16 @@ def clear_all_jobs() -> int:
         cursor = conn.execute("DELETE FROM research_jobs")
         conn.commit()
         return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def delete_job(job_id: str) -> bool:
+    conn = _connect()
+    try:
+        cursor = conn.execute("DELETE FROM research_jobs WHERE id = ?", (job_id,))
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 

@@ -33,6 +33,8 @@ from app.services.research.textutil import (
     mentions_any,
     name_forms,
     normalize_ws,
+    stem,
+    stem_set,
     token_set,
 )
 from app.services.research.types import (
@@ -205,6 +207,7 @@ class Retriever:
         self.fetches_used = 0
         self.provider_calls = 0
         self.provider_failures = 0
+        self._calls_lock = threading.Lock()
         self._executed: list[tuple[set[str], str]] = []
         self._source_counter = 0
         self._lead_counter = 0
@@ -300,14 +303,16 @@ class Retriever:
                     self._attempt(action, vertical, "error", provider_name, error=str(response))
                     continue
                 if not response.results:
-                    if response.error:
+                    # A search that found nothing worked; only one that could not search failed.
+                    failed = bool(response.error) and "no results" not in response.error.lower()
+                    if failed:
                         self.provider_failures += 1
                     self._attempt(
                         action,
                         vertical,
-                        "error" if response.error else "empty",
+                        "error" if failed else "empty",
                         provider_name,
-                        error=response.error,
+                        error=response.error if failed else None,
                     )
                     continue
                 utility = self.result_utility(response.results, action)
@@ -365,9 +370,11 @@ class Retriever:
         for provider in self.providers:
             if not _offers(provider, vertical):
                 continue
-            if self.provider_calls >= self.max_searches * 2:
-                break
-            self.provider_calls += 1
+            # Searches run in parallel threads; the count is shared between them.
+            with self._calls_lock:
+                if self.provider_calls >= self.max_searches * 2:
+                    break
+                self.provider_calls += 1
             try:
                 # Dependency instances can be shared across concurrent runs. A
                 # per-call copy keeps one run's authorization out of another.
@@ -865,7 +872,8 @@ class Retriever:
 
     @staticmethod
     def _looks_relevant(text: str, subject_forms: set[str], target_tokens: set[str]) -> bool:
-        overlap = len(target_tokens & token_set(text))
+        # Stemmed on both sides, so "photo" matches "photos" and "post" matches "posting".
+        overlap = len({stem(token) for token in target_tokens} & stem_set(text))
         if subject_forms:
             return mentions_any(text, subject_forms) and (overlap >= 1 or not target_tokens)
         return overlap >= min(2, max(1, len(target_tokens)))
@@ -934,5 +942,9 @@ def _retryable(page: FetchedPage) -> bool:
 
 
 def _status_from_error(error: str | None) -> int | None:
-    match = re.search(r"\b([45]\d{2})\b", error or "")
+    """The HTTP status an error message reports, never a port or another number in it."""
+    text = error or ""
+    match = re.search(r"\b([45]\d{2})\s+(?:Client|Server)\s+Error", text) or re.search(
+        r"\bstatus(?:\s*code)?\D{0,3}([45]\d{2})\b", text, flags=re.IGNORECASE
+    )
     return int(match.group(1)) if match else None

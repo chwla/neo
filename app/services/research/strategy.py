@@ -13,6 +13,7 @@ exact titles are searched only when evidence itself named them.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,10 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.services.research.capability import items_per_call
 from app.services.research.evidence_map import EvidenceMap
 from app.services.research.llm_json import (
+    STAGE_FAILURES,
     LLMBudget,
-    LLMBudgetExhausted,
     LLMFactory,
-    ModelOutputInvalid,
     call_json,
 )
 from app.services.research.policy import ResearchPolicy
@@ -519,25 +519,68 @@ def write_queries(
                 notes=trace.errors,
                 reserved=reserved,
             )
-        except (ModelOutputInvalid, LLMBudgetExhausted) as exc:
+        except STAGE_FAILURES as exc:
             trace.errors.append(f"query writing fell back to the plan's own words: {exc}")
             continue
         for item in output.queries:
             query = normalize_ws(item.query)[:160]
             if item.action_id and token_set(query):
                 written.setdefault(item.action_id, query)
+    chosen: list[str] = []
     for action in actions:
         if action.intent == Intent.FOLLOW_LEAD and _lead_href(action, by_lead):
             action.query = ""
             continue
         candidate = written.get(action.id, "")
-        previous = tried.get(action.target_id, [])
+        previous = [*tried.get(action.target_id, []), *chosen]
         if not candidate or _repeats(candidate, previous):
-            candidate = fallback_query(action, plan, by_lead)
+            candidate = fallback_query(action, plan, by_lead, previous)
         action.query = candidate
+        chosen.append(candidate)
 
 
-def fallback_query(action: Action, plan: ResearchPlan, by_lead: dict[str, OriginLead]) -> str:
+#: Words that ask the same thing from another angle; one more per attempt.
+_ANGLES = ("official", "overview", "explained", "facts", "guide", "details", "review", "history")
+
+
+def fallback_query(
+    action: Action,
+    plan: ResearchPlan,
+    by_lead: dict[str, OriginLead],
+    tried: list[str] | None = None,
+) -> str:
+    """A query from the target's own words, asked a different way on each attempt.
+
+    The same words return the same pages, so a second attempt that repeated the first found
+    nothing new and the run gave up. Each later attempt names the subjects by another of their
+    names where they have one and adds an angle; a query already tried is never returned.
+    """
+    base = _plain_fallback(action, plan, by_lead)
+    if action.intent in (Intent.FOLLOW_LEAD, Intent.ACCESSIBLE_COPY):
+        return base
+    tried = tried or []
+    attempt = max(1, action.attempt) - 1
+    query = base
+    for offset in range(len(_ANGLES) + 1):
+        query = _angled(base, action, plan, attempt + offset)
+        if not _repeats(query, tried):
+            return query
+    return query
+
+
+def _angled(base: str, action: Action, plan: ResearchPlan, turn: int) -> str:
+    if turn <= 0:
+        return base
+    text = base
+    for subject_id in action.subject_ids:
+        entity = plan.entity(subject_id)
+        if entity and entity.aliases and turn % 2 == 1:
+            alias = entity.aliases[(turn // 2) % len(entity.aliases)]
+            text = re.sub(re.escape(entity.name), alias, text, count=1, flags=re.IGNORECASE)
+    return normalize_ws(f"{text} {_ANGLES[(turn - 1) % len(_ANGLES)]}")[:160]
+
+
+def _plain_fallback(action: Action, plan: ResearchPlan, by_lead: dict[str, OriginLead]) -> str:
     """A query from the target's own words: its subjects, key terms and the form of its record."""
     target = plan.target(action.target_id)
     names = [entity.name for sid in action.subject_ids if (entity := plan.entity(sid))]

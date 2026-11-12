@@ -42,7 +42,7 @@ class MockClient(BaseLLMClient):
     def model_is_installed(self) -> bool:
         return True
 
-    def chat_with_metadata(self, messages, temperature=0.4, num_predict=None):
+    def chat_with_metadata(self, messages, temperature=0.4, num_predict=None, **_kwargs):
         content = messages[-1].content if messages else "mock"
         return LLMChatResult(
             content=f"Mock: {content}",

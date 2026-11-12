@@ -4,8 +4,15 @@ Deterministic rules check what code can prove: citations exist and are accepted 
 for the same question, the evidence is about the entities the claim names, comparisons
 have evidence for every side, negatives rest on negating evidence, recommendations rest on
 supported reasons, conflicts and stale or partial evidence cap support. A model entailment
-audit then checks that the cited excerpts actually say what the claim says. The renderer
-accepts only a :class:`VerifiedClaimSet`, which only this module can construct.
+audit then checks that the cited excerpts actually say what the claim says.
+
+Entailment is required of every claim, model-written or extractive. Where the model audit
+cannot run -- out of time, out of calls, the model failing -- a strict check of the wording
+stands in: every word, figure and judgement the claim states must be in its excerpts. Code
+also refuses, whatever an auditor says, a judgement ("better", "best") its excerpts never
+make. A claim that cannot be shown to be entailed is not deleted silently: its excerpts are
+reported as unverified evidence. The renderer accepts only a :class:`VerifiedClaimSet`, which
+only this module can construct.
 """
 
 from __future__ import annotations
@@ -15,11 +22,11 @@ import re
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.research.capability import items_per_call
+from app.services.research.claims import unsupported_specifics
 from app.services.research.llm_json import (
+    STAGE_FAILURES,
     LLMBudget,
-    LLMBudgetExhausted,
     LLMFactory,
-    ModelOutputInvalid,
     call_json,
 )
 from app.services.research.policy import ResearchPolicy
@@ -28,10 +35,13 @@ from app.services.research.textutil import (
     jaccard,
     mentions_any,
     name_forms,
+    names_as_words,
     names_entity,
     normalize_ws,
     scope_conflict,
     scope_tokens,
+    stem,
+    stem_set,
     token_set,
 )
 from app.services.research.types import (
@@ -43,13 +53,17 @@ from app.services.research.types import (
     EvidenceItem,
     FreshnessFit,
     Polarity,
+    Provenance,
     RecencyKind,
     ResearchPlan,
+    ResearchSource,
     ResearchTrace,
+    SourceRole,
     Support,
     SupportStatus,
     Tier,
     TimeSensitivity,
+    UnverifiedEvidence,
     VerificationDecision,
 )
 
@@ -73,6 +87,18 @@ LIFTED_CONFLICT_NOTE = (
 #: Marks a claim that holds only by adding several sources together, which none of them states.
 UNION_NOTE = "no single cited source states this; it holds only by combining them"
 _AUDIT_BATCH = 8
+#: How much of a claim's wording its excerpts must contain to pass the wording check that
+#: stands in for an audit the model could not run.
+WORDING_ENTAILMENT = 0.75
+#: Words that judge or rank rather than state. A claim may use one only where its excerpts do.
+_JUDGEMENT = re.compile(
+    r"\b(?:better|best|worse|worst|superior|inferior|greatest|ideal|recommended|preferable|"
+    r"outperforms?|beats?|wins?|winner|leading|top|overall|everyone|always|never|"
+    r"more \w+ than|less \w+ than|faster|slower|cheaper|easier|harder|stronger|weaker)\b",
+    re.IGNORECASE,
+)
+#: Unverified excerpts shown per question, and in all.
+_UNVERIFIED_PER_QUESTION, _UNVERIFIED_MAX = 3, 12
 #: Output one verdict costs: a claim id and a single word.
 _VERDICT_OUTPUT_TOKENS = 30
 #: Claims that state a relation between sources' facts rather than repeating one of them.
@@ -124,13 +150,14 @@ Output: {"claims": [{"claim_id": "...", "text": "..."}]}
 class VerifiedClaimSet:
     """Claims that survived verification. Construct only through :func:`audit`."""
 
-    __slots__ = ("claims", "removed", "decisions")
+    __slots__ = ("claims", "removed", "decisions", "unverified")
 
     def __init__(
         self,
         claims: list[Claim],
         removed: list[Claim],
         decisions: list[VerificationDecision],
+        unverified: list[UnverifiedEvidence] | None = None,
         *,
         _token: object = None,
     ) -> None:
@@ -139,6 +166,8 @@ class VerifiedClaimSet:
         self.claims: tuple[Claim, ...] = tuple(claims)
         self.removed: tuple[Claim, ...] = tuple(removed)
         self.decisions: tuple[VerificationDecision, ...] = tuple(decisions)
+        #: Accepted excerpts that no surviving claim cites, quoted rather than stated.
+        self.unverified: tuple[UnverifiedEvidence, ...] = tuple(unverified or ())
 
     def by_id(self) -> dict[str, Claim]:
         return {claim.id: claim for claim in self.claims}
@@ -152,10 +181,16 @@ def merge_verified(first: VerifiedClaimSet, second: VerifiedClaimSet) -> Verifie
     """
     kept: dict[str, Claim] = {claim.id: claim for claim in (*first.claims, *second.claims)}
     removed = [claim for claim in (*first.removed, *second.removed) if claim.id not in kept]
+    cited = {evidence_id for claim in kept.values() for evidence_id in claim.evidence_ids}
+    unverified: dict[str, UnverifiedEvidence] = {}
+    for item in (*first.unverified, *second.unverified):
+        if item.evidence_id not in cited:
+            unverified.setdefault(item.evidence_id, item)
     return VerifiedClaimSet(
         list(kept.values()),
         removed,
         [*first.decisions, *second.decisions],
+        list(unverified.values()),
         _token=_FACTORY_TOKEN,
     )
 
@@ -217,6 +252,16 @@ def audit(
             reasons=list(claim.verification_notes),
         )
 
+    def settle(claim: Claim, why: str) -> None:
+        """No model audit for this claim: the wording check decides, never silence."""
+        share = wording_entailment(claim, _cited(claim, evidence_by_id))
+        if share < WORDING_ENTAILMENT:
+            remove(claim, f"{why}, and its wording is not stated by the cited excerpts")
+            return
+        claim.verification_notes.append(f"{why}; checked against the excerpts' wording")
+        if share < 0.95:
+            _cap(claim, SupportStatus.PARTIALLY_SUPPORTED, "entailed by wording, not audited")
+
     ordinary = [c.model_copy(deep=True) for c in claims if c.claim_type != ClaimType.RECOMMENDATION]
     recommendations = [
         c.model_copy(deep=True) for c in claims if c.claim_type == ClaimType.RECOMMENDATION
@@ -229,29 +274,79 @@ def audit(
         else:
             kept[claim.id] = claim
 
+    # A claim in its excerpts' own words is entailed, and code can prove it: asking a small
+    # model whether a sentence states itself only invites a wrong "no". Those claims skip the
+    # model audit; what they say is still capped to what their evidence can carry.
+    verbatim = {
+        c.id
+        for c in kept.values()
+        if wording_entailment(c, _cited(c, evidence_by_id)) >= VERBATIM
+    }
+    for claim in list(kept.values()):
+        if claim.id in verbatim:
+            claim.verification_notes.append("states its excerpts' own words; entailed")
+            if claim.origin == "extractive" and not _answers_question(plan, claim):
+                remove(claim, "its excerpt may not answer the question it was found for")
+                verbatim.discard(claim.id)
+    audited = [
+        c for c in kept.values() if _in_scope(plan, c, policy) and c.id not in verbatim
+    ]
     weakened = _entailment(
         plan,
-        [c for c in kept.values() if _in_scope(plan, c, policy)],
+        audited,
         evidence_by_id,
         {},
         policy=policy,
         llm_factory=llm_factory,
         llm_budget=llm_budget,
         remove=remove,
+        settle=settle,
     )
+    # A judgement the excerpts never make is refused whatever the audit said: an auditor that
+    # approves everything must not be able to pass "X is better than Y" off feature facts.
+    judged = [
+        c
+        for c in kept.values()
+        if c not in weakened and unsupported_judgement(c.text, _cited(c, evidence_by_id))
+    ]
+    for claim in judged:
+        claim.verification_notes.append("judges or ranks where the cited excerpts do not")
+    # Likewise a claim whose own words appear in none of its excerpts ("differ in their gameplay
+    # style" over six excerpts about settings, movement and studios), whatever the audit said.
+    unstated = [
+        c
+        for c in kept.values()
+        if c not in weakened
+        and c not in judged
+        and c.id not in verbatim
+        and unsupported_specifics(plan, c.text, _cited(c, evidence_by_id))
+    ]
+    for claim in unstated:
+        claim.verification_notes.append("says what none of its cited excerpts say")
+    judged = [*judged, *unstated]
     overstated = {CONTEXT_ONLY_NOTE, GENERALISED_NOTE, FIGURE_NOTE}
+    for claim in kept.values():
+        if claim.id in verbatim and overstated & set(claim.verification_notes):
+            # Its own excerpt's words: nothing to narrow, only a limit to state.
+            _cap(claim, SupportStatus.PARTIALLY_SUPPORTED, "holds for what its source states")
     context_only = [
-        c for c in kept.values() if overstated & set(c.verification_notes) and c not in weakened
+        c
+        for c in kept.values()
+        if overstated & set(c.verification_notes)
+        and c not in weakened
+        and c not in judged
+        and c.id not in verbatim
     ]
     _rewrite(
         plan,
-        [c for c in [*weakened, *context_only] if c.id in kept],
+        [c for c in [*weakened, *judged, *context_only] if c.id in kept],
         evidence_by_id,
         {},
         policy=policy,
         llm_factory=llm_factory,
         llm_budget=llm_budget,
         remove=remove,
+        settle=settle,
     )
     union_only = _union_only(
         plan,
@@ -272,14 +367,13 @@ def audit(
         llm_factory=llm_factory,
         llm_budget=llm_budget,
         remove=remove,
+        settle=settle,
     )
     for claim in list(kept.values()):
-        if not _in_scope(plan, claim, policy) and not _restates_evidence(claim, evidence_by_id):
-            _cap(
-                claim,
-                SupportStatus.PARTIALLY_SUPPORTED,
-                "not independently audited; stated as partial",
-            )
+        if claim.id in kept and claim.id not in verbatim and not _in_scope(plan, claim, policy):
+            # This mode does not send the claim to the model audit; entailment is still
+            # required of it, so the wording check decides.
+            settle(claim, "not sent to the model audit at this depth")
 
     for claim in recommendations:
         reason = _recommendation_checks(plan, claim, kept)
@@ -296,6 +390,7 @@ def audit(
         llm_factory=llm_factory,
         llm_budget=llm_budget,
         remove=remove,
+        settle=lambda claim, why: _cap(claim, SupportStatus.PARTIALLY_SUPPORTED, why),
     )
     _rewrite(
         plan,
@@ -306,6 +401,7 @@ def audit(
         llm_factory=llm_factory,
         llm_budget=llm_budget,
         remove=remove,
+        settle=lambda claim, why: remove(claim, why),
     )
 
     ordered = [kept[c.id] for c in claims if c.id in kept]
@@ -320,15 +416,190 @@ def audit(
                 reasons=list(claim.verification_notes),
             ),
         )
+    unverified = _unverified(ordered, removed, evidence_by_id)
     trace.verification.extend(decisions.values())
     trace.removed_claims.extend(removed)
-    return VerifiedClaimSet(ordered, removed, list(decisions.values()), _token=_FACTORY_TOKEN)
+    return VerifiedClaimSet(
+        ordered, removed, list(decisions.values()), unverified, _token=_FACTORY_TOKEN
+    )
+
+
+#: Wording share at which a claim is its excerpts' own words.
+VERBATIM = 0.95
+#: Wording share one excerpt must carry for its source to count as corroborating a claim.
+SUPPORTS_ALONE = 0.5
+#: Words of a question that say nothing about what is asked.
+_QUESTION_FILLER = frozenset(
+    {"what", "which", "who", "when", "where", "why", "how", "do", "does", "did", "is", "are",
+     "was", "were", "for", "the", "and", "compare", "compared", "differ", "difference",
+     "between", "both", "have", "has", "common", "about", "known"}
+)
+
+
+def _answers_question(plan: ResearchPlan, claim: Claim) -> bool:
+    """Whether a code-written finding shares anything with what its question asks.
+
+    A judge proposed the evidence; code wrote the finding from it. Before code states it as an
+    answer, the excerpt must at least speak to the question's own terms (beyond the subjects'
+    names). A question that names nothing but its subjects is answered by anything about them.
+    """
+    target = plan.target(claim.question_id) if claim.question_id else None
+    if target is None:
+        return True
+    names: set[str] = set()
+    for entity in plan.understanding.entities:
+        names |= stem_set(" ".join(entity.names()))
+    dimension = plan.dimension(target.dimension_id)
+    asked = stem_set(f"{target.text} {target.scope_note}") - names - {
+        stem(word) for word in _QUESTION_FILLER
+    }
+    if dimension is not None and dimension.name != "The question as asked":
+        asked |= stem_set(dimension.name) - names
+    if not asked:
+        return True
+    return bool(asked & stem_set(claim.text))
+
+
+def _about(plan: ResearchPlan, item: EvidenceItem) -> set[str]:
+    """The entities an item is about: its judge's tags, and those its excerpt names itself."""
+    found = set(item.entity_ids)
+    for entity in plan.understanding.entities:
+        if entity.id not in found and names_as_words(item.excerpt, entity.names()):
+            found.add(entity.id)
+    return found
+
+
+def _cited(claim: Claim, evidence_by_id: dict[str, EvidenceItem]) -> list[EvidenceItem]:
+    return [evidence_by_id[e] for e in claim.evidence_ids if e in evidence_by_id]
+
+
+def unsupported_judgement(text: str, cited: list[EvidenceItem]) -> bool:
+    """Whether a claim judges, ranks or generalises in words none of its excerpts use."""
+    claimed = {normalize_ws(m.group(0)).lower() for m in _JUDGEMENT.finditer(text or "")}
+    if not claimed:
+        return False
+    excerpts = " ".join(item.excerpt for item in cited)
+    stated = {normalize_ws(m.group(0)).lower() for m in _JUDGEMENT.finditer(excerpts)}
+    return bool(claimed - stated)
+
+
+def wording_entailment(claim: Claim, cited: list[EvidenceItem]) -> float:
+    """How much of a claim its excerpts state word for word: 0 when it gives a figure, or a
+    judgement, they do not. The check that stands in for an audit the model cannot run."""
+    if not cited:
+        return 0.0
+    excerpts = " ".join(item.excerpt for item in cited)
+    values = " ".join(item.value or "" for item in cited)
+    if set(_NUMBER.findall(claim.text)) - set(_NUMBER.findall(f"{excerpts} {values}")):
+        return 0.0
+    if unsupported_judgement(claim.text, cited):
+        return 0.0
+    wanted = stem_set(claim.text)
+    if not wanted:
+        return 0.0
+    return len(wanted & stem_set(excerpts)) / len(wanted)
+
+
+def _unverified(
+    kept: list[Claim], removed: list[Claim], evidence_by_id: dict[str, EvidenceItem]
+) -> list[UnverifiedEvidence]:
+    """Excerpts behind withheld claims that no surviving claim cites: still shown, as quotes."""
+    cited = {evidence_id for claim in kept for evidence_id in claim.evidence_ids}
+    shown: list[UnverifiedEvidence] = []
+    per_question: dict[str, int] = {}
+    seen: set[str] = set()
+    for claim in removed:
+        for evidence_id in claim.evidence_ids:
+            item = evidence_by_id.get(evidence_id)
+            if (
+                item is None
+                or item.status != "accepted"
+                or evidence_id in cited
+                or evidence_id in seen
+                or item.claim_fit == ClaimFit.INSUFFICIENT
+                or per_question.get(item.question_id, 0) >= _UNVERIFIED_PER_QUESTION
+                or len(shown) >= _UNVERIFIED_MAX
+            ):
+                continue
+            seen.add(evidence_id)
+            per_question[item.question_id] = per_question.get(item.question_id, 0) + 1
+            shown.append(
+                UnverifiedEvidence(
+                    evidence_id=evidence_id,
+                    question_id=item.question_id,
+                    source_id=item.source_id,
+                    excerpt=item.excerpt,
+                    reason=(claim.verification_notes or [""])[-1][:200],
+                )
+            )
+    return shown
+
+
+def label_strengths(
+    plan: ResearchPlan,
+    claims: tuple[Claim, ...] | list[Claim],
+    evidence: list[EvidenceItem],
+    sources: list[ResearchSource],
+) -> None:
+    """Give each verified claim the strength a reader should take from it, in place.
+
+    verified: entailed, and backed by two independent sources or by the subject's own record
+    stating a fact about itself. limited: entailed, but only partly supported or resting on
+    dated evidence for a current question. single_source: entailed, one unofficial source.
+    disputed: sources disagree. one_side_only: a comparison only one side's evidence speaks to.
+    """
+    evidence_by_id = {item.id: item for item in evidence}
+    by_source = {source.id: source for source in sources}
+    for claim in claims:
+        cited = _cited(claim, evidence_by_id)
+        keys: set[str] = set()
+        official = False
+        wanted = stem_set(claim.text)
+        for item in cited:
+            source = by_source.get(item.source_id)
+            if source is None:
+                continue
+            # Only a source whose own excerpt carries the claim corroborates it; a citation
+            # added beside it (a related passage from another page) does not.
+            if wanted and len(wanted & stem_set(item.excerpt)) / len(wanted) < SUPPORTS_ALONE:
+                continue
+            assessment = source.assessment
+            if assessment is not None and assessment.provenance == Provenance.D:
+                continue
+            keys.add(source.independence_key)
+            if (
+                assessment is not None
+                and assessment.role == SourceRole.ISSUER_RECORD
+                and assessment.provenance in (Provenance.A, Provenance.B)
+                and (not claim.entity_ids or set(claim.entity_ids) & set(source.official_for))
+                and not unsupported_judgement(claim.text, [item])
+            ):
+                official = True
+        target = plan.target(claim.question_id) if claim.question_id else None
+        stale = bool(cited) and all(i.freshness_fit == FreshnessFit.STALE for i in cited) and (
+            target is not None and target.profile.recency.kind == RecencyKind.CURRENT
+        )
+        covered = {entity_id for item in cited for entity_id in _about(plan, item)}
+        if claim.support in (
+            SupportStatus.CONFLICTING_EVIDENCE,
+            SupportStatus.INHERENTLY_UNCERTAIN,
+        ):
+            claim.strength = "disputed"
+        elif claim.claim_type in _DERIVED_TYPES and len(covered & set(claim.entity_ids)) < 2:
+            claim.strength = "one_side_only"
+        elif stale or claim.support != SupportStatus.SUPPORTED:
+            claim.strength = "limited"
+        elif len(keys) >= 2 or official:
+            claim.strength = "verified"
+        else:
+            claim.strength = "single_source"
 
 
 def _deterministic_checks(
     plan: ResearchPlan, claim: Claim, evidence_by_id: dict[str, EvidenceItem]
 ) -> str | None:
     _keep_named_entities(plan, claim)
+    _refile(plan, claim, evidence_by_id)
     cited: list[EvidenceItem] = []
     for evidence_id in claim.evidence_ids:
         item = evidence_by_id.get(evidence_id)
@@ -378,13 +649,23 @@ def _deterministic_checks(
     if _generalises_from_too_few_cases(plan, claim, cited):
         claim.verification_notes.append(GENERALISED_NOTE)
 
-    covered = {entity_id for item in cited for entity_id in item.entity_ids}
+    covered = {entity_id for item in cited for entity_id in _about(plan, item)}
     missing = [entity_id for entity_id in claim.entity_ids if entity_id not in covered]
     if missing:
         names = ", ".join(plan.entity(e).name if plan.entity(e) else e for e in missing)
         if claim.claim_type in (ClaimType.COMPARISON, ClaimType.TRADEOFF):
             return f"comparison lacks evidence about {names}"
-        return f"cited evidence is not about {names}"
+        kept = [entity_id for entity_id in claim.entity_ids if entity_id in covered]
+        if not kept:
+            return f"cited evidence is not about {names}"
+        # A fact tagged with an entity its evidence is not about, beside one it is: the extra
+        # tag is a writer's slip (a small model tags every entity of a comparative question),
+        # not a reason to lose a supported fact. The tag comes off; if the text itself asserts
+        # something about that entity, the unstated-entity check below still removes it.
+        claim.entity_ids = kept
+        claim.verification_notes.append(
+            f"tagged {names}, which its cited evidence is not about; that tag was removed"
+        )
     unstated = _unstated_entities(plan, claim, cited)
     if unstated:
         names = ", ".join(entity.name for entity in unstated)
@@ -660,6 +941,41 @@ def _in_scope(plan: ResearchPlan, claim: Claim, policy: ResearchPolicy) -> bool:
     return bool(target and target.tier == Tier.CORE)
 
 
+def _root(plan: ResearchPlan, target_id: str) -> str:
+    target = plan.target(target_id)
+    return target.parent_id if target is not None and target.parent_id else target_id
+
+
+def _refile(plan: ResearchPlan, claim: Claim, evidence_by_id: dict[str, EvidenceItem]) -> None:
+    """File a claim under the question its evidence answers, when the writer misfiled it.
+
+    A small model files a comparison under one side's question, or a fact under the question
+    next to it. The claim is not wrong for that, and dropping its citations as "evidence for
+    another question" is how supported facts disappeared from reports.
+    """
+    cited = [
+        item
+        for e in claim.evidence_ids
+        if (item := evidence_by_id.get(e)) is not None and item.status == "accepted"
+    ]
+    if not cited:
+        return
+    questions = list(dict.fromkeys(item.question_id for item in cited))
+    roots = {_root(plan, question) for question in questions}
+    if len(questions) > 1 and len(roots) == 1:
+        target = next(iter(roots))
+    elif claim.question_id and any(
+        _same_target_family(plan, q, claim.question_id) for q in questions
+    ):
+        return
+    else:
+        target = max(questions, key=lambda q: sum(item.question_id == q for item in cited))
+    if target != claim.question_id and plan.target(target) is not None:
+        if claim.question_id:
+            claim.verification_notes.append("refiled under the question its evidence answers")
+        claim.question_id = target
+
+
 def _same_target_family(plan: ResearchPlan, evidence_target: str, claim_target: str) -> bool:
     """Evidence filed under a target, its parent or its per-subject children bears on it."""
     if evidence_target == claim_target:
@@ -691,8 +1007,12 @@ def _entailment(
     llm_factory: LLMFactory,
     llm_budget: LLMBudget,
     remove,
+    settle,
 ) -> list[Claim]:
-    """Check every claim against its excerpts. Returns the claims that say more than they state."""
+    """Check every claim against its excerpts. Returns the claims that say more than they state.
+
+    A claim the model could not audit goes to ``settle``, which applies the wording check.
+    """
     weakened: list[Claim] = []
     per_call = min(
         _AUDIT_BATCH,
@@ -707,9 +1027,7 @@ def _entailment(
         batch = claims[start : start + per_call]
         if not llm_budget.can_spend(reserved=True):
             for claim in batch:
-                _cap(
-                    claim, SupportStatus.PARTIALLY_SUPPORTED, "not audited: model budget exhausted"
-                )
+                settle(claim, "not audited by the model: no time or calls left")
             continue
         payload = {
             "claims": [
@@ -748,11 +1066,9 @@ def _entailment(
                 num_predict=900,
                 reserved=True,
             )
-        except (ModelOutputInvalid, LLMBudgetExhausted):
+        except STAGE_FAILURES:
             for claim in batch:
-                _cap(
-                    claim, SupportStatus.PARTIALLY_SUPPORTED, "audit unavailable; stated as partial"
-                )
+                settle(claim, "the model audit failed")
             continue
         verdicts = {item.claim_id: item for item in output.results}
         for claim in batch:
@@ -770,7 +1086,7 @@ def _entailment(
             elif verdict in ("full", "partial"):
                 weakened.append(claim)
             else:
-                _cap(claim, SupportStatus.PARTIALLY_SUPPORTED, "audit returned no verdict")
+                settle(claim, "the model audit returned no verdict")
     return weakened
 
 
@@ -873,7 +1189,7 @@ def _union_only(
                 num_predict=900,
                 reserved=True,
             )
-        except (ModelOutputInvalid, LLMBudgetExhausted):
+        except STAGE_FAILURES:
             return []
         for verdict in output.results:
             if verdict.entailment.strip().lower() == "full" and not verdict.overstated:
@@ -891,17 +1207,20 @@ def _rewrite(
     llm_factory: LLMFactory,
     llm_budget: LLMBudget,
     remove,
+    settle,
 ) -> None:
     """Narrow claims their excerpts only partly support, then check them again.
 
     A claim is never reported as a partly supported answer: it is rewritten down to what the
-    evidence states and re-verified, or it is withheld.
+    evidence states and re-verified. When it cannot be rewritten -- no time, the model failing
+    or returning it unchanged -- the wording check decides: entailed by its excerpts' words it
+    stands, otherwise its excerpts are shown as unverified evidence.
     """
     if not claims:
         return
     if not llm_budget.can_spend(reserved=True):
         for claim in claims:
-            remove(claim, "cited excerpts support only part of the claim")
+            settle(claim, "could not be narrowed: no time or calls left")
         return
     payload = {
         "claims": [
@@ -927,19 +1246,23 @@ def _rewrite(
             num_predict=1200,
             reserved=True,
         )
-    except (ModelOutputInvalid, LLMBudgetExhausted):
+    except STAGE_FAILURES:
         for claim in claims:
-            remove(claim, "cited excerpts support only part of the claim")
+            settle(claim, "could not be narrowed: the model failed")
         return
     texts = {item.claim_id: normalize_ws(item.text) for item in output.claims}
     narrowed: list[Claim] = []
     for claim in claims:
         text = texts.get(claim.id, "")
-        if not text or len(text.split()) > 40 or text.strip() == claim.text.strip():
+        if not text or len(text.split()) > 40:
             remove(claim, "cited excerpts support only part of the claim")
+            continue
+        if text.strip() == claim.text.strip():
+            settle(claim, "the model returned it unchanged when asked to narrow it")
             continue
         claim.text = text
         claim.verification_notes.append(NARROWED_NOTE)
+        _keep_named_entities(plan, claim)
         narrowed.append(claim)
     still_weak = _entailment(
         plan,
@@ -950,8 +1273,17 @@ def _rewrite(
         llm_factory=llm_factory,
         llm_budget=llm_budget,
         remove=remove,
+        settle=settle,
     )
     for claim in still_weak:
+        if claim.id in {c.id for c in narrowed} and wording_entailment(
+            claim, _cited(claim, evidence_by_id)
+        ) >= WORDING_ENTAILMENT and not unsupported_judgement(
+            claim.text, _cited(claim, evidence_by_id)
+        ):
+            claim.verification_notes.append("narrowed claim matches its excerpts' wording")
+            _cap(claim, SupportStatus.PARTIALLY_SUPPORTED, "narrowed to its excerpts")
+            continue
         remove(claim, "the narrowed claim is still not stated by the cited excerpts")
 
 

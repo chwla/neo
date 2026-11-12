@@ -3,8 +3,10 @@
 Every semantic stage talks to the model through :func:`call_json`: one system prompt
 naming the stage, one JSON input, one JSON output validated against a pydantic model.
 Budget accounting lives here so no stage can quietly spend more calls than its depth
-allows, and provider failures surface as :class:`ResearchModelUnavailable` so a run
-fails closed instead of carrying on without verification.
+allows. Provider failures surface as :class:`ResearchModelUnavailable`, which says whether
+the model is slow or failing (a stage degrades to its deterministic fallback and the run
+carries on) or unreachable (the run stops spending model calls and finishes with what it has).
+Every call asks the provider for JSON that fits the stage's schema, and can be cancelled.
 """
 
 from __future__ import annotations
@@ -21,12 +23,28 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ValidationError
 
 from app.services.disclosure import Label, label_of, public
-from app.services.llm import LLMMessage
+from app.services.llm import GenerationCancelled, LLMMessage, inline_schema
 from app.services.research.capability import ModelCapability, output_budget
+
+#: Provider failure categories after which no further call can succeed: nothing is answering,
+#: or the route is misconfigured. Anything else (slow, rate limited, a bad reply) may pass.
+UNREACHABLE_CATEGORIES = frozenset(
+    {"provider_unavailable", "auth_or_config", "unsupported_capability"}
+)
+#: Consecutive failed calls after which the model is treated as gone for the rest of the run.
+UNAVAILABLE_STREAK = 3
 
 
 class ResearchModelUnavailable(RuntimeError):
-    """The research model route could not be reached; the run must fail closed."""
+    """A model call failed at the provider: ``kind`` is "unreachable", "timeout" or "error"."""
+
+    def __init__(self, message: str, kind: str = "error") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+    @property
+    def unreachable(self) -> bool:
+        return self.kind == "unreachable"
 
 
 class ModelOutputInvalid(RuntimeError):
@@ -39,6 +57,10 @@ class LLMBudgetExhausted(RuntimeError):
 
 class ResearchCancelled(RuntimeError):
     """The user cancelled the run; no further model calls are made."""
+
+
+#: What a stage catches to fall back to its deterministic path instead of ending the run.
+STAGE_FAILURES = (ModelOutputInvalid, LLMBudgetExhausted, ResearchModelUnavailable)
 
 
 class ChatModel(Protocol):
@@ -59,8 +81,16 @@ class StageUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     seconds: float = 0.0
+    #: Of ``seconds``, what the provider spent loading the model into memory. Paid once per
+    #: load, not per call, so it is left out of the pace later calls are expected to take.
+    load_seconds: float = 0.0
     #: Units of work answered (chunks judged, claims audited), so output per unit can be measured.
     items: int = 0
+    #: Calls that failed at the provider (timeouts, refusals), for the run's diagnostics.
+    failures: int = 0
+
+    def work_seconds(self) -> float:
+        return max(0.0, self.seconds - self.load_seconds)
 
     def completion_tokens_per_item(self) -> float | None:
         if not self.items or not self.completion_tokens:
@@ -87,10 +117,12 @@ class StageProfile:
         completion_tokens: int | None = None,
         retry: bool = False,
         truncated: bool = False,
+        load_seconds: float | None = None,
     ) -> None:
         usage = self.usage(stage)
         usage.calls += 1
         usage.seconds = round(usage.seconds + seconds, 3)
+        usage.load_seconds = round(usage.load_seconds + min(float(load_seconds or 0), seconds), 3)
         usage.prompt_tokens += int(prompt_tokens or 0)
         usage.completion_tokens += int(completion_tokens or 0)
         usage.retries += 1 if retry else 0
@@ -149,11 +181,46 @@ class LLMBudget:
         #: When the whole run must end. Research work stops early enough to leave the
         #: reserved calls (claims, verification, prose) the time they are expected to take.
         self.deadline = deadline
+        #: When nothing more may be asked of the model at all, finishing included. Past it a
+        #: run completes with deterministic fallbacks only. None: no hard limit.
+        self.hard_deadline: float | None = None
         self.cancelled = cancelled or (lambda: False)
+        #: Consecutive provider failures, and why the model is considered gone (or "").
+        self.failure_streak = 0
+        self.down_reason = ""
+
+    @property
+    def model_down(self) -> bool:
+        return bool(self.down_reason)
+
+    def note_failure(self, error: ResearchModelUnavailable) -> None:
+        self.failure_streak += 1
+        if error.unreachable:
+            self.down_reason = str(error)
+        elif self.failure_streak >= UNAVAILABLE_STREAK:
+            self.down_reason = (
+                f"the research model failed {self.failure_streak} calls in a row ({error})"
+            )
+
+    def note_success(self) -> None:
+        self.failure_streak = 0
+
+    def past_hard_deadline(self) -> bool:
+        return self.hard_deadline is not None and self.clock() >= self.hard_deadline
+
+    def should_stop(self) -> bool:
+        """Whether a model call already under way must stop: cancelled, or the hard limit hit.
+
+        Checking the hard limit only before a call let one slow answer on a CPU run on past it
+        by many minutes; a streamed call is stopped between pieces instead.
+        """
+        return self.cancelled() or self.past_hard_deadline()
 
     def can_spend(self, *, reserved: bool = False) -> bool:
         if self.cancelled():
             raise ResearchCancelled("research cancelled")
+        if self.model_down or self.past_hard_deadline():
+            return False
         ceiling = self.limit if reserved else self.limit - self.reserved
         return self.used < ceiling and self.has_time(reserved=reserved)
 
@@ -177,6 +244,8 @@ class LLMBudget:
         """
         if self.cancelled():
             raise ResearchCancelled("research cancelled")
+        if self.model_down or self.past_hard_deadline():
+            return False
         ceiling = self.limit if reserved else self.limit - self.reserved
         if self.used + max(1, calls) > ceiling:
             return False
@@ -188,7 +257,7 @@ class LLMBudget:
 
     def seconds_per_call(self) -> float:
         calls = sum(usage.calls for usage in self.profile.stages.values())
-        seconds = sum(usage.seconds for usage in self.profile.stages.values())
+        seconds = sum(usage.work_seconds() for usage in self.profile.stages.values())
         return seconds / calls if calls else 0.0
 
     #: The stages a run still has to pay for once research stops, in the order they run.
@@ -204,9 +273,9 @@ class LLMBudget:
         """
         usage = self.profile.stages.get(stage)
         if usage is None or not usage.calls:
-            paces = [u.seconds / u.calls for u in self.profile.stages.values() if u.calls]
+            paces = [u.work_seconds() / u.calls for u in self.profile.stages.values() if u.calls]
             return min(paces, default=0.0)
-        return usage.seconds / usage.calls
+        return usage.work_seconds() / usage.calls
 
     def reserve_seconds(self) -> float:
         """Time the reserved calls are expected to take, judged from this run's calls so far.
@@ -225,6 +294,22 @@ class LLMBudget:
         if extra > 0 and paces:
             expected += extra * (sum(paces) / len(paces))
         return expected * self.RESERVE_MARGIN
+
+    def slowest_seconds_per_call(self) -> float:
+        """The slowest stage's time per call so far: what a long-answer call costs here."""
+        paces = [u.work_seconds() / u.calls for u in self.profile.stages.values() if u.calls]
+        return max(paces, default=0.0)
+
+    def extend_deadline(self, until: float) -> float:
+        """Move the deadline to ``until`` if that is later, never past the hard deadline;
+        returns the seconds added."""
+        if self.hard_deadline is not None:
+            until = min(until, self.hard_deadline)
+        if self.deadline is None or until <= self.deadline:
+            return 0.0
+        added = until - self.deadline
+        self.deadline = until
+        return added
 
     @property
     def remaining_unreserved(self) -> int:
@@ -249,6 +334,9 @@ def extract_json(text: str, keys: frozenset[str] = frozenset()) -> Any:
 
 def _extract(text: str, keys: frozenset[str]) -> tuple[Any, bool]:
     cleaned = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL)
+    if "<think>" in cleaned:
+        # Reasoning that never closed: whatever JSON sits inside it is a draft, not the answer.
+        cleaned = cleaned.split("<think>", 1)[0]
     cleaned = re.sub(r"```(?:json)?", "", cleaned)
     decoder = json.JSONDecoder()
     for index, char in enumerate(cleaned):
@@ -403,15 +491,31 @@ def call_json[T: BaseModel](
     client = llm_factory(num_predict)
     last_error = "invalid output"
     keys = frozenset(schema.model_fields)
+    structured = structured_schema(schema)
     for attempt in range(2):
         if attempt and not budget.can_spend(reserved=True):
             break
         budget.spend()
         started = budget.clock()
         try:
-            raw, meta = _ask(client, messages, num_predict)
+            raw, meta = _ask(client, messages, num_predict, structured, budget.should_stop)
         except Exception as exc:  # provider runtime, transport or timeout failures
-            raise ResearchModelUnavailable(_safe_error(exc)) from exc
+            if isinstance(exc, ResearchCancelled) or budget.cancelled():
+                raise ResearchCancelled("research cancelled") from exc
+            if profile is not None:
+                profile.record(stage, seconds=budget.clock() - started, retry=attempt > 0)
+            if budget.past_hard_deadline():
+                # Stopped mid-answer at the hard limit (or failed and was not retried past it):
+                # the stage has run out of time, not the model; it degrades like any spent budget.
+                raise LLMBudgetExhausted(f"{stage}: stopped at the run's hard time limit") from exc
+            if isinstance(exc, GenerationCancelled):
+                raise ResearchCancelled("research cancelled") from exc
+            if profile is not None:
+                profile.usage(stage).failures += 1
+            error = ResearchModelUnavailable(_safe_error(exc), _failure_kind(exc))
+            budget.note_failure(error)
+            raise error from exc
+        budget.note_success()
         elapsed = budget.clock() - started
         try:
             value, truncated = _extract(raw, keys)
@@ -425,12 +529,14 @@ def call_json[T: BaseModel](
                     prompt_tokens=meta.get("prompt_tokens"),
                     completion_tokens=meta.get("completion_tokens"),
                     retry=attempt > 0,
+                    load_seconds=meta.get("load_seconds"),
                 )
             last_error = _validation_summary(exc)
+            # The bad answer goes back short: on a CPU every resent token is paid again.
             messages = [
-                *messages,
+                *messages[:2],
                 LLMMessage(
-                    role="assistant", content=(raw or "")[:6000], source_label=budget.source_label
+                    role="assistant", content=(raw or "")[:800], source_label=budget.source_label
                 ),
                 LLMMessage(
                     role="user",
@@ -450,6 +556,7 @@ def call_json[T: BaseModel](
                 completion_tokens=meta.get("completion_tokens"),
                 retry=attempt > 0,
                 truncated=truncated,
+                load_seconds=meta.get("load_seconds"),
             )
         if truncated and notes is not None:
             notes.append(
@@ -542,22 +649,105 @@ def _data_path(value: Any, loc: tuple) -> list:
     return path
 
 
-def _ask(client: Any, messages: list[LLMMessage], num_predict: int) -> tuple[str, dict[str, Any]]:
+#: Fields that carry an answer's meaning. Constrained output must include them where the
+#: schema has them, so a small model cannot satisfy the grammar with an empty object.
+_KEY_FIELDS = frozenset({
+    "id", "question_id", "chunk_id", "claim_id", "action_id", "text", "query", "evidence_ids",
+    "sentence_ids", "findings", "entailment", "source_id", "dimension_id", "tier", "form",
+    "subject_ids", "name", "sentences", "ok",
+})
+#: Top-level fields a stage may leave out without losing anything it needs.
+_OPTIONAL_ROOT = frozenset({"sources", "conflicts"})
+
+
+def structured_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """The JSON schema a provider constrains this stage's answer to."""
+    shape = inline_schema(schema.model_json_schema())
+
+    def mark(node: Any, root: bool = False) -> None:
+        if isinstance(node, list):
+            for item in node:
+                mark(item)
+            return
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            required = [
+                key
+                for key in properties
+                if (root and key not in _OPTIONAL_ROOT) or (not root and key in _KEY_FIELDS)
+            ]
+            if required:
+                node["required"] = required
+            for value in properties.values():
+                mark(value)
+        for key in ("items", "anyOf", "oneOf", "allOf"):
+            if key in node:
+                mark(node[key])
+
+    mark(shape, root=True)
+    return shape
+
+
+def _failure_kind(exc: Exception) -> str:
+    from app.services.provider_runtime.errors import classify
+
+    category = getattr(exc, "category", None) or classify(exc)
+    if category in UNREACHABLE_CATEGORIES:
+        return "unreachable"
+    return "timeout" if category == "timeout" else "error"
+
+
+_CHAT_KWARGS: dict[Any, frozenset[str] | None] = {}
+
+
+def _chat_kwargs(method: Any) -> frozenset[str] | None:
+    import inspect
+
+    key = getattr(method, "__func__", method)
+    if key not in _CHAT_KWARGS:
+        try:
+            parameters = list(inspect.signature(method).parameters.values())
+        except (TypeError, ValueError):
+            parameters = []
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+            _CHAT_KWARGS[key] = None
+        else:
+            _CHAT_KWARGS[key] = frozenset(p.name for p in parameters)
+    return _CHAT_KWARGS[key]
+
+
+def _ask(
+    client: Any,
+    messages: list[LLMMessage],
+    num_predict: int,
+    json_schema: dict[str, Any] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[str, dict[str, Any]]:
     """Ask the client, preferring the call that also reports why generation stopped.
 
     ``finish_reason`` is the provider's own word for "I ran out of room", which is a surer
     truncation signal than inspecting the JSON afterwards. Clients that only offer ``chat``
-    still work; they simply report nothing.
+    still work; they simply report nothing. Structured output and cancellation are passed
+    to clients that take them.
     """
     with_metadata = getattr(client, "chat_with_metadata", None)
     if callable(with_metadata):
-        result = with_metadata(messages, 0.1, num_predict)
+        accepted = _chat_kwargs(with_metadata)
+        extra: dict[str, Any] = {}
+        for name, value in (("json_schema", json_schema), ("should_stop", should_stop)):
+            if value is not None and (accepted is None or name in accepted):
+                extra[name] = value
+        result = with_metadata(messages, 0.1, num_predict, **extra)
+        load_ms = getattr(result, "load_ms", None)
         return (
             getattr(result, "content", "") or "",
             {
                 "finish_reason": getattr(result, "finish_reason", None),
                 "prompt_tokens": getattr(result, "prompt_tokens", None),
                 "completion_tokens": getattr(result, "completion_tokens", None),
+                "load_seconds": load_ms / 1000 if isinstance(load_ms, (int, float)) else None,
             },
         )
     return client.chat(messages, temperature=0.1), {}

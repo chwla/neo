@@ -119,6 +119,8 @@ class ProviderRuntimeClient(BaseLLMClient):
         temperature: float = 0.4,
         num_predict: int | None = None,
         tools: list[dict[str, Any]] | None = None,
+        json_schema: dict[str, Any] | None = None,
+        should_stop: Any = None,
     ) -> LLMChatResult:
         result = self.runtime.complete(
             request_type="chat",
@@ -127,6 +129,9 @@ class ProviderRuntimeClient(BaseLLMClient):
             max_tokens=num_predict or self.num_predict,
             metadata={"temperature": temperature},
             tools=tools,
+            timeout=self.timeout,
+            json_schema=json_schema,
+            should_stop=should_stop,
         )
         if result.status != "completed":
             raise _failure(
@@ -178,6 +183,7 @@ class ProviderRuntimeClient(BaseLLMClient):
             messages=messages,
             max_tokens=num_predict or self.num_predict,
             metadata={"temperature": temperature},
+            timeout=self.timeout,
         )
         self.request_ids.append(session["id"])
         seen = 0

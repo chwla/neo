@@ -878,6 +878,7 @@ class WebPageFetcher:
                 "User-Agent": self.user_agent,
                 "Accept": "text/html,application/xhtml+xml,text/plain,application/json"
                 + (",application/pdf" if self.read_documents else ""),
+                "Accept-Language": "en-US,en;q=0.9",
             },
         }, source)
 

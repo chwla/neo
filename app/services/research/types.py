@@ -204,6 +204,8 @@ class RejectionReason(StrEnum):
     NON_PROPOSITIONAL = "non_propositional"
     UNGROUNDED_EXCERPT = "ungrounded_excerpt"
     INVALID_REFERENCE = "invalid_reference"
+    #: Text addressed to the reader or to an AI ("ignore previous instructions ...").
+    PLANTED_INSTRUCTION = "planted_instruction"
     NO_SUPPORT = "no_support"
     BUDGET = "budget"
 
@@ -907,11 +909,29 @@ class Claim(BaseModel):
     confidence: Confidence = Confidence.LOW
     confidence_reasons: list[str] = Field(default_factory=list)
     verification_notes: list[str] = Field(default_factory=list)
+    #: How well the claim is backed, in the reader's terms: verified (entailed and backed by
+    #: two independent sources or the subject's own record), limited (entailed, partial or
+    #: dated support), single_source, disputed, or one_side_only. Empty until verified.
+    strength: str = ""
+    #: "model" when a model wrote the claim; "extractive" when it is an excerpt's own words,
+    #: written by code because no usable model answer covered that evidence.
+    origin: str = "model"
     #: Evidence that disagrees with what this claim's own evidence states, unexplained.
     opposing_evidence_ids: list[str] = Field(default_factory=list)
     #: What the claim's evidence supports before an opposing source is taken into account, so
     #: an audit that finds the opposition is about something else can restore it.
     _support_before_conflict: SupportStatus | None = PrivateAttr(default=None)
+
+
+class UnverifiedEvidence(BaseModel):
+    """An excerpt the run read and accepted, shown as such: no finding drawn from it passed
+    verification, so it is quoted rather than stated."""
+
+    evidence_id: str
+    question_id: str
+    source_id: str
+    excerpt: str
+    reason: str = ""
 
 
 class ComparisonDimension(BaseModel):
@@ -1051,6 +1071,10 @@ class ResearchTrace(BaseModel):
     stop_reason: StopReason | None = None
     stop_detail: str = ""
     errors: list[str] = Field(default_factory=list)
+    #: Everything needed to diagnose a run without repeating it: the model and how it was
+    #: asked, limits, search providers, timing and the deadline, every fallback taken and why,
+    #: evidence and claim outcomes, and how the run ended. Never credentials or prompts.
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResearchMetrics(BaseModel):
@@ -1072,6 +1096,8 @@ class ResearchOutcome(BaseModel):
     sources: list[ResearchSource] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
+    #: Accepted excerpts no verified finding stands on, quoted in the report as unverified.
+    unverified: list[UnverifiedEvidence] = Field(default_factory=list)
     comparison: list[ComparisonDimension] = Field(default_factory=list)
     confidence: Confidence = Confidence.LOW
     confidence_reasons: list[str] = Field(default_factory=list)
@@ -1119,6 +1145,8 @@ class ProgressEvent(BaseModel):
     core_targets: int = 0
     elapsed_seconds: int = 0
     ceiling_seconds: int = 0
+    #: Expected seconds until the run finishes, at this machine's pace; None when unknown.
+    remaining_seconds: int | None = None
 
 
 class ResearchJob(BaseModel):
@@ -1139,6 +1167,7 @@ class ResearchJob(BaseModel):
     sources: list[ResearchSource] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
+    unverified: list[UnverifiedEvidence] = Field(default_factory=list)
     trace: ResearchTrace | None = None
     report: str = ""
     error: str | None = None
@@ -1209,3 +1238,6 @@ class StartResearchRequest(BaseModel):
     repo_id: str | None = None
     memory_enabled: bool = True
     incognito: bool = False
+    #: A plan from the preview, as the person edited it. Checked again before it is used;
+    #: the run then researches it instead of planning its own.
+    plan: dict[str, Any] | None = None

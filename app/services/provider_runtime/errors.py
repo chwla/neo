@@ -105,10 +105,12 @@ def classify(exc: Exception) -> str:
         return "timeout"
     # Decided after rate limiting so a 429 stays a rate limit, and before the
     # transport buckets below so a served rejection is never read as one.
+    # A request too long for the model's window is answered with a 400 by some servers
+    # (llama.cpp, LM Studio). It is not a configuration problem: a smaller request works.
+    if "context" in message and any(w in message for w in ("large", "length", "exceed", "window")):
+        return "context_too_large"
     if _status_code(exc) in _CONFIG_STATUSES:
         return "auth_or_config"
-    if "context" in message and ("large" in message or "length" in message):
-        return "context_too_large"
     if "unsupported" in message or "capability" in message:
         return "unsupported_capability"
     if isinstance(exc, (ConnectionError, requests.ConnectionError)) or any(

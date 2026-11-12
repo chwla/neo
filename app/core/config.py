@@ -251,8 +251,12 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("WEB_SEARCH_ENABLED", "NEO_WEB_SEARCH_ENABLED"),
     )
+    # The same chain the Docker image ships: Neo's built-in SearXNG, then providers that need
+    # no key or install. A local run used to default to "disabled", so research on any fresh
+    # install outside Docker planned for minutes and then had nothing to search. A built-in
+    # SearXNG that is not installed reports an error and the chain falls through to the next.
     web_search_provider: str = Field(
-        default="disabled",
+        default="searxng",
         validation_alias=AliasChoices(
             "NEO_SEARCH_PROVIDER",
             "SEARCH_PROVIDER",
@@ -287,12 +291,20 @@ class Settings(BaseSettings):
             "SEARXNG_SETTINGS_PATH",
         ),
     )
+    # Whether Neo installs its built-in SearXNG by itself on first start when it is missing.
+    searxng_auto_install: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "NEO_SEARXNG_AUTO_INSTALL",
+            "SEARXNG_AUTO_INSTALL",
+        ),
+    )
     web_search_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "NEO_WEB_SEARCH_API_KEY"),
     )
     web_search_fallback_providers: str = Field(
-        default="",
+        default="duckduckgo,bing_html",
         validation_alias=AliasChoices(
             "WEB_SEARCH_FALLBACK_PROVIDERS",
             "NEO_WEB_SEARCH_FALLBACK_PROVIDERS",
@@ -372,6 +384,16 @@ class Settings(BaseSettings):
     web_cache_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("WEB_CACHE_ENABLED", "NEO_WEB_CACHE_ENABLED"),
+    )
+    #: Identifies Neo, in a form that sites which refuse non-browser agents still serve.
+    research_fetch_user_agent: str = Field(
+        default=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36 Neo/1.0"
+        ),
+        validation_alias=AliasChoices(
+            "RESEARCH_FETCH_USER_AGENT", "NEO_RESEARCH_FETCH_USER_AGENT"
+        ),
     )
     research_fetch_timeout_seconds: float = Field(
         default=12.0,

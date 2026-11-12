@@ -168,6 +168,35 @@ export function minutes(seconds) {
   return value < 1 ? "under a minute" : `${value} min`;
 }
 
+/**
+ * The clock line for a running job. An estimate, when the run has one, is what the person
+ * wants to know: how long is left on this machine. Without one (the model has never answered
+ * here before, and the run has not made a call yet) the run's limit is the honest answer.
+ */
+export function runClock(progress, live = true) {
+  if (!progress) return "";
+  const elapsed = minutes(progress.elapsed_seconds);
+  if (!live) return `ran for ${elapsed}`;
+  const left = progress.remaining_seconds;
+  if (left !== null && left !== undefined) {
+    return left < 60 ? `${elapsed} so far · almost done` : `${elapsed} so far · about ${minutes(left)} left`;
+  }
+  return progress.ceiling_seconds > 0 ? `${elapsed} of up to ${minutes(progress.ceiling_seconds)}` : "";
+}
+
+/** Models that can write research answers: enabled, and not an embedding-only model. */
+export function researchCapable(models) {
+  return (models || []).filter(
+    (model) => model.enabled !== false && !model.supports_embeddings && !/embed/i.test(model.model_name || ""),
+  );
+}
+
+/** A mode's expected duration on this machine, for the depth picker; empty when unmeasured. */
+export function modeEstimate(estimates, depth) {
+  const seconds = estimates?.modes?.[depth]?.seconds;
+  return seconds === null || seconds === undefined ? "" : `about ${minutes(seconds)} here`;
+}
+
 /** Whether a target is one subject's share of a question asked of several. */
 export function plannedChild(plan, targetId) {
   const target = (plan?.targets || []).find((item) => item.id === targetId);
@@ -198,7 +227,21 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
   const [savedNote, setSavedNote] = useState(null);
   const [composing, setComposing] = useState(true);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [estimates, setEstimates] = useState(null);
+  //: The preview plan as the person has edited it; sent with the run when present.
+  const [draftPlan, setDraftPlan] = useState(null);
+  const [models, setModels] = useState([]);
+  const [researchModelId, setResearchModelId] = useState("");
+  const [savingModel, setSavingModel] = useState(false);
+  //: The history row waiting for its delete to be confirmed.
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  //: Bumped to restart watching the open run (re-opening it, say).
+  const [watchNonce, setWatchNonce] = useState(0);
+  //: Shown while polling is failing and being retried; cleared once it recovers.
+  const [pollWarning, setPollWarning] = useState("");
   const questionRef = useRef(null);
+  //: The plan preview in flight, so it can be cancelled or ignored once the question changes.
+  const planRequest = useRef(null);
 
   const loadRuns = useCallback(async () => {
     try {
@@ -212,31 +255,110 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     loadRuns();
   }, [loadRuns]);
 
+  // Re-read whenever the composer opens: every finished run refines this machine's measured
+  // pace, so the picker's estimates improve as Neo is used.
+  const loadEstimates = useCallback(async () => {
+    try {
+      setEstimates(await api.researchEstimates());
+    } catch {
+      setEstimates(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!composing) return undefined;
+    let alive = true;
+    loadEstimates();
+    Promise.all([api.llmModels(), api.llmRoutes()])
+      .then(([modelList, routeList]) => {
+        if (!alive) return;
+        setModels(researchCapable(modelList.models || []));
+        const route = (routeList.routes || []).find((item) => item.route_name === "research");
+        setResearchModelId(route?.model_id || "");
+      })
+      .catch(() => alive && setModels([]));
+    return () => {
+      alive = false;
+    };
+  }, [composing, loadEstimates]);
+
+  async function chooseModel(modelId) {
+    const model = models.find((item) => item.id === modelId);
+    if (!model || modelId === researchModelId) return;
+    setSavingModel(true);
+    setError("");
+    try {
+      await api.updateLlmRoute("research", { provider_id: model.provider_id, model_id: model.id });
+      setResearchModelId(model.id);
+      await loadEstimates();
+    } catch (err) {
+      setError(err.message || "Could not switch the research model.");
+    } finally {
+      setSavingModel(false);
+    }
+  }
+
+  async function deleteRun(jobId) {
+    setConfirmDelete(null);
+    try {
+      await api.researchDelete(jobId);
+      if (jobId === activeId) {
+        setActiveId(null);
+        setRun(null);
+        setComposing(true);
+      }
+      await loadRuns();
+    } catch (err) {
+      setError(err.message || "Could not delete that run.");
+    }
+  }
+
+  // The open run is watched until it ends. While it runs, the light status endpoint is polled
+  // and the full job (sources, evidence, trace) is fetched only when the run has moved on, so
+  // watching never competes with a slow machine's model for the database. A failed poll -- a
+  // restart, a busy database -- is retried with backoff instead of leaving the run looking
+  // stuck; re-opening the run starts a fresh watch.
   useEffect(() => {
     if (!activeId) return undefined;
     let alive = true;
     let handle = null;
+    let failures = 0;
+    let lastKey = "";
+    let lastFull = 0;
     async function tick() {
       try {
-        const job = await api.researchJob(activeId);
-        if (!alive) return;
-        setRun(job);
-        if (TERMINAL.has(job.status)) {
-          loadRuns();
-          return;
+        const status = lastKey ? await api.researchStatus(activeId) : null;
+        const key = status ? `${status.status}|${status.progress_percent}|${status.current_step}` : "";
+        const stale = Date.now() - lastFull > 15000;
+        if (!status || key !== lastKey || stale || TERMINAL.has(status.status)) {
+          const job = await api.researchJob(activeId);
+          if (!alive) return;
+          setRun(job);
+          lastFull = Date.now();
+          lastKey = `${job.status}|${job.progress_percent}|${job.current_step}`;
+          if (TERMINAL.has(job.status)) {
+            setPollWarning("");
+            loadRuns();
+            return;
+          }
         }
+        failures = 0;
+        if (alive) setPollWarning("");
       } catch (err) {
-        if (alive) setError(err.message);
-        return;
+        if (!alive) return;
+        failures += 1;
+        setPollWarning(
+          `Lost contact with Neo while watching this run (${err.message || "request failed"}). Retrying…`,
+        );
       }
-      handle = setTimeout(tick, 1500);
+      handle = setTimeout(tick, Math.min(15000, 2000 * 2 ** Math.min(failures, 3)));
     }
     tick();
     return () => {
       alive = false;
       if (handle) clearTimeout(handle);
     };
-  }, [activeId, loadRuns]);
+  }, [activeId, watchNonce, loadRuns]);
 
   const live = Boolean(run && !TERMINAL.has(run.status));
   const sources = useMemo(() => run?.sources || [], [run]);
@@ -264,16 +386,39 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
 
   const reportHtml = useMemo(() => (run?.report ? renderMarkdown(run.report) : ""), [run?.report]);
 
+  function stopPlanning() {
+    planRequest.current?.controller.abort();
+    planRequest.current = null;
+    setPlanning(false);
+    // Stop it on the server too, so it stops holding the model.
+    api.researchPlanCancel().catch(() => {});
+  }
+
   async function previewPlan() {
+    if (planRequest.current) {
+      // A second press while planning cancels it.
+      stopPlanning();
+      return;
+    }
     if (!question.trim()) return;
+    const asked = { question, depth, controller: new AbortController() };
+    planRequest.current = asked;
     setPlanning(true);
     setError("");
     try {
-      setPreview(await api.researchPlan({ question, depth }));
+      const plan = await api.researchPlan({ question, depth }, asked.controller.signal);
+      // A plan answers the question it was made for: ignore one for a question since edited.
+      if (planRequest.current !== asked) return;
+      setPreview(plan);
+      setDraftPlan(structuredClone(plan));
     } catch (err) {
+      if (err?.name === "AbortError" || planRequest.current !== asked) return;
       setError(err.message || "Could not create a research plan.");
     } finally {
-      setPlanning(false);
+      if (planRequest.current === asked) {
+        planRequest.current = null;
+        setPlanning(false);
+      }
     }
   }
 
@@ -288,7 +433,11 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
         depth,
         memory_enabled: memoryEnabled,
         incognito: memoryIncognito,
+        // The reviewed plan, as edited; without one the run plans for itself.
+        ...(draftPlan ? { plan: draftPlan } : {}),
       });
+      setPreview(null);
+      setDraftPlan(null);
       setRun(null);
       setActiveId(started.job_id);
       setComposing(false);
@@ -316,6 +465,8 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     setComposing(false);
     setTab("report");
     setActiveId(id);
+    // Re-opening the run already open restarts watching it.
+    setWatchNonce((value) => value + 1);
   }
 
   async function saveToNote() {
@@ -346,6 +497,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
     setActiveId(null);
     setRun(null);
     setPreview(null);
+    setDraftPlan(null);
     setSavedNote(null);
     setError("");
     window.requestAnimationFrame(() => questionRef.current?.focus());
@@ -358,7 +510,8 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
 
   const tabs = [
     ["report", "Report", 0],
-    ["evidence", "Evidence", linkedEvidence.length],
+    // While running there are no claims yet, so the count is the evidence accepted so far.
+    ["evidence", "Evidence", live ? accepted.length : linkedEvidence.length],
     ["sources", "Sources", reviewed.length],
     ["plan", "Plan", (run?.plan?.targets || []).filter((t) => !t.parent_id).length],
   ];
@@ -399,6 +552,13 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
             </div>
           )}
 
+          {pollWarning && (
+            <div className="rs-notice rs-notice-warn" role="status">
+              <Icon name="refresh" />
+              <span>{pollWarning}</span>
+            </div>
+          )}
+
           {savedNote && (
             <div className="rs-notice">
               <Icon name="check" />
@@ -423,9 +583,23 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                 ref={questionRef}
                 className="rs-question"
                 value={question}
-                onChange={(event) => setQuestion(event.target.value)}
+                onChange={(event) => {
+                  setQuestion(event.target.value);
+                  // A plan answers the question it was made for; a new question needs a new one.
+                  if (planRequest.current) stopPlanning();
+                  if (draftPlan) {
+                    setPreview(null);
+                    setDraftPlan(null);
+                  }
+                }}
                 onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") start();
+                  if (
+                    (event.metaKey || event.ctrlKey)
+                    && event.key === "Enter"
+                    && estimates?.search_enabled !== false
+                  ) {
+                    start();
+                  }
                 }}
                 placeholder="Ask anything worth researching: a comparison, a decision, how something works, what the evidence says."
                 aria-label="Research question"
@@ -444,25 +618,70 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                   >
                     <strong>{label}</strong>
                     <span>{detail}</span>
+                    {modeEstimate(estimates, value) && (
+                      <span className="rs-depth-time">{modeEstimate(estimates, value)}</span>
+                    )}
                   </button>
                 ))}
               </div>
 
+              {estimates?.search_enabled === false && (
+                <p className="rs-plan-warn">
+                  Web search is turned off, so research would have nothing to search. Choose a
+                  search provider in Settings, then come back.
+                </p>
+              )}
+
               <div className="rs-options">
+                {models.length > 0 && (
+                  <label className="rs-option">
+                    Model
+                    <select
+                      value={researchModelId}
+                      disabled={savingModel}
+                      onChange={(event) => chooseModel(event.target.value)}
+                      aria-label="Research model"
+                    >
+                      {!models.some((item) => item.id === researchModelId) && <option value="">Choose a model</option>}
+                      {models.map((item) => (
+                        <option key={item.id} value={item.id}>{item.display_name || item.model_name}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <div className="rs-composer-actions">
-                  <button className="rs-btn" type="button" disabled={planning || !question.trim()} onClick={previewPlan}>
-                    <Icon name="layers" />
-                    {planning ? "Planning…" : "Preview plan"}
+                  <button
+                    className="rs-btn"
+                    type="button"
+                    disabled={!planning && !question.trim()}
+                    onClick={previewPlan}
+                    title={planning ? "Stop planning" : undefined}
+                  >
+                    <Icon name={planning ? "stop" : "layers"} />
+                    {planning ? "Planning… (stop)" : draftPlan ? "Re-plan" : "Preview plan"}
                   </button>
-                  <button className="rs-btn primary lg" type="button" disabled={starting || !question.trim()} onClick={start}>
+                  <button
+                    className="rs-btn primary lg"
+                    type="button"
+                    disabled={starting || !question.trim() || estimates?.search_enabled === false}
+                    onClick={start}
+                  >
                     <Icon name="play" />
-                    {starting ? "Starting…" : "Run research"}
+                    {starting ? "Starting…" : draftPlan ? "Run this plan" : "Run research"}
                     <kbd>⌘⏎</kbd>
                   </button>
                 </div>
               </div>
 
-              {preview && <PlanView plan={preview} />}
+              {draftPlan && (
+                <PlanEditor
+                  plan={draftPlan}
+                  caps={estimates?.modes?.[depth]?.caps}
+                  depthLabel={DEPTHS.find(([value]) => value === depth)?.[1] || depth}
+                  onChange={setDraftPlan}
+                  onReset={() => setDraftPlan(structuredClone(preview))}
+                />
+              )}
             </div>
           ) : (
             <article className="rs-run">
@@ -489,11 +708,7 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
                 <div className="rs-progress-card">
                   <div className="rs-progress-top">
                     <span className="rs-step">{phaseLabel}</span>
-                    {latest?.ceiling_seconds > 0 && (
-                      <span className="rs-pct">
-                        {minutes(latest.elapsed_seconds)} of up to {minutes(latest.ceiling_seconds)}
-                      </span>
-                    )}
+                    {runClock(latest, live) && <span className="rs-pct">{runClock(latest, live)}</span>}
                   </div>
                   <p className="rs-progress-note">
                     {latest?.core_targets
@@ -586,23 +801,42 @@ export default function Research({ onOpenNote, memoryEnabled, memoryIncognito })
         </header>
         <div className="rs-rail-list">
           {runs.length ? runs.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`rs-histrow ${activeId === item.id && !composing ? "active" : ""}`.trim()}
-              onClick={() => open(item.id)}
-            >
-              <span className="rs-histrow-top">
-                <span className={`rs-dot ${statusTone(item.status)}`} />
-                <span className="rs-histrow-title">{item.user_query}</span>
-              </span>
-              <span className="rs-histrow-meta">
-                <span>{relativeTime(item.created_at)}</span>
-                <span>{words(item.depth)}</span>
-                {!TERMINAL.has(item.status) && <span>{item.progress_percent || 0}%</span>}
-                {item.has_report && <Icon name="book" />}
-              </span>
-            </button>
+            <div className="rs-histitem" key={item.id}>
+              <button
+                type="button"
+                className={`rs-histrow ${activeId === item.id && !composing ? "active" : ""}`.trim()}
+                onClick={() => open(item.id)}
+              >
+                <span className="rs-histrow-top">
+                  <span className={`rs-dot ${statusTone(item.status)}`} />
+                  <span className="rs-histrow-title">{item.user_query}</span>
+                </span>
+                <span className="rs-histrow-meta">
+                  <span>{relativeTime(item.created_at)}</span>
+                  <span>{words(item.depth)}</span>
+                  {!TERMINAL.has(item.status) && <span>{item.progress_percent || 0}%</span>}
+                  {item.has_report && <Icon name="book" />}
+                </span>
+              </button>
+              {confirmDelete === item.id ? (
+                <span className="rs-rail-confirm rs-histrow-confirm">
+                  <button type="button" onClick={() => setConfirmDelete(null)}>Cancel</button>
+                  <button type="button" className="danger" onClick={() => deleteRun(item.id)}>
+                    {TERMINAL.has(item.status) ? "Delete" : "Stop & delete"}
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="rs-histrow-delete"
+                  aria-label={`Delete research: ${item.user_query}`}
+                  title="Delete this run"
+                  onClick={() => setConfirmDelete(item.id)}
+                >
+                  <Icon name="trash" />
+                </button>
+              )}
+            </div>
           )) : (
             <p className="rs-rail-empty">Runs you start show up here.</p>
           )}
@@ -778,6 +1012,141 @@ function SourcesView({ sources, live }) {
 }
 
 /** The plan: what has to be established for each aspect, and what research did about it. */
+const PRIORITY = [
+  ["core", "Must answer"],
+  ["supporting", "Helpful"],
+  ["context", "Background"],
+];
+
+/**
+ * The preview plan, editable before it runs: reword a question, change how much it matters,
+ * drop it, or add one. The server checks the edited plan exactly as it checks its own, so
+ * this only has to be honest about what the chosen depth will research.
+ */
+function PlanEditor({ plan, caps, depthLabel, onChange, onReset }) {
+  const dimensions = plan.decomposition?.dimensions || [];
+  const targets = plan.targets || [];
+  const questions = targets.filter((target) => !target.parent_id);
+  const [text, setText] = useState("");
+  const [dimension, setDimension] = useState(dimensions[0]?.id || "");
+  const [priority, setPriority] = useState("supporting");
+
+  const counts = Object.fromEntries(PRIORITY.map(([tier]) => [tier, questions.filter((q) => q.tier === tier).length]));
+  const over = caps ? PRIORITY.filter(([tier]) => counts[tier] > (caps[tier] ?? 0)) : [];
+
+  function update(id, patch) {
+    onChange({ ...plan, targets: targets.map((target) => (target.id === id ? { ...target, ...patch } : target)) });
+  }
+
+  function remove(id) {
+    onChange({ ...plan, targets: targets.filter((target) => target.id !== id && target.parent_id !== id) });
+  }
+
+  function add() {
+    const value = text.trim();
+    if (!value) return;
+    const question = {
+      id: `u${Date.now().toString(36)}`,
+      text: value,
+      dimension_id: dimension || dimensions[0]?.id || "m1",
+      tier: priority,
+      form: "single",
+      subject_ids: [],
+    };
+    onChange({ ...plan, targets: [...targets, question] });
+    setText("");
+  }
+
+  const groups = dimensions
+    .map((item) => [item, questions.filter((q) => q.dimension_id === item.id)])
+    .filter(([, own]) => own.length);
+  const orphaned = questions.filter((q) => !dimensions.some((item) => item.id === q.dimension_id));
+
+  function row(question) {
+    return (
+      <li className="rs-plan-row" key={question.id}>
+        <textarea
+          value={question.text}
+          maxLength={300}
+          rows={1}
+          aria-label="Research question"
+          onChange={(event) => update(question.id, { text: event.target.value })}
+        />
+        <select
+          value={question.tier}
+          aria-label="How much this question matters"
+          onChange={(event) => update(question.id, { tier: event.target.value })}
+        >
+          {PRIORITY.map(([tier, label]) => <option key={tier} value={tier}>{label}</option>)}
+        </select>
+        <button type="button" className="rs-plan-remove" aria-label="Remove this question" onClick={() => remove(question.id)}>
+          <Icon name="close" />
+        </button>
+      </li>
+    );
+  }
+
+  return (
+    <section className="rs-plan rs-plan-edit">
+      <div className="rs-plan-edit-head">
+        <div>
+          <h2>Research plan</h2>
+          <p>Edit, reprioritise, remove or add questions. Research follows this plan as you leave it.</p>
+        </div>
+        <button type="button" className="rs-btn" onClick={onReset}>Reset</button>
+      </div>
+
+      {over.length > 0 && caps && (
+        <p className="rs-plan-warn">
+          {depthLabel} researches at most{" "}
+          {PRIORITY.map(([tier, label]) => `${caps[tier]} ${label.toLowerCase()}`).join(", ")} questions.
+          The extra {over.map(([, label]) => label.toLowerCase()).join(" and ")} questions will be left out;
+          choose a deeper mode or remove some.
+        </p>
+      )}
+
+      {groups.map(([item, own]) => (
+        <div className="rs-plan-block" key={item.id}>
+          <h2>{item.name}</h2>
+          <ol className="rs-plan-list rs-plan-edit-list">{own.map(row)}</ol>
+        </div>
+      ))}
+      {orphaned.length > 0 && (
+        <div className="rs-plan-block">
+          <h2>Other questions</h2>
+          <ol className="rs-plan-list rs-plan-edit-list">{orphaned.map(row)}</ol>
+        </div>
+      )}
+      {questions.length === 0 && <p className="rs-plan-warn">Add at least one question to research.</p>}
+
+      <div className="rs-plan-add">
+        <input
+          value={text}
+          maxLength={300}
+          placeholder="Add a question to research"
+          aria-label="New research question"
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              add();
+            }
+          }}
+        />
+        {dimensions.length > 1 && (
+          <select value={dimension} aria-label="Aspect" onChange={(event) => setDimension(event.target.value)}>
+            {dimensions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        )}
+        <select value={priority} aria-label="How much it matters" onChange={(event) => setPriority(event.target.value)}>
+          {PRIORITY.map(([tier, label]) => <option key={tier} value={tier}>{label}</option>)}
+        </select>
+        <button type="button" className="rs-btn" disabled={!text.trim()} onClick={add}>Add</button>
+      </div>
+    </section>
+  );
+}
+
 function PlanView({ plan, trace, completion, stopDetail }) {
   const understanding = plan?.understanding;
   const decomposition = plan?.decomposition;

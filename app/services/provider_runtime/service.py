@@ -3,21 +3,24 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 import requests
 
 from app.core.config import get_settings
 from app.services.llm import (
+    GenerationCancelled,
     LLMMessage,
     forget_loaded_models,
     ollama_loaded_model,
     ollama_loaded_model_names,
 )
 from app.services.llm_registry.providers import build_client
-from app.services.provider_runtime import store
+from app.services.provider_runtime import pace, store
 from app.services.provider_runtime.budget import (
     DEFAULT_CONTEXT_WINDOW,
     context_check,
@@ -37,6 +40,37 @@ from app.services.provider_runtime.usage import summary
 #: Provider failures are recorded here in full. Everything the caller sees instead
 #: carries only the one safe sentence from ``user_message``.
 _LOG = logging.getLogger("neo.provider_runtime")
+#: A provider record with no timeout of its own, as the registry's schema default has it.
+DEFAULT_CALL_TIMEOUT = 60
+
+
+_ACCEPTED: dict[Any, frozenset[str] | None] = {}
+
+
+def _accepts(method: Any) -> frozenset[str] | None:
+    """Keyword names a client's chat method takes; None when it takes any (``**kwargs``)."""
+    key = getattr(method, "__func__", method)
+    if key not in _ACCEPTED:
+        try:
+            parameters = inspect.signature(method).parameters.values()
+        except (TypeError, ValueError):
+            _ACCEPTED[key] = frozenset()
+        else:
+            if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+                _ACCEPTED[key] = None
+            else:
+                _ACCEPTED[key] = frozenset(p.name for p in parameters)
+    return _ACCEPTED[key]
+
+
+def _chat(client, messages, max_tokens, tools, metadata, json_schema, should_stop):
+    """One non-streamed call, passing structured output and cancellation where supported."""
+    kwargs: dict[str, Any] = {"num_predict": max_tokens, "tools": tools, **_sampling(metadata)}
+    accepted = _accepts(client.chat_with_metadata)
+    for name, value in (("json_schema", json_schema), ("should_stop", should_stop)):
+        if value is not None and (accepted is None or name in accepted):
+            kwargs[name] = value
+    return client.chat_with_metadata(messages, **kwargs)
 
 
 def _sampling(metadata: dict[str, Any]) -> dict[str, float]:
@@ -194,6 +228,9 @@ class ProviderRuntimeService:
         max_tokens: int | None,
         metadata: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        timeout: int | None = None,
+        json_schema: dict[str, Any] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> RuntimeResult:
         return self._run(
             request_type,
@@ -203,6 +240,9 @@ class ProviderRuntimeService:
             metadata or {},
             stream=False,
             tools=tools,
+            timeout=timeout,
+            json_schema=json_schema,
+            should_stop=should_stop,
         )
 
     def _run(
@@ -216,6 +256,9 @@ class ProviderRuntimeService:
         existing_id: str | None = None,
         cancelled=None,
         tools: list[dict[str, Any]] | None = None,
+        timeout: int | None = None,
+        json_schema: dict[str, Any] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> RuntimeResult:
         route = select(request_type, route_name)
         estimates = estimate_tokens(messages, max_tokens)
@@ -304,6 +347,9 @@ class ProviderRuntimeService:
             if provider and model:
                 targets.append((provider, model, True))
         for provider, model, _fallback in targets:
+            if should_stop is not None and should_stop():
+                # Cancelled: never start the fallback model on a request no one wants.
+                break
             # What has already reached the person in this attempt; read in the handler below.
             partial = ""
             try:
@@ -317,9 +363,20 @@ class ProviderRuntimeService:
                         model.get("context_window") or DEFAULT_CONTEXT_WINDOW,
                     ),
                 )
+                # The provider's limit, or the caller's when it asked for longer -- or, on a
+                # machine measured to run this model slowly, as long as this request needs.
+                # Retries below reuse it: a call that ran out of time is never retried with less.
+                call_timeout = pace.call_timeout(
+                    max(int(provider.get("timeout_seconds") or 0), int(timeout or 0))
+                    or DEFAULT_CALL_TIMEOUT,
+                    pace.measured(model.get("model_name"), route["route_name"]),
+                    prompt_tokens=estimates["prompt_tokens_estimate"],
+                    max_output_tokens=max_tokens,
+                )
                 client = build_client(
                     provider,
                     model,
+                    timeout=call_timeout,
                     num_predict=max_tokens,
                     num_ctx=num_ctx,
                     disable_thinking=self.disable_thinking,
@@ -369,8 +426,8 @@ class ProviderRuntimeService:
                         stream_usage or {"total_tokens": estimates["total_tokens_estimate"]},
                     )
                 else:
-                    result = client.chat_with_metadata(
-                        messages, num_predict=max_tokens, tools=tools, **_sampling(metadata)
+                    result = _chat(
+                        client, messages, max_tokens, tools, metadata, json_schema, should_stop
                     )
                     result_content = result.content
                     tool_calls = result.tool_calls
@@ -401,6 +458,20 @@ class ProviderRuntimeService:
                     finish_reason=finish_reason,
                 )
             except Exception as exc:
+                if isinstance(exc, GenerationCancelled):
+                    # The caller stopped it on purpose; nothing failed and nothing is retried.
+                    _LOG.info("provider_request_cancelled request=%s", request["id"])
+                    return self._finish(
+                        request["id"],
+                        "cancelled",
+                        route,
+                        None,
+                        None,
+                        attempts,
+                        fallback_chain,
+                        redaction,
+                        partial=partial,
+                    )
                 category, detail, error_redaction = safe_error(exc)
                 redaction = error_redaction
                 _LOG.warning(
@@ -432,19 +503,23 @@ class ProviderRuntimeService:
                         partial=partial,
                         detail=detail,
                     )
-                if retryable(exc) and attempts < MAX_RETRIES:
+                failure = exc
+                while retryable(failure) and attempts < MAX_RETRIES:
+                    if should_stop is not None and should_stop():
+                        break
                     time.sleep(backoff_ms(attempts) / 1000)
                     attempts += 1
                     try:
                         client = build_client(
                             provider,
                             model,
+                            timeout=call_timeout,
                             num_predict=max_tokens,
                             num_ctx=num_ctx,
                             disable_thinking=self.disable_thinking,
                         )
-                        result = client.chat_with_metadata(
-                            messages, num_predict=max_tokens, tools=tools, **_sampling(metadata)
+                        result = _chat(
+                            client, messages, max_tokens, tools, metadata, json_schema, should_stop
                         )
                         return self._finish(
                             request["id"],
@@ -467,6 +542,7 @@ class ProviderRuntimeService:
                         )
                     except Exception as retry_exc:
                         category, detail, redaction = safe_error(retry_exc)
+                        failure = retry_exc
                         _LOG.warning(
                             "provider_retry_failed request=%s route=%s category=%s",
                             request["id"],

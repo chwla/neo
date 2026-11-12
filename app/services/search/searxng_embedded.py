@@ -94,6 +94,34 @@ def _quiet_searx_logging() -> None:
     logging.getLogger("searx").setLevel(logging.CRITICAL)
 
 
+def _windows_compat() -> None:
+    """Let SearXNG import on Windows, which it does not support upstream.
+
+    The only thing in the way is ``searx/valkeydb.py`` importing ``pwd``, a Unix-only module.
+    It is used in one place: naming the account in a log line when a configured Valkey server
+    cannot be reached. Neo's settings configure no Valkey, so that line never runs; a stand-in
+    module that can answer it anyway is all Windows needs. On every other platform the real
+    module exists and this does nothing.
+    """
+
+    if os.name != "nt" or "pwd" in sys.modules:
+        return
+    import getpass
+    import types
+    from collections import namedtuple
+
+    entry = namedtuple("struct_passwd", "pw_name pw_passwd pw_uid pw_gid pw_gecos pw_dir pw_shell")
+    stand_in = types.ModuleType("pwd")
+    stand_in.struct_passwd = entry
+
+    def getpwuid(uid: int = 0):
+        home = os.path.expanduser("~")
+        return entry(getpass.getuser(), "x", uid, uid, "", home, "")
+
+    stand_in.getpwuid = getpwuid
+    sys.modules["pwd"] = stand_in
+
+
 def _boot() -> Any | None:
     """Import ``searx.webapp`` and return its Flask app, or None with the error set."""
 
@@ -108,8 +136,12 @@ def _boot() -> Any | None:
         settings_file = _settings_path()
 
         if not source_available():
+            from app.services.search.searxng_install import state
+
             _BOOT_ERROR = (
-                f"SearXNG source not found at {source}. "
+                "SearXNG is still being installed."
+                if state["status"] == "installing"
+                else f"SearXNG source not found at {source}. "
                 "Run scripts/setup_searxng.py, or select a different search provider."
             )
             logger.info("Embedded SearXNG unavailable: %s", _BOOT_ERROR)
@@ -125,12 +157,17 @@ def _boot() -> Any | None:
         os.environ["SEARXNG_SETTINGS_PATH"] = str(settings_file)
         os.environ["SEARXNG_DISABLE_ETC_SETTINGS"] = "1"
         _quiet_searx_logging()
+        _windows_compat()
 
         # Extending sys.path here rather than PYTHONPATH keeps the searx package
         # invisible to the rest of Neo's import graph until something actually
         # asks for a search.
         if str(source) not in sys.path:
             sys.path.insert(0, str(source))
+        # SearXNG's own packages, when Neo installed them beside the tree (searxng_install).
+        from app.services.search.searxng_install import add_deps_to_path
+
+        add_deps_to_path()
 
         try:
             from searx.webapp import app  # noqa: PLC0415 -- import *is* the boot

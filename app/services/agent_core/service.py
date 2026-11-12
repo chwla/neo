@@ -117,13 +117,37 @@ def _budgets_for(executor: str, handoff: dict | None) -> Budgets:
     from app.services.agent_core.types import EXTERNAL_EXECUTORS
 
     if executor not in EXTERNAL_EXECUTORS and not handoff:
-        return Budgets()
+        return _own_loop_budgets()
     per_step = int(get_settings().external_agent_timeout_seconds)
     steps = max(1, len((handoff or {}).get("steps") or []))
     # Slack for the orchestration around each step (snapshotting, context
     # building) so the ceiling is never the thing that ends a healthy chain.
     total = min(86_400, int(per_step * steps * 1.2) + 300)
     return Budgets(max_seconds=total)
+
+
+def _own_loop_budgets() -> Budgets:
+    """Neo's own loop: the default ceilings, with room for the model's pace on this machine.
+
+    The 20-minute default is forty turns at half a minute each. A CPU-only machine measured
+    at four minutes a turn would hit it after five, mid-task, so the ceiling grows to fit the
+    turn allowance at the measured pace (bounded by ``model_pace``). Where turns are quick,
+    or the model has no history yet, the default stands.
+    """
+
+    from app.services.provider_runtime import pace as model_pace
+    from app.services.provider_runtime.router import select
+
+    defaults = Budgets()
+    try:
+        model = select("chat", "agent")["model"]
+        measured = model_pace.measured(model, "agent")
+    except Exception:  # routing is resolved again, and reported, when the run starts
+        return defaults
+    seconds = model_pace.scaled_ceiling(
+        defaults.max_seconds, measured, calls=defaults.max_iterations
+    )
+    return Budgets(max_seconds=int(seconds))
 
 
 def _title(objective: str) -> str:

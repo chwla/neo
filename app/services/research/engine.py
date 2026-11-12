@@ -9,21 +9,27 @@ against fakes in tests.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
+import re
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
+from pydantic import BaseModel
+
 from app.core.config import get_settings
 from app.services.disclosure import Destination, Label, Labeled, join, label_of, require, to_json
+from app.services.provider_runtime import pace as model_pace
+from app.services.research import estimate as run_estimate
 from app.services.research import stopping, strategy
 from app.services.research.authority import assess_sources, claim_fit
 from app.services.research.capability import ModelCapability, resolve_capability, work_scale
-from app.services.research.claims import build_claims, build_comparison
+from app.services.research.claims import build_claims, build_comparison, extractive_claims
 from app.services.research.confidence import assess as assess_confidence
 from app.services.research.evidence import (
     JUDGE_OUTPUT_TOKENS_PER_CHUNK,
@@ -40,11 +46,13 @@ from app.services.research.extraction import (
     repeated_block_hashes,
 )
 from app.services.research.llm_json import (
+    STAGE_FAILURES,
     LLMBudget,
     LLMFactory,
     ResearchCancelled,
     ResearchModelUnavailable,
     StageProfile,
+    call_json,
 )
 from app.services.research.planner import (
     PlanningFailed,
@@ -91,12 +99,14 @@ from app.services.research.types import (
     SupportStatus,
     Tier,
 )
-from app.services.research.verify import audit, merge_verified
+from app.services.research.verify import audit, label_strengths, merge_verified
 
 logger = logging.getLogger(__name__)
 
 _MAX_EMBEDDINGS_PER_RUN = 240
 _JUDGE_BATCH = 10
+#: Finishing calls a run with findings is always given time for: claim synthesis and the summary.
+_GUARANTEED_FINISHING_CALLS = 2
 #: Chunks judged for a target that is still being established, and for one being improved.
 _CHUNKS_OPEN, _CHUNKS_IMPROVING = 6, 4
 _PROVENANCE_ORDER = {Provenance.A: 0, Provenance.B: 1, Provenance.C: 2, Provenance.D: 3, None: 4}
@@ -108,6 +118,67 @@ _STOP_OF_COMPLETION = {
     CompletionStatus.CANCELLED: StopReason.USER_CANCELLED,
     CompletionStatus.FAILED: StopReason.FAILED,
 }
+
+
+#: Providers that run on this machine, where a first call may first have to load the model.
+_LOCAL_PROVIDERS = frozenset({"ollama", "llamacpp", "llama_cpp", "lmstudio", "local"})
+#: Time a run keeps past its research limit to finish: claims, the audit and the summary.
+#: At least this many seconds, whatever the measured pace says.
+_MIN_FINISHING_SECONDS = 120.0
+#: Calls the finishing allowance is sized for.
+_FINISHING_CALLS = 3
+#: What each engine stage is called when a run says where its time limit was reached.
+_STAGE_NAMES = {
+    "planning": "planning",
+    "searching": "searching",
+    "fetching": "searching",
+    "judging": "judging",
+    "coverage": "judging",
+    "synthesizing": "claims",
+    "verifying": "verification",
+    "reporting": "report",
+}
+
+
+class _Ping(BaseModel):
+    ok: bool = True
+
+
+def machine_hint(capability: ModelCapability) -> model_pace.ModelPace | None:
+    """An estimated pace for a local model this machine has never run, or None.
+
+    Before a model has answered here there is no measurement, and the mode's limits were
+    written for a GPU. On a machine without one, the model's size and the memory bandwidth
+    give a rough speed -- enough to size the first run's time limit so it is not cut short.
+    """
+    if capability.provider.lower() not in _LOCAL_PROVIDERS:
+        return None
+    try:
+        from app.services.local_models import probe, sizing
+
+        machine = probe.detect()
+        if machine.has_gpu and machine.accelerator != "cpu":
+            return None
+        match = re.search(r"(\d+(?:\.\d+)?)\s*b\b", capability.model.lower())
+        parameters = float(match.group(1)) if match else 7.0
+        bytes_read = max(0.3, parameters) * 0.6e9  # a 4-bit quantised model
+        decode = sizing.bandwidth_gbps(machine) * sizing.DECODE_EFFICIENCY * 1e9 / bytes_read
+        decode = max(1.0, min(decode, 40.0))
+        prefill = decode * 6
+        typical = 10.0 + 1300 / prefill + 500 / decode
+        return model_pace.ModelPace(
+            model=capability.model,
+            samples=0,
+            decode_tps=decode,
+            prefill_tps=prefill,
+            load_seconds=10.0,
+            call_seconds=typical,
+            route_samples=0,
+            mean_call_seconds=typical,
+        )
+    except Exception:
+        logger.debug("Research could not estimate this machine's speed", exc_info=True)
+        return None
 
 
 @dataclass
@@ -128,6 +199,8 @@ class ProgressUpdate:
     core_targets: int = 0
     elapsed_seconds: int = 0
     ceiling_seconds: int = 0
+    #: Expected seconds until the run finishes, at this machine's pace; None when unknown.
+    remaining_seconds: int | None = None
 
 
 ProgressCallback = Callable[[ProgressUpdate], None]
@@ -164,6 +237,7 @@ def default_dependencies(route_name: str = "research") -> EngineDependencies:
         providers=[p for p in ProviderRegistry().chain() if getattr(p, "name", "") != "disabled"],
         fetcher=WebPageFetcher(
             timeout_seconds=settings.research_fetch_timeout_seconds,
+            user_agent=settings.research_fetch_user_agent,
             read_documents=True,
             truncate_oversized=True,
         ),
@@ -171,6 +245,74 @@ def default_dependencies(route_name: str = "research") -> EngineDependencies:
         max_fetch_workers=settings.research_max_fetch_workers,
         fetch_retries=settings.research_fetch_retries,
     )
+
+
+def finishing_calls(depth: DepthMode) -> int:
+    """Model calls a run reserves for finishing, before the capability work scale."""
+    policy = POLICIES[depth]
+    # Claims, the entailment audit, a possible rewrite of what it weakens, and the summary
+    # are always paid for; stricter verification reserves more.
+    reserved = 4 + (policy.entailment != "core_decisive") + policy.union_check
+    # Richer presentation needs generation and audit calls after the ordinary finish.
+    # Reserve them before research, without raising any ceiling or withholding calls
+    # from mandatory verification. If verification needs them, the report falls back.
+    return reserved + REPORT_DEPTH[depth].writing_reserve
+
+
+def time_estimates(route_name: str = "research") -> dict:
+    """How long a run in each mode should take on this machine, before it starts.
+
+    From the routed model's measured pace here and a typical plan for each mode. A mode's
+    ``seconds`` is None when the model has no history on this machine yet: there is nothing
+    honest to estimate from until it has answered once.
+    """
+    try:
+        capability = resolve_capability(route_name)
+    except Exception:
+        capability = ModelCapability()
+    measured = model_pace.measured(capability.model, route_name)
+    # A model never run here is estimated from the hardware, as a run's own limit is.
+    estimated = measured is None and (hint := machine_hint(capability)) is not None
+    if estimated:
+        measured = hint
+    scale = work_scale(
+        capability, reference_items=_JUDGE_BATCH, output_per_item=JUDGE_OUTPUT_TOKENS_PER_CHUNK
+    )
+    modes = {}
+    for depth in DepthMode:
+        policy = POLICIES[depth]
+        planning = planning_call_budget(depth, capability)
+        judge = policy.ceilings.judge_calls_per_step * scale
+        reserved = finishing_calls(depth) * scale
+        run = run_estimate.shape(
+            policy,
+            planning_calls=planning,
+            judge_calls=judge,
+            finishing_calls=reserved,
+            call_limit=policy.ceilings.model_calls * scale,
+        )
+        # Sized exactly as a run sizes its own limit, so the estimate and the run agree.
+        ceiling = model_pace.scaled_ceiling(
+            policy.ceilings.seconds, measured, calls=run.total_calls(),
+            extra_seconds=run.steps * run_estimate.STEP_SECONDS,
+        )
+        modes[depth.value] = {
+            "seconds": run_estimate.before_run(run, measured, ceiling),
+            "ceiling_seconds": int(ceiling),
+            # How many questions of each priority the mode researches, so an edited plan can
+            # say what it will drop before the run drops it.
+            "caps": {
+                "core": policy.planning.core,
+                "supporting": policy.planning.supporting,
+                "context": policy.planning.context,
+            },
+        }
+    return {
+        "model": capability.model,
+        "measured": measured is not None and not estimated,
+        "estimated": estimated,
+        "modes": modes,
+    }
 
 
 def capability_of(deps: EngineDependencies) -> ModelCapability:
@@ -224,15 +366,23 @@ class _Semantic:
 
 
 def plan_preview(
-    query: str, depth: DepthMode, *, deps: EngineDependencies | None = None, context: str = ""
+    query: str,
+    depth: DepthMode,
+    *,
+    deps: EngineDependencies | None = None,
+    context: str = "",
+    cancelled: Callable[[], bool] | None = None,
 ) -> ResearchPlan:
     """The plan a run would start from, made without searching or reading anything.
 
-    Raises ``ResearchModelUnavailable`` or ``PlanningFailed`` exactly as a run's planning would.
+    Raises ``ResearchModelUnavailable`` exactly as a run's planning would; a planner that
+    answers unusably yields the plan built from the query itself, as a run would use.
     """
     deps = deps or default_dependencies()
     capability = capability_of(deps)
-    budget = LLMBudget(planning_call_budget(depth, capability), 0, capability=capability)
+    budget = LLMBudget(
+        planning_call_budget(depth, capability), 0, capability=capability, cancelled=cancelled
+    )
     return plan_research(query, depth, llm_factory=deps.llm_factory, budget=budget, context=context)
 
 
@@ -245,7 +395,10 @@ def run_research(
     cancelled: Callable[[], bool] | None = None,
     context: str = "",
     run_id: str | None = None,
+    plan: ResearchPlan | None = None,
 ) -> ResearchOutcome:
+    """Research ``query``. ``plan``, when given, is a checked plan to research as it stands --
+    one the person edited in the preview -- so the run does not plan its own."""
     source = label_of(query)
     query = query.value if isinstance(query, Labeled) else query
     if context:
@@ -263,6 +416,7 @@ def run_research(
         context,
         run_id or uuid.uuid4().hex[:12],
         source_label=source,
+        plan=plan,
     )
     outcome = run.execute()
     outcome.source_label_json = to_json(source)
@@ -281,7 +435,10 @@ class _Run:
         run_id,
         *,
         source_label: Label | None = None,
+        plan: ResearchPlan | None = None,
     ) -> None:
+        #: A plan given in advance, which replaces planning; None plans as usual.
+        self.given_plan = plan
         self.query = query
         self.source_label = label_of(source_label)
         self.depth = depth
@@ -302,16 +459,35 @@ class _Run:
         self.scale = scale
         #: Judge calls a step may make; a model answering less per call needs more calls.
         self.judge_calls = self.policy.ceilings.judge_calls_per_step * scale
-        # Claims, the entailment audit, a possible rewrite of what it weakens, and the summary
-        # are always paid for; stricter verification reserves more.
-        reserved = 4 + (self.policy.entailment != "core_decisive") + self.policy.union_check
-        # Richer presentation needs generation and audit calls after the ordinary finish.
-        # Reserve them before research, without raising any ceiling or withholding calls
-        # from mandatory verification. If verification needs them, the report falls back.
-        reserved += REPORT_DEPTH[depth].writing_reserve
+        reserved = finishing_calls(depth)
         self.started = deps.clock()
+        # What the run is expected to spend: planning, its research steps, and finishing. The
+        # step count is a typical plan's (or the given plan's) until the real plan exists.
+        self.shape = run_estimate.shape(
+            self.policy,
+            planning_calls=self._planning_calls(depth),
+            judge_calls=self.judge_calls,
+            finishing_calls=reserved * scale,
+            call_limit=self.policy.ceilings.model_calls * scale,
+            targets=self._given_targets(),
+        )
         # The mode's time limit covers the whole run, planning and the final report included.
-        self.deadline = self.started + self.policy.ceilings.seconds
+        # It was set for a model answering in seconds. Where this machine has been measured
+        # answering slower -- a CPU-only machine, a large model on a small GPU -- the limit
+        # grows to fit the mode's whole work at the measured pace: the mode decides how much
+        # research is done, the machine only how long it takes. Measured fast, or not measured
+        # yet, it is the mode's own limit.
+        self.ceiling_seconds = self._ceiling_seconds()
+        self.deadline = self.started + self.ceiling_seconds
+        #: Past this nothing more is asked of the model; the run finishes deterministically.
+        self.hard_limit_seconds = self._hard_limit_seconds()
+        #: The stage running when the time limit was reached, once it has been.
+        self.deadline_stage: str | None = None
+        self.stage = "planning"
+        self.fallbacks: list[dict[str, str]] = []
+        self._prior_seconds_per_call = run_estimate.seconds_per_call(self._pace)
+        #: Model calls already spent when finishing began; None while still researching.
+        self._finishing_from: int | None = None
         self.llm_budget = LLMBudget(
             self.policy.ceilings.model_calls * scale,
             reserved * scale,
@@ -322,6 +498,7 @@ class _Run:
             cancelled=cancelled,
             source_label=self.source_label,
         )
+        self.llm_budget.hard_deadline = self.started + self.hard_limit_seconds
         self.trace = ResearchTrace(run_id=run_id, query=query, depth=depth)
         self.trace.model_route = {
             "route_name": self.capability.route_name,
@@ -337,6 +514,13 @@ class _Run:
                 f"the configured research model returns at most "
                 f"{self.capability.max_output_tokens} tokens per answer, so this run used "
                 f"{scale}x more, smaller model calls to cover the same evidence"
+            )
+        if self.ceiling_seconds > self.policy.ceilings.seconds:
+            self.trace.errors.append(
+                f"{self.capability.model} takes about {round(self._pace.budget_seconds())} s "
+                f"per answer on this machine, so this run's time limit was raised from "
+                f"{self.policy.ceilings.seconds // 60} to {round(self.ceiling_seconds / 60)} "
+                f"minutes to fit this mode's research"
             )
         self.plan: ResearchPlan | None = None
         self.emap: EvidenceMap | None = None
@@ -357,21 +541,103 @@ class _Run:
         #: Why a run that ran out of pages could not read on, once it has.
         self._read_limit_detail = "page-read limit reached"
 
+    def _ceiling_seconds(self) -> float:
+        """The run's time limit: the mode's own, or what this mode's work takes on this machine.
+
+        The work is the run's expected shape -- planning, its research steps, finishing --
+        counted at this machine's measured time per call for the routed model, plus searching
+        and reading. ``model_pace`` keeps the result at or above the mode's limit and below its
+        safety cap.
+        """
+        self._pace = model_pace.measured(
+            self.capability.model, self.capability.route_name or "research"
+        )
+        self._pace_source = "measured" if self._pace is not None else "none"
+        if self._pace is None:
+            # Never run here: estimate from the hardware rather than assume a GPU.
+            self._pace = machine_hint(self.capability)
+            if self._pace is not None:
+                self._pace_source = "estimated"
+        return model_pace.scaled_ceiling(
+            self.policy.ceilings.seconds,
+            self._pace,
+            calls=self.shape.total_calls(),
+            extra_seconds=self.shape.steps * run_estimate.STEP_SECONDS,
+        )
+
+    def _hard_limit_seconds(self) -> float:
+        """The research limit plus time to finish, never past the run safety cap.
+
+        Fixed when the run starts. Finishing is sized for long answers (writing claims is
+        one) at this machine's pace, so the write-up that the research limit leaves room for
+        always fits inside it.
+        """
+        if self._pace is not None:
+            long_call = self._pace.expected_seconds(3000, 2000) or 0.0
+            per_call = max(self._pace.budget_seconds(), long_call)
+        else:
+            per_call = 120.0
+        finishing = max(_MIN_FINISHING_SECONDS, _FINISHING_CALLS * per_call * 1.5)
+        return min(float(model_pace.MAX_RUN_SECONDS), self.ceiling_seconds + finishing)
+
+    def _planning_calls(self, depth: DepthMode) -> int:
+        return 0 if self.given_plan is not None else planning_call_budget(depth, self.capability)
+
+    def _given_targets(self) -> int | None:
+        """How many questions a given plan pursues; None until a plan exists."""
+        if self.given_plan is None:
+            return None
+        return sum(1 for t in self.given_plan.top_targets() if t.tier in self.policy.pursued_tiers)
+
     # --- orchestration -----------------------------------------------------------------
 
     def execute(self) -> ResearchOutcome:
         try:
-            self._emit("planning", 4, "Planning", "Working out what needs to be established")
-            self.plan = plan_research(
-                self.query,
-                self.depth,
-                llm_factory=self.deps.llm_factory,
-                budget=self.llm_budget,
-                context=self.context,
-            )
+            if self.given_plan is not None:
+                self.plan = self.given_plan
+            if not self.deps.providers:
+                # Nothing to search with: say so now, before any model time is spent.
+                self.loop_end, self.stop_detail = "blocked", "no web search provider is enabled"
+                return self._blocked()
+            failure = self._preflight_model()
+            if failure:
+                return self._failure(failure)
+            unavailable = self._probe_search()
+            if unavailable:
+                self.loop_end = "blocked"
+                self.stop_detail = f"web search is unavailable ({unavailable})"
+                return self._blocked()
+            if self.given_plan is not None:
+                self._emit("planning", 4, "Using your plan", "Researching the plan you reviewed")
+                self.plan = self.given_plan
+            else:
+                self._emit("planning", 4, "Planning", "Working out what needs to be established")
+                self.plan = plan_research(
+                    self.query,
+                    self.depth,
+                    llm_factory=self.deps.llm_factory,
+                    budget=self.llm_budget,
+                    context=self.context,
+                )
+            for issue in self.plan.issues:
+                if issue.code == "fallback_plan":
+                    self.fallbacks.append({"stage": "planning", "reason": issue.detail})
+            if self.llm_budget.model_down:
+                return self._failure(
+                    f"The research model is unavailable ({self.llm_budget.down_reason})."
+                )
             self.trace.plan_issues = self.plan.issues
             self.emap = EvidenceMap(self.plan, self.policy)
             top = self.plan.top_targets()
+            # The real plan replaces the typical one in the time estimate.
+            self.shape = run_estimate.shape(
+                self.policy,
+                planning_calls=self.shape.planning_calls,
+                judge_calls=self.judge_calls,
+                finishing_calls=self.shape.finishing_calls,
+                call_limit=self.shape.call_limit,
+                targets=sum(1 for t in top if t.tier in self.policy.pursued_tiers),
+            )
             self._emit(
                 "planning",
                 10,
@@ -379,12 +645,18 @@ class _Run:
                 f"{sum(t.tier == Tier.CORE for t in top)} core questions to establish",
                 plan=self.plan,
             )
-            self._research_loop()
+            self._check_deadline()
+            if self.deadline_stage is None:
+                self._research_loop()
+            else:
+                self.loop_end = "ceiling"
+                self.stop_detail = f"time limit reached during {self.deadline_stage}"
+                self.emap.update(self.evidence, self.sources, self.groups, self.leads)
             return self._synthesize()
         except ResearchCancelled:
             return self._outcome(CompletionStatus.CANCELLED, "cancelled by user", report_text="")
         except ResearchModelUnavailable as exc:
-            return self._failure(f"The research model is unavailable ({exc}).")
+            return self._failure(self._unavailable_message(exc))
         except PlanningFailed as exc:
             self.trace.plan_issues = exc.issues
             return self._failure(str(exc))
@@ -392,12 +664,82 @@ class _Run:
             logger.exception("Research run %s failed", self.trace.run_id)
             return self._failure(f"Research failed unexpectedly ({exc.__class__.__name__}).")
 
+    # --- preflight ---------------------------------------------------------------------
+
+    def _unavailable_message(self, exc: Exception) -> str:
+        provider = self.capability.provider or "the model provider"
+        hint = (
+            f" Check that {provider} is running and that {self.capability.model or 'the model'}"
+            " is installed, then try again."
+            if getattr(exc, "unreachable", False)
+            else ""
+        )
+        return f"The research model is unavailable ({exc}).{hint}"
+
+    def _preflight_model(self) -> str:
+        """Wake a local model before planning; report an unreachable one now, not in an hour.
+
+        A local model's first call may load it into memory, which on a slow disk takes minutes.
+        One tiny call does that while nothing else waits on it, and a server that is not
+        running at all is found before any searching is done. A slow answer is not a failure.
+        """
+        if self.capability.provider.lower() not in _LOCAL_PROVIDERS:
+            return ""
+        self._emit("planning", 2, "Loading model", "Waking the research model")
+        ping = LLMBudget(
+            1, 0, capability=self.capability, profile=self.profile, clock=self.deps.clock,
+            cancelled=self.cancelled, source_label=self.source_label,
+        )
+        try:
+            call_json(
+                self.deps.llm_factory,
+                stage="warmup",
+                instructions='Reply with {"ok": true}.',
+                payload={"ping": True},
+                schema=_Ping,
+                budget=ping,
+                num_predict=8,
+            )
+        except ResearchModelUnavailable as exc:
+            if exc.unreachable:
+                return self._unavailable_message(exc)
+            self.trace.errors.append(f"the model was slow to answer its first call ({exc})")
+        except STAGE_FAILURES:
+            pass
+        return ""
+
+    def _probe_search(self) -> str:
+        """One search before any model time is spent; the reason it failed, or ""."""
+        from app.services.search.providers import WebSearchProvider
+
+        problems: list[str] = []
+        for provider in self.deps.providers:
+            try:
+                if isinstance(provider, WebSearchProvider):
+                    provider = copy.copy(provider)
+                    provider.source_label = self.source_label
+                response = provider.search(self.query, 3)
+            except Exception as exc:  # each provider may fail on its own
+                problems.append(f"{getattr(provider, 'name', 'search')}: {exc.__class__.__name__}")
+                continue
+            error = (response.error or "").lower()
+            if response.results or not error or "no results" in error:
+                return ""
+            problems.append(f"{getattr(provider, 'name', 'search')}: {response.error[:80]}")
+        return "; ".join(problems) or "no search provider answered"
+
+    def _check_cancelled(self) -> None:
+        if self.cancelled():
+            raise ResearchCancelled("research cancelled")
+
+    def _check_deadline(self) -> None:
+        """Record the stage that was running when the time limit passed, the first time."""
+        if self.deadline_stage is None and self.deps.clock() >= self.llm_budget.deadline:
+            self.deadline_stage = _STAGE_NAMES.get(self.stage, self.stage)
+
     def _research_loop(self) -> None:
         assert self.plan is not None and self.emap is not None
         ceilings = self.policy.ceilings
-        if not self.deps.providers:
-            self.loop_end, self.stop_detail = "blocked", "no web search provider is enabled"
-            return
         self.retriever = Retriever(
             plan=self.plan,
             max_searches=ceilings.searches,
@@ -409,13 +751,28 @@ class _Run:
             clock=self.deps.clock,
             # On the first step, searching and reading are paid for like the first model
             # calls are: a run that looked at nothing has nothing to report.
-            has_time=lambda: self.llm_budget.has_time(reserved=self.steps <= 1),
+            has_time=lambda: (
+                not self._cancelled_now() and self.llm_budget.has_time(reserved=self.steps <= 1)
+            ),
             max_workers=self.deps.max_fetch_workers,
             fetch_retries=self.deps.fetch_retries,
             source_label=self.source_label,
         )
         while True:
             step = self.steps + 1
+            self._check_cancelled()
+            self._check_deadline()
+            if self.deadline_stage is not None:
+                self.loop_end = "ceiling"
+                self.stop_detail = f"time limit reached during {self.deadline_stage}"
+                break
+            if self.llm_budget.model_down:
+                self.loop_end = "ceiling"
+                self.stop_detail = (
+                    f"stopped early: the research model stopped responding "
+                    f"({self.llm_budget.down_reason})"
+                )
+                break
             if step == 1:
                 actions = strategy.first_actions(self.emap, self.policy)
             else:
@@ -449,10 +806,11 @@ class _Run:
                     if self._expand():
                         continue
                     self.loop_end = "saturated"
-                    self.stop_detail = "no remaining research could change the answer"
+                    self.stop_detail = "no further search this depth allows could add to the answer"
                     break
             self.steps = step
             self._run_step(step, actions)
+            self._check_deadline()
             if (
                 step == 1
                 and self.retriever.search_unavailable
@@ -521,11 +879,24 @@ class _Run:
             reserved=first,
         )
         before = {a.target_id: list(self.emap.state(a.target_id).fingerprint) for a in actions}
-        for action in actions:
-            self.emap.record_attempt(action.target_id, action.intent)
-            self.trace.actions.append(action)
-
+        self._check_cancelled()
+        attempts_before = len(self.trace.search_attempts)
         searched = self.retriever.run_actions(actions, leads_by_id)
+        self._check_cancelled()
+        # An attempt counts once it searched (or followed a cited record). One that could not
+        # search at all -- no time, every provider failing -- leaves the allowance unspent.
+        ran = {
+            attempt.task_id
+            for attempt in self.trace.search_attempts[attempts_before:]
+            if attempt.status in ("useful", "weak", "empty", "skipped_duplicate")
+        }
+        for action in actions:
+            followed = action.intent == Intent.FOLLOW_LEAD and bool(
+                (lead := leads_by_id.get(action.lead_id or "")) and lead.href
+            )
+            if action.id in ran or followed:
+                self.emap.record_attempt(action.target_id, action.intent)
+            self.trace.actions.append(action)
         self._add_leads(searched.leads)
         leads_by_id = {lead.id: lead for lead in self.leads}
         targets = list(dict.fromkeys(action.target_id for action in actions))
@@ -535,6 +906,7 @@ class _Run:
         )
         self._emit("fetching", base + 5, "Reading", f"Reading up to {reads} pages", phase=phase)
         fetched = self.retriever.fetch(chosen, reads)
+        self._check_cancelled()
         fetched_for: dict[str, set[str]] = defaultdict(set)
         for item in fetched:
             self.sources.append(item.source)
@@ -552,6 +924,7 @@ class _Run:
                 self._add_leads(self.retriever.reference_leads(item))
         # An original recognised only now has not been judged yet, for any target.
         restored = self._mark_duplicates()
+        self._check_cancelled()
 
         self._emit(
             "judging",
@@ -588,7 +961,7 @@ class _Run:
             trace=self.trace,
             round_no=step,
             today=self.deps.today(),
-            out_of_time=lambda: not self.llm_budget.has_time(reserved=first),
+            out_of_time=lambda reserved_now: not self.llm_budget.has_time(reserved=reserved_now),
             reserved=first,
             known_leads=self.leads,
             batch_size=_JUDGE_BATCH,
@@ -627,8 +1000,42 @@ class _Run:
             phase=phase,
         )
 
+    def _secure_finishing(self) -> None:
+        """Evidence the run accepted is never thrown away for want of time to write it up.
+
+        Research may run up to the deadline, and on a slow machine one call can take minutes.
+        A run that reached the deadline with findings in hand used to skip claim synthesis and
+        report nothing established. Writing up is the point of the run, so when there is
+        anything to write up, the deadline moves out by what claim synthesis and the summary
+        take at this run's own pace. What the audit cannot then check is stated as partial.
+        """
+        accepted = sum(1 for item in self.evidence if item.status == "accepted")
+        if not accepted or self.llm_budget.deadline is None:
+            return
+        # Claim synthesis writes a long answer, so it is charged at the run's slowest pace.
+        # Never past the hard limit, which was sized for this when the run started.
+        per_call = self.llm_budget.slowest_seconds_per_call()
+        needed = _GUARANTEED_FINISHING_CALLS * per_call * self.llm_budget.RESERVE_MARGIN
+        added = self.llm_budget.extend_deadline(self.deps.clock() + needed)
+        if added <= 0:
+            return
+        self.deadline = self.llm_budget.deadline
+        self.ceiling_seconds = self.deadline - self.started
+        self.trace.errors.append(
+            f"time limit extended by up to {max(1, round(added / 60))} min so the {accepted} "
+            "findings already accepted could be written up"
+        )
+
     def _synthesize(self) -> ResearchOutcome:
         assert self.plan is not None and self.emap is not None
+        if self.llm_budget.model_down and not any(
+            item.status == "accepted" for item in self.evidence
+        ):
+            return self._failure(
+                f"The research model is unavailable ({self.llm_budget.down_reason})."
+            )
+        self._secure_finishing()
+        self._finishing_from = self.llm_budget.used
         self._emit("synthesizing", 76, "Building claims", "Turning evidence into claims")
         claims, links = build_claims(
             self.plan,
@@ -656,12 +1063,25 @@ class _Run:
         verified_targets = self._verified_targets(verified.claims)
         refused = False
         unanswered = self._unanswered_core(verified_targets)
-        if unanswered:
+        self._check_deadline()
+        if unanswered and self.deadline_stage is None:
             # Verification removed the only answer to a core question. One more step is worth
             # more than reporting nothing about it, when the run can still afford one.
             step, claims, verified, verified_targets, refused = self._re_research(
                 unanswered, claims, verified
             )
+        if refused and self.loop_end != "ceiling":
+            self.stop_detail = (
+                "the step, call or time limit left no room to look again for questions "
+                "verification left unanswered"
+            )
+        self._check_deadline()
+        if self.deadline_stage is not None and self.loop_end != "ceiling":
+            self.loop_end = "ceiling"
+            self.stop_detail = f"time limit reached during {self.deadline_stage}"
+        verified = self._recover_withheld(verified)
+        verified_targets = self._verified_targets(verified.claims)
+        label_strengths(self.plan, verified.claims, self.evidence, self.sources)
         completion = stopping.completion_status(
             self.emap,
             self.policy,
@@ -674,6 +1094,7 @@ class _Run:
         confidence, reasons = assess_confidence(self.emap, verified.claims)
         metrics = self._metrics()
         self._emit("reporting", 92, "Writing report", "Rendering verified findings")
+        self._check_deadline()
         rendered = render(
             query=self.query,
             depth=self.depth,
@@ -696,6 +1117,7 @@ class _Run:
         self.trace.report_sentences = rendered.sentences
         outcome = self._outcome(completion, self.stop_detail, report_text=rendered.text)
         outcome.claims = list(verified.claims)
+        outcome.unverified = list(verified.unverified)
         outcome.comparison = comparison
         outcome.confidence = confidence
         outcome.confidence_reasons = reasons
@@ -704,14 +1126,60 @@ class _Run:
         outcome.metrics = metrics
         return outcome
 
+    def _recover_withheld(self, verified):
+        """Give evidence behind a withheld model claim a second chance, in its own words.
+
+        A small model often paraphrases an excerpt into something the excerpt does not quite
+        say; verification rightly withholds that claim, and the fact it came from was lost with
+        it. The excerpt's own words are then offered as a finding and verified like any other
+        (they are entailed by construction, and must still speak to their question).
+        """
+        assert self.plan is not None
+        by_id = {item.id: item for item in self.evidence}
+        withheld = {
+            evidence_id
+            for claim in verified.removed
+            if claim.origin == "model"
+            for evidence_id in claim.evidence_ids
+        }
+        items = [
+            by_id[u.evidence_id]
+            for u in verified.unverified
+            if u.evidence_id in withheld and u.evidence_id in by_id
+        ]
+        if not items:
+            return verified
+        # Only surviving findings count as already said; the withheld paraphrase does not.
+        retry = extractive_claims(self.plan, items, list(verified.claims))
+        if not retry:
+            return verified
+        for claim in retry:
+            claim.id = f"r{claim.id}"  # never collide with a withheld claim's id
+        rechecked = audit(
+            self.plan,
+            retry,
+            self.evidence,
+            policy=self.policy,
+            llm_factory=self.deps.llm_factory,
+            llm_budget=self.llm_budget,
+            trace=self.trace,
+        )
+        if rechecked.claims:
+            self.trace.errors.append(
+                f"{len(rechecked.claims)} withheld finding(s) were restated in their excerpts' "
+                "own words and verified"
+            )
+        return merge_verified(verified, rechecked)
+
     def _unanswered_core(self, verified_targets: set[str]) -> list[str]:
         """Core targets the evidence establishes but no verified claim states."""
         assert self.plan is not None and self.emap is not None
         return [
             target.id
-            for target in self.plan.top_targets()
+            for target in self.plan.targets
             if target.tier == Tier.CORE
-            and not (self.emap.family(target) & verified_targets)
+            and target.id not in verified_targets
+            and not (target.parent_id is None and self.emap.family(target) & verified_targets)
             and self.emap.state(target.id).sufficiency != Sufficiency.INSUFFICIENT
         ]
 
@@ -948,6 +1416,7 @@ class _Run:
             self.roles,
             self.leads,
             sources_citing_leads={item.source_id for item in self.evidence if item.lead_ids},
+            plan=self.plan,
         )
         by_id = {source.id: source for source in self.sources}
         for item in self.evidence:
@@ -1060,7 +1529,18 @@ class _Run:
             open_gaps=open_questions,
         )
 
+    def _cancelled_now(self) -> bool:
+        try:
+            return bool(self.cancelled())
+        except Exception:
+            return False
+
     def _emit(self, stage: str, percent: int, step: str, message: str, **payload) -> None:
+        # The deadline is checked at every stage boundary, so the stage that was running when
+        # it passed is the one recorded.
+        if hasattr(self, "llm_budget"):
+            self._check_deadline()
+        self.stage = stage
         if self.progress is None:
             return
         core = [t for t in self.plan.top_targets() if t.tier == Tier.CORE] if self.plan else []
@@ -1082,12 +1562,35 @@ class _Run:
                     core_established=established,
                     core_targets=len(core),
                     elapsed_seconds=int(self.deps.clock() - self.started),
-                    ceiling_seconds=self.policy.ceilings.seconds,
+                    ceiling_seconds=int(self.ceiling_seconds),
+                    remaining_seconds=self._remaining_seconds(),
                     **payload,
                 )
             )
         except Exception:
             logger.exception("Research progress callback failed")
+
+    def _remaining_seconds(self) -> int | None:
+        """How long the run should still take, from what it has spent and has left to do."""
+        now = self.deps.clock()
+        model_seconds = sum(usage.seconds for usage in self.profile.stages.values())
+        # Searching and reading per step, measured as the run's time outside model calls.
+        step_seconds = (
+            max(5.0, (now - self.started - model_seconds) / self.steps) if self.steps else None
+        )
+        used = self.llm_budget.used
+        finishing = None if self._finishing_from is None else used - self._finishing_from
+        return run_estimate.remaining(
+            self.shape,
+            calls_used=used,
+            steps_done=self.steps,
+            planned=self.plan is not None,
+            finishing_calls_used=finishing,
+            run_seconds_per_call=self.llm_budget.seconds_per_call(),
+            run_step_seconds=step_seconds,
+            prior_seconds_per_call=self._prior_seconds_per_call,
+            seconds_left=max(0.0, self.deadline - now),
+        )
 
     def _finalize_trace(self, completion: CompletionStatus, detail: str) -> None:
         self.trace.completion_status = completion
@@ -1109,6 +1612,95 @@ class _Run:
             for chunk_id, chunk in self.pool.chunks.items()
             if chunk_id in selected or chunk_id in grounding
         ]
+        self.trace.diagnostics = self._diagnostics(completion, detail)
+
+    def _diagnostics(self, completion: CompletionStatus, detail: str) -> dict:
+        """What it takes to diagnose this run without repeating it. No credentials, no prompts."""
+        rejected = Counter(
+            (item.rejection_reason.value if item.rejection_reason else "unknown")
+            for item in self.evidence
+            if item.status == "rejected"
+        )
+        fallbacks = list(self.fallbacks)
+        for note in self.trace.errors:
+            lowered = note.lower()
+            if any(word in lowered for word in ("fell back", "skipped", "own words", "slow to")):
+                stage = next(
+                    (
+                        stage_name
+                        for phrase, stage_name in (
+                            ("query", "queries"),
+                            ("judge", "judging"),
+                            ("finding(s) were written", "claims"),
+                            ("claim", "claims"),
+                            ("audit", "verification"),
+                            ("summary", "report"),
+                            ("first call", "model"),
+                        )
+                        if phrase in lowered
+                    ),
+                    "run",
+                )
+                fallbacks.append({"stage": stage, "reason": note[:300]})
+        claims = self.trace.verification
+        return {
+            "inference": {
+                "provider": self.capability.provider,
+                "model": self.capability.model,
+                "context_window": self.capability.context_window,
+                "max_output_tokens": self.capability.max_output_tokens,
+                "capability_known": self.capability.known,
+                "call_allowance_scale": self.scale,
+                "structured_output": "json_schema",
+                "thinking": "disabled",
+                "temperature": 0.1,
+            },
+            "search": {
+                "providers": [getattr(p, "name", "") for p in self.deps.providers],
+                "used": sorted({a.provider for a in self.trace.search_attempts if a.provider}),
+                "searches": self.retriever.searches_used if self.retriever else 0,
+                "fetches": self.retriever.fetches_used if self.retriever else 0,
+            },
+            "depth": self.depth.value,
+            "timing": {
+                "ceiling_seconds": round(self.ceiling_seconds, 1),
+                "hard_limit_seconds": round(self.hard_limit_seconds, 1),
+                "deadline_hit": self.deadline_stage,
+                "elapsed_seconds": round(self.deps.clock() - self.started, 1),
+                "pace": self._pace_source,
+                "seconds_per_call": round(self.llm_budget.seconds_per_call(), 1),
+            },
+            "stages": {
+                usage.stage: {
+                    "calls": usage.calls,
+                    "failures": usage.failures,
+                    "retries": usage.retries,
+                    "truncations": usage.truncations,
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "seconds": usage.seconds,
+                }
+                for usage in self.profile.stages.values()
+            },
+            "fallbacks": fallbacks,
+            "evidence": {
+                "sources_read": sum(1 for s in self.sources if s.reviewed),
+                "sources_refused": sum(
+                    1 for s in self.sources if s.http_status in (401, 403, 429, 451)
+                ),
+                "accepted": sum(1 for item in self.evidence if item.status == "accepted"),
+                "rejected": dict(rejected),
+            },
+            "claims": {
+                "kept": sum(1 for d in claims if d.outcome != "removed"),
+                "removed": sum(1 for d in claims if d.outcome == "removed"),
+            },
+            "end": {
+                "status": completion.value,
+                "reason": detail,
+                "model_down": self.llm_budget.down_reason,
+            },
+        }
 
     def _outcome(
         self, completion: CompletionStatus, detail: str, *, report_text: str
@@ -1129,6 +1721,15 @@ class _Run:
             trace=self.trace,
             report_type="failed" if completion == CompletionStatus.FAILED else "partial",
         )
+
+    def _blocked(self) -> ResearchOutcome:
+        metrics = self._metrics()
+        rendered = render_failure(self.query, self.depth, self.stop_detail, metrics)
+        outcome = self._outcome(
+            CompletionStatus.BLOCKED, self.stop_detail, report_text=rendered.text
+        )
+        outcome.report_sections = rendered.sections
+        return outcome
 
     def _failure(self, detail: str) -> ResearchOutcome:
         self.trace.errors.append(detail)

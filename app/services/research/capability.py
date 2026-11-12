@@ -67,7 +67,12 @@ def resolve_capability(route_name: str = "research") -> ModelCapability:
         context_window=window
         if isinstance(window, int) and window > 0
         else FALLBACK_CONTEXT_WINDOW,
-        max_output_tokens=min(limits) if limits else _assumed_output(window),
+        max_output_tokens=min(limits)
+        if limits
+        # Ollama has no output limit of its own beyond the window: Neo sets it per request.
+        else 4096
+        if str(route.get("provider") or "").lower() == "ollama"
+        else _assumed_output(window),
         supports_json=bool(model.get("supports_json")),
         route_name=str(route.get("route_name") or route_name),
         provider=str(route.get("provider") or ""),
@@ -117,6 +122,7 @@ def items_per_call(
     overhead_tokens: int = 200,
     input_chars_per_item: int = 0,
     ceiling: int = 64,
+    prompt_overhead_tokens: int = 0,
 ) -> int:
     """How many items of work fit in one call to this model, by output and by context.
 
@@ -127,6 +133,11 @@ def items_per_call(
     by_output = usable_output // max(1, output_tokens_per_item)
     by_context = ceiling
     if input_chars_per_item > 0:
-        room = capability.context_window - capability.max_output_tokens - CONTEXT_SAFETY_TOKENS
+        room = (
+            capability.context_window
+            - capability.max_output_tokens
+            - CONTEXT_SAFETY_TOKENS
+            - prompt_overhead_tokens
+        )
         by_context = max(1, (room * CHARS_PER_TOKEN) // max(1, input_chars_per_item))
     return max(1, min(ceiling, by_output, by_context))

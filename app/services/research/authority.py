@@ -1,10 +1,15 @@
 """Source provenance and what each evidence item can do for its claim.
 
 Provenance answers a question about a source, independent of any claim: how well is it
-established who published it? The judge proposes a role and issuer; deterministic signals
-decide the grade. What a page says about itself can be copied, so grade A needs support from
-other, independent pages read in the same run. There are no lists of known sites, domains or
-topics anywhere in this module, and no hostname heuristics.
+established who published it? The judge may propose a role and issuer, but a small model often
+proposes nothing, so the role is also inferred from structure: who the page says publishes it,
+whether the registrable domain *is* a research subject's name (the "verified domain" signal),
+public-sector and academic suffixes, news markup, and discussion-style addresses. Ownership is
+claimed conservatively: a page is a subject's own record only when its domain is exactly that
+subject's name and the page names the subject as its publisher, so a lookalike such as
+"<name>-features.net" never qualifies however it describes itself. What a page says about
+itself can be copied, so grade A needs support from other, independent pages read in the same
+run. There are no lists of known sites, domains or topics anywhere in this module.
 
 Claim fit answers a question about one evidence item and one target: does this item establish
 the claim, support it, or only give context? The same excellent source can establish one claim
@@ -93,9 +98,26 @@ def _name_matches(value: str, forms: set[str], *, allow_suffix: bool) -> bool:
 # identifier, or declares it canonical. Nothing here looks at hostnames resembling names.
 
 ISSUER_ROLES = frozenset({SourceRole.ISSUER_RECORD, SourceRole.INSTITUTIONAL})
+#: Address segments of discussion pages: forums, threads, comments, Q&A.
+_DISCUSSION_PATH = re.compile(
+    r"/(?:forums?|threads?|comments|community|communities|discussions?|questions|answers|"
+    r"topic|t|r|board|boards|showthread\.php|viewtopic\.php)(?:/|$|\?)",
+    re.IGNORECASE,
+)
+_DISCUSSION_HOST = re.compile(r"^(?:forums?|community|answers|discuss|boards?)\.", re.IGNORECASE)
+#: Publisher names that declare a reference work.
+_REFERENCE_NAME = re.compile(r"wikipedia|encyclop(?:a)?edia", re.IGNORECASE)
+_NEWS_SCHEMA = re.compile(r"NewsArticle|ReportageNewsArticle|AnalysisNewsArticle", re.IGNORECASE)
+#: Language a publisher uses to rate itself; a subject's own page saying it is not evidence.
+_SELF_PRAISE = re.compile(
+    r"\b(?:best|better|leading|superior|top|#1|number one|world'?s|award[- ]winning|"
+    r"most (?:popular|trusted|reliable|advanced)|unmatched|unbeatable)\b",
+    re.IGNORECASE,
+)
 _UNTRUSTED_ROLES = frozenset({SourceRole.AGGREGATOR, SourceRole.PROMOTIONAL})
 _IDENTITY_SIGNALS = frozenset(
-    {"issuer_self_id", "cross_page_self_id", "document_metadata", "dataset_schema"}
+    {"issuer_self_id", "cross_page_self_id", "document_metadata", "dataset_schema",
+     "verified_domain"}
 )
 _POOR_EXTRACTION = 0.35
 
@@ -106,37 +128,128 @@ def assess_sources(
     leads: list[OriginLead],
     *,
     sources_citing_leads: set[str] | frozenset[str] = frozenset(),
+    plan: ResearchPlan | None = None,
 ) -> None:
     """Give every readable source its provenance, in place.
 
     ``roles`` maps source ids to the judge's labels (anything with ``role``, ``issuer`` and
-    ``review_status``). Sources are reassessed on every call: a page read later can cite or
-    link one read earlier, and that raises the earlier page's standing.
+    ``review_status``); a source the judge said nothing about gets the role its structure
+    shows. Sources are reassessed on every call: a page read later can cite or link one read
+    earlier, and that raises the earlier page's standing.
     """
     readable = [s for s in sources if s.reviewed and s.rejection_reason is None]
     for source in readable:
         label = roles.get(source.id)
         previous = source.assessment or SourceAssessment()
         role = _coerce_role(label.role) if label is not None else previous.role
+        # Only an issuer the judge named is checked against the domain; one inferred on an
+        # earlier pass is not evidence of anything.
+        judged_issuer = normalize_ws(label.issuer)[:120] if label and label.issuer else ""
+        inferred_role, inferred_issuer, owned = infer_role(source, plan, judged_issuer)
+        issuer = judged_issuer or previous.issuer
+        if role == SourceRole.ISSUER_RECORD and not owned:
+            # A page may call itself anyone's; without the verified domain it is not theirs.
+            role = SourceRole.UNKNOWN
+        if role == SourceRole.UNKNOWN:
+            role = inferred_role
         source.assessment = SourceAssessment(
-            role=role if role != SourceRole.UNKNOWN else previous.role,
-            issuer=normalize_ws(label.issuer)[:120] if label and label.issuer else previous.issuer,
+            role=role,
+            issuer=issuer or inferred_issuer,
             review_status=(
                 normalize_ws(label.review_status).lower()[:40]
                 if label and label.review_status
                 else previous.review_status
             ),
         )
+        entities_owned = [o for o in owned if o != "issuer"]
+        if entities_owned:
+            source.official_for = sorted(set(source.official_for) | set(entities_owned))
+        if owned and source.assessment.role == SourceRole.ISSUER_RECORD:
+            source.class_signals = sorted(set(source.class_signals) | {"verified_domain"})
     for source in readable:
         assessment = source.assessment
         forms = name_forms([assessment.issuer]) if assessment.issuer else set()
         assessment.self_asserted = _self_signals(source, forms, readable)
+        if "verified_domain" in source.class_signals:
+            assessment.self_asserted.append("verified_domain")
         assessment.negative = _negative_signals(source)
     for source in readable:
         source.assessment.corroborated = _corroborated_signals(source, readable, leads)
     for source in readable:
         _grade(source, readable, sources_citing_leads, leads)
     _resolve_issuer_conflicts(readable, sources_citing_leads)
+
+
+def _domain_label(source: ResearchSource) -> str:
+    """The registrable name of a source's site: "instagram" for help.instagram.com."""
+    return compact(source.host_group.split(".", 1)[0])
+
+
+def infer_role(
+    source: ResearchSource, plan: ResearchPlan | None, issuer: str = ""
+) -> tuple[SourceRole, str, list[str]]:
+    """The role a page's own structure shows, the issuer it names, and the subjects it is
+    verifiably the publisher of (empty unless ownership is confirmed).
+
+    A subject's own record needs two signals that a lookalike cannot both fake: the site's
+    registrable domain is exactly the subject's name (or the named issuer's), and the page names
+    that subject or issuer as its publisher. Anything less is not ownership.
+    """
+    label = _domain_label(source)
+    publisher = source.citation_meta.get("publisher", "")
+    named = [source.site_name, *source.organization_names, publisher]
+    owned: list[str] = []
+    owner_name = ""
+    candidates: list[tuple[str, list[str]]] = []
+    if plan is not None:
+        # Ownership is claimed only by a subject's full name or an alias that is not a piece
+        # of it: "stark.in" is not House Stark's site because "Stark" is part of the name.
+        candidates = [
+            (
+                entity.id,
+                [
+                    entity.name,
+                    *[a for a in entity.aliases if compact(a) not in compact(entity.name)],
+                ],
+            )
+            for entity in plan.understanding.entities
+        ]
+    if issuer:
+        candidates.append(("", [issuer]))
+    for entity_id, names in candidates:
+        forms = name_forms(names)
+        if not forms or label not in forms:
+            continue
+        title_tail = source.title.split("|")[-1].split(" - ")[-1]
+        if _names_issuer(named, forms, allow_suffix=True) or _names_issuer(
+            [title_tail], forms, allow_suffix=False
+        ):
+            # The name the page itself uses, so its other self-identification is read in it.
+            owner_name = next(
+                (
+                    value
+                    for value in [*named, title_tail]
+                    if value and _names_issuer([value], forms, allow_suffix=True)
+                ),
+                names[0],
+            )
+            if entity_id:
+                owned.append(entity_id)
+            else:
+                owned.append("issuer")
+    if owned:
+        return SourceRole.ISSUER_RECORD, owner_name, owned
+    if any(_REFERENCE_NAME.search(value or "") for value in named):
+        return SourceRole.REFERENCE, source.site_name or "", []
+    path = (source.canonical_url or source.url or "").split("://", 1)[-1]
+    path = path[path.find("/") :] if "/" in path else "/"
+    if _DISCUSSION_PATH.search(path) or _DISCUSSION_HOST.search(source.host):
+        return SourceRole.COMMUNITY, "", []
+    if public_suffix_class(source.host) is not None:
+        return SourceRole.INSTITUTIONAL, source.site_name or "", []
+    if any(_NEWS_SCHEMA.search(kind) for kind in source.schema_types):
+        return SourceRole.REPORTING, source.site_name or "", []
+    return SourceRole.UNKNOWN, "", []
 
 
 def claim_fit(
@@ -158,7 +271,7 @@ def claim_fit(
         return ClaimFit.CONTEXT, False
     if profile.recency.kind == RecencyKind.CURRENT and item.freshness_fit == FreshnessFit.STALE:
         return ClaimFit.CONTEXT, False
-    interested = _interested_party(assessment, plan, target, source)
+    interested = _interested_party(assessment, plan, target, source, item)
     if interested:
         return ClaimFit.CONTEXT, True
 
@@ -408,9 +521,9 @@ def _grade(
         and source.id in sources_citing_leads
     ):
         grade = Provenance.B
-    elif role == SourceRole.UNKNOWN and not identity and not corroborated:
-        grade = Provenance.D
     else:
+        # Nothing known against it and readable text: unverified, not weak. Weak (D) is kept
+        # for pages with something against them -- promotion, copying, unreadable text.
         grade = Provenance.C
     assessment.provenance = grade
 
@@ -450,14 +563,28 @@ def _interested_party(
     plan: ResearchPlan,
     target: EvidenceTarget | None,
     source: ResearchSource | None,
+    item: EvidenceItem | None = None,
 ) -> bool:
-    """A subject's own publisher speaking about how that subject compares or performs."""
+    """A subject's own publisher speaking about how that subject compares or performs.
+
+    What a publisher documents about its own product -- a feature, a limit, a date -- is the
+    record of it, and stands for that subject's own question. What it says about how good it
+    is, or about how it compares, is never evidence of that.
+    """
     if target is None or source is None or assessment.role not in ISSUER_ROLES:
         return False
     judging = (
         target.form == TargetForm.JOINT or target.profile.authority_kind == AuthorityKind.EVALUATIVE
     )
     if not judging:
+        return False
+    own_subject_fact = (
+        target.form == TargetForm.SINGLE
+        and len(target.subject_ids) == 1
+        and item is not None
+        and not _SELF_PRAISE.search(f"{item.excerpt} {item.claim}")
+    )
+    if own_subject_fact:
         return False
     issuer_forms = name_forms([assessment.issuer]) if assessment.issuer else set()
     for subject_id in target.subject_ids:

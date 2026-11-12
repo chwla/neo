@@ -35,6 +35,24 @@ jobs:
         run: python -m unittest discover -s .github/scripts -p check_folder_agent.py -v
       - name: Verify a final file action ends the run without extra model calls
         run: python -m unittest discover -s .github/scripts -p check_agent_completion.py -v
+      - name: Verify time limits follow measured model speed, never below the defaults
+        run: python -m unittest discover -s .github/scripts -p check_model_pace.py -v
+      - name: Verify the built-in SearXNG installs itself without touching Neo's packages
+        run: python -m unittest discover -s .github/scripts -p check_searxng_install.py -v
+      - name: Verify research history delete, clear all, and edited plans
+        run: python -m unittest discover -s .github/scripts -p check_research_controls.py -v
+      - name: Verify research planning completes when model calls are slow
+        run: python -m unittest discover -s .github/scripts -p check_research_budget.py -v
+      - name: Verify research end to end on GPU, CPU-only, small, reasoning and hosted models
+        run: python -m unittest discover -s .github/scripts -p check_research_e2e.py -v
+      - name: Verify research recovers from model, search and time failures, and cancels cleanly
+        run: python -m unittest discover -s .github/scripts -p check_research_resilience.py -v
+      - name: Verify research is not misled into verified findings by adversarial pages
+        run: python -m unittest discover -s .github/scripts -p check_research_adversarial.py -v
+      - name: Verify research evidence, source standing, entailment and model-call units
+        run: python -m unittest discover -s .github/scripts -p check_research_units.py -v
+      - name: Verify research jobs persist, queue on local models and never undo a cancel
+        run: python -m unittest discover -s .github/scripts -p check_research_jobs.py -v
       - name: Verify Quick routing, prompt size and streaming latency
         run: python -m unittest discover -s .github/scripts -p check_chat_latency.py -v
       - name: Verify local startup preparation preserves chat prompts

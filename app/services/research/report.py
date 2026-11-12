@@ -18,10 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.services.research.capability import items_per_call
 from app.services.research.evidence_map import EvidenceMap
 from app.services.research.llm_json import (
+    STAGE_FAILURES,
     LLMBudget,
-    LLMBudgetExhausted,
     LLMFactory,
-    ModelOutputInvalid,
     call_json,
 )
 from app.services.research.policy import POLICIES
@@ -57,6 +56,7 @@ from app.services.research.types import (
     TargetStatus,
     TaskType,
     Tier,
+    UnverifiedEvidence,
 )
 from app.services.research.verify import SCOPE_NOTE, VerifiedClaimSet, audit
 
@@ -81,10 +81,8 @@ Output: {"sentences": ["..."]}
 
 _COMPLETION_TEXT = {
     CompletionStatus.COMPLETED: "every question it pursued is established",
-    CompletionStatus.COMPLETED_WITH_GAPS: (
-        "no further research could change the answer, but some questions remain open"
-    ),
-    CompletionStatus.CEILING_REACHED: "it reached this mode's limit with questions still open",
+    CompletionStatus.COMPLETED_WITH_GAPS: "some questions remain open",
+    CompletionStatus.CEILING_REACHED: "it stopped before every question was settled",
     CompletionStatus.BLOCKED: "web search was unavailable",
     CompletionStatus.CANCELLED: "the run was cancelled",
     CompletionStatus.FAILED: "the run failed",
@@ -93,6 +91,14 @@ _HEDGE = {
     SupportStatus.PARTIALLY_SUPPORTED: " (partially supported)",
     SupportStatus.CONFLICTING_EVIDENCE: " (sources conflict)",
     SupportStatus.INHERENTLY_UNCERTAIN: " (uncertain)",
+}
+#: How each strength reads beside a finding.
+STRENGTH_LABEL = {
+    "verified": "verified",
+    "limited": "limited support",
+    "single_source": "one source",
+    "disputed": "sources disagree",
+    "one_side_only": "one side only",
 }
 _CLAIM_ID = r"[A-Za-z][A-Za-z0-9_.-]*"
 _CLAIM_REF = re.compile(rf"\{{({_CLAIM_ID})\}}")
@@ -134,6 +140,8 @@ class ReportContext:
     completion: CompletionStatus
     stop_detail: str
     metrics: ResearchMetrics
+    #: Accepted excerpts no verified finding stands on: quoted, never stated.
+    unverified: tuple[UnverifiedEvidence, ...] = ()
     citation_numbers: dict[str, int] = field(default_factory=dict)
     #: Propositions already stated. Distinct audited explanations may reuse their claim ids.
     rendered_claims: set[str] = field(default_factory=set)
@@ -161,7 +169,9 @@ class ReportContext:
         return "".join(f"[{number}]" for number in numbers)
 
     def line(self, claim: Claim) -> str:
-        text = f"{claim.text}{_HEDGE.get(claim.support, '')} {self.cite(claim)}".strip()
+        label = STRENGTH_LABEL.get(claim.strength)
+        badge = f" _({label})_" if label else _HEDGE.get(claim.support, "")
+        text = f"{claim.text}{badge} {self.cite(claim)}".strip()
         self.record(text, [claim.id])
         return text
 
@@ -309,14 +319,16 @@ def render(
         completion=completion,
         stop_detail=stop_detail,
         metrics=metrics,
+        unverified=verified.unverified,
     )
     used_sources: list[str] = []
-    for claim in context.claims:
-        for evidence_id in claim.evidence_ids:
-            item = context.evidence_by_id.get(evidence_id)
-            if item and item.source_id not in context.citation_numbers:
-                context.citation_numbers[item.source_id] = len(context.citation_numbers) + 1
-                used_sources.append(item.source_id)
+    cited_ids = [e for claim in context.claims for e in claim.evidence_ids]
+    cited_ids += [item.evidence_id for item in context.unverified]
+    for evidence_id in cited_ids:
+        item = context.evidence_by_id.get(evidence_id)
+        if item and item.source_id not in context.citation_numbers:
+            context.citation_numbers[item.source_id] = len(context.citation_numbers) + 1
+            used_sources.append(item.source_id)
     for source_id in used_sources:
         context.sources_by_id[source_id].used = True
     metrics.sources_used = len(used_sources)
@@ -400,8 +412,13 @@ def _header(context: ReportContext) -> list[str]:
         if not re.fullmatch(r"\d+ of \d+ core questions are established\.", reason)
     )
     stop = _COMPLETION_TEXT[context.completion]
-    if context.stop_detail and context.completion == CompletionStatus.CEILING_REACHED:
-        stop = f"{stop} ({context.stop_detail})"
+    if context.stop_detail and context.completion in (
+        CompletionStatus.CEILING_REACHED,
+        CompletionStatus.COMPLETED_WITH_GAPS,
+    ):
+        # The actual reason, never a stock phrase: a stall, the time limit and an exhausted
+        # search are different things to the reader.
+        stop = f"{context.stop_detail}; {stop}"
     core = [t for t in context.plan.top_targets() if t.tier == Tier.CORE]
     open_ids = {target.id for target, _, _ in _open_questions(context)}
     established = sum(
@@ -931,7 +948,12 @@ def _gaps(context: ReportContext) -> list[str]:
     if context.removed_count:
         lines.append(
             f"- {context.removed_count} draft statement(s) were withheld because "
-            "verification did not confirm them against the cited evidence."
+            "verification did not confirm them against the cited evidence"
+            + (
+                "; the passages they drew on are quoted under Unverified evidence."
+                if context.unverified
+                else "."
+            )
         )
     narrowed = sum(
         1
@@ -944,6 +966,24 @@ def _gaps(context: ReportContext) -> list[str]:
             "figures stated for a different place, population, version or period were not "
             "combined with them."
         )
+    return lines
+
+
+def _unverified_applies(context: ReportContext) -> bool:
+    return bool(context.unverified)
+
+
+def _unverified_section(context: ReportContext) -> list[str]:
+    lines = [
+        "_Read and accepted as relevant, but no finding drawn from these passages passed "
+        "verification. They are quoted, not stated as findings._",
+        "",
+    ]
+    for item in context.unverified:
+        number = context.citation_numbers.get(item.source_id)
+        quote = normalize_ws(item.excerpt)[:300]
+        context.record(f'"{quote}"', [], [item.evidence_id])
+        lines.append(f'- "{quote}"' + (f" [{number}]" if number else ""))
     return lines
 
 
@@ -1021,6 +1061,9 @@ SECTIONS: list[Section] = [
     Section("limitations", lambda c: "Limitations", _LIMIT[0], _LIMIT[1]),
     Section("agreement", lambda c: "Where sources agree", _agreement_applies, _agreement),
     Section("conflicts", lambda c: "Conflicting findings", _conflicts_applies, _conflicts),
+    Section(
+        "unverified", lambda c: "Unverified evidence", _unverified_applies, _unverified_section
+    ),
     Section("recommendation", _recommendation_title, _recommendation_applies, _recommendation),
     Section("gaps", lambda c: "What could not be established", _gaps_applies, _gaps),
     Section(
@@ -1070,7 +1113,7 @@ def _summary_prose(
             num_predict=700,
             reserved=True,
         )
-    except (ModelOutputInvalid, LLMBudgetExhausted):
+    except STAGE_FAILURES:
         return []
     before = len(context.sentences)
     kept = enforce_claim_references(output.sentences, claims, context, context.prose_claim_ids)
@@ -1238,7 +1281,7 @@ def _explanatory_details(
                 num_predict=250 + len(batch) * policy.details_per_claim * 100,
                 reserved=True,
             )
-        except (ModelOutputInvalid, LLMBudgetExhausted):
+        except STAGE_FAILURES:
             continue
         drafts = []
         origins = {}

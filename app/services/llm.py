@@ -438,8 +438,115 @@ def forget_loaded_models(base_url: str | None = None) -> None:
         _LOADED_MODELS.pop(base_url.rstrip("/"), None)
 
 
+class GenerationCancelled(RuntimeError):
+    """The caller stopped a model call while it was still generating; the reply was closed."""
+
+
+#: (endpoint, model) pairs whose server refused a structured-output request, mapped to how many
+#: steps down they have gone: a server that rejects a JSON schema is asked for plain JSON next,
+#: and one that rejects that too is asked for nothing special, for the rest of the process.
+_STRUCTURED_DOWNGRADES: dict[tuple[str, str], int] = {}
+_STRUCTURED_LOCK = RLock()
+
+
+def inline_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """A JSON schema with every ``$ref`` replaced by its definition and pydantic's titles dropped.
+
+    Servers that turn a schema into a decoding grammar (Ollama, llama.cpp) handle a plain,
+    self-contained schema reliably; references and extra keys are where they differ.
+    """
+    definitions = dict(schema.get("$defs") or schema.get("definitions") or {})
+
+    def resolve(node: Any, depth: int = 0) -> Any:
+        if isinstance(node, list):
+            return [resolve(item, depth) for item in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        if isinstance(ref, str) and depth < 20:
+            target = definitions.get(ref.rsplit("/", 1)[-1], {})
+            merged = {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+            return resolve(merged, depth + 1)
+        return {
+            key: resolve(value, depth)
+            for key, value in node.items()
+            if key not in ("$defs", "definitions", "title")
+        }
+
+    return resolve(schema)
+
+
+def _structured_level(base_url: str, model: str) -> int:
+    with _STRUCTURED_LOCK:
+        return _STRUCTURED_DOWNGRADES.get((base_url, model), 0)
+
+
+def _downgrade_structured(base_url: str, model: str) -> None:
+    with _STRUCTURED_LOCK:
+        key = (base_url, model)
+        _STRUCTURED_DOWNGRADES[key] = _STRUCTURED_DOWNGRADES.get(key, 0) + 1
+
+
+def _rejected_structured_output(exc: Exception) -> bool:
+    """Whether a 4xx says the server does not accept the structured-output field we sent."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int) or not 400 <= status < 500 or status in (401, 403, 429):
+        return False
+    text = f"{exc} {getattr(response, 'text', '') or ''}".lower()
+    return any(word in text for word in ("format", "schema", "response_format", "json"))
+
+
 def _ns_to_ms(value: Any) -> int | None:
     return int(value / 1_000_000) if isinstance(value, (int, float)) and value > 0 else None
+
+
+def _collect_ollama_stream(
+    response: Any, should_stop: Callable[[], bool] | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read a streamed ``/api/chat`` reply into what the non-streamed one would have been.
+
+    Returns the final chunk (token counts, timings, ``done_reason``) and the whole message:
+    content and thinking joined, tool calls from whichever chunks carried them -- recent
+    Ollama streams them as they are produced, older versions send them in one piece.
+    """
+    content: list[str] = []
+    thinking: list[str] = []
+    tool_calls: list[Any] = []
+    final: dict[str, Any] = {}
+    try:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if should_stop is not None and should_stop():
+                # Closing the reply (below) is what makes the server stop generating.
+                raise GenerationCancelled("the model call was cancelled")
+            if not line:
+                continue
+            chunk = json.loads(line)
+            if chunk.get("error"):
+                # A failure after the reply started arrives as a chunk, not a status code.
+                raise requests.HTTPError(str(chunk["error"]), response=response)
+            message = chunk.get("message") or {}
+            if message.get("content"):
+                content.append(str(message["content"]))
+            piece = message.get("thinking") or message.get("reasoning")
+            if piece:
+                thinking.append(str(piece))
+            if message.get("tool_calls"):
+                tool_calls.extend(message["tool_calls"])
+            if chunk.get("done"):
+                final = chunk
+                break
+    finally:
+        response.close()
+    if not final:
+        raise requests.ConnectionError("Ollama closed the reply before it finished.")
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
+    if thinking:
+        message["thinking"] = "".join(thinking)
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return final, message
 
 
 class OllamaClient(BaseLLMClient):
@@ -523,19 +630,41 @@ class OllamaClient(BaseLLMClient):
         temperature: float = 0.4,
         num_predict: int | None = None,
         tools: list[dict[str, Any]] | None = None,
+        json_schema: dict[str, Any] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
-        body: dict[str, Any] = self._body(messages, temperature, num_predict, stream=False)
-        if tools:
-            body["tools"] = tools
-        response = requests.post(
-            f"{self.base_url}/api/chat",
-            json=body,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        message = payload["message"]
+        # Streamed even though the caller wants one answer. A non-streamed request sends nothing
+        # until the whole answer exists, so its timeout has to cover the entire generation --
+        # and a large model on a modest CPU can need an hour for a long answer, which no fixed
+        # limit both allows and still catches a stuck server. Streamed, the timeout applies to
+        # each wait for the next piece: a model that is slow but writing is never cut off, and
+        # one that has gone silent still is. It is also what lets a caller stop it midway.
+        while True:
+            body: dict[str, Any] = self._body(messages, temperature, num_predict, stream=True)
+            if tools:
+                body["tools"] = tools
+            level = _structured_level(self.base_url, self.model) if json_schema else 2
+            if json_schema and level == 0:
+                # Constrained decoding: the server can only write JSON of this shape, which is
+                # what makes a 1-3B model's structured answers dependable.
+                body["format"] = inline_schema(json_schema)
+            elif json_schema and level == 1:
+                body["format"] = "json"
+            response = requests.post(
+                f"{self.base_url}/api/chat",
+                json=body,
+                stream=True,
+                timeout=self.timeout,
+            )
+            try:
+                payload, message = _collect_ollama_stream(response, should_stop)
+            except requests.HTTPError as exc:
+                if "format" in body and _rejected_structured_output(exc):
+                    _downgrade_structured(self.base_url, self.model)
+                    continue
+                raise
+            break
         raw = str(message.get("content") or "")
         tool_calls = normalize_tool_calls(message.get("tool_calls"))
         native_thinking = str(message.get("thinking") or message.get("reasoning") or "").strip()
@@ -692,23 +821,56 @@ class OpenAICompatibleClient(BaseLLMClient):
             payload["tools"] = tools
         return payload
 
+    def _response_format(self, json_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not json_schema:
+            return None
+        level = _structured_level(self.base_url, self.model)
+        if level == 0:
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "schema": inline_schema(json_schema),
+                    "strict": False,
+                },
+            }
+        if level == 1:
+            return {"type": "json_object"}
+        return None
+
     def chat_with_metadata(
         self,
         messages: list[LLMMessage],
         temperature: float = 0.4,
         num_predict: int | None = None,
         tools: list[dict[str, Any]] | None = None,
+        json_schema: dict[str, Any] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> LLMChatResult:
         started = time.perf_counter()
-        response = self._checked(
-            requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=self._payload(messages, temperature, num_predict, False, tools),
-                timeout=self.timeout,
-                allow_redirects=False,
-            )
-        )
+        while True:
+            body = self._payload(messages, temperature, num_predict, False, tools)
+            response_format = self._response_format(json_schema)
+            if response_format:
+                body["response_format"] = response_format
+            try:
+                if should_stop is not None and not tools:
+                    return self._streamed_result(body, messages, started, should_stop)
+                response = self._checked(
+                    requests.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=self.headers,
+                        json=body,
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                    )
+                )
+            except requests.HTTPError as exc:
+                if response_format and _rejected_structured_output(exc):
+                    _downgrade_structured(self.base_url, self.model)
+                    continue
+                raise
+            break
         payload = response.json()
         message = payload["choices"][0]["message"]
         raw = str(message.get("content") or "")
@@ -730,6 +892,69 @@ class OpenAICompatibleClient(BaseLLMClient):
             total_tokens=usage.get("total_tokens"),
             duration_ms=int((time.perf_counter() - started) * 1000),
             finish_reason=str(payload["choices"][0].get("finish_reason") or "stop"),
+            provider_name="openai_compatible",
+            model_name=self.model,
+        )
+
+    def _streamed_result(
+        self,
+        body: dict[str, Any],
+        messages: list[LLMMessage],
+        started: float,
+        should_stop: Callable[[], bool],
+    ) -> LLMChatResult:
+        """One answer read as a stream, so the caller can stop it, and a slow server is waited
+        for piece by piece rather than for its whole answer at once."""
+        body = {**body, "stream": True}
+        response = self._checked(
+            requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=body,
+                timeout=self.timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+        )
+        content: list[str] = []
+        reasoning: list[str] = []
+        finish_reason = "stop"
+        usage: dict[str, Any] = {}
+        try:
+            for raw_line in response.iter_lines():
+                if should_stop():
+                    raise GenerationCancelled("the model call was cancelled")
+                if not raw_line:
+                    continue
+                line = raw_line.decode() if isinstance(raw_line, bytes) else str(raw_line)
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                usage = chunk.get("usage") or usage
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        content.append(str(delta["content"]))
+                    piece = delta.get("reasoning") or delta.get("reasoning_content")
+                    if piece:
+                        reasoning.append(str(piece))
+                    if choice.get("finish_reason"):
+                        finish_reason = str(choice["finish_reason"])
+        finally:
+            response.close()
+        raw = "".join(content)
+        return LLMChatResult(
+            content=self.clean_response(raw),
+            source_label=call_label(messages),
+            thinking="".join(reasoning).strip() or self.extract_thinking(raw),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            finish_reason=finish_reason,
             provider_name="openai_compatible",
             model_name=self.model,
         )

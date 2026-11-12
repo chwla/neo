@@ -383,10 +383,15 @@ def _sufficiency(
 ) -> tuple[Sufficiency, Basis, list[EvidenceItem]]:
     """The one sufficiency standard, identical in every mode."""
     agreeing = [item for item in usable if item.id not in in_open_conflict]
+    # One item settles a question alone only from a source whose publisher is established
+    # (grade A or B). A single unverified page, however directly a model judged it to answer,
+    # has to be corroborated like any other: a small judge's "direct" is not decisive.
     decisive = [
         item
         for item in agreeing
-        if item.claim_fit == ClaimFit.ESTABLISHES and item.support == Support.DIRECT
+        if item.claim_fit == ClaimFit.ESTABLISHES
+        and item.support == Support.DIRECT
+        and _provenance(item, by_source) in (Provenance.A, Provenance.B)
     ]
     if decisive:
         return Sufficiency.ESTABLISHED, Basis.DECISIVE, decisive

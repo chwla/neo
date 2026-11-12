@@ -322,8 +322,17 @@ def _warm_embedded_searxng() -> None:
     if settings.web_search_provider.lower().strip() != "searxng":
         return
 
+    from app.services.search import searxng_install
     from app.services.search.searxng_embedded import warm_up
 
+    # SearXNG comes with Neo: an install that does not have it yet (a fresh clone, or one from
+    # before it was bundled) fetches it now, in the background, and searches use the other
+    # providers until it is ready. NEO_SEARXNG_AUTO_INSTALL=false leaves that to
+    # scripts/setup_searxng.py, for a machine that should never download on its own.
+    if searxng_install.needs_install():
+        if settings.searxng_auto_install:
+            searxng_install.install_in_background()
+        return
     threading.Thread(target=warm_up, name="searxng-warmup", daemon=True).start()
 
 

@@ -9,13 +9,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.research.capability import items_per_call
 from app.services.research.llm_json import (
+    STAGE_FAILURES,
     LLMBudget,
-    LLMBudgetExhausted,
     LLMFactory,
-    ModelOutputInvalid,
     call_json,
 )
-from app.services.research.textutil import compact, jaccard, normalize_ws, token_set
+from app.services.research.textutil import (
+    compact,
+    jaccard,
+    normalize_ws,
+    stem_set,
+    token_set,
+)
 from app.services.research.types import (
     Basis,
     Claim,
@@ -38,6 +43,8 @@ from app.services.research.types import (
 MAX_EVIDENCE_PER_CALL = 40
 #: Output one claim costs: a sentence, its ids and its scope.
 CLAIM_OUTPUT_TOKENS = 120
+#: Output a synthesis answer needs besides its claims: its JSON frame and any conflicts.
+CLAIM_OVERHEAD_TOKENS = 300
 MAX_EVIDENCE_PER_CELL = 6
 
 CLAIM_INSTRUCTIONS = """\
@@ -176,18 +183,183 @@ def build_claims(
                 payload=payload,
                 schema=_ClaimOutput,
                 budget=llm_budget,
-                num_predict=6000,
+                # Room for this batch's claims, as the batching above counted it. Asking for
+                # far more let a small CPU model write for 20+ minutes in one call; an answer cut
+                # short keeps its complete claims, and evidence it left out gets extractive ones.
+                num_predict=min(6000, CLAIM_OVERHEAD_TOKENS + len(batch) * CLAIM_OUTPUT_TOKENS),
                 notes=trace.errors,
                 reserved=True,
             )
-        except (ModelOutputInvalid, LLMBudgetExhausted) as exc:
+        except STAGE_FAILURES as exc:
             trace.errors.append(f"claim synthesis batch skipped: {exc}")
             continue
         drafts.extend(output.claims)
         for conflict in output.conflicts:
             ids = [item for item in conflict.evidence_ids if isinstance(item, str)]
             conflict_links.extend(zip(ids, ids[1:], strict=False))
-    return _normalize(plan, drafts), conflict_links
+    claims = _normalize(plan, drafts)
+    extractive = extractive_claims(plan, selected, claims)
+    if extractive:
+        trace.errors.append(
+            f"{len(extractive)} finding(s) were written from their excerpts' own words, "
+            "because no usable model answer covered that evidence"
+        )
+    return [*claims, *extractive], conflict_links
+
+
+#: Findings code may write per (question, entities) from the excerpts' own words.
+MAX_EXTRACTIVE_PER_CELL = 3
+
+
+#: Longest finding code writes from an excerpt, in characters.
+EXTRACTIVE_CHARS = 320
+_FOOTNOTE = re.compile(r"\s*\[\s*(?:\d+|citation needed|[a-z])\s*\]", re.IGNORECASE)
+
+
+#: Sentences of an excerpt that are not findings: the writer's own taste ("Personally, I
+#: prefer Black Ops' story.") or an instruction to the reader ("Do not compare 33 with 30.").
+_ASIDE = re.compile(
+    r"^[\"'(]*(?:personally\b|in my (?:opinion|view|experience)\b|imo\b|"
+    r"i (?:personally |really |still )?(?:think|feel|believe|prefer|love|like|hate|recommend|"
+    r"would|'d)\b|i'd\b|"
+    r"(?:do not|don't|please|remember|make sure|ignore)\b)",
+    re.IGNORECASE,
+)
+
+
+def _readable(text: str) -> str:
+    """An excerpt as a finding: footnote markers and asides out, whole sentences, never cut
+    mid-word."""
+    text = normalize_ws(_FOOTNOTE.sub("", text or ""))
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s and not _ASIDE.match(s)]
+    text = " ".join(sentences)
+    if len(text) <= EXTRACTIVE_CHARS:
+        return text
+    kept = ""
+    for sentence in sentences:
+        if kept and len(kept) + 1 + len(sentence) > EXTRACTIVE_CHARS:
+            break
+        kept = f"{kept} {sentence}".strip()
+    if len(kept) > EXTRACTIVE_CHARS:
+        kept = kept[:EXTRACTIVE_CHARS].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return kept
+
+
+#: Words that say subjects are compared without saying how they compare.
+_COMPARING = frozenset(
+    stem_set(
+        "differ differs different difference differences similar similarity similarities alike "
+        "same both compare compared comparison versus unlike between each other main key "
+        "significant major various several many way ways aspect aspects terms"
+    )
+)
+
+
+def _generic_words(plan: ResearchPlan) -> frozenset[str]:
+    """Words a finding can use without saying anything specific: the query's own, its
+    subjects' names and words that only announce a comparison."""
+    names = " ".join(name for e in plan.understanding.entities for name in e.names())
+    return _COMPARING | stem_set(plan.query) | stem_set(names)
+
+
+def _carries(text: str, item: EvidenceItem, generic: frozenset[str]) -> bool:
+    """Whether a finding states something specific that this evidence says.
+
+    "Modern Warfare and Black Ops differ in their gameplay style" cited six excerpts about
+    campaign settings, movement systems and studios. It says nothing those excerpts say beyond
+    the subjects' names, so citing them must not count as having reported them.
+    """
+    said = stem_set(text) - generic
+    if not said:
+        return False
+    shared = said & (stem_set(f"{item.claim} {item.excerpt}") - generic)
+    return len(shared) >= min(2, len(said))
+
+
+def unsupported_specifics(plan: ResearchPlan, text: str, cited: list[EvidenceItem]) -> bool:
+    """Whether a finding's own content appears in none of its cited excerpts.
+
+    Its own content is every word but the query's, its subjects' names and words that only
+    announce a comparison. "Modern Warfare and Black Ops differ in their gameplay style" cited
+    six excerpts, none of which says "gameplay" or "style", and a 3B auditor passed it.
+    """
+    generic = _generic_words(plan)
+    said = stem_set(text) - generic
+    if not said:
+        return False
+    return not said & (stem_set(" ".join(item.excerpt for item in cited)) - generic)
+
+
+def extractive_claims(
+    plan: ResearchPlan, evidence: list[EvidenceItem], existing: list[Claim]
+) -> list[Claim]:
+    """Findings stated in their evidence's own words, for evidence no model claim covers.
+
+    Used when synthesis failed, was skipped, ran out of time or left some evidence unused, so
+    accepted evidence is never silently dropped. Evidence a claim cites without stating any of
+    it (a vague claim citing everything) counts as unused. An extractive claim says only what
+    its excerpt says and still goes through verification like any other.
+    """
+    by_id = {item.id: item for item in evidence}
+    generic = _generic_words(plan)
+    covered = {
+        evidence_id
+        for claim in existing
+        for evidence_id in claim.evidence_ids
+        if evidence_id in by_id and _carries(claim.text, by_id[evidence_id], generic)
+    }
+    by_cell: dict[tuple[str, tuple[str, ...]], list[EvidenceItem]] = defaultdict(list)
+    for item in evidence:
+        if item.id in covered or item.duplicate_of is not None:
+            continue
+        by_cell[(item.question_id, tuple(sorted(item.entity_ids)))].append(item)
+    claims: list[Claim] = []
+    taken = {claim.id for claim in existing}
+    number = len(existing)
+    stated = [token_set(claim.text) for claim in existing]
+    for (question_id, entity_ids), items in by_cell.items():
+        items.sort(
+            key=lambda item: (
+                _SUPPORT_RANK[item.support],
+                _FIT_RANK.get(item.claim_fit, 3),
+                item.id,
+            )
+        )
+        written: list[Claim] = []
+        for item in items:
+            text = _readable(item.claim or item.excerpt)
+            if not text:
+                continue
+            words = token_set(text)
+            if any(jaccard(words, other) >= 0.75 for other in stated):
+                continue  # already a finding, from this evidence's copy elsewhere
+            same = next(
+                (c for c in written if jaccard(token_set(c.text), token_set(text)) >= 0.75), None
+            )
+            if same is not None:
+                same.evidence_ids.append(item.id)
+                continue
+            if len(written) >= MAX_EXTRACTIVE_PER_CELL:
+                continue
+            number += 1
+            while f"c{number}" in taken:
+                number += 1
+            taken.add(f"c{number}")
+            written.append(
+                Claim(
+                    id=f"c{number}",
+                    text=text,
+                    claim_type=ClaimType.FACT,
+                    polarity=item.polarity,
+                    question_id=question_id if plan.target(question_id) else None,
+                    entity_ids=list(entity_ids),
+                    evidence_ids=[item.id],
+                    origin="extractive",
+                )
+            )
+        claims.extend(written)
+        stated.extend(token_set(claim.text) for claim in written)
+    return claims
 
 
 def build_comparison(
@@ -398,6 +570,8 @@ def _evidence_payload(item: EvidenceItem) -> dict:
         "question_id": item.question_id,
         "entity_ids": item.entity_ids,
         "claim": item.claim,
+        # The words the audit will hold the claim to: writing from them keeps claims faithful.
+        "excerpt": item.excerpt[:300],
         "polarity": item.polarity.value,
         "attribute": item.attribute,
         "value": item.value,

@@ -59,3 +59,13 @@ engines:
     disabled: false
   - name: github
     disabled: false
+  # Off in SearXNG's defaults, on here: the big engines above rate-limit and serve CAPTCHAs
+  # to automated traffic from a home connection within a few searches (measured on Windows:
+  # Brave and Google rate-limited, DuckDuckGo and Startpage CAPTCHA'd, Bing alone answering).
+  # Mojeek and Mwmbl run their own indexes, so they are not another view of Bing or Google.
+  - name: mojeek
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: mwmbl
+    disabled: false

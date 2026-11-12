@@ -23,10 +23,10 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_valida
 
 from app.services.research.capability import ModelCapability, items_per_call
 from app.services.research.llm_json import (
+    STAGE_FAILURES,
     LLMBudget,
-    LLMBudgetExhausted,
     LLMFactory,
-    ModelOutputInvalid,
+    ResearchModelUnavailable,
     call_json,
 )
 from app.services.research.policy import POLICIES
@@ -453,8 +453,12 @@ def plan_research(
                 budget=budget,
                 num_predict=4000,
             )
-    except (ModelOutputInvalid, LLMBudgetExhausted) as exc:
-        raise PlanningFailed(f"The research planner did not return a usable plan ({exc}).") from exc
+    except STAGE_FAILURES as exc:
+        if isinstance(exc, ResearchModelUnavailable) and exc.unreachable:
+            raise
+        # A planner that could not answer usably still leaves the question itself, which is
+        # always something research can pursue. Failing here is what emptied so many runs.
+        return fallback_plan(query, depth, f"the planner's answer was unusable ({exc})")
 
     plan = validate_plan(draft, query, depth)
     plan_draft = draft
@@ -493,7 +497,9 @@ def plan_research(
                 ]
                 plan = candidate
                 plan_draft = repaired_draft
-        except (ModelOutputInvalid, LLMBudgetExhausted):
+        except STAGE_FAILURES as exc:
+            if isinstance(exc, ResearchModelUnavailable) and exc.unreachable:
+                raise
             plan.issues.append(PlanIssue(code="model_repair_failed"))
     if not any(t.tier == Tier.CORE for t in plan.top_targets()):
         # A dimension left unjustified only by its references -- missing, or naming nothing the
@@ -508,14 +514,326 @@ def plan_research(
                 *adopted.issues,
             ]
             plan = adopted
+    if any(t.tier == Tier.CORE for t in plan.top_targets()):
+        plan = _anchored(plan, query, depth)
     if not any(t.tier == Tier.CORE for t in plan.top_targets()):
         discarded = Counter(issue.code for issue in proposal_issues if issue.code in _DISCARDS)
         reasons = ", ".join(f"{n} {code.replace('_', ' ')}" for code, n in discarded.items())
+        fallback = fallback_plan(
+            query,
+            depth,
+            "the planner proposed no usable core question"
+            + (f" (discarded: {reasons})" if reasons else ""),
+        )
+        fallback.issues = [*plan.issues, *fallback.issues]
+        return fallback
+    return plan
+
+
+#: Words of a query that ask for nothing in particular.
+_BARE_WORDS = frozenset(
+    {"vs", "versus", "compare", "comparison", "compared", "research", "between", "difference",
+     "differences", "tell", "about", "explain", "overview", "info", "information"}
+)
+
+
+def _anchored(plan: ResearchPlan, query: str, depth: DepthMode) -> ResearchPlan:
+    """Keep a question that is the query itself when the planner's questions left it.
+
+    "instagram vs facebook" asks for the comparison. A small planner narrowed it to one aspect
+    it chose (relative popularity, profiled as academic statistics), and the run then read
+    papers about something the person never asked. "difference between modern warfare and black
+    ops in call of duty" came back as "how stealthy is Modern Warfare compared to Black Ops?".
+    A query that names no aspect of its own (only its subjects, the scope they are compared in
+    and comparison words) keeps its own question as a core target beside whatever the planner
+    proposed.
+    """
+    if not plan.understanding.entities:
+        return plan
+    names = set()
+    for entity in plan.understanding.entities:
+        names |= token_set(" ".join(entity.names()))
+    _, scope = _subjects_of(query)
+    asked = token_set(query) - names - _BARE_WORDS - token_set(scope)
+    cap = POLICIES[depth].planning.core
+    core = [t for t in plan.top_targets() if t.tier == Tier.CORE]
+    if len(core) >= cap:
+        return plan
+    # A query naming aspects of its own ("the history of house stark") is decomposed into them,
+    # often in other words ("its origins", "the War of the Five Kings"); the plan stands.
+    if len(asked) > 1:
+        return plan
+    # Two or more core questions that each take in every subject mean the planner took the
+    # query apart. One question, or questions each about a single subject ("the number of users
+    # on Instagram"), is where a small model narrowed the query to aspects of its own choosing.
+    every = {e.id for e in plan.understanding.entities}
+    covering = [t for t in core if every <= set(t.subject_ids)]
+    if len(core) >= 2 and covering:
+        return plan
+    anchor_plan = fallback_plan(query, depth, "the query names no particular aspect")
+    anchor = next((t for t in anchor_plan.top_targets() if t.tier == Tier.CORE), None)
+    if anchor is None:
+        return plan
+    lookup = {compact(e.name): e.id for e in plan.understanding.entities}
+    subjects = [
+        lookup[compact(e.name)]
+        for e in anchor_plan.understanding.entities
+        if compact(e.name) in lookup
+    ] or [e.id for e in plan.understanding.entities]
+    if any(
+        jaccard(token_set(t.text), token_set(anchor.text)) >= 0.6
+        and set(subjects) <= set(t.subject_ids)
+        for t in core
+    ):
+        return plan
+    dimension_id = _fresh_id("", "m", len(plan.decomposition.dimensions) + 1,
+                             {d.id for d in plan.decomposition.dimensions})
+    plan.decomposition.dimensions.insert(
+        0, Dimension(id=dimension_id, name="The question as asked", justification_refs=["query"])
+    )
+    target_id = _fresh_id("", "q", 1, {t.id for t in plan.targets})
+    form = anchor.form if len(subjects) > 1 else TargetForm.SINGLE
+    names_by_id = {e.id: e.name for e in plan.understanding.entities}
+    text = (
+        _comparison_text([names_by_id[s] for s in subjects], query, scope)
+        if len(subjects) >= 2
+        else anchor.text
+    )
+    target = EvidenceTarget(
+        id=target_id,
+        text=text,
+        dimension_id=dimension_id,
+        tier=Tier.CORE,
+        form=form,
+        subject_ids=subjects,
+        profile=EvidenceProfile(),
+    )
+    # The question as asked leads: it is searched first and reported first, so a run cut short
+    # on a slow machine has answered what the person asked before any aspect the planner chose.
+    plan.targets = [target, *_children([target], plan.understanding.entities), *plan.targets]
+    plan.complexity = _complexity(plan, plan.complexity.contested_likely)
+    plan.issues.append(PlanIssue(code="query_anchor_added", detail=text, repaired=True))
+    return plan
+
+
+# --- a plan from the query alone -----------------------------------------------------------
+
+_LEAD_IN = re.compile(
+    r"^\s*(?:please\s+)?(?:do\s+(?:a\s+)?)?(?:research|look\s+up|find\s+out|investigate|"
+    r"tell\s+me|explain|compare|comparison)(?:\s+(?:on|about|into|of|for|the))*\s+",
+    re.IGNORECASE,
+)
+_SIDES = re.compile(r"\s+(?:vs\.?|versus|v\.)\s+", re.IGNORECASE)
+_BETWEEN = re.compile(r"\bbetween\s+(.+?)\s+and\s+(.+)$", re.IGNORECASE)
+_COMPARE = re.compile(
+    r"^\s*(?:compare|comparing|comparison\s+of)\s+(.+?)\s+(?:and|with|to|against)\s+(.+)$",
+    re.IGNORECASE,
+)
+_JOINT_WORDS = re.compile(
+    r"\b(?:similarit\w*|in\s+common|alike|relationship|connection|differences?|differ)\b",
+    re.IGNORECASE,
+)
+_SIMILAR_WORDS = re.compile(
+    r"\b(?:similarit\w*|similar|in\s+common|alike|relationship|connection)\b", re.IGNORECASE
+)
+_DIFFERENT_WORDS = re.compile(r"\b(?:differences?|differ\w*)\b", re.IGNORECASE)
+#: The scope a comparison is made in ("... and black ops in call of duty").
+_SCOPE = re.compile(r"\s+(?:in|within)\s+(?!terms\s+of\b)(?:the\s+)?(\S.*)$", re.IGNORECASE)
+_CURRENT_WORDS = re.compile(
+    r"\b(?:latest|current(?:ly)?|now|today|this\s+year|recent(?:ly)?|new|upcoming|20[2-9]\d)\b",
+    re.IGNORECASE,
+)
+#: Words naming an aspect of a subject ("the story of X"); stripped to leave the subject.
+_ASPECT_LEAD = re.compile(
+    r"^(?:the\s+)?(?:story(?:line)?|plot|history|features?|price|prices|cost|performance|"
+    r"quality|design|gameplay|graphics|specs|specifications|benefits|pros\s+and\s+cons|"
+    r"differences?|similarit\w*)\s+(?:of|in|between)\s+(?:the\s+)?",
+    re.IGNORECASE,
+)
+#: Where a subject's name ends and the rest of the sentence begins.
+_SUBJECT_END = re.compile(
+    r"[.?!,;:()]|\s(?:for|in\s+terms\s+of|regarding|when|what|which|how|who|why|where|"
+    r"while|because|so\s+that)\s",
+    re.IGNORECASE,
+)
+
+
+_LOOKUP = re.compile(r"(?:who|when|where|what|which|how\s+(?:many|much|old|tall|long))\b")
+
+
+def _subject(text: str) -> str:
+    text = _SUBJECT_END.split(f"{text} ", maxsplit=1)[0]
+    text = _ASPECT_LEAD.sub("", normalize_ws(text))
+    text = re.sub(r"^(?:the|a|an)\s+", "", text, flags=re.IGNORECASE)
+    return normalize_ws(text).strip(" '\"")[:80]
+
+
+def _subjects_of(query: str) -> tuple[list[str], str]:
+    """The two subjects a comparison names, and the scope it compares them in, if any.
+
+    "difference between modern warfare and black ops in call of duty" compares "modern warfare"
+    and "black ops", in "call of duty"; the scope is not part of the second subject's name.
+    """
+    text = _LEAD_IN.sub("", normalize_ws(query))
+    pair: tuple[str, str] | None = None
+    if match := _COMPARE.match(normalize_ws(query)):
+        pair = (match.group(1), match.group(2))
+    elif match := _BETWEEN.search(text):
+        pair = (match.group(1), match.group(2))
+    elif len(parts := _SIDES.split(text, maxsplit=1)) == 2:
+        left = re.split(r"\b(?:between|of|about|on)\s+", parts[0], flags=re.IGNORECASE)[-1]
+        pair = (left, parts[1])
+    if pair is None:
+        return [], ""
+    last, scope = pair[1], ""
+    if (found := _SCOPE.search(last)) and found.start() > 0:
+        last, scope = last[: found.start()], _SUBJECT_END.split(f"{found.group(1)} ", 1)[0]
+    names = [_subject(side) for side in (pair[0], last)]
+    if not all(len(token_set(name)) or name for name in names):
+        return [], ""
+    if compact(names[0]) == compact(names[1]) or not all(compact(n) for n in names):
+        return [], ""
+    return names, normalize_ws(scope).strip(" '\"?.!")[:80]
+
+
+def _restated(query: str) -> str:
+    """The query itself, as a question."""
+    cleaned = normalize_ws(query).rstrip(" ?.!")
+    text = _LEAD_IN.sub("", cleaned) or cleaned
+    return text[:1].upper() + text[1:] + "?"
+
+
+def _comparison_text(names: list[str], query: str, scope: str) -> str:
+    """The comparison a query asks for, in a question's words."""
+    joined = " and ".join(names)
+    where = f" in {scope}" if scope else ""
+    if _SIMILAR_WORDS.search(query):
+        return f"What do {joined} have in common, and how do they differ{where}?"
+    if _DIFFERENT_WORDS.search(query):
+        return f"How do {joined} differ{where}?"
+    return f"How do {joined} compare{where}?"
+
+
+def fallback_plan(query: str, depth: DepthMode, reason: str) -> ResearchPlan:
+    """A plan built from the query's own words, for when the planner gives nothing usable.
+
+    It asks what the person asked: the comparison of the subjects the query names, or the
+    question itself. Every later stage handles it exactly like a planned one.
+    """
+    cleaned = normalize_ws(query).rstrip(" ?.!")
+    names, scope = _subjects_of(query)
+    entities = [{"id": f"e{index}", "name": name} for index, name in enumerate(names, 1)]
+    joint = bool(names) and bool(_JOINT_WORDS.search(query))
+    if len(names) >= 2:
+        task_type = TaskType.COMPARISON.value
+        # "instagram vs facebook in terms of privacy" asks about privacy: keep its own words.
+        aspects = token_set(query) - token_set(" ".join(names)) - _BARE_WORDS - token_set(scope)
+        text = _comparison_text(names, query, scope) if len(aspects) <= 1 else _restated(query)
+        form = TargetForm.JOINT.value if joint else TargetForm.PER_SUBJECT.value
+    else:
+        lowered = cleaned.lower()
+        task_type = (
+            TaskType.HISTORICAL_RESEARCH.value
+            if "history" in lowered
+            else TaskType.FACTUAL_LOOKUP.value
+            if _LOOKUP.match(lowered)
+            else TaskType.OPEN_EXPLORATION.value
+        )
+        text = _restated(query)
+        form = TargetForm.SINGLE.value
+    current = bool(_CURRENT_WORDS.search(query))
+    draft = PlanDraft.model_validate(
+        {
+            "task_type": task_type,
+            "answer_shape": "a sourced answer to the question as asked",
+            "time_sensitivity": "high" if current else "low",
+            "entities": entities,
+            "dimensions": [{"id": "m1", "name": "Answer", "justification_refs": ["query"]}],
+            "targets": [
+                {
+                    "id": "t1",
+                    "text": text,
+                    "dimension_id": "m1",
+                    "tier": "core",
+                    "form": form,
+                    "subject_ids": [e["id"] for e in entities],
+                    "authority_kind": "issuer",
+                    "claim_scope": "record",
+                    "recency": "current" if current else "timeless",
+                }
+            ],
+        }
+    )
+    plan = validate_plan(draft, query, depth, adopt_unjustified=True)
+    plan.issues.append(
+        PlanIssue(code="fallback_plan", detail=normalize_ws(reason)[:300], repaired=True)
+    )
+    return plan
+
+
+#: The most questions a person may add to a plan, beyond what the mode would plan itself.
+MAX_EDITED_TARGETS = 30
+
+
+def plan_from_edit(edited: dict[str, Any], query: str, depth: DepthMode) -> ResearchPlan:
+    """A plan the person reviewed and changed, checked exactly as a proposed plan is.
+
+    The preview's plan comes back with questions reworded, reprioritised, removed or added.
+    It is turned back into a proposal and put through ``validate_plan``, so nothing reaches
+    research that the planner's own checks would have refused: a question about the research
+    itself is dropped, the mode's caps apply, subjects are resolved by name. A question added
+    without a profile gets the same neutral defaults any underspecified target does.
+    """
+    understanding = edited.get("understanding") or {}
+    decomposition = edited.get("decomposition") or {}
+    dimensions = [d for d in decomposition.get("dimensions") or [] if isinstance(d, dict)]
+    known_dimensions = {str(d.get("id")) for d in dimensions}
+    targets = []
+    for raw in edited.get("targets") or []:
+        # Children are regenerated from their parent; only the questions themselves are edited.
+        if not isinstance(raw, dict) or raw.get("parent_id"):
+            continue
+        profile = raw.get("profile") or {}
+        recency = profile.get("recency") or {}
+        dimension_id = str(raw.get("dimension_id") or "")
+        if dimension_id not in known_dimensions and dimensions:
+            dimension_id = str(dimensions[0].get("id"))
+        targets.append({
+            **{key: raw.get(key) for key in (
+                "id", "text", "tier", "form", "subject_ids", "scope_note", "hypotheses",
+                "constraint_ids", "criterion_ids",
+            ) if raw.get(key) is not None},
+            "dimension_id": dimension_id,
+            **{key: profile.get(key) for key in (
+                "authority_kind", "claim_scope", "origin_hint", "record_form", "originator",
+                "outcome_role", "error_prone",
+            ) if profile.get(key)},
+            "recency": recency.get("kind") or "",
+            "max_age_days": recency.get("max_age_days"),
+        })
+    if not dimensions and targets:
+        # A plan whose aspects were all removed still has a question: the query itself.
+        dimensions = [{"id": "m1", "name": "Answer", "justification_refs": ["query"]}]
+        for target in targets:
+            target["dimension_id"] = "m1"
+    draft = PlanDraft.model_validate({
+        **{key: understanding.get(key) for key in (
+            "task_type", "answer_shape", "time_sensitivity", "entities", "constraints",
+            "decision_criteria",
+        ) if understanding.get(key) is not None},
+        "contested_likely": bool((edited.get("complexity") or {}).get("contested_likely")),
+        "dimensions": dimensions,
+        "targets": targets[:MAX_EDITED_TARGETS],
+    })
+    # The person kept these aspects by keeping questions under them; that is justification.
+    plan = validate_plan(draft, query, depth, adopt_unjustified=True)
+    if not any(t.tier == Tier.CORE for t in plan.top_targets()):
         raise PlanningFailed(
-            "The research planner produced no usable core research targets"
-            + (f" (discarded: {reasons})." if reasons else "."),
+            "The edited plan has no question left to research. Keep at least one, and mark "
+            "the one the answer depends on as must answer.",
             plan.issues,
         )
+    plan.issues.append(PlanIssue(code="plan_edited_by_user", repaired=True))
     return plan
 
 
@@ -578,7 +896,11 @@ def _staged_draft(
     }
     dimension_limit = max(2, min(5, max_targets))
     dimensions: list[DraftDimension] = []
-    if budget.can_spend():
+    # Every later stage needs a plan, so the smallest usable one -- its dimensions and one
+    # batch of targets -- may use the time held back for finishing. That reserve is projected
+    # from the calls seen so far; on a slow CPU-only machine one long first call projected
+    # past the run's deadline, these calls were skipped, and the run failed on an empty plan.
+    if budget.can_spend(reserved=True):
         try:
             dimensions = call_json(
                 llm_factory,
@@ -588,13 +910,16 @@ def _staged_draft(
                 schema=DimensionsDraft,
                 budget=budget,
                 num_predict=900,
+                reserved=True,
             ).dimensions
-        except (ModelOutputInvalid, LLMBudgetExhausted):
+        except STAGE_FAILURES as exc:
+            if isinstance(exc, ResearchModelUnavailable) and exc.unreachable:
+                raise
             dimensions = []
 
     per_call = _targets_per_call(budget.capability, max_targets)
     targets: list[DraftTarget] = []
-    while len(targets) < max_targets and budget.can_spend():
+    while len(targets) < max_targets and budget.can_spend(reserved=not targets):
         wanted = min(per_call, max_targets - len(targets))
         try:
             batch = call_json(
@@ -611,8 +936,11 @@ def _staged_draft(
                 schema=TargetsDraft,
                 budget=budget,
                 num_predict=2000,
+                reserved=not targets,
             ).targets
-        except (ModelOutputInvalid, LLMBudgetExhausted):
+        except STAGE_FAILURES as exc:
+            if isinstance(exc, ResearchModelUnavailable) and exc.unreachable:
+                raise
             break
         fresh = [item for item in batch if item.text and item.text not in {t.text for t in targets}]
         if not fresh:
@@ -661,6 +989,16 @@ def validate_plan(
     )
 
     entities = _entities(draft, note)
+    # "difference between modern warfare and black ops in call of duty" compares two games in
+    # Call of Duty; a planner that also made Call of Duty a subject split the comparison three
+    # ways ("... (for Call of Duty)"). The scope a comparison is made in is not one of its sides.
+    subjects, scope = _subjects_of(query)
+    if scope and len(subjects) >= 2 and len(entities) > 2:
+        is_scope = [e for e in entities if compact(scope) in {compact(n) for n in e.names()}]
+        if is_scope and len(entities) - len(is_scope) >= 2:
+            for entity in is_scope:
+                note("entity_is_scope", entity.name)
+            entities = [e for e in entities if e not in is_scope]
     entity_lookup = _entity_lookup(entities)
     constraints = _constraints(draft, query, note)
     criteria = [
@@ -668,7 +1006,7 @@ def validate_plan(
             id=_fresh_id(raw.id, "d", index, set()), text=normalize_ws(raw.text)[:200]
         )
         for index, raw in enumerate(draft.decision_criteria, 1)
-        if normalize_ws(raw.text)
+        if normalize_ws(raw.text) and _criterion_grounded(raw, query, task_type, note)
     ]
     criteria = _unique_ids(criteria, "d")
 
@@ -799,8 +1137,10 @@ def _entities(draft: PlanDraft, note) -> list[Entity]:
         aliases = [
             alias
             for alias in dict.fromkeys(normalize_ws(item)[:120] for item in raw.aliases)
-            if alias and compact(alias) and compact(alias) != key
+            if alias and compact(alias) and compact(alias) != key and not _truncation(alias, key)
         ][:6]
+        if len(aliases) < len(raw.aliases):
+            note("alias_dropped", f"{name}: truncated or empty aliases removed")
         entities.append(
             Entity(
                 id=_fresh_id(raw.id, "e", index, taken),
@@ -810,6 +1150,16 @@ def _entities(draft: PlanDraft, note) -> list[Entity]:
             )
         )
     return entities
+
+
+def _truncation(alias: str, key: str) -> bool:
+    """A clipped form of the name ("Face" for Facebook, "Insta" for Instagram).
+
+    Such forms are ordinary words or word-starts, so they match unrelated text and turn
+    searches into nonsense. Acronyms written in capitals (IG, FB) are kept.
+    """
+    form = compact(alias)
+    return form != key and key.startswith(form) and not alias.strip().isupper()
 
 
 def _entity_lookup(entities: list[Entity]) -> dict[str, str]:
@@ -828,6 +1178,22 @@ def _resolve_entity_ids(raw_ids: list[str], lookup: dict[str, str]) -> list[str]
         if entity_id and entity_id not in resolved:
             resolved.append(entity_id)
     return resolved
+
+
+def _criterion_grounded(raw: DraftRef, query: str, task_type: TaskType, note) -> bool:
+    """Whether a decision criterion is the user's, not one the planner made up.
+
+    A small model asked about "instagram vs facebook" decided the question was "which platform
+    has more features for posting photos?", and the whole run then reported that this was not
+    established. Outside a request for a recommendation, a criterion must come from the query.
+    """
+    if task_type == TaskType.RECOMMENDATION:
+        return True
+    words = token_set(raw.text)
+    if not words or len(words & token_set(query)) / len(words) >= 0.5:
+        return True
+    note("criterion_not_in_query", raw.text)
+    return False
 
 
 def _constraints(draft: PlanDraft, query: str, note) -> list[Constraint]:
@@ -951,16 +1317,15 @@ def _targets(
         if dimension_id is None:
             dimension_id = _infer_dimension(text, dimensions)
             if dimension_id is None:
-                # Code cannot tell where the target belongs. Losing one the answer depends on
-                # is worth asking the model about; a lesser one is simply dropped.
-                given = raw.dimension_id or "(missing)"
-                note(
-                    "target_without_dimension",
-                    f"dimension_id {given} is not a kept dimension: {text}",
-                    tier != Tier.CORE,
-                )
-                continue
-            note("target_dimension_inferred", text)
+                # The target names an aspect the plan never declared ("performance"), or none.
+                # Small models do this constantly, and dropping such targets threw away whole
+                # plans -- every question of "what changes in GTA 6 on PS5" went, and the run
+                # failed before searching. The question is still about the query; it gets the
+                # aspect it named, or a general one.
+                dimension_id = _dimension_for(raw.dimension_id, dimensions, dimension_remap)
+                note("target_dimension_created", f"{raw.dimension_id or '(missing)'}: {text}")
+            else:
+                note("target_dimension_inferred", text)
 
         subject_ids = _resolve_entity_ids(raw.subject_ids, entity_lookup)
         if len(subject_ids) < len(raw.subject_ids):
@@ -1035,6 +1400,28 @@ def _targets(
             continue
         targets.append(candidate)
     return targets
+
+
+def _dimension_for(label: str, dimensions: list[Dimension], remap: dict[str, str]) -> str:
+    """The dimension a target named but the plan never declared, created from that name.
+
+    Added to ``dimensions`` and ``remap`` in place, so later targets naming the same aspect
+    join it. Justified by the query: the target that names it is a question about the query.
+    """
+    words = normalize_ws(str(label or "").replace("_", " ").replace("-", " "))
+    name = (words[:1].upper() + words[1:])[:100] if token_set(words) else "Answer"
+    for form in (label, compact(label or ""), compact(name)):
+        if form and form in remap:
+            return remap[form]
+    taken = {dimension.id for dimension in dimensions}
+    new_id = _fresh_id("", "m", len(dimensions) + 1, taken)
+    dimensions.append(
+        Dimension(id=new_id, name=name, description="", justification_refs=["query"])
+    )
+    for form in (new_id, label, compact(label or ""), compact(name)):
+        if form:
+            remap.setdefault(form, new_id)
+    return new_id
 
 
 def _profile(raw: DraftTarget, note) -> EvidenceProfile:
@@ -1309,7 +1696,7 @@ def expand(
             budget=budget,
             num_predict=1200,
         )
-    except (ModelOutputInvalid, LLMBudgetExhausted) as exc:
+    except STAGE_FAILURES as exc:
         trace.errors.append(f"expansion skipped: {exc}")
         return []
 

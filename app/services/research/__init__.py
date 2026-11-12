@@ -6,7 +6,7 @@ from app.services.research.types import (
     StartResearchRequest,
 )
 
-_JOB_EXPORTS = {"cancel_job", "create_job", "get_job", "start_job"}
+_JOB_EXPORTS = {"cancel_job", "clear_jobs", "create_job", "delete_job", "get_job", "start_job"}
 _STORE_EXPORTS = {"clear_all_jobs", "initialize_research_tables", "list_jobs"}
 
 
@@ -31,7 +31,9 @@ __all__ = [
     "ResearchJob",
     "StartResearchRequest",
     "cancel_job",
+    "clear_jobs",
     "create_job",
+    "delete_job",
     "get_job",
     "initialize_research_tables",
     "list_jobs",

@@ -161,13 +161,18 @@ python -m venv .venv
 ```
 
 Create a `.env` in the repo root (copy `.env.example`; on Windows `copy .env.example .env`) or
-export variables, with at least a search provider if you want web search; local runs default to
-search **disabled**. Each profile can also pick its own provider in Settings > Web search.
+export variables to change any default:
 
 ```bash
-NEO_SEARCH_PROVIDER=duckduckgo
 NEO_DEFAULT_MODEL=llama3.2:3b
 ```
+
+Web search works with nothing to configure. Neo's built-in SearXNG is the default provider, and
+Neo installs it by itself the first time it starts (about 20 MB, into `data/searxng`, with its
+packages kept apart from Neo's own); searches use DuckDuckGo and Bing until it is ready. To do
+that ahead of time, or on a machine that should not download on its own
+(`NEO_SEARXNG_AUTO_INSTALL=false`), run `python scripts/setup_searxng.py` once. Each profile can
+pick another provider, or turn search off, in Settings > Web search.
 
 On a native Windows install set `NEO_WORKSPACE_LIVE_ROOTS` to the folders Agent Mode may
 attach, separated by `;` (for example `C:\Users\you\code;D:\projects`); unset, any folder
@@ -259,14 +264,38 @@ Set `NEO_SEARCH_PROVIDER` to one of:
 
 | Value | Needs |
 |---|---|
-| `searxng` | Built in on Docker. A local install needs a SearXNG source tree at `NEO_SEARXNG_SOURCE_DIR` (default `data/searxng`); without it the provider reports unavailable. |
+| `searxng` | **Default.** Built into the Docker image; a local install fetches it on first start, or with `python scripts/setup_searxng.py`, into `NEO_SEARXNG_SOURCE_DIR` (default `data/searxng`). Runs on Windows, macOS and Linux. |
 | `external_searxng` | `NEO_SEARXNG_URL` pointing at your own instance. |
 | `duckduckgo`, `bing_html` | Nothing (keyless; can be rate-limited or blocked on some networks). |
 | `tavily`, `brave`, `serper` | An API key: `NEO_TAVILY_API_KEY`, `NEO_BRAVE_API_KEY`, `NEO_SERPER_API_KEY`. |
-| `disabled` | Default on local runs. |
+| `disabled` | Nothing; turns web search off. Research Mode then refuses to start. |
 
-`NEO_WEB_SEARCH_FALLBACK_PROVIDERS` is a comma-separated list tried after the primary fails.
-A keyed provider is the most reliable choice on networks that block the keyless ones.
+`NEO_WEB_SEARCH_FALLBACK_PROVIDERS` is a comma-separated list tried after the primary fails;
+it defaults to `duckduckgo,bing_html`. A keyed provider is the most reliable choice on networks
+that block the keyless ones.
+
+### Research Mode on a CPU-only machine
+
+Research does the same work on every machine: the same questions, sources and checks. A
+slower machine takes longer; it never gets a shallower run. Expect, with a 3B model on a
+laptop CPU (about 5-10 tokens a second), roughly 10-20 minutes for Quick and 30-60 for
+Standard. With a GPU or a hosted API, a few minutes.
+
+- Each mode's time limit grows to fit the measured speed of your model on your machine.
+  Before a model has answered here, Neo estimates its speed from the hardware.
+- At the limit, a run stops searching, writes up what it has verified, and says where it
+  stopped. Findings are never invented to fill a report.
+- Only one research run uses a local model server at a time; a second one waits ("Waiting
+  for another research run") rather than slowing both down.
+- Findings carry a strength: verified, limited support, one source, sources disagree, or one
+  side only. Passages that were read but could not be verified are quoted under "Unverified
+  evidence", not stated as findings.
+- If Ollama is not running, research says so within seconds; if web search is unavailable it
+  stops before planning. A slow first answer while the model loads is not treated as a failure.
+- To check research on your own machine, run
+  `python scripts/research_live_check.py --profile <profile-id> --depth quick "<question>"`.
+  It runs through the normal job pipeline (the run appears in Research history) and prints
+  status, timings, findings and whether every citation resolves.
 
 ### Connecting a Google account
 

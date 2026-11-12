@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from app.services.research.memory_scope import (
 from app.services.research.policy import POLICIES
 from app.services.research.report import lead_answer
 from app.services.research.store import (
+    clear_all_jobs,
     load_job,
     mark_interrupted_jobs,
     query_label_for,
@@ -40,6 +42,7 @@ from app.services.research.store import (
     unfinished_job_ids,
     update_job_status,
 )
+from app.services.research.store import delete_job as store_delete_job
 from app.services.research.types import (
     CompletionStatus,
     DepthMode,
@@ -47,6 +50,7 @@ from app.services.research.types import (
     ProgressEvent,
     ResearchJob,
     ResearchOutcome,
+    ResearchPlan,
     StopReason,
 )
 from app.services.rules.resolver import RuleResolver
@@ -56,6 +60,11 @@ logger = logging.getLogger(__name__)
 
 _active_jobs: dict[str, threading.Event] = {}
 _lock = threading.Lock()
+#: One research run at a time per local model server. Such a server answers one request at
+#: a time on most machines; two runs sharing it each go at half speed, time out, and both fail.
+_model_slots: dict[str, threading.Lock] = {}
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "0.0.0.0", "host.docker.internal")
+_LOCAL_TYPES = frozenset({"ollama", "llamacpp", "llama_cpp", "lmstudio", "local"})
 
 ResearchMemoryProvider = Callable[
     [dict[str, Any]], tuple[RecallPromptOrchestrator, MemoryQueryContext]
@@ -230,6 +239,7 @@ def create_job(
     is_guest: bool = False,
     memory_enabled: bool = True,
     incognito: bool = False,
+    plan: ResearchPlan | None = None,
 ) -> ResearchJob:
     query_label = label_of(user_query)
     user_query = user_query.value if isinstance(user_query, Labeled) else user_query
@@ -253,6 +263,7 @@ def create_job(
         created_at=now,
         updated_at=now,
         current_step="Queued",
+        plan=plan,
         owner_id=owner_id,
         database_identity=database_identity,
         profile_id=profile_id,
@@ -270,6 +281,7 @@ def create_job(
             "resolved_rules": rule_result["resolved_rules"],
             "applied_profiles": rule_result["applied_profiles"],
             "rule_warnings": rule_result["warnings"],
+            "plan_edited": plan is not None,
         },
     )
     save_job(job.model_dump(mode="json"), query_label=query_label)
@@ -309,11 +321,71 @@ def _run_research_pipeline_bound(
     profile_id: str | None,
     is_guest: bool,
 ) -> None:
-    if profile_id:
-        with profile_database(profile_id, guest=is_guest):
-            _run_research_pipeline(job_id, cancel)
-        return
-    _run_research_pipeline(job_id, cancel)
+    try:
+        if profile_id:
+            with profile_database(profile_id, guest=is_guest):
+                _run_research_pipeline(job_id, cancel)
+            return
+        _run_research_pipeline(job_id, cancel)
+    except Exception as exc:
+        # The run could not even reach its profile. Record that where possible; never leave
+        # the job queued forever with its slot taken.
+        logger.exception("Research job %s could not start", job_id)
+        try:
+            update_job_status(
+                job_id,
+                JobStatus.FAILED.value,
+                error=f"Research could not open this profile's data ({exc.__class__.__name__}).",
+                current_step="Research failed",
+            )
+        except Exception:
+            logger.exception("Could not record the failure of research job %s", job_id)
+    finally:
+        with _lock:
+            _active_jobs.pop(job_id, None)
+
+
+def model_slot_key(route_name: str = "research") -> str | None:
+    """The local model server a research route runs on, or None for a hosted API."""
+    try:
+        from app.services.provider_runtime.router import select
+
+        route = select("research", route_name)
+    except Exception:
+        return None
+    provider = route.get("provider_record") or {}
+    kind = str(provider.get("provider_type") or route.get("provider") or "").lower()
+    base_url = str(provider.get("base_url") or "").lower()
+    if kind in _LOCAL_TYPES or any(host in base_url for host in _LOCAL_HOSTS):
+        return base_url or kind
+    return None
+
+
+def _wait_for_model(job_id: str, key: str | None, cancel: threading.Event) -> threading.Lock | None:
+    """Take the model server's slot, waiting while another run holds it.
+
+    Returns the lock held (release it when done), or None when there is nothing to wait for.
+    Raises ``_Cancelled`` when the run is cancelled while it waits.
+    """
+    if not key:
+        return None
+    with _lock:
+        slot = _model_slots.setdefault(key, threading.Lock())
+    if slot.acquire(blocking=False):
+        return slot
+    update_job_status(
+        job_id,
+        JobStatus.QUEUED.value,
+        current_step="Waiting for another research run on this model to finish",
+    )
+    while not slot.acquire(timeout=0.25):
+        if cancel.is_set():
+            raise _Cancelled
+    return slot
+
+
+class _Cancelled(Exception):
+    pass
 
 
 def cancel_job(job_id: str) -> bool:
@@ -340,6 +412,22 @@ def cancel_unfinished_jobs() -> list[str]:
     return job_ids
 
 
+def delete_job(job_id: str) -> bool:
+    """Remove one run from history, stopping it first if it is still going.
+
+    A run deleted while working would otherwise keep its worker -- invisible, still holding
+    the model for as long as the run had left -- and its next save could write it back.
+    """
+    cancel_job(job_id)
+    return store_delete_job(job_id)
+
+
+def clear_jobs() -> int:
+    """Remove every run in this profile's history, stopping any still in progress first."""
+    cancel_unfinished_jobs()
+    return clear_all_jobs()
+
+
 def running_job_ids() -> set[str]:
     """Jobs with a worker thread in this process right now."""
     with _lock:
@@ -355,6 +443,7 @@ def get_job(job_id: str) -> ResearchJob | None:
 
 def _dict_to_job(data: dict) -> ResearchJob:
     metadata = data.get("metadata") or {}
+    data.setdefault("unverified", metadata.get("unverified") or [])
     data.setdefault("owner_id", metadata.get("memory_owner_id"))
     data.setdefault("database_identity", metadata.get("memory_database_identity"))
     data.setdefault("profile_id", metadata.get("memory_profile_id"))
@@ -396,7 +485,17 @@ def _research_context(job_data: dict[str, Any], user_query: str) -> tuple[str, l
 
 
 def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
+    slot: threading.Lock | None = None
+    waited = 0.0
     try:
+        started_wait = time.monotonic()
+        try:
+            slot = _wait_for_model(job_id, model_slot_key(), cancel)
+        except _Cancelled:
+            return _mark_cancelled(job_id)
+        waited = time.monotonic() - started_wait
+        if cancel.is_set():
+            return _mark_cancelled(job_id)
         _update(job_id, JobStatus.PLANNING, 2, "Starting", "Preparing research")
         job_data = load_job(job_id)
         if not job_data:
@@ -415,6 +514,10 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             "reason_codes": ["external_search_requires_explicit_grant"],
         }
         job_data["metadata"] = metadata
+        if cancel.is_set():
+            # Cancelled -- or deleted -- before it began. Saving now would write a deleted
+            # run back into history, since a save inserts a row that is missing.
+            return
         save_job(job_data)
         route_name = RuleResolver.route_name(
             {
@@ -446,6 +549,8 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
                 **fields,
             )
 
+        # A plan the person edited in the preview was checked when the run was started.
+        edited = job_data.get("plan") if metadata.get("plan_edited") else None
         outcome = run_research(
             Labeled(user_query, query_label_for(job_data)),
             depth,
@@ -454,9 +559,13 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             cancelled=cancel.is_set,
             context=context,
             run_id=job_id,
+            plan=ResearchPlan.model_validate(edited) if edited else None,
         )
         if cancel.is_set() or outcome.stop_reason == StopReason.USER_CANCELLED:
             return _mark_cancelled(job_id)
+        if waited >= 1:
+            timing = outcome.trace.diagnostics.setdefault("timing", {})
+            timing["queue_wait_seconds"] = round(waited, 1)
         _save_final(job_id, outcome, memory_keys, cancel)
     except Exception as exc:
         logger.exception("Research pipeline failed for job %s", job_id)
@@ -468,6 +577,8 @@ def _run_research_pipeline(job_id: str, cancel: threading.Event) -> None:
             progress_percent=0,
         )
     finally:
+        if slot is not None:
+            slot.release()
         with _lock:
             _active_jobs.pop(job_id, None)
 
@@ -498,6 +609,7 @@ def _update(
             core_targets=progress.core_targets if progress is not None else 0,
             elapsed_seconds=progress.elapsed_seconds if progress is not None else 0,
             ceiling_seconds=progress.ceiling_seconds if progress is not None else 0,
+            remaining_seconds=progress.remaining_seconds if progress is not None else None,
             searches_run=metrics.searches_run if metrics else 0,
             sources_reviewed=metrics.sources_reviewed if metrics else 0,
             sources_used=metrics.sources_used if metrics else 0,
@@ -524,12 +636,14 @@ def _save_final(
     data = load_job(job_id)
     if not data:
         return
-    failed = outcome.completion_status == CompletionStatus.FAILED
+    # Search being unavailable is a failure the person can act on, never a completion.
+    failed = outcome.completion_status in (CompletionStatus.FAILED, CompletionStatus.BLOCKED)
     data["report"] = outcome.report
     data["plan"] = outcome.plan.model_dump(mode="json") if outcome.plan else None
     data["sources"] = [source.model_dump(mode="json") for source in outcome.sources]
     data["evidence"] = [item.model_dump(mode="json") for item in outcome.evidence]
     data["claims"] = [claim.model_dump(mode="json") for claim in outcome.claims]
+    unverified = [item.model_dump(mode="json") for item in outcome.unverified]
     data["trace"] = outcome.trace.model_dump(mode="json")
     data["generated_queries"] = [action.query for action in outcome.trace.actions if action.query]
     metadata = dict(data.get("metadata") or {})
@@ -545,6 +659,7 @@ def _save_final(
             "report_sections": outcome.report_sections,
             "metrics": outcome.metrics.model_dump(),
             "memory_used": memory_keys,
+            "unverified": unverified,
         }
     )
     data["metadata"] = metadata
@@ -554,6 +669,10 @@ def _save_final(
     data["current_step"] = "Research failed" if failed else "Research complete"
     with _lock:
         if cancel is not None and cancel.is_set():
+            return
+        current = load_job(job_id)
+        if current is None or current.get("status") == JobStatus.CANCELLED.value:
+            # Cancelled (or deleted) while the result was being written up.
             return
         save_job(data)
 

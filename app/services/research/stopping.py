@@ -57,9 +57,11 @@ def decide(
         if strategy.has_material_action(target, emap, policy, leads, groups)
     ]
     if not actionable:
-        return LoopDecision(True, "saturated", "no remaining research could change the answer")
+        return LoopDecision(
+            True, "saturated", "no further search this depth allows could add to the answer"
+        )
     if emap.steps_without_change >= GLOBAL_STALL_STEPS:
-        return LoopDecision(True, "no_progress", "the last steps improved no target")
+        return LoopDecision(True, "no_progress", "the last searches found nothing new")
     if not can_afford_step:
         core_left = any(target.tier == Tier.CORE for target in actionable)
         return LoopDecision(True, "ceiling" if core_left else "saturated", limiting_ceiling)
